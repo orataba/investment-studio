@@ -236,6 +236,9 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
             prepare_run(run_id)
         if execution_authorization is not None:
             execution_authorization()
+        if not risk_run and not resume_review:
+            from watchlist_app.services.sector_research import prepare_initialization_searches
+            prepare_initialization_searches(run_id)
         # The pinned headless CLI returns its last assistant text.
         # Research/risk drafts use structured tool submissions; conversations retain prose.
         mode = ["sector"] if sector_run else ["risk"] if risk_run else []

@@ -152,7 +152,7 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
     common = {"sector_run", "research_run", "risk_run", "run_id", "cutoff", "input_snapshot_cutoff", "instrument_ids", "initialization"}
     fields = common | ({"question", "page_context", "referenced_research_update", "referenced_research_versions",
         "referenced_risk_case", "history", "conversation", "evidence", "watchlists", "limitations", "data_gaps",
-        "incremental_trigger", "analyst_focus", "user_records", "team_publication_instructions", "market_coverage",
+        "incremental_trigger", "analyst_focus", "user_records", "team_publication_instructions", "market_coverage", "market_queries",
         "catalogue", "tool_evidence", "computed_metrics", "topic_id", "as_of_date", "requested_at", "selected_instrument_ids",
         "watchlist_id", "portfolio_id", "team_id", "visibility", "risk_inputs", "risk_scope", "prior_inputs"}
         if request.resource == "context" else
@@ -164,6 +164,10 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
         # value. Other retained conversations, figures and risk snapshots cannot
         # contribute to this page and need not be decoded on every page request.
         fields = common | ({request.section} if request.section in fields else set())
+        if request.section in {"initialization", "initialization_candidates"}:
+            fields.add("market_queries")
+        if request.section == "initialization_candidates":
+            fields.add("initialization_candidates")
     elif request.resource == "instrument" and request.section != "overview":
         fields.discard("research_dossiers")
     record = load_run_fields(session, run_id, fields)

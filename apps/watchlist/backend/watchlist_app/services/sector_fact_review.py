@@ -278,6 +278,11 @@ actual acquisition queries, relevant originals, available baseline and PM/quanti
 instrument_id annotation alone does not establish relevance, and a bound source index does not prove the
 whole original was read. Do not certify a seven-day scan solely from a nonempty investment view, source
 count or generic search. Preserve specific missing coverage; a checked quiet window needs no invented news.
+initialization_searches describes actual registered-name/code directory pages only. Its candidate directory
+is available separately in this same packet; it is not read original evidence. Check exact query filters,
+AND terms, date bounds and unreturned pages. Correct coverage that upgrades a narrower topic/date intersection
+or incomplete directory into a complete seven-day topic scan. Identity-directory completion does not certify
+all related topics, official disclosures or original reading; state the actual checked scope and remaining gaps.
 Check progress_kind=editorial is limited to wording, scoring or research arrangements, not new facts or
 material analysis; it must not refresh the factual timeline. Check importance_score (1–5) and its substantive reason separately from confidence/impact/urgency. Public
 market_views require attribution, dates and actual originals; issuer statements alone are not consensus.
@@ -613,6 +618,8 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
     if isinstance(market_coverage, dict):
         market_coverage = {**market_coverage, "detail_read":
             "read_review_context(section='market_coverage')；同一冻结核证包内的完整覆盖细项按需读取。索引/采集状态不表示已覆盖全部事实，缺口不能推定无新增。"}
+    from watchlist_app.services.market_evidence import initialization_search_summary
+    initialization_searches = initialization_search_summary(context)
     return {
         "run_id": run_id,
         "cutoff": context["cutoff"],
@@ -628,11 +635,15 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
         "research_dossiers": dossiers,
         "theme_history": theme_history,
         "market_coverage": context.get("market_coverage"),
+        **({"initialization_candidates": context.get("initialization_candidates", [])} if initialization_searches is not None else {}),
         "prior_research_updates": prior_updates,
         "prior_judgment_versions": prior_judgment_versions,
         "tool_evidence": _tool_receipts(context),
         "acquisition": {
             "initialization": context.get("initialization"),
+            **({"initialization_searches": initialization_searches,
+                "candidate_read": "read_review_context(section='initialization_candidates')；仅目录，原文仍须读取 sources 中实际已取得的版本。"}
+               if initialization_searches is not None else {}),
             "market_queries": context.get("market_queries", []),
             "market_coverage": market_coverage,
             "market_channel_gaps": {iid: shared_market_coverage_gaps(context, instrument_id=iid) for iid in sorted(ids)},

@@ -450,8 +450,57 @@ def prepare_run(run_id):
                 "published_after": (datetime.fromisoformat(cutoff) - timedelta(days=7)).isoformat(),
                 "as_of": cutoff,
                 "scope": "逐标的检索过去七天相关新闻及最新公告；核对必要基础资料、PM观点、已有研究和适用量化。允许更早的必要背景及晚收材料；缺失如实记录。"}
+            queries, identity_gaps = [], []
+            for dossier in context["research_dossiers"]:
+                if dossier["instrument_id"] not in context.get("instrument_ids", []):
+                    continue
+                registration = (dossier.get("mandate") or {}).get("registration") or {}
+                seen = set()
+                for kind in ("name", "identifier"):
+                    value = str(registration.get(kind) or "").strip()
+                    if not value:
+                        identity_gaps.append(f"{dossier['instrument_id']} 缺少已登记的{kind}，未猜测代码或执行空关键词检索。")
+                    elif value not in seen:
+                        queries.append({"instrument_id": dossier["instrument_id"], "identity_kind": kind, "query": value})
+                        seen.add(value)
+            context["initialization"].update(identity_queries=queries, identity_gaps=identity_gaps)
         run.context_json = context
         session.commit()
+
+
+def prepare_initialization_searches(run_id):
+    """Fetch each bound identity's first directory page before generation.
+
+    Generation retries fill missing/failed first pages without changing the
+    snapshot/window. Review-only retries never call this function.
+    """
+    from watchlist_app.services.market_evidence import initialization_search_summary, search_market_directory
+    from watchlist_app.services.research_access import require_entry_access
+    while True:
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, run_id, with_for_update=True)
+            require_entry_access(session, run)
+            context = dict(run.context_json)
+            if run.status not in {"queued", "running"} or context.get("submitted_draft"):
+                return
+            summary = initialization_search_summary(context)
+            if summary is None:
+                return
+            item = next((row for row in summary["queries"]
+                if row["directory_status"] in {"pending", "failed"} and row["returned_through"] == 0), None)
+            if item is None:
+                return
+            request = {**{key: item[key] for key in ("instrument_id", "query")}, "entities": [],
+                "published_after": summary["published_after"], "observed_after": None, "received_after": None,
+                "as_of": summary["as_of"], "limit": 100, "offset": 0}
+            try:
+                search_market_directory(context, request)
+            except Exception:
+                run.context_json = context
+                session.commit()
+                raise
+            run.context_json = context
+            session.commit()
 
 
 class PublicMarketView(BaseModel):
@@ -1177,7 +1226,9 @@ def apply_result(session, run, reply):
         acquisition_gaps.append("本轮未检索共享资讯或补充来源，不能据此认定无重大新增。")
     reviews = {}
     for review in parsed.reviews:
+        from watchlist_app.services.market_evidence import initialization_coverage_notes
         coverage = list(dict.fromkeys([*review.coverage, *acquisition_gaps,
+            *initialization_coverage_notes(context, review.instrument_id),
             *shared_market_coverage_gaps(context, instrument_id=review.instrument_id)]))
         if context.get("sector_run") and review.reflection is None:
             coverage.append("本轮未记录对既有判断与经验的复核，复盘覆盖尚不明确。")

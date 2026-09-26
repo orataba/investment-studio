@@ -211,28 +211,26 @@ def market_run(session, run_id):
 
 @router.post("/research/runs/{run_id}/market-search")
 def search_market_documents(run_id: str, request: MarketSearch, session: Session = Depends(get_db_session)):
-    from watchlist_app.services.market_evidence import text_store
+    from watchlist_app.services.market_evidence import search_market_directory
     run = market_run(session, run_id)
-    context = run.context_json
+    context = dict(run.context_json)
     scope = set(context.get("instrument_ids", [])) | {i["instrument_id"] for i in context.get("catalogue", [])}
     if request.instrument_id and request.instrument_id not in scope:
         raise HTTPException(422, "检索标的不在本轮研究目录")
     cutoff = request.as_of or datetime.fromisoformat(context["cutoff"])
     if cutoff > datetime.fromisoformat(context["cutoff"]):
         raise HTTPException(422, "检索时点不能晚于本轮已取得资料的截止时间")
-    result = text_store().search(request.query, entities=request.entities or None,
-        published_after=request.published_after, observed_after=request.observed_after, received_after=request.received_after,
-        as_of=cutoff, limit=request.limit, offset=request.offset)
-    query = {**request.model_dump(mode="json"), "total": result["total"], "cutoff": cutoff.isoformat()}
-    run.context_json = {**context, "market_queries": [*context.get("market_queries", []), query],
-                        "market_coverage": result["coverage"]}
+    try:
+        result = search_market_directory(context, request.model_dump(mode="json"))
+    except Exception:
+        run.context_json = context
+        session.commit()
+        raise
+    run.context_json = context
     session.commit()
     # Search is a source directory. Original bodies remain available through
     # the immutable document/version read, which also binds the actual source.
-    return {**result, "rows": [{**{key: value for key, value in row.items()
-                                  if key not in {"content_text", "raw_path"}},
-                                "body_available": bool(row.get("content_text"))}
-                               for row in result["rows"]]}
+    return result
 
 
 @router.get("/research/runs/{run_id}/market-source")

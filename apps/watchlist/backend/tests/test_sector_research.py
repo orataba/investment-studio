@@ -484,7 +484,8 @@ def test_prepare_context_retains_scoped_sector_inputs(client, monkeypatch):
     page = client.post(f"/api/research/runs/{rid}/read", json={"resource": "context"}).json()
     assert page["initialization"] == original_window
     selected = client.post(f"/api/research/runs/{rid}/read", json={"resource": "context", "section": "initialization"}).json()
-    assert selected["data"] == original_window
+    assert {key: selected["data"][key] for key in original_window} == original_window
+    assert selected["data"]["identity_searches"]["as_of"] == original_window["as_of"]
 
 
 def test_missing_owned_sector_snapshot_remains_a_gap_without_estimate_baseline(client, monkeypatch):

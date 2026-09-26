@@ -25,6 +25,15 @@ quantitative observations; fill only necessary missing background and preserve e
 Record in coverage the checked window/channels, any material unresolved retrieval or baseline gaps and
 what each gap limits. An existing investment_view alone does not establish this initialization was done.
 The fixed initialization window stays unchanged when later web acquisition advances the knowledge cutoff.
+When initialization.identity_queries is present, the application executes separate registered-name and
+registered-code searches before generation. Read context.initialization for actual query receipts and
+initialization_candidates for the candidate directories. These are retained directory pages, not proof you
+read them or their originals. Continue a partial directory with its supplied same-filter/as_of continuation;
+read selected originals by document_id/version_id, and supplement relevant underlying topics and official
+disclosures using the existing tools. Space-separated terms are AND, not alternative names or an OR search.
+Describe exact checked scopes, windows and unfinished pages; never call identity-only or a narrower keyword
+intersection a complete seven-day topic scan. Failed queries are not zero matches. Do not repeat completed
+directory queries or put the entire shared corpus into scope just to claim initialization is complete.
 A disabled or unsupported native public-search result is an acquisition gap. Use the shared information and
 known official URLs instead, and do not repeat identical unavailable search calls or call the gap no news.
 

@@ -35,6 +35,11 @@ def read_research_context(request, section: str = "overview", offset: int = 0, l
                 for item in context.get("computed_metrics", [])],
             "tool_evidence": [{key: item.get(key) for key in ("source_id", "tool", "request", "retrieved_at")}
                               for item in context.get("tool_evidence", [])]})
+        from watchlist_app.services.market_evidence import initialization_search_summary
+        initialization_searches = initialization_search_summary(context)
+        if initialization_searches is not None:
+            sections["initialization"] = {**sections["initialization"], "identity_searches": initialization_searches}
+            sections["initialization_candidates"] = context.get("initialization_candidates", [])
         if section != "overview":
             if section not in sections:
                 raise ValueError("该分区不在本轮上下文目录中。")
@@ -42,11 +47,15 @@ def read_research_context(request, section: str = "overview", offset: int = 0, l
                              offset=offset, limit=limit, path=path)
         if offset or path:
             raise ValueError("overview不使用offset/path，请读取目录内的section。")
+        section_shapes = {key: shape(value) for key, value in sections.items()}
+        if initialization_searches is not None:
+            # HTTP overview intentionally does not hydrate the candidate pages.
+            section_shapes["initialization_candidates"] = {"type": "array", "count": initialization_searches["candidate_page_count"]}
         return checked_overview({**{key: context[key] for key in (
             "sector_run", "research_run", "run_id", "topic_id", "question", "cutoff", "input_snapshot_cutoff", "as_of_date", "initialization",
             "requested_at", "instrument_ids", "selected_instrument_ids", "watchlist_id", "portfolio_id", "team_id", "visibility") if key in context},
             "market_coverage": coverage_summary(context.get("market_coverage")),
-            "sections": {key: shape(value) for key, value in sections.items()},
+            "sections": section_shapes,
             "next_read": "自动研究逐一读取instrument_ids；对话按问题读取page_context、非空referenced_research_update/referenced_research_versions/referenced_risk_case及相关history/evidence。图表/底稿追问须读取referenced_research_versions绑定的精确版本及其source_ids，不用当前版本替换。referenced_risk_case是当前风险快照；不是历史版本。catalogue按需分页发现相关标的，不要求遍历登记库。read_research_instrument提供当前判断与资料目录，read_research_dossier按section读取任务、复核议程和底稿，source_id/version_id读取原文/原版本。所有选读分区跟随next_offset及deferred.path读完；未读资料不代表缺失。个人对话仅在用户明确要求后先authorize_team_research，再submit_research_review；组合对话不能发布团队研究。"}, pageable_fields=[(["question"], {"tool": "read_research_context", "section": "question"})] if "question" in context else [])
     if section != "overview" or offset or path:
         raise ValueError("风控使用read_risk_instrument/read_portfolio_risk分区；范围索引不使用section/offset/path。")
