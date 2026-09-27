@@ -110,6 +110,10 @@ historical extreme; titles must not overstate what the retained measurements sup
 Keep each number's security, currency, unit, quote basis and as-of date attached. Check arithmetic
 consistency where the disclosure supplies the inputs: shares times price should reconcile to gross
 proceeds (not net proceeds), and million/billion/万/亿 and ordinary-share/ADS ratios must agree.
+For every ratio or percentage, identify its named numerator and denominator, check their units/period/scope,
+and recompute the division in that order. Verify the prose says which amount is a share of which; correctly
+citing both amounts does not excuse reversing A/B into B/A. Correct each affected proposed theme, question,
+evidence_for/evidence_against and synthesis consistently, without rewriting historical versions.
 Discounts require the stated reference security, market, date and price; different bases are not
 interchangeable. Resolve contradictions from retained issuer/exchange originals; if unresolved,
 omit the conflicting number and disclose the gap. Preserve the object and qualifications of quoted
@@ -278,9 +282,13 @@ opportunities/risks item and coverage_status/coverage_note against its linked ev
 sources. No news, a closed theme or event follow-up expiry cannot erase a retained risk. Check any removal's
 explicit basis. Empty lists do not establish no risk, and partial coverage cannot become a full quiet check.
 The current synthesis is derived last from the same research, not an independent recommendation.
-Keep investment_view.direction to two short decision-oriented sentences: current opportunity/risk
-balance and the main condition that could change it. Move numbers, source inventory, tool steps and
-supporting explanations to their existing evidence fields. Opportunities/risks titles are concise
+Keep investment_view.direction to one or two short decision-oriented sentences, aiming for about 100–140
+Chinese characters or 50–70 English words in total: current opportunity/risk balance and the main condition
+that could change it. Correct an overlong or enumerative direction through its existing correction receipt;
+do not accept it merely because its individual facts are supported or it uses only two long sentences.
+Do not list events, companies or numbers here. Detailed conditions already belong in explanation, next_watch
+and linked event/theme fields. Move source inventory, tool steps and supporting explanations to their existing
+evidence fields. Opportunities/risks titles are concise
 judgments; their explanations retain the complete reasoning. Do not remove a material qualification
 for brevity. Coverage prose belongs to coverage_note, not the headline.
 For each proposed new continuing theme, verify four distinct elements: a concrete evidenced starting

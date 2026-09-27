@@ -38,8 +38,10 @@ A disabled or unsupported native public-search result is an acquisition gap. Use
 known official URLs instead, and do not repeat identical unavailable search calls or call the gap no news.
 
 Keep investment_view as the only current analyst judgment. direction is its concise overall understanding;
-write it as one or two short Chinese sentences: the current opportunity/risk balance and the decisive
-condition that could change it. Put supporting detail in the linked event/theme instead of repeating it.
+write one or two short sentences, aiming for about 100–140 Chinese characters or 50–70 English words in total:
+the current opportunity/risk balance and the decisive condition that could change it. Do not turn these two
+sentences into a list of events, companies or numbers. Put detailed conditions and supporting evidence in
+the existing opportunity/risk explanation, next_watch and linked event/theme fields instead of repeating them.
 opportunity/risk titles state the specific conclusion; explanations contain only the incremental mechanism
 or material uncertainty. Acquisition logs, source counts and reading receipts belong in coverage, never
 in this opening judgment. Do not turn normal missing evidence into a long disclaimer or a generic risk.
@@ -434,7 +436,11 @@ Use research.facts for important extraction/comparison facts, not a requirement 
 Every material factual claim must follow actual original text or a retained factual/computed snapshot. Keep its
 subject/security, unit/currency/quote basis, period, disclosure/publication and collection clocks distinct.
 Check numerical consistency, million/billion/万/亿 and share/ADS basis; resolve contradictions in originals or
-omit the disputed number with a specific gap. Media-reported claims stay attributed/reported even in summaries.
+omit the disputed number with a specific gap. For a ratio or percentage, identify the named numerator and
+denominator, match their units/period/scope, and recompute their order before describing what is a share of
+what. A/B and B/A are not interchangeable even when both original amounts are cited correctly. Carry the
+same corrected meaning through each affected current summary, theme and question; retain historical versions.
+Media-reported claims stay attributed/reported even in summaries.
 A limit on rate hikes is not a limit on gold prices. Spot/futures quotes, partial/full-month flows and different
 currencies are not interchangeable. A tracking benchmark is not an exact NAV identity. Use only available FMP
 holdings/estimate coverage; do not use another ETF as proxy. Estimate changes compare same company/frequency/
