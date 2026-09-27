@@ -201,7 +201,7 @@ Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会
 
 ### 4.7 Watchlist 投资研究 V1
 
-V1 复用既有 `research_entry`、主题、来源与 `risk_case` JSON；不新增研究平台、事件表或平行总结。页面按机会与风险、重要事件、重点主题、量化观察阅读；基础档案、研究指导、PM 观点及历史保留在辅助入口。
+V1 复用既有 `research_entry`、主题、来源与 `risk_case` JSON；不新增研究平台、事件表或平行总结。页面按机会与风险、重要进展、重点主题、量化观察阅读；基础档案、研究指导、PM 观点及历史保留在辅助入口。数值来源的 `observation_domain=market|fundamental|unclassified` 区分市场观察与经营财务分析；浏览器量化区只显示市场观察，新提交的 `market-quantitative.figure_source_ids` 必须符合该用途。原始历史来源与其版本保持完整，不根据标题猜测分类。
 
 - 当前投资判断的同一版本增加 `opportunities`、`risks` 数组，每项包含稳定 `key`、标题、解释、下一观察，以及 `source_ids` / `event_keys` / `theme_ids` 引用；数值依据用 `figure_source_ids`。发布时绑定实际留存证据，历史按原版本读取。数组缺省继续保留旧判断，明确空数组才表示本轮已评估且暂无对应事项。旧记录没有数组时显示覆盖未建立，不推断“没有风险”。`coverage_status` 为 `assessed` / `limited` / `not_established`；`coverage_note` 说明限制。
 - 新重要事件须有整数 `importance_score`（1–5）和具体 `importance_reason`；旧值允许未知。评分不等于确定性、方向或风险严重度。`market_views` 保存有发布者、日期和来源的公开观点；没有样本时不生成共识。`market_reaction` 仅解释绑定的确定性计算及其限制，不写自由浮点行情。

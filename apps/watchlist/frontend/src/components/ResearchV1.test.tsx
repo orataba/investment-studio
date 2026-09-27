@@ -149,12 +149,11 @@ it('opens one event history only on request and preserves historical versions an
   api.events.mockResolvedValue(response([past]))
   render(<ResearchEventCard update={event()} />)
   expect(api.events).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByText('查看影响、公开观点与依据'))
-  fireEvent.click(await screen.findByText('研究历史与 PM 操作'))
+  fireEvent.click(screen.getByRole('button', { name: '研究修订历史' }))
   expect(await screen.findByRole('heading', { name: '当时的事件判断' })).toBeTruthy()
   expect(api.events).toHaveBeenCalledWith('stock', 'history', expect.any(AbortSignal), 0, 'stable-event', true)
   expect(screen.getByText('已修订 · 当时版本')).toBeTruthy()
-  expect(screen.queryByRole('button', { name: '写投资观点' })).toBeNull()
+  expect(within(screen.getByRole('dialog')).queryByRole('button', { name: '写投资观点' })).toBeNull()
 })
 
 it('labels a PM pin audit as an administrative choice without attributing the retained research to the PM', () => {
@@ -213,4 +212,34 @@ it.each([null, []])('keeps null legacy values distinct from explicit empty insig
     expect(background).toContain('不表示不存在风险')
   }
   expect(background).toContain('本轮公开信息覆盖受限。')
+})
+
+
+it('keeps the summary readable while moving coverage details and explanations behind explicit controls', () => {
+  const detail = '已读取已披露的行业资料；仅使用已留存证据。'
+  render(<InvestmentResearchState instrumentId="stock" compact notebook={notebook(view({ risks: [insight(1)], coverage_note: detail, coverage_status: 'assessed' }))} sources={() => null} />)
+  expect(screen.queryByText(detail)).toBeNull()
+  expect(screen.queryByText(insight(1).explanation)).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: `研究覆盖说明: ${detail}` }))
+  expect(screen.getByRole('tooltip').textContent).toContain(detail)
+})
+
+it('presents dated facts, investment impact, ratings and direct actions before opening evidence', async () => {
+  api.note.mockResolvedValue({})
+  const ask = vi.fn()
+  const record = event({ importance_score: 4, impact_analysis: '改变行业盈利预期。' })
+  api.events.mockResolvedValue(response([record]))
+  const { container } = render(<ResearchRecentEvents instrumentId="stock" onAskAssistant={ask} />)
+  await screen.findByRole('heading', { name: '重要进展' })
+  expect(container.querySelector('.research-event-date time')?.getAttribute('datetime')).toBe('2026-09-22')
+  expect(screen.getByText(record.body)).toBeTruthy()
+  expect(screen.getByText(record.impact_analysis!)).toBeTruthy()
+  expect(screen.getByLabelText('重要性 4/5')).toBeTruthy()
+  expect(screen.queryByRole('dialog')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '追问这条更新' }))
+  expect(ask).toHaveBeenCalledWith(expect.any(String), { ...record.reference, research_update_id: record.update_id })
+  fireEvent.click(screen.getByRole('button', { name: '写投资观点' }))
+  fireEvent.change(screen.getByLabelText('我的投资观点'), { target: { value: '等待进一步证据。' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存投资观点' }))
+  await waitFor(() => expect(api.note).toHaveBeenCalledWith('stock', expect.objectContaining({ note: expect.objectContaining({ research_context: expect.objectContaining({ event_case_id: 'case-1', event_version_id: 'event:1:v1' }) }) })))
 })

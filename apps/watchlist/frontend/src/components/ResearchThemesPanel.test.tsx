@@ -40,9 +40,10 @@ it('shows synthesized priorities without surfacing old independent research ques
   await openTheme(theme().title)
   expect(screen.getAllByText('核心').length).toBeGreaterThan(0)
   expect(screen.queryByText('旧问题名称')).toBeNull()
-  expect(screen.getAllByText(theme().synthesis!)[0].closest('details')).toBeNull()
+  expect(screen.getAllByText(theme().synthesis!)).toHaveLength(1)
   expect(screen.getAllByText(theme().priority_reason!).length).toBeGreaterThan(0)
-  expect(screen.getByText('管理主题').closest('details')).toHaveProperty('open', false)
+  expect(screen.queryByText('管理主题')).toBeNull()
+  expect(screen.getByRole('button', { name: '取消研究' }).closest('.research-theme-expanded')).toBeNull()
 })
 
 it('preserves PM authorship and exact historical references in an actual theme timeline', async () => {
@@ -57,12 +58,12 @@ it('preserves PM authorship and exact historical references in an actual theme t
   const timeline = container.querySelector('.research-timeline')!
   expect(screen.getByText(/最近记录/)).toBeTruthy()
   expect(screen.queryByText(/判断更新/)).toBeNull()
-  expect(timeline.closest('details')).toHaveProperty('open', true)
+  expect(timeline.closest('.research-theme-expanded')).toBeTruthy()
   expect(timeline.querySelectorAll('time')).toHaveLength(2)
   expect([...timeline.querySelectorAll('[data-update-id]')].map(node => node.getAttribute('data-update-id'))).toEqual([update.update_id, opinion.update_id])
   const pm = within(timeline as HTMLElement).getByRole('heading', { name: opinion.title }).closest('article')!
   expect(within(pm).getByText('人工判断')).toBeTruthy()
-  expect(within(pm).getByText(opinion.body).closest('details')).toHaveProperty('open', true)
+  expect(within(pm).getByText(opinion.body).closest('.research-theme-expanded')).toBeTruthy()
   fireEvent.click(await within(pm).findByRole('button', { name: '追问这条更新' }))
   expect(ask).toHaveBeenLastCalledWith(expect.any(String), { ...opinion.reference, research_update_id: opinion.update_id })
   fireEvent.click(screen.getByRole('button', { name: '讨论主题' }))
@@ -149,9 +150,8 @@ it('closes a theme with an explicit reason while preserving its record', async (
   api.get.mockResolvedValue({ identity, themes: [theme()] }); api.update.mockResolvedValue(theme({ status: 'closed' }))
   render(<ResearchThemesPanel instrumentId="gold" />)
   await screen.findByRole('heading', { name: theme().title })
-  await openTheme(theme().title)
-  fireEvent.click(await screen.findByText('管理主题'))
-  fireEvent.click(screen.getByRole('button', { name: '结束主题' }))
+  expect(api.detail).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: '取消研究' }))
   fireEvent.change(screen.getByLabelText('结束原因'), { target: { value: '机制已不适用' } })
   fireEvent.click(screen.getByRole('button', { name: '保存并结束' }))
   await waitFor(() => expect(api.update).toHaveBeenCalledWith('gold', 'theme-credit', { status: 'closed', close_reason: '机制已不适用' }))
@@ -189,7 +189,7 @@ it('translates the working surface while preserving original research text', asy
   render(<LanguageProvider messages={researchMessages} patterns={researchPatterns}><LanguageSelector /><ResearchThemesPanel instrumentId="gold" onAskAssistant={vi.fn()} /></LanguageProvider>)
   expect(await screen.findByRole('heading', { name: /Research priorities/ })).toBeTruthy()
   expect(screen.getByRole('heading', { name: 'Risk' })).toBeTruthy()
-  fireEvent.click(screen.getByText('Details and timeline'))
+  fireEvent.click(screen.getByRole('button', { name: 'Research context and timeline' }))
   expect(await screen.findByRole('button', { name: 'Discuss theme' })).toBeTruthy()
   expect(screen.getByRole('button', { name: 'Create theme' })).toBeTruthy()
   fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
@@ -222,7 +222,7 @@ it('retains loaded theme evidence and its exact version if a later detail refres
   render(<ResearchThemesPanel instrumentId="gold" onAskAssistant={ask} />)
   await screen.findByRole('heading', { name: theme().title })
   await openTheme(theme().title)
-  api.get.mockResolvedValue({ identity, themes: [theme({ source_version_id: 'theme:theme-credit:2', synthesis: '更新后的摘要。' })] })
+  api.get.mockResolvedValue({ identity, themes: [theme({ source_version_id: 'theme:theme-credit:2', latest_development: '更新后的摘要。' })] })
   api.detail.mockRejectedValue(new Error('详情读取暂不可用'))
   act(() => announceResearchPublication(['gold']))
   expect(await screen.findByRole('alert')).toHaveProperty('textContent', '详情读取暂不可用。以下保留上次有效内容。')
@@ -250,7 +250,23 @@ it('keeps migration bookkeeping out of analysis changes and the default evolutio
 
 async function openTheme(title: string) {
   const card = screen.getByRole('heading', { name: title }).closest('article')!
-  const details = card.querySelector('details')!
-  if (!details.open) fireEvent.click(within(card).getByText('展开详情与时间线'))
+  const trigger = within(card).queryByRole('button', { name: '研究脉络与时间线' })
+  if (trigger) fireEvent.click(trigger)
   await waitFor(() => expect(card.querySelector('.research-theme-record')).toBeTruthy())
 }
+
+
+it('pauses and restores a theme from its card without fetching detailed research', async () => {
+  api.get.mockResolvedValue({ identity, themes: [theme()] })
+  api.update.mockResolvedValue(theme({ status: 'paused' }))
+  render(<ResearchThemesPanel instrumentId="gold" />)
+  await screen.findByRole('heading', { name: theme().title })
+  expect(screen.queryByText(theme().synthesis!)).toBeNull()
+  api.get.mockResolvedValue({ identity, themes: [theme({ status: 'paused' })] })
+  fireEvent.click(screen.getByRole('button', { name: '暂停研究' }))
+  await waitFor(() => expect(api.update).toHaveBeenCalledWith('gold', 'theme-credit', { status: 'paused' }))
+  fireEvent.click(await screen.findByText('暂停或结束的主题 · 1'))
+  fireEvent.click(screen.getByRole('button', { name: '恢复研究' }))
+  await waitFor(() => expect(api.update).toHaveBeenLastCalledWith('gold', 'theme-credit', { status: 'active' }))
+  expect(api.detail).not.toHaveBeenCalled()
+})

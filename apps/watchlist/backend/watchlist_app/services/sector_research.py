@@ -437,12 +437,12 @@ def prepare_run(run_id):
         run.context_json = context
         bind_research_instruments(session, run, context.get("instrument_ids", []))
         context = dict(run.context_json)
-        needs_baseline = context.get("sector_run") and any(
+        needs_baseline = context.get("sector_run") and (not context.get("last_successful_review_cutoff") or any(
             not (view := (dossier.get("notebook") or {}).get("investment_view"))
             or not (view.get("direction") or "").strip()
             or view.get("coverage_status") == "not_established"
             for dossier in context.get("research_dossiers", [])
-            if dossier["instrument_id"] in context.get("instrument_ids", []))
+            if dossier["instrument_id"] in context.get("instrument_ids", [])))
         if context.get("initialization") or needs_baseline:
             # This is an acquisition window, not the rolling UI timeline. Later
             # web fetches may advance cutoff but cannot relabel this baseline.
@@ -1426,6 +1426,12 @@ def _daily_research_universe(session):
 def daily_review_groups(session, *, now=None):
     ids, pending = _daily_research_universe(session)
     now = now or datetime.now(UTC)
+    reviews = latest_reviews(session, instrument_ids=ids)
+    # An initial dossier is useful as soon as a new instrument enters Proposed /
+    # Invested, including weekends. Once any formal attempt exists, its failure
+    # recovery and ordinary market-day cadence own subsequent dispatches; a
+    # missing baseline must not become an unlimited once-per-minute retry loop.
+    initial = set(ids) - reviews.keys()
     # Follow-up terms are calendar days, including non-trading days. Eligibility
     # still comes exclusively from the existing authorized research universe.
     from watchlist_app.services.research_access import research_context_projection, research_projection_rows
@@ -1440,8 +1446,7 @@ def daily_review_groups(session, *, now=None):
         if market and row.follow_up == "watch" and row.follow_up_until and row.follow_up_until <= now.astimezone(ZoneInfo(RESEARCH_TIMEZONES[market])).date().isoformat():
             overdue.add(row.instrument_id)
     groups = [[iid] for iid in ids if (market := _research_market(session, iid)) is not None
-              and (iid in pending or iid in overdue or _research_due(market, now))]
-    reviews = latest_reviews(session, instrument_ids=[iid for group in groups for iid in group])
+              and (iid in initial or iid in pending or iid in overdue or _research_due(market, now))]
     # Resume the least recently attempted work first, including after a restart or date change.
     return sorted(groups, key=lambda group: min((reviews.get(iid) or {}).get("checked_at") or "" for iid in group))
 
@@ -1494,6 +1499,22 @@ def run_daily_reviews(stop):
         _run_daily_reviews(stop)
 
 
+def _pending_research_risk_ids(session):
+    """Research referrals are due even when their market is closed."""
+    from watchlist_app.services.research_access import research_context_projection, research_projection_rows
+    ids = active_research_ids(session)
+    if not ids:
+        return set()
+    relation, values = research_context_projection(session, {"risk_assessment": JSON}, json_column=RiskCase.evidence_json)
+    query = select(RiskCase.instrument_id, values["risk_assessment"].label("risk_assessment")).select_from(RiskCase)
+    if relation is not None:
+        query = query.join(relation, true())
+    query = query.where(RiskCase.instrument_id.in_(ids), RiskCase.signal.like("sector:%"))
+    return {row.instrument_id for row in research_projection_rows(session, query,
+        {"risk_assessment": ("risk_assessment",)}, json_column=RiskCase.evidence_json)
+        if (row.risk_assessment or {}).get("status") == "pending" and _research_market(session, row.instrument_id) is not None}
+
+
 def _run_daily_reviews(stop):
     from studio_identity import current_principal
     from watchlist_app.services.research_runner import run_analysis, same_research_initiator
@@ -1503,9 +1524,12 @@ def _run_daily_reviews(stop):
         recoveries = automatic_recovery_runs(session)
         groups = daily_review_groups(session)
         groups = [[iid] for iid in recoveries] + [ids for ids in groups if ids[0] not in recoveries]
-        if not groups:
+        pending_referrals = _pending_research_risk_ids(session)
+        if not groups and not pending_referrals:
             return
-        research_dates = _research_dates(session, [iid for ids in groups for iid in ids], datetime.now(UTC))
+        research_dates = _research_dates(session, sorted({iid for ids in groups for iid in ids} | pending_referrals), datetime.now(UTC))
+        referral_states = latest_reviews(session, instrument_ids=pending_referrals)
+        busy_referrals = {iid for iid in pending_referrals if (referral_states.get(iid) or {}).get("status") in {"queued", "running"}}
         watchlist_scopes = [{"watchlist_id": iid} for iid in session.scalars(select(Watchlist.watchlist_id)
             .where(Watchlist.watchlist_id != "all-instruments"))]
     risk_scopes = [{"portfolio_id": p["portfolio_id"]} for p in portfolio_options().get("portfolios", [])] + watchlist_scopes
@@ -1540,7 +1564,8 @@ def _run_daily_reviews(stop):
             return False
 
     remaining = list(groups)
-    pending_ids = set()
+    pending_ids = set(busy_referrals)
+    covered_ids = set()
     from watchlist_app.core.settings import get_settings
     with ThreadPoolExecutor(max_workers=get_settings().research_worker_concurrency, thread_name_prefix="daily-research") as pool:
         for scope in risk_scopes:
@@ -1549,6 +1574,7 @@ def _run_daily_reviews(stop):
             try:
                 with get_session_factory()() as session:
                     member_ids = set(read_risk_snapshot(session, **scope)["instrument_ids"])
+                covered_ids.update(member_ids)
                 scope_dates = {iid: day for iid, day in research_dates.items() if iid in member_ids}
                 if not scope_dates:
                     continue
@@ -1571,7 +1597,33 @@ def _run_daily_reviews(stop):
                     run_analysis(run_id)
             except Exception:
                 logging.getLogger(__name__).exception("Daily risk assessment failed for %s", scope)
-        list(pool.map(review_group, remaining))
+        for ids, finished in zip(remaining, pool.map(review_group, remaining)):
+            if not finished:
+                pending_ids.update(ids)
+        if stop.is_set():
+            return
+        with get_session_factory()() as session:
+            # Read after publication so a first investigation can immediately
+            # hand a new referral to the officer. The all-instruments catalogue
+            # intentionally has no aggregate risk job; isolated members still
+            # need their own officer rather than remaining pending forever.
+            uncovered = _pending_research_risk_ids(session) - covered_ids - pending_ids
+            states = latest_reviews(session, instrument_ids=uncovered)
+            uncovered = {iid for iid in uncovered if (states.get(iid) or {}).get("status") not in {"queued", "running"}}
+        for iid in sorted(uncovered):
+            if stop.is_set():
+                return
+            try:
+                with get_session_factory()() as session:
+                    dates = _research_dates(session, [iid], datetime.now(UTC))
+                    run, created = begin_risk_run(session, instrument_id=iid, scheduled_dates=dates)
+                    run_id, status = run.entry_id, run.status
+                    if not created and status == "queued" and not same_research_initiator(run.context_json, current_principal()):
+                        continue
+                if created or status == "queued":
+                    run_analysis(run_id)
+            except Exception:
+                logging.getLogger(__name__).exception("Research risk referral failed for %s", iid)
 
 
 def start_sector_worker():

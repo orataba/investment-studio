@@ -8,6 +8,8 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from itertools import combinations
+from statistics import correlation, mean, StatisticsError
 
 import exchange_calendars
 from exchange_calendars.errors import CalendarError
@@ -22,7 +24,7 @@ from watchlist_app.services.return_windows import (
 from watchlist_app.services.sector_market_data import all_rows, holding_type, numeric_store
 
 
-OBSERVATION_METHOD_VERSION = "watchlist-observations/v1"
+OBSERVATION_METHOD_VERSION = "watchlist-observations/v2"
 REACTION_METHOD_VERSION = "event-daily-reaction/v1"
 
 
@@ -118,6 +120,44 @@ def _long_only_weights(holdings):
         and all(_number(row.get("shares")) is None or _number(row.get("shares")) >= 0 for row in holdings))
 
 
+def top10_correlation(holdings, member_series, *, as_of_date, calendar):
+    """Current top holdings, one exact quarter of common daily returns."""
+    result = {"status": "unavailable", "average": None, "pairs": [], "members": [],
+        "return_observations": 0, "window_sessions": 63, "start_date": None,
+        "end_date": as_of_date.isoformat(),
+        "method": "当前披露Top 10，同币种/同收益口径最近63个交易日简单收益的Pearson相关系数；各证券对等权平均，不代表风险贡献。",
+        "limitation": "需全部所选成分同一窗口的连续价格；缺失不填充，不用不同样本的两两相关性拼接。"}
+    selected = sorted(holdings, key=lambda row: (-_number(row.get("weight_percent")), row["holding_key"]))[:10]
+    symbols = [row.get("holding_symbol") for row in selected]
+    if len(symbols) < 2 or any(not symbol for symbol in symbols) or len(set(symbols)) != len(symbols):
+        return result
+    result["members"] = symbols
+    sessions = _market_calendar_sessions(calendar, as_of_date - timedelta(days=200), as_of_date) if calendar else None
+    if not sessions or sessions[-1] != as_of_date or len(sessions) < 64:
+        return result
+    dates = [day.isoformat() for day in sessions[-64:]]
+    reference = member_series.get(symbols[0]) or {}
+    values = {}
+    for symbol in symbols:
+        series = member_series.get(symbol) or {}
+        if _comparable(reference, series) is not None:
+            return result
+        prices = {point["date"]: point["value"] for point in _points(series)}
+        if any(day not in prices for day in dates):
+            return result
+        values[symbol] = [prices[after] / prices[before] - 1 for before, after in zip(dates, dates[1:])]
+    try:
+        pairs = [{"left": left, "right": right, "correlation": correlation(values[left], values[right])}
+                 for left, right in combinations(symbols, 2)]
+    except StatisticsError:
+        result["limitation"] = "所选成分存在恒定收益序列，相关系数无定义。"
+        return result
+    result.update(status="available", average=mean(row["correlation"] for row in pairs), pairs=pairs,
+        return_observations=63, start_date=dates[0], currency=reference["currency"],
+        return_kind=reference["metadata"]["return_kind"], limitation="当前持仓篮子的历史共振，不代表历史持仓或未来相关性。")
+    return result
+
+
 def basket_observations(holdings, member_series, *, as_of_date, total_members=None, ordinary_equity=False, calendar=None):
     """Current disclosed basket only; no historic constituents or contribution claims.
 
@@ -135,6 +175,8 @@ def basket_observations(holdings, member_series, *, as_of_date, total_members=No
         "total_members": total_members, "disclosed_members": len(holdings), "top10": [],
         "ranking_status": "available" if all(w is not None for w in weights) else "partial",
         "concentration_pct": None, "concentration_status": "unavailable",
+        "correlation": {"status": "unavailable", "average": None, "pairs": [],
+            "limitation": "需先确认当前披露成分、权重与普通股票篮子结构。"},
         "breadth": {"status": "unavailable", "current_pct": None, "previous_pct": None, "change_pp": None,
             "valid_members": 0, "above_members": 0, "weight_coverage_pct": None, "common_members": [],
             "as_of_date": as_of_date.isoformat(), "previous_date": None, "scope": "unavailable"},
@@ -162,6 +204,7 @@ def basket_observations(holdings, member_series, *, as_of_date, total_members=No
     if not ordinary_equity or not weights_valid:
         limits.append("底层股票及非杠杆结构未完整确认；仅保留披露的Top 10信息，不套用股票内部广度。")
         return result
+    result["correlation"] = top10_correlation(holdings, member_series, as_of_date=as_of_date, calendar=calendar)
     sessions = _market_calendar_sessions(calendar, as_of_date - timedelta(days=200), as_of_date) if calendar else None
     if not sessions or sessions[-1] != as_of_date or len(sessions) < 51:
         limits.append("缺少覆盖50个交易观察及前次比较的日历。")
@@ -262,7 +305,7 @@ def _raw_market(instrument, cutoff, store, as_of_date):
     profiles = store.latest("company_profiles", symbols=symbols, as_of=cutoff, limit=100000)["rows"]
     profiles_by_symbol = {r["symbol"]: r for r in profiles}
     info = store.latest("etf_info", symbols=[symbol], as_of=cutoff)["rows"] if holdings else []
-    # This read horizon covers 50 observations and 1M endpoints. All rows are
+    # This read horizon covers 63 daily returns, 50-observation breadth and 1M endpoints. All rows are
     # paged, not silently truncated when the fund holds many securities.
     prices = all_rows(store, "us_eod_daily", symbols=symbols, as_of=cutoff,
         start=(as_of_date - timedelta(days=200)).isoformat(), end=as_of_date.isoformat())
@@ -271,10 +314,10 @@ def _raw_market(instrument, cutoff, store, as_of_date):
     grouped = {}
     for row in prices:
         grouped.setdefault(row["symbol"], []).append(row)
-    # Only these rows can enter either 50-observation window or a 1W/1M return.
+    # Only these rows enter the quarter correlation, breadth or a 1W/1M return.
     # Retain every used source, without copying unnecessary daily history into
     # each research version. Missing sessions still fail closed in the consumer.
-    grouped = {symbol: sorted(rows, key=lambda r: r["date"])[-51:] for symbol, rows in grouped.items()}
+    grouped = {symbol: sorted(rows, key=lambda r: r["date"])[-64:] for symbol, rows in grouped.items()}
     prices = [row for rows in grouped.values() for row in rows]
     series = {}
     for member, rows in grouped.items():
@@ -322,7 +365,7 @@ def instrument_observations(session, instrument_id, *, as_of, benchmark_id=None,
             volume = {"status": "unavailable", "change_pct": None, "error_kind": type(error).__name__}
     observations = {"relative_performance": relative, "volume": volume, "ewma": ewma, "drawdown": drawdown}
     metrics = {"1W相对基准（百分点）": relative[0]["difference_pp"], "1M相对基准（百分点）": relative[1]["difference_pp"]}
-    if instrument.instrument_type in {"equity", "index", "crypto"}:
+    if instrument.instrument_type in {"equity", "etf", "index", "crypto"}:
         metrics["EWMA年化波动率（%）"] = (ewma.get("current") or {}).get("volatility_pct")
         metrics["当前回撤（%）"] = drawdown["current_pct"]
     if instrument.instrument_type == "equity":
@@ -354,6 +397,12 @@ def instrument_observations(session, instrument_id, *, as_of, benchmark_id=None,
         breadth = basket["breadth"]
         metrics["Top 10集中度（%）"] = basket["concentration_pct"]
         metrics["已覆盖成分高于50观察均价（%）"] = breadth["current_pct"]
+        metrics["Top 10平均相关性（63交易日）"] = basket["correlation"]["average"]
+        limits.append(basket["correlation"]["limitation"])
+        if basket["correlation"]["pairs"]:
+            tables.append(_table("top10_correlation", "Top 10共同样本相关性 · 最近63交易日", [
+                ("left", "证券A", ""), ("right", "证券B", ""), ("correlation", "相关系数", "")],
+                basket["correlation"]["pairs"]))
         limits.append(f"广度有效成员 {breadth['valid_members']} / 总股票成员 {member_count if member_count is not None else '未知'}；"
             f"可确认权重覆盖 {breadth['weight_coverage_pct'] if breadth['weight_coverage_pct'] is not None else '未知'}%；"
             f"持仓日期 {basket['holdings_date'] or '未知'}。")
@@ -384,6 +433,7 @@ def instrument_observations(session, instrument_id, *, as_of, benchmark_id=None,
     return _evidence("量化观察", cutoff, data, {"version": OBSERVATION_METHOD_VERSION,
         "relative_return": "same-currency same-return-kind observed endpoints; arithmetic difference in percentage points",
         "breadth": "price above mean of 50 completed observations; changes use common members",
+        "correlation": "mean pairwise Pearson correlation; exact common 63 daily returns of current disclosed top10; same currency and return kind",
         "holdings": "dated disclosed weights; current basket history, not historical holdings or contribution"}, originals,
         instrument_id=instrument_id, input_snapshot=snapshot, benchmark_snapshot=benchmark_snapshot)
 

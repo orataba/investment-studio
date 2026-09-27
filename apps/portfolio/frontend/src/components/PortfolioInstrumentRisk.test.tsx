@@ -167,7 +167,7 @@ it('renders the same research risk and sources for a held instrument and removes
   const { rerender } = render(view(2))
 
   await screen.findByText(record.body)
-  expect(screen.getByRole('link', { name: record.title })).toHaveAttribute('href', expect.stringContaining('tab=events'))
+  expect(screen.getByRole('link', { name: record.title })).toHaveAttribute('href', expect.stringContaining('tab=investment-research&risk=1'))
   fireEvent.click(screen.getByRole('button', { name: '问助手' }))
   expect(ask).toHaveBeenCalledWith('baba', expect.any(String), { instrument_id: 'baba', event_case_id: record.case_id, event_version_id: 'watchlist-baba-policy:2' })
   expect(request).toHaveBeenCalledWith('/risk?instrument_ids=baba&summary=true', undefined)

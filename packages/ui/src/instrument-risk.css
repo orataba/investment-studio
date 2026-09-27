@@ -138,6 +138,7 @@
   color: #465b6c;
   margin: 0;
 }
+.risk-scope-label .investment-studio-info-hint { margin-left: 8px; }
 .risk-workbench button {
   border: 1px solid #d4dde3;
   border-radius: 3px;

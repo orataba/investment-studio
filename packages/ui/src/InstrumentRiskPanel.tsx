@@ -1,4 +1,6 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import WorkspaceSkeleton from './WorkspaceSkeleton'
+import InfoHint from './InfoHint'
+import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import RiskOfficerPanel from './RiskOfficerPanel'
 import type { ResearchAssistantReference } from './researchReference'
 import {
@@ -88,7 +90,7 @@ function CaseRow({
   const evidence = (detail || record).evidence_json
   const history = (detail || record).history_json || []
   const detailStatus = <>
-    {detailLoading && <p>正在读取证据与跟进历史…</p>}
+    {detailLoading && <WorkspaceSkeleton />}
     {detailError && <div role="alert">{detailError} <button type="button" onClick={() => setDetailRetry((value) => value + 1)}>重试读取</button>
       <button type="button" onClick={() => void refresh().catch((failure) => setDetailError(failure instanceof Error ? failure.message : '刷新失败'))}>刷新列表</button></div>}
   </>
@@ -553,7 +555,7 @@ function PriceRiskSettings({
   )
 }
 
-export default function InstrumentRiskPanel({
+function ScopedInstrumentRiskPanel({
   canWrite = true,
   canRun = canWrite,
   portfolioId,
@@ -565,7 +567,6 @@ export default function InstrumentRiskPanel({
   assistantHref,
   onAskAssistant,
   onChanged,
-  caseScope = 'all',
   attentionLabel = '风险关注',
   scopeLabel = '当前标的',
   scopeNote,
@@ -583,7 +584,6 @@ export default function InstrumentRiskPanel({
   assistantHref?: (id: string, question: string, reference?: ResearchAssistantReference) => string
   onAskAssistant?: (id: string, question: string, reference?: ResearchAssistantReference) => void
   onChanged?: () => void
-  caseScope?: 'all' | 'traditional'
   attentionLabel?: string
   scopeLabel?: string
   scopeNote?: ReactNode
@@ -591,6 +591,8 @@ export default function InstrumentRiskPanel({
   heading?: string | null
 }) {
   const [data, setData] = useState<RiskWorkspace | null>(null)
+  const readSequence = useRef(0)
+  const mounted = useRef(false)
   const [officerRefresh, setOfficerRefresh] = useState(0)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState('attention')
@@ -616,31 +618,41 @@ export default function InstrumentRiskPanel({
         ? new URLSearchParams({ instrument_id: params.get('instrument_id')! }).toString()
         : null
   function receive(response: RiskWorkspace) {
-    setData(caseScope === 'traditional'
-      ? { ...response, cases: response.cases.filter((record) => !record.signal.startsWith('sector:')) }
-      : response)
+    setData(response)
   }
-  const load = async () => receive(await request<RiskWorkspace>(path))
+  async function load() {
+    const sequence = ++readSequence.current
+    const response = await request<RiskWorkspace>(path)
+    if (!mounted.current || sequence !== readSequence.current) return false
+    receive(response)
+    return true
+  }
   useEffect(() => {
     let cancelled = false
+    mounted.current = true
+    const sequence = ++readSequence.current
     setData(null)
     setError('')
     setManual(false)
     setFilter('attention')
     request<RiskWorkspace>(path)
       .then((response) => {
-        if (cancelled) return
+        if (cancelled || sequence !== readSequence.current) return
         receive(response)
+        const relevant = response.cases.filter((record) => !focusInstrumentId || record.instrument_id === focusInstrumentId)
+        if (!relevant.some(attention) && relevant.some(pendingReview)) setFilter('pending')
       })
       .catch((e) => {
-        if (!cancelled) setError(e.message)
+        if (!cancelled && sequence === readSequence.current) setError(e.message)
       })
     return () => {
       cancelled = true
+      mounted.current = false
+      ++readSequence.current
     }
-  }, [path, request, focusInstrumentId, caseScope])
+  }, [path, request, focusInstrumentId])
   async function refresh(refreshOfficer = true) {
-    await load()
+    if (!mounted.current || !await load()) return
     if (refreshOfficer) setOfficerRefresh((value) => value + 1)
     onChanged?.()
   }
@@ -715,6 +727,7 @@ export default function InstrumentRiskPanel({
           <p className="risk-scope-label">
             <span translate="no">{scopeLabel}</span>
             {data ? ` · ${data.instruments.length} 个标的` : ''}
+            {data && <InfoHint label="价格监测范围" detail={`已设复核线 ${data.instruments.filter((item) => item.drawdown_limit != null || Object.values(item.period_limits || {}).some((value) => value != null)).length}/${data.instruments.length}；可计算 ${data.instruments.filter((item) => !coverageFor(item)).length}/${data.instruments.length}。未触发提醒不代表风险低。`} />}
           </p>
         </div>
         {canWrite && <button
@@ -737,7 +750,7 @@ export default function InstrumentRiskPanel({
           {error}
         </div>
       )}
-      {!data && !error && <p>正在读取风险事项…</p>}
+      {!data && !error && <WorkspaceSkeleton />}
       {data && (
         <>
           <nav className="risk-sections" aria-label="风险事项">
@@ -753,21 +766,6 @@ export default function InstrumentRiskPanel({
               ))}
             </div>
           </nav>
-          <p className="research-muted risk-monitoring-status">
-            价格提醒：
-            {
-              data.instruments.filter(
-                (i) =>
-                  i.drawdown_limit != null ||
-                  Object.values(i.period_limits || {}).some(
-                    (value) => value != null,
-                  ),
-              ).length
-            }
-            /{data.instruments.length} 已设置复核线 ·{' '}
-            {data.instruments.filter((i) => !coverageFor(i)).length}/
-            {data.instruments.length} 数据可计算
-          </p>
           {manual && canWrite && (
             <form
               className="risk-event-form"
@@ -967,4 +965,8 @@ export default function InstrumentRiskPanel({
       )}
     </section>
   )
+}
+
+export default function InstrumentRiskPanel(props: ComponentProps<typeof ScopedInstrumentRiskPanel>) {
+  return <ScopedInstrumentRiskPanel key={`${props.portfolioId || ''}:${props.instrumentId || ''}:${props.query || ''}`} {...props} />
 }

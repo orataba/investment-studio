@@ -40,7 +40,7 @@ vi.mock('../lib/api', async (importOriginal) => ({
 }))
 
 describe('WatchlistsPage loading', () => {
-  it('does not refetch unchanged screener criteria after the result renders', async () => {
+  it.each(['attention', 'pending'])('shows %s risk badges without refetching unchanged criteria', async (riskState) => {
     apiMocks.fetchJson.mockImplementation(async (path: string) => path.startsWith('/api/risk/review?')
       ? { available: true, scope: { kind: 'watchlist', id: 'all-private-funds', name: 'All Private Funds' },
         input_as_of: null, counts: { research: 0, quantitative: 0, coverage: 0 }, instruments: [],
@@ -130,7 +130,7 @@ describe('WatchlistsPage loading', () => {
       default_filters_summary: {},
     })
     apiMocks.runScreenerQuery.mockResolvedValue({
-      rows: [{ instrument_id: 'fund-1', instrument_name: 'Fund 1', 'attr.risk_attention': 'attention' }],
+      rows: [{ instrument_id: 'fund-1', instrument_name: 'Fund 1', 'attr.risk_attention': riskState }],
       groups: [],
       total_rows: 1,
       stale_row_count: 0,
@@ -166,7 +166,7 @@ describe('WatchlistsPage loading', () => {
     )
     expect(new Set(criteriaKeys).size).toBe(criteriaKeys.length)
     expect(apiMocks.runScreenerQuery.mock.calls[0][0].selected_fields).toContain('attr.risk_attention')
-    expect(screen.getByRole('button', { name: 'View risk alerts for Fund 1' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: riskState === 'pending' ? 'View pending risk review for Fund 1' : 'View risk alerts for Fund 1' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: '风险关注：升序' })).toBeNull()
     const title = screen.getByRole('heading', { name: 'All Private Funds', level: 1 })
     const tools = screen.getByRole('group', { name: 'Current workspace tools' })

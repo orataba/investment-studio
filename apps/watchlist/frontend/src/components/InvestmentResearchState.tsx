@@ -4,6 +4,8 @@ import type { AskResearchAssistant, InvestmentView, ResearchForecast, ResearchFo
 import ResearchOpinionComposer from './ResearchOpinionComposer'
 import { useStudioAccount } from './AccountBoundary'
 import ResearchReadingAside from './ResearchReadingAside'
+import ResearchLoading from '../../../../../packages/ui/src/WorkspaceSkeleton'
+import InfoHint from '../../../../../packages/ui/src/InfoHint'
 import { ReferencedResearchEvent } from './ResearchEventCard'
 import { getResearchTheme, type ResearchTheme } from '../lib/researchDossierApi'
 
@@ -26,7 +28,7 @@ function ReferencedThemeEvidence({ instrumentId, themeId }: { instrumentId: stri
     {theme.latest_development && <p translate="no">{theme.latest_development}</p>}
     {theme.next_check && <p translate="no">下一观察：{theme.next_check}</p>}
     <SourceList instrumentId={instrumentId} versionId={theme.source_version_id} sources={theme.sources || []} />
-  </section> : <p role="status">Loading</p>
+  </section> : <ResearchLoading />
 }
 
 function InsightList({ title, items, legacy, view, instrumentId, sources }: { title: string; items?: ResearchInsight[] | null; legacy: string; view: InvestmentView; instrumentId: string; sources: Sources }) {
@@ -35,7 +37,7 @@ function InsightList({ title, items, legacy, view, instrumentId, sources }: { ti
     <h4>{title}{Boolean(items?.length) && <span> · {items!.length}</span>}</h4>
     {items?.length ? <>
       {(all ? items : items.slice(0, 3)).map(item => <article key={item.key} className="research-insight">
-        <h5 translate="no">{item.title}</h5><p translate="no">{item.explanation}</p>
+        <h5 translate="no">{item.title}</h5>
         <ResearchReadingAside label="依据与下一观察" title={`${item.title} · 依据与下一观察`}>
           <p translate="no">{item.explanation}</p>
           <p><strong>下一观察</strong> <span translate="no">{item.next_watch || '尚待明确。'}</span></p>
@@ -148,7 +150,7 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
   const reference: ResearchReference = { instrument_id: instrumentId, notebook_version_id: notebook.version_id }
   return <>
     {(view || brief) && mode !== 'records' && <section className={`research-notebook-current${compact ? ' research-current-brief' : ''}`} aria-label={historical ? '当时投资判断' : compact ? '当前机会与风险' : '当前投资判断'}>
-      <div className="research-judgment-heading"><h3>{historical ? '当时投资判断' : compact ? '当前机会与风险' : '当前投资判断'}</h3><time dateTime={view?.updated_at || brief?.updated_at || undefined}>{dateLabel(view?.updated_at || brief?.updated_at)}</time></div>
+      <div className="research-judgment-heading"><h3>{historical ? '当时投资判断' : compact ? '当前机会与风险' : '当前投资判断'}</h3>{compact && view?.coverage_note && <InfoHint label="研究覆盖说明" detail={view.coverage_note} tone={view.coverage_status === 'limited' ? 'warning' : 'info'} />}<time dateTime={view?.updated_at || brief?.updated_at || undefined}>{dateLabel(view?.updated_at || brief?.updated_at)}</time></div>
       {brief && !compact && <div className="research-decision-brief" aria-label="投资建议">
         <p className="research-current-direction" translate="no">{brief.recommendation}</p>
         {brief.rationale && <p className="research-decision-rationale" translate="no">{brief.rationale}</p>}
@@ -158,7 +160,6 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
       </div>}
       {view && (compact ? <>
         <p className="research-current-direction" translate="no">{view.direction || '当前总结尚待补充。'}</p>
-        {view.coverage_note && <p className="sector-research-note" translate="no">{view.coverage_note}</p>}
         {view.coverage_status === 'limited' && <p className="sector-research-limitation">本次研究部分可用，未覆盖部分不能据此判断。</p>}
         <div className="research-insight-grid"><InsightList title="机会" items={view.opportunities} legacy={view.attractiveness} {...{ view, instrumentId, sources }} /><InsightList title="风险" items={view.risks} legacy={view.risk} {...{ view, instrumentId, sources }} /></div>
       </> : <ViewBody view={view} sources={sources} />)}

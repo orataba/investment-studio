@@ -1,9 +1,7 @@
 import { useState } from 'react'
-import { useStudioAccount } from './AccountBoundary'
 import type { AskResearchAssistant, ResearchUpdate } from '../lib/researchDossierApi'
 import { SourceList, dateLabel, hasTimeZone } from './ResearchEvidence'
-import ResearchOpinionComposer from './ResearchOpinionComposer'
-import ResearchThemeComposer from './ResearchThemeComposer'
+import ResearchEntryActions from './ResearchEntryActions'
 import ResearchReadingAside from './ResearchReadingAside'
 const questionTrackingLabels = { active: '跟进中', paused: '已暂停', closed: '已结束' }
 
@@ -34,13 +32,10 @@ export function updateStatusLabel(update: ResearchUpdate) {
 export default function ResearchUpdateCard({ update, onAskAssistant, themeNames = {}, inTheme = false, compact = false, readable = false }: {
   update: ResearchUpdate; onAskAssistant?: AskResearchAssistant; themeNames?: Record<string, string>; inTheme?: boolean; compact?: boolean; readable?: boolean
 }) {
-  const canWrite = useStudioAccount()?.team_role !== 'reader'
   const [expandedBody, setExpandedBody] = useState(false)
-  const [writing, setWriting] = useState(false)
-  const [creatingTheme, setCreatingTheme] = useState(false)
-  const [notice, setNotice] = useState('')
   const [entryOpen, setEntryOpen] = useState(false)
   const historical = Boolean(update.superseded || update.withdrawn)
+  const timeline = inTheme && compact && readable
   const citationCorrected = update.change === 'citation_corrected'
   const correction = citationCorrected ? update.citation_correction : undefined
   const organized = update.change === 'organized'
@@ -52,10 +47,10 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
   const body = <>
     {displayBody && (!compact || !themeLead) && <p className={`research-update-body${!readable && !compact && !expandedBody && displayBody.length > 220 ? ' research-update-excerpt' : ''}`} translate="no">{displayBody}</p>}
     {!readable && !compact && displayBody.length > 220 && <button className="sector-event-ask research-update-expand" type="button" aria-expanded={expandedBody} onClick={() => setExpandedBody(value => !value)}>{expandedBody ? '收起分析' : '展开分析'}</button>}
-    {Boolean(update.risk_channels?.length) && <p className="sector-research-note">影响渠道：<span translate="no">{update.risk_channels!.join("、")}</span></p>}
-    {update.impact_analysis && <p className="research-update-impact"><strong>影响分析</strong><span translate="no">{update.impact_analysis}</span></p>}
-    {update.action_condition && <p className="research-update-impact"><strong>应对条件</strong><span translate="no">{update.action_condition}</span></p>}
-    {update.next_check && <p className="research-update-next"><strong>{citationCorrected ? '原下一步观察' : '下一步观察'}</strong> <span translate="no">{update.next_check}</span></p>}
+    {!timeline && Boolean(update.risk_channels?.length) && <p className="sector-research-note">影响渠道：<span translate="no">{update.risk_channels!.join("、")}</span></p>}
+    {!timeline && update.impact_analysis && <p className="research-update-impact"><strong>影响分析</strong><span translate="no">{update.impact_analysis}</span></p>}
+    {!timeline && update.action_condition && <p className="research-update-impact"><strong>应对条件</strong><span translate="no">{update.action_condition}</span></p>}
+    {!timeline && update.next_check && <p className="research-update-next"><strong>{citationCorrected ? '原下一步观察' : '下一步观察'}</strong> <span translate="no">{update.next_check}</span></p>}
     {update.kind === 'question' && update.tracking_status && <p className="sector-research-note"><strong>当时跟踪安排</strong> <span>{questionTrackingLabels[update.tracking_status]}</span>{update.tracking_reason && <> · <span translate="no">{update.tracking_reason}</span></>}</p>}
     {update.kind === 'lesson' && update.status === 'withdrawn' && update.withdrawal_reason && <p className="sector-research-note" translate="no">{update.withdrawal_reason}</p>}
     {update.scheduled_at && <p className="sector-event-dates"><span>预定时间 <time dateTime={update.scheduled_at}>{dateLabel(update.scheduled_at)}</time></span></p>}
@@ -63,25 +58,19 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
       {update.occurred_at && <span>事件发生 <time dateTime={update.occurred_at}>{dateLabel(update.occurred_at)}</time></span>}
       {update.published_at && <span>信息发布 <time dateTime={update.published_at}>{dateLabel(update.published_at)}</time></span>}
     </p>}
-    {readable && update.details?.filter(detail => detail.text && !['最新进展', '当前认识'].includes(detail.label) && detail.text !== update.body && detail.text !== update.next_check).map((detail, index) => <div className="research-update-detail" key={index}><h5>{detail.label}</h5><p translate="no">{detail.text}</p></div>)}
-    {Boolean(update.sources.length || (!readable && update.details?.length)) && (readable ? <ResearchReadingAside label="分析与研究依据" title={update.title}><SourceList instrumentId={reference.instrument_id} versionId={sourceVersion} sources={update.sources.map((source, index) => ({ ...source, source_id: source.source_id || `${update.update_id}:${index}` }))} /></ResearchReadingAside> : <details className="research-update-evidence"><summary>分析与研究依据</summary>
+    {readable && !timeline && update.details?.filter(detail => detail.text && !['最新进展', '当前认识'].includes(detail.label) && detail.text !== update.body && detail.text !== update.next_check).map((detail, index) => <div className="research-update-detail" key={index}><h5>{detail.label}</h5><p translate="no">{detail.text}</p></div>)}
+    {Boolean(update.sources.length || update.details?.length || update.impact_analysis || update.action_condition || update.next_check) && (readable ? <ResearchReadingAside label="分析与研究依据" title={update.title}>
+      {timeline && <>
+        {update.impact_analysis && <p translate="no">{update.impact_analysis}</p>}
+        {update.action_condition && <p translate="no">{update.action_condition}</p>}
+        {update.next_check && <p translate="no">下一步观察：{update.next_check}</p>}
+        {update.details?.filter(detail => detail.text && !['最新进展', '当前认识'].includes(detail.label) && detail.text !== update.body && detail.text !== update.next_check).map((detail, index) => <section key={index}><h4>{detail.label}</h4><p translate="no">{detail.text}</p></section>)}
+      </>}
+      <SourceList instrumentId={reference.instrument_id} versionId={sourceVersion} sources={update.sources.map((source, index) => ({ ...source, source_id: source.source_id || `${update.update_id}:${index}` }))} /></ResearchReadingAside> : <details className="research-update-evidence"><summary>分析与研究依据</summary>
       {update.details?.filter(detail => detail.text).map((detail, index) => <div key={`${detail.label}:${index}`}><strong>{detail.label}</strong><p translate="no">{detail.text}</p></div>)}
       <SourceList instrumentId={reference.instrument_id} versionId={sourceVersion} sources={update.sources.map((source, index) => ({ ...source, source_id: source.source_id || `${update.update_id}:${index}` }))} />
     </details>)}
-    <div className="research-update-actions">
-      {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(`请${historical ? '按当时信息复核这条历史研究更新' : '继续分析这条研究更新'}“${update.title}”。读取它对应的原始证据、相关事件及主题，区分新增事实、机制判断和市场定价；核实后说明是否需要改变认识或继续跟进。${historical ? '此版本已被修订或撤回，请区分当时判断与当前结论。' : ''}`, reference)}>{historical ? '讨论当时判断' : '追问这条更新'}</button>}
-      {canWrite && !historical && <>
-        <button type="button" className="sector-event-ask" onClick={() => setWriting(value => !value)}>写投资观点</button>
-        {!inTheme && update.theme_ids.length === 0 && update.kind === 'event' && <button type="button" className="sector-event-ask" onClick={() => setCreatingTheme(value => !value)}>转为跟踪主题</button>}
-      </>}
-    </div>
-    {writing && <ResearchOpinionComposer instrumentId={reference.instrument_id} title={`关于${update.title}的观点`} context={{
-      research_update_id: update.update_id, theme_id: reference.theme_id || update.theme_ids[0], event_case_id: reference.event_case_id, event_version_id: reference.event_version_id,
-      theme_version_id: reference.theme_version_id, notebook_version_id: reference.notebook_version_id, investment_view_version_id: reference.investment_view_version_id,
-      source_ids: update.sources.flatMap(source => source.source_id ? [source.source_id] : []), background: `${update.title}\n${displayBody}\n研究记录时间：${update.recorded_at}`,
-    }} onCancel={() => setWriting(false)} onSaved={() => { setWriting(false); setNotice('投资观点已保存。') }} />}
-    {creatingTheme && <ResearchThemeComposer instrumentId={reference.instrument_id} title={update.title} kind="event" background={`${update.title}\n${update.body}\n研究记录时间：${update.recorded_at}`} reference={{ research_update_id: update.update_id, event_case_id: reference.event_case_id, event_version_id: reference.event_version_id, source_ids: update.sources.flatMap(source => source.source_id ? [source.source_id] : []) }} onCancel={() => setCreatingTheme(false)} onSaved={(action, message) => { setCreatingTheme(false); setNotice(message || (action === 'linked' ? '已关联主题。' : '主题已建立。')) }} />}
-    {notice && <p role="status">{notice}</p>}
+    <ResearchEntryActions update={update} onAskAssistant={onAskAssistant} inTheme={inTheme} />
   </>
   return <article className={`research-update-card${historical ? ' research-update-historical' : ''}${readable ? ' research-update-readable' : ''}`} data-update-id={update.update_id}>
     <div className="research-update-meta"><span>{updateKindLabels[update.kind]}{update.analysis_depth === 'brief' && <> · <span>简讯</span></>}</span>

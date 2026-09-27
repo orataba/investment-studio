@@ -54,7 +54,9 @@ def test_chat_publication_quiet_check_and_risk_only_update_share_the_same_view(i
         chat = run_for(session, 'chat-1', conversation=True)
         apply(session, chat, change_kind='investment', summary='中期偏多；短期方向尚无新增判断。',
             themes=[{'theme_key': 'gold-demand', 'title': '黄金需求持续性', 'question': '储备需求能否持续支持价格？',
-                     'priority_reason': '需求持续性是中期判断的关键未决条件，需要跟踪后续原始披露。'}], research={
+                     'priority_reason': '需求持续性是中期判断的关键未决条件，需要跟踪后续原始披露。',
+                     'source_ids': ['original'], 'synthesis': '原始披露显示储备需求仍获支持，后续持续性尚待验证。',
+                     'next_check': '核对下一期储备需求披露是否继续保持支持。'}], research={
             'investment_view': {'direction': '中期偏多', 'horizon': '未来一季度', 'attractiveness': '仍需比较当前风险补偿',
                 'risk': '观察波动变化', 'source_ids': ['original']},
             'forecasts': [{'key': 'demand', 'claim': '需求支持有望延续', 'horizon': '未来一季度',
@@ -102,7 +104,9 @@ def test_computed_volatility_can_support_risk_without_an_external_news_story(ins
         }]}
         session.commit()
         apply(session, run, themes=[{'theme_key': 'gold-volatility', 'kind': 'quantitative', 'title': '黄金波动风险',
-            'question': '当前波动变化是否持续影响风险承受水平？', 'priority_reason': '实际波动变化会改变风险敞口，需继续观察持续性。'}],
+            'question': '当前波动变化是否持续影响风险承受水平？', 'priority_reason': '实际波动变化会改变风险敞口，需继续观察持续性。',
+            'source_ids': ['computed:risk'], 'synthesis': '同口径EWMA波动率为25%，需观察后续是否持续。',
+            'next_check': '用相同半衰期核对下一交易日的波动率，评估风险承受水平。'}],
             events=[{'event_key': 'volatility', 'action': 'new', 'direction': 'risk',
             'importance_score': 3, 'importance_reason': '同口径波动变化影响风险承受水平。',
             'title': '波动风险上升', 'body': '已计算的波动观察需要重新评估风险承受水平，不代表未来必然下跌。',
@@ -130,7 +134,9 @@ def test_repeated_metric_read_is_quiet_but_changed_measurement_updates_same_risk
             session.commit()
             theme = {'themes': [{'theme_key': 'gold-volatility', 'kind': 'quantitative', 'title': '黄金波动风险',
                 'question': '波动上升是否持续并需要重新评估风险承受水平？',
-                'priority_reason': '同口径波动观察直接影响风险判断，应保留持续性验证。'}]} if index == 0 else {}
+                'priority_reason': '同口径波动观察直接影响风险判断，应保留持续性验证。',
+                'source_ids': ['computed:risk'], 'synthesis': '当前同口径EWMA波动率为25%，持续性尚待后续测量验证。',
+                'next_check': '比较下一次同口径波动率测量，区分重复读取与新的风险变化。'}]} if index == 0 else {}
             apply(session, run, events=[{**event, 'action': 'new' if index == 0 else 'updated'}], **theme)
             case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == 'gold-test'))
             assert len(case.history_json) == (2 if index == 2 else 1)

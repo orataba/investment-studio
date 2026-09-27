@@ -7,7 +7,7 @@ import ResearchReadingAside from './ResearchReadingAside'
 export default function ResearchQuantObservations({ instrumentId, notebook, onAskAssistant }: { instrumentId: string; notebook?: SavedResearchNotebook | null; onAskAssistant?: AskResearchAssistant }) {
   const [all, setAll] = useState(false)
   const observation = notebook?.modules?.find(module => module.key === 'market-quantitative')
-  const sources = (notebook?.sources || []).filter(source => observation?.figure_source_ids.includes(source.source_id))
+  const sources = (notebook?.sources || []).filter(source => observation?.figure_source_ids.includes(source.source_id) && source.observation_domain === 'market')
   return <section className="research-quant-observations" aria-label="量化观察">
     <div className="research-dossier-section-heading"><h2>量化观察</h2>{observation?.evidence_as_of && <span className="sector-research-note">数据截至 {dateLabel(observation.evidence_as_of)}</span>}</div>
     {observation ? <>

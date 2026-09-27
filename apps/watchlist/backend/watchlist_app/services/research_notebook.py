@@ -595,6 +595,11 @@ def validate_notebook(notebook: ResearchNotebook, iid: str, sources: dict[str, d
         for sid in module.figure_source_ids:
             if sources[sid].get("source_type") not in {"computed_metric", "sector_snapshot", "analyst_estimate_changes"}:
                 raise ValueError("研究图表必须引用已留存的数值计算、持仓或预期证据")
+        submitted = next(item for item in notebook.modules if item.key == module.key)
+        if module.key == "market-quantitative" and "figure_source_ids" in submitted.model_fields_set:
+            from watchlist_app.services.research_metrics import observation_domain
+            if any(observation_domain(sources[sid]) != "market" for sid in module.figure_source_ids):
+                raise ValueError("量化观察只接受价格、收益、波动、广度、相关性或技术指标；经营与财务图表请放入相应基本面模块或主题，未分类计算先明确其方法用途。")
     if notebook.investment_view is not None:
         for item in [*(notebook.investment_view.opportunities or []), *(notebook.investment_view.risks or [])]:
             for sid in item.figure_source_ids:

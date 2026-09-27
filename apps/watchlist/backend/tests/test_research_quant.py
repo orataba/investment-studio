@@ -131,7 +131,7 @@ result = {
 }
 inputs["computed:input"]["data"]["points"][0]["value"] = 999
 '''
-    evidence = quant.execute_analysis(record, request(code=code))
+    evidence = quant.execute_analysis(record, request(code=code, observation_domain="market"))
     assert evidence["data"]["metrics"]["change"] == 2
     assert evidence["methodology"]["input_sources"][0]["data"]["points"][0]["value"] == 10
     assert record.context_json["computed_metrics"][0]["data"]["points"][0]["value"] == 10

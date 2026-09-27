@@ -44,18 +44,7 @@
 .risk-officer button:disabled { opacity: .5; cursor: default; }
 .risk-officer button:focus-visible,
 .risk-officer summary:focus-visible { outline: 2px solid #315d68; outline-offset: 3px; }
-.risk-officer-counts {
-  display: flex;
-  gap: 12px 26px;
-  flex-wrap: wrap;
-  margin: 14px 0 6px;
-  padding: 10px 0;
-  border-top: 1px solid #e6ebef;
-  border-bottom: 1px solid #e6ebef;
-}
-.risk-officer-counts > div { display: flex; align-items: baseline; gap: 8px; }
-.risk-officer-counts dt { color: #6c7b88; font-size: 12px; }
-.risk-officer-counts dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 600; }
+.risk-officer-title { display: flex; align-items: center; gap: 8px; }
 .risk-officer p { margin: 7px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .risk-officer .risk-officer-muted,
 .risk-officer-conclusion-heading time { color: #70808c; font-size: 12px; }

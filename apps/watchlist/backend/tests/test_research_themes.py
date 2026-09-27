@@ -78,7 +78,9 @@ def test_analyst_theme_stable_key_closure_and_user_takeover(research_client):
     from watchlist_app.services.research_themes import AnalystThemeUpdate, save_analyst_theme, theme_index
     with get_session_factory()() as session:
         theme = save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(
-            theme_key="term-premium", title="期限溢价变化", question="期限溢价上升是否持续？", background="区分实际利率与期限溢价", priority_reason="期限溢价影响中期风险补偿"))
+            theme_key="term-premium", title="期限溢价变化", question="期限溢价上升是否持续？", background="区分实际利率与期限溢价", priority_reason="期限溢价影响中期风险补偿",
+            synthesis="现有利率观察尚不能区分驱动，需要按同一口径持续验证", next_check="比较下一期实际利率与期限溢价",
+            source_ids=["rates-baseline"]), sources={"rates-baseline": {"source_id": "rates-baseline", "source_type": "public_source", "text": "Dated term structure evidence"}})
         assert theme["origin"] == theme["managed_by"] == "researcher" and theme["author"] == "研究员"
         revised = save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(theme_key="term-premium", background="补充主导机制的假设"))
         assert revised["theme_id"] == theme["theme_id"] and revised["question"] == theme["question"]
@@ -119,7 +121,8 @@ def test_theme_synthesis_changes_advance_progress_but_quiet_receipts_do_not(rese
     with get_session_factory()() as session:
         original = service.save_analyst_theme(session, "fund-us-agg", service.AnalystThemeUpdate(
             theme_key="cash-return", title="现金回报", question="增长能否覆盖投入？", priority_reason="决定资本回报",
-            synthesis="等待披露"))
+            synthesis="等待披露", next_check="核对下一季现金投入与收入", source_ids=["cash-baseline"]),
+            sources={"cash-baseline": {"source_id": "cash-baseline", "source_type": "public_source", "text": "Dated cash flow baseline"}})
         Clock.value = datetime(2026, 9, 2, tzinfo=UTC)
         changed = service.save_analyst_theme(session, "fund-us-agg", service.AnalystThemeUpdate(
             theme_key="cash-return", title="增长尚未带来现金回报", synthesis="收入增长但现金投入更快，需要继续检验回收。"))

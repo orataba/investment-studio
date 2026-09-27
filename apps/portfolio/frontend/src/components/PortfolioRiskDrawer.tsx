@@ -1,3 +1,4 @@
+import WorkspaceSkeleton from '../../../../../packages/ui/src/WorkspaceSkeleton'
 import { useEffect, useState } from 'react'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
@@ -20,11 +21,14 @@ export default function PortfolioRiskDrawer({ portfolioId, onClose, onAskAssista
 
   useEffect(() => {
     let cancelled = false
-    getHoldingsWorkspace(portfolioId, { include_details: true }).then(
+    const controller = new AbortController()
+    setWorkspace(null)
+    setError(null)
+    getHoldingsWorkspace(portfolioId, { include_details: true }, controller.signal).then(
       (value) => { if (!cancelled) setWorkspace(value) },
       (reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)) },
     )
-    return () => { cancelled = true }
+    return () => { cancelled = true; controller.abort() }
   }, [portfolioId])
 
   return <div className="portfolio-risk-backdrop" onClick={(event) => {
@@ -38,7 +42,7 @@ export default function PortfolioRiskDrawer({ portfolioId, onClose, onAskAssista
       <div className="portfolio-risk-body">
         {error ? <p role="alert">{error}</p> : workspace
           ? <PortfolioInstrumentRisk portfolioId={portfolioId} workspace={workspace} onAskAssistant={onAskAssistant} />
-          : <p role="status">{zh ? '正在整理组合风险…' : 'Loading portfolio risks…'}</p>}
+          : <WorkspaceSkeleton />}
       </div>
     </div>
   </div>

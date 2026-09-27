@@ -215,3 +215,63 @@ def test_theme_reference_uses_exact_theme_version_and_rejects_mislabeled_kind(re
     assert "原始研究主题" in response.json()["background"] and "已修订主题" not in response.json()["background"]
     invalid = research_client.post(_themes(), json={"title": "错误的版本类型", "reference": {"notebook_version_id": theme["source_version_id"]}})
     assert invalid.status_code == 422
+
+
+@pytest.mark.parametrize('missing', ['synthesis', 'next_check', 'source_ids'])
+def test_automatic_theme_requires_evidence_and_a_continuing_question(missing):
+    from watchlist_app.services.research_themes import analyst_theme_values
+    value = dict(theme_key='technology-adoption', title='新技术的采用是否改变算力需求？',
+        question='效率提升与需求扩张哪条传导更强？', priority_reason='改变相关设备与软件公司的收益路径',
+        synthesis='已有公开技术结果，商业采用与需求弹性尚待验证', next_check='核对真实采用与单位成本；若未持续采用则停止跟踪',
+        source_ids=['technology-report'])
+    value.pop(missing)
+    with pytest.raises(ValueError, match='基线依据'):
+        analyst_theme_values(AnalystThemeUpdate(**value))
+
+
+@pytest.mark.parametrize('status', ['paused', 'closed'])
+def test_user_stopped_unpinned_theme_requires_explicit_user_resume(research_client, status):
+    theme = research_client.post(_themes(), json={'title': '技术采用是否改变需求'}).json()
+    path = f"{_themes()}/{theme['theme_id']}"
+    stopped = research_client.patch(path, json={'status': status, **({'close_reason': '主动退出当前研究'} if status == 'closed' else {})}).json()
+    assert not stopped['pinned'] and stopped['lifecycle_owner'] == 'user'
+    with get_session_factory()() as session:
+        # Factual correction does not transfer control of a human stop decision.
+        corrected = save_analyst_theme(session, 'fund-us-agg', AnalystThemeUpdate(theme_key=theme['theme_key'], synthesis='更正已有来源的日期'))
+        assert corrected['status'] == status and corrected['lifecycle_owner'] == 'user'
+        with pytest.raises(ValueError, match='明确恢复'):
+            save_analyst_theme(session, 'fund-us-agg', AnalystThemeUpdate(theme_key=theme['theme_key'], status='active'))
+        session.commit()
+    resumed = research_client.patch(path, json={'status': 'active'}).json()
+    assert resumed['lifecycle_owner'] == 'researcher' and resumed['status'] == 'active'
+
+
+@pytest.mark.parametrize('status', ['paused', 'closed'])
+@pytest.mark.parametrize('owner', ['user', 'researcher'])
+def test_legacy_theme_owner_uses_status_transition_not_latest_text_author(research_client, status, owner):
+    from watchlist_app.db.models.workbench import ResearchEntry
+    from watchlist_app.services.research_themes import theme_record, theme_summaries
+    theme = research_client.post(_themes(), json={'title': '持续技术研究'}).json()
+    with get_session_factory()() as session:
+        entry = session.get(ResearchEntry, theme['theme_id'])
+        entry.context_json = {key: value for key, value in entry.context_json.items() if key != 'lifecycle_owner'}
+        entry.context_json = {**entry.context_json, 'theme_status': status,
+            'updated_by_role': 'researcher' if owner == 'user' else 'user',
+            'close_reason': '已有结论' if status == 'closed' else '',
+            'versions': [{'status': 'active', 'updated_by_role': 'researcher'},
+                         {'status': status, 'updated_by_role': owner}]}
+        session.commit()
+        assert theme_record(entry)['lifecycle_owner'] == owner
+        summary = theme_summaries(session, 'fund-us-agg')['themes'][0]
+        assert summary['lifecycle_owner'] is None and 'versions' not in summary
+        updated = save_analyst_theme(session, 'fund-us-agg', AnalystThemeUpdate(
+            theme_key=theme['theme_key'], synthesis='更正原始资料'))
+        assert updated['lifecycle_owner'] == owner
+        assert entry.context_json['lifecycle_owner'] == owner
+        assert theme_summaries(session, 'fund-us-agg')['themes'][0]['lifecycle_owner'] == owner
+        if owner == 'user':
+            with pytest.raises(ValueError, match='明确恢复'):
+                save_analyst_theme(session, 'fund-us-agg', AnalystThemeUpdate(theme_key=theme['theme_key'], status='active'))
+        else:
+            assert save_analyst_theme(session, 'fund-us-agg', AnalystThemeUpdate(
+                theme_key=theme['theme_key'], status='active'))['status'] == 'active'

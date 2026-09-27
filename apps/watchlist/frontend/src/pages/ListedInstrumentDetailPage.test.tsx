@@ -181,11 +181,11 @@ describe('independent detail loading', () => {
     expect(screen.queryByText(/No overall view selected/)).toBeNull()
     expect(screen.queryByText(/No source data is available/)).toBeNull()
     expect(apiMocks.getInstrumentPerformance).not.toHaveBeenCalled()
-    fireEvent.click(screen.getAllByRole('button', { name: 'Performance & Risk' })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: 'Performance & Metrics' })[0])
     await waitFor(() => expect(apiMocks.getInstrumentPerformance).toHaveBeenCalledTimes(1))
     expect(apiMocks.getInstrumentRisk).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByRole('button', { name: 'Investment Research' }))
-    fireEvent.click(screen.getAllByRole('button', { name: 'Performance & Risk' })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: 'Performance & Metrics' })[0])
     expect(apiMocks.getInstrumentPerformance).toHaveBeenCalledTimes(1)
   })
 
@@ -211,7 +211,7 @@ describe('independent detail loading', () => {
     expect(screen.getByText('Fixed Income / Broad Bond')).toBeTruthy()
     expect(screen.getByText('YTD').nextElementSibling?.textContent).toBe('Loading…')
     expect(screen.queryByText('Risk statistics unavailable')).toBeNull()
-    fireEvent.click(screen.getAllByRole('button', { name: 'Performance & Risk' })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: 'Performance & Metrics' })[0])
     expect(screen.getAllByRole('status').some(node => node.textContent?.includes('Risk statistics'))).toBe(true)
     await act(async () => performance.resolve({ ...performanceValue, trailing_returns: [{ window: '1Y', investment_nav: 17 }] }))
     expect(await screen.findByText('17.000%')).toBeTruthy()
@@ -305,7 +305,7 @@ describe('ListedInstrumentDetailPage index view', () => {
       }} watchlistContext={null} />
     </MemoryRouter></LanguageProvider>)
     await screen.findByRole('img', { name: 'Crypto spot price chart' })
-    fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Risk$/ })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Metrics$/ })[0])
     const table = container.querySelector('.instrument-metrics-table') as HTMLElement
     for (const label of ['Ann. Volatility', 'Sharpe Ratio', 'Sortino Ratio', 'Max DD']) {
       const cells = within(table).getByText(label).closest('tr')!.querySelectorAll('td strong')
@@ -332,7 +332,7 @@ describe('ListedInstrumentDetailPage index view', () => {
       }} watchlistContext={null} />
     </MemoryRouter></LanguageProvider>)
     await screen.findByRole('img', { name: 'Index level chart' })
-    fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Risk$/ })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Metrics$/ })[0])
     const table = container.querySelector('.instrument-metrics-table') as HTMLElement
     for (const label of ['Ann. Volatility', 'Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio', 'Max DD']) {
       const values = [...within(table).getByText(label).closest('tr')!.querySelectorAll('td strong')]
@@ -462,19 +462,19 @@ describe('ListedInstrumentDetailPage index view', () => {
     fireEvent.click(screen.getByRole('button', { name: /Cumulative Return|累计收益/ }))
     expect(screen.queryByRole('img', { name: 'Cumulative return chart' })).not.toBeNull()
     expect(screen.queryByRole('img', { name: 'Index level chart' })).toBeNull()
-    fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Risk$|^业绩与风险$/ })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Metrics$|^表现与指标$/ })[0])
 
     expect(screen.queryByText('Metrics Matrix')).not.toBeNull()
     expect(screen.queryByText('Monthly Return Matrix')).not.toBeNull()
     expect(screen.queryByText('Growth of Price')).toBeNull()
     expect(screen.queryByRole('img', { name: 'Cumulative return chart' })).toBeNull()
     expect(screen.queryByRole('img', { name: 'Historical drawdown chart' })).not.toBeNull()
-    expect(screen.getByTestId('risk-panel').getAttribute('data-mode')).toBe('price')
+    expect(screen.queryByTestId('risk-panel')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /^Research assistant$|^研究助手$/ }))
     const drawer = await screen.findByRole('dialog', { name: '研究助手' })
     expect(drawer.getAttribute('data-instrument')).toBe('h11001-csi')
     fireEvent.click(within(drawer).getByRole('button', { name: '关闭研究助手' }))
-    expect(screen.getByTestId('risk-panel').getAttribute('data-mode')).toBe('price')
+    expect(screen.queryByTestId('risk-panel')).toBeNull()
   })
   it('keeps an ETF price chart on overview and combines monthly returns with quantitative risk', async () => {
     apiMocks.getInstrumentReferenceData.mockResolvedValueOnce({ instrument_id: 'xlk', instrument_type: 'etf', provider: 'fmp', provider_symbol: 'XLK', fetched_at: '2026-09-06T13:00:00Z', source: {}, section_errors: {}, sections: { fund_info: { etfCompany: 'SPDR', expenseRatio: 0.08, holdingsCount: 73 }, holdings: [] } })
@@ -498,11 +498,11 @@ describe('ListedInstrumentDetailPage index view', () => {
     fireEvent.click(screen.getByRole('button', { name: /Investment Views|投资观点/ }))
     expect(screen.queryByRole('button', { name: /Add view|新增观点/ })).not.toBeNull()
     expect(screen.queryByText('Current Investment View')).toBeNull()
-    fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Risk$|^业绩与风险$/ })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Metrics$|^表现与指标$/ })[0])
     expect(screen.queryByText('Monthly Return Matrix')).not.toBeNull()
     expect(screen.queryByRole('img', { name: 'Historical drawdown chart' })).not.toBeNull()
     expect(screen.queryByRole('img', { name: 'Cumulative return chart' })).toBeNull()
-    expect(screen.getByTestId('risk-panel').getAttribute('data-mode')).toBe('price')
+    expect(screen.queryByTestId('risk-panel')).toBeNull()
   })
 
   it.each(['etf', 'equity', 'index'] as const)('routes the old %s analyst tab to prepared research and preserves its context when closing the assistant', async (instrumentType) => {
@@ -525,11 +525,13 @@ describe('ListedInstrumentDetailPage index view', () => {
     const riskDrawer = screen.getByRole('dialog', { name: '风险提示' })
     expect(within(riskDrawer).getByTestId('risk-panel').getAttribute('data-instrument')).toBe(instrumentId)
     fireEvent.click(within(riskDrawer).getByRole('button', { name: '追问当前风险' }))
-    expect(screen.queryByRole('dialog', { name: '风险提示' })).toBeNull()
+    expect(screen.getByRole('dialog', { name: '风险提示' })).toBe(riskDrawer)
     expect((await screen.findByRole('dialog', { name: '研究助手' })).getAttribute('data-instrument')).toBe(instrumentId)
     fireEvent.click(screen.getByRole('button', { name: '关闭研究助手' }))
+    expect(screen.getByRole('dialog', { name: '风险提示' })).toBe(riskDrawer)
+    fireEvent.click(within(riskDrawer).getByRole('button', { name: '关闭风险提示' }))
     const navigation = container.querySelector('.instrument-detail-tabs') as HTMLElement
-    expect(within(navigation).getAllByRole('button').map((node) => node.textContent)).toEqual(['Overview', 'Investment Research', 'Investment Views', 'Performance & Risk'])
+    expect(within(navigation).getAllByRole('button').map((node) => node.textContent)).toEqual(['Overview', 'Investment Research', 'Investment Views', 'Performance & Metrics'])
     expect(within(navigation).getByRole('button', { name: 'Investment Research' }).classList.contains('instrument-detail-tab-active')).toBe(true)
     fireEvent.click(within(navigation).getByRole('button', { name: 'Investment Views' }))
     await screen.findByRole('button', { name: 'Add view' })

@@ -55,6 +55,8 @@
   color: #a87831;
   cursor: pointer;
 }
+.watchlist-risk-indicator-pending { color: #697c92; }
+.watchlist-risk-indicator.watchlist-risk-indicator-pending:hover { background: #eef3f8; color: #315b83; }
 .watchlist-risk-indicator svg {
   width: 15px;
   height: 15px;
@@ -74,15 +76,6 @@
 .watchlist-risk-cell:hover {
   color: #246b66;
   text-decoration: underline;
-}
-.watchlist-risk-drawer {
-  width: min(860px, 88vw);
-  height: 100dvh;
-  display: flex;
-  flex-direction: column;
-  background: #fff;
-  border-left: 1px solid #cfd7df;
-  color: #263547;
 }
 .watchlist-risk-heading {
   display: flex;
@@ -122,9 +115,6 @@
   .watchlist-heading-row {
     flex-wrap: wrap;
     gap: 4px;
-  }
-  .watchlist-risk-drawer {
-    width: 100vw;
   }
   .watchlist-risk-heading,
   .watchlist-risk-body .risk-workbench {

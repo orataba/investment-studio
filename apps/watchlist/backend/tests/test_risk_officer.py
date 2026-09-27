@@ -167,11 +167,12 @@ def test_snapshot_does_not_bind_version_across_concurrent_input_update(client, m
         assert run.context_json["risk_inputs"]["research"][0]["status"] == "open"
 
 
-@pytest.mark.parametrize("assessment_status", ["active", "resolved"])
+@pytest.mark.parametrize("assessment_status", ["active", "resolved", "pending"])
 def test_own_assessment_does_not_expire_new_report_but_later_pm_change_does(client, assessment_status):
     seed(client)
+    dates = {"risk-a": "2026-09-08"}
     with get_session_factory()() as session:
-        run, _ = service.begin_run(session, instrument_id="risk-a")
+        run, _ = service.begin_run(session, instrument_id="risk-a", scheduled_dates=dates)
         run_id = run.entry_id
     service.prepare_run(run_id)
     with get_session_factory()() as session:
@@ -181,9 +182,13 @@ def test_own_assessment_does_not_expire_new_report_but_later_pm_change_does(clie
             "event_version_id": event["evidence_json"]["event_version_id"], "status": assessment_status, "reason": "依据本轮证据"}]})
         session.commit()
         assert service.review_workspace(session, instrument_id="risk-a")["latest_completed"]["stale"] is False
+        same, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates=dates)
+        assert not created and same.entry_id == run.entry_id
         session.get(RiskCase, "research").status = "handled"
         session.commit()
         assert service.review_workspace(session, instrument_id="risk-a")["latest_completed"]["stale"] is True
+        updated, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates=dates)
+        assert created and updated.entry_id != run.entry_id
 
 
 def test_own_assessment_does_not_hide_pm_update_during_model_run(client):
@@ -968,3 +973,76 @@ def test_live_role_or_service_scope_revocation_prevents_risk_publication(client,
         assert case.trigger_active and case.status == 'open'
         assert case.evidence_json['risk_assessment'] == {'status': 'pending'}
         assert 'result' not in run.context_json
+
+
+@pytest.mark.parametrize("initially_active", [True, False])
+def test_identical_pending_assessments_across_scopes_do_not_republish_or_requeue(client, initially_active):
+    from copy import deepcopy
+    seed(client)
+    dates = {"risk-a": "2026-09-27"}
+    if not initially_active:
+        with get_session_factory()() as session:
+            case = session.get(RiskCase, "research")
+            case.trigger_active, case.status = False, "recorded"
+            case.evidence_json = {**case.evidence_json, "risk_assessment": {"status": "pending"}}
+            session.commit()
+
+    def assess(scope, reason="当前仍无新增证据。"):
+        with get_session_factory()() as session:
+            run, created = service.begin_run(session, **scope, scheduled_dates=dates)
+            assert created
+            run_id = run.entry_id
+        service.prepare_run(run_id)
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, run_id)
+            event = next(item for item in run.context_json["risk_inputs"]["research"] if item["case_id"] == "research")
+            service.apply_result(session, run, {"summary": "等待更多证据。", "priorities": [], "limitations": [], "case_assessments": [{
+                "case_id": "research", "event_version_id": event["evidence_json"]["event_version_id"],
+                "status": "pending", "reason": reason}]})
+            session.commit()
+        return run_id
+
+    first_id = assess({"instrument_id": "risk-a"})
+    with get_session_factory()() as session:
+        case = session.get(RiskCase, "research")
+        original = deepcopy((case.evidence_json, case.history_json, case.updated_at))
+        assert case.evidence_json["event_version_id"] == "research:1"
+    second_id = assess({"watchlist_id": "risk-list"})
+    with get_session_factory()() as session:
+        case = session.get(RiskCase, "research")
+        assert (case.evidence_json, case.history_json, case.updated_at) == original
+        second = session.get(ResearchEntry, second_id)
+        assert second.status == "completed" and second.completed_at
+        assert second.context_json["result"]["case_assessments"][0]["reason"] == "当前仍无新增证据。"
+        for scope, expected in (({"instrument_id": "risk-a"}, first_id), ({"watchlist_id": "risk-list"}, second_id)):
+            run, created = service.begin_run(session, **scope, scheduled_dates=dates)
+            assert not created and run.entry_id == expected
+        case.status = "handled"  # Real PM work must still invalidate the retained inputs.
+        session.commit()
+        run, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates=dates)
+        assert created and run.entry_id != first_id
+
+
+def test_revised_assessment_reason_remains_a_real_shared_case_update(client):
+    seed(client)
+    def assess(scope, reason):
+        with get_session_factory()() as session:
+            run, _ = service.begin_run(session, **scope, scheduled_dates={"risk-a": "2026-09-27"})
+            run_id = run.entry_id
+        service.prepare_run(run_id)
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, run_id)
+            event = next(item for item in run.context_json["risk_inputs"]["research"] if item["case_id"] == "research")
+            service.apply_result(session, run, {"summary": reason, "priorities": [], "limitations": [], "case_assessments": [{
+                "case_id": "research", "event_version_id": event["evidence_json"]["event_version_id"],
+                "status": "pending", "reason": reason}]})
+            session.commit()
+        return run_id
+    first_id = assess({"instrument_id": "risk-a"}, "等待披露。")
+    assess({"watchlist_id": "risk-list"}, "最新披露不足以确认价格影响，继续核查。")
+    with get_session_factory()() as session:
+        case = session.get(RiskCase, "research")
+        assert len(case.history_json) == 2
+        assert case.evidence_json["event_version_id"] == "research:1"
+        run, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-27"})
+        assert created and run.entry_id != first_id

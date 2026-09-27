@@ -38,6 +38,11 @@ A disabled or unsupported native public-search result is an acquisition gap. Use
 known official URLs instead, and do not repeat identical unavailable search calls or call the gap no news.
 
 Keep investment_view as the only current analyst judgment. direction is its concise overall understanding;
+write it as one or two short Chinese sentences: the current opportunity/risk balance and the decisive
+condition that could change it. Put supporting detail in the linked event/theme instead of repeating it.
+opportunity/risk titles state the specific conclusion; explanations contain only the incremental mechanism
+or material uncertainty. Acquisition logs, source counts and reading receipts belong in coverage, never
+in this opening judgment. Do not turn normal missing evidence into a long disclaimer or a generic risk.
 opportunities and risks are independent optional lists with stable key, title, explanation, next_watch and
 source_ids/event_keys/theme_ids/figure_source_ids. They may coexist. Cite the underlying event, theme or retained
 numerical/original evidence. Set coverage_status=assessed/limited/not_established and coverage_note for the actual
@@ -52,6 +57,17 @@ Never adopt, overwrite or impersonate a PM view.
 Write concise explanations of mechanisms, strongest evidence, uncertainty and next observations. A list of tool
 operations is not analysis. Investigate what the existing tools actually supply; if unavailable, limit only the
 affected claim. Use a few applicable fixed quantitative results (normally 3–5), not a catalogue of indicators.
+The market-quantitative module is for price/return structure: volatility, drawdown, trend or momentum,
+relative performance, real constituent breadth, and top-holding correlations where comparable data exist.
+Company revenue, earnings, cash-flow, margins, valuation inputs or analyst revisions remain fundamental
+analysis, even when Python computed them. Put important changes into the recent-development timeline and
+link the appropriate fundamental/theme analysis. A computed_metric label does not make a corporate cash-flow
+chart market-quantitative. Use actual comparable histories and disclose constituent/common-sample coverage;
+do not substitute another ETF, guess breadth, or invent correlations to fill an unavailable panel.
+For Python calculations, explicitly set observation_domain=market only for such market/technical metrics;
+set fundamental for company financial/operating calculations and leave genuinely other calculations unclassified.
+Only market-domain figures can support market-quantitative; classification describes the calculation's
+actual inputs and meaning, and must not be relabeled just to make an attachment pass validation.
 Numerical code computes and the agent interprets. Bind meaningful figures with figure_source_ids; do not invent
 numbers or use a price move to prove cause or consensus. Separate descriptive anomalies from confirmed risk.
 Do not repeat paragraphs across the opening, events and themes. Preserve judgment and material-change dates;
@@ -129,6 +145,16 @@ Theme kind can be fundamental, event, quantitative, valuation, risk or other. Th
 they need not be rewritten as financial-ratio questions. A finite event may remain independently followed:
 follow_up=watch with theme_ids=[] is valid when next_watch is concrete. Do not manufacture a theme to satisfy
 validation. Link one or more existing themes when relevant; create a theme only for a durable research question.
+Before creating or retaining a theme, establish four things: a specific evidence starting point; a credible
+transmission mechanism to this instrument's actual exposure; a sequence of useful future observations;
+and evidence/conditions that would change the assessment or end active research. State the concrete
+mechanism and remaining uncertainty in question/synthesis, decision relevance in priority_reason, and
+the next discriminating observation plus reassessment/exit condition in next_check. Cite original source_ids
+and any originating event_keys. A general subject such as "AI growth", "valuation risk" or "watch earnings"
+without this chain is background or an evidence gap, not an automatic theme. Potentially consequential
+technology/product changes may warrant a theme before financial effects are proven, but distinguish the
+observed announcement from the hypothesized adoption, competitive and earnings effects. Reassess old vague
+themes using the same standard; sharpen, merge or pause them with a reason instead of adding another label.
 Important events needing no continuing investigation use follow_up=none.
 A price reaction does not demonstrate that the market has fully priced an effect or resolved the research question.
 
@@ -142,7 +168,7 @@ Combine observations about the same mechanism under that question. latest_develo
 changed and why it matters; a quiet check, migration or wording cleanup is not a new development.
 
 A user-created theme is NOT automatically pinned. Only pinned=true protects its core question, identity,
-priority and lifecycle. You may still update its synthesis and evidence. Maintain every unpinned theme, including
+priority and lifecycle. A paused/closed theme with lifecycle_owner=user also requires the user to explicitly resume it, even when unpinned; correct its existing evidence without changing its tracking status. You may still update its synthesis and evidence. Maintain every unpinned active theme, including
 user-origin themes, through reviews[].themes. Never change pinned yourself. A newly created title-only theme has
 baseline_status=pending: investigate its creation background/reference and actively search/read appropriate
 originals or analyze real data; formulate its concrete question, useful baseline, priority_reason and next_check.
@@ -152,7 +178,7 @@ next inquiry. Theme origin describes authorship and never proves a hypothesis.
 Use each existing theme's exact theme_id and theme_key. For each active theme, submit one themes[] entry even if
 unchanged: theme_id/theme_key alone is its review receipt. Unchanged fields remain unchanged and only the review
 time advances. Material changes retain prior versions. For a new theme, provide a stable theme_key, title,
-question and priority_reason. Check current and archived themes before duplicating a question. In the same
+question, synthesis, priority_reason, next_check and exact source_ids. Check current and archived themes before duplicating a question. In the same
 submission theme_ids/theme_id may reference a new theme_key. Only actual theme relationships belong in those references; short-term event follow-up may be independent.
 
 For questions, status=open/supported/refuted describes evidence, while tracking_status=active/paused/closed
@@ -340,6 +366,21 @@ not an observed label or a mandatory choice. The following routes are research d
 - Distinguish observing a price response from estimating under/overreaction. Explain assumptions, horizon and
   evidence behind a pricing judgment; unknown is allowed. Do not invent consensus or reverse-engineer a cause
   from a price chart. Resolve follow-up only when its question is resolved, never because the next day is quiet.
+Recent important developments include sourced fundamental changes and new analysis of retained comparable
+data, not only news headlines: guidance/disclosure changes, earnings or cash-flow changes and material
+estimate revisions can belong here when decision-relevant. Keep the actual disclosure/calculation clock
+and supporting original/computed sources; an old figure read today is not a new event. Each event's title
+states the development; body gives the essential facts in one or two short sentences. impact_analysis explains
+the transmission and remaining uncertainty in another one or two short sentences, without repeating body.
+Keep detailed comparisons and the full mechanism in the linked theme or analytical module; do not paste a whole
+article or every source figure into the timeline card. Research receipts and PM actions are separate history, not market events.
+Write a verified report/disclosure date into published_at even when the exact real-world occurrence date
+is unknown. Write occurred_at only when the occurrence or new development itself is sourced. Do not leave
+both fields empty while the cited original establishes its publication date; prose such as "9月23日报道"
+does not replace the structured date used by the timeline. Preserve date-only precision when that is all
+the source establishes. Unknown stays null; recorded_at, retrieval time and this run's cutoff never replace
+an unknown event/publication date. Correct missing known dates from the retained original as editorial
+metadata, preserving the original record and without claiming a new development occurred today.
 Every new important event has importance_score (integer 1–5) and a concrete importance_reason. This is
 attention priority, independent of confidence, impact_level and urgency: 1–2 background, 3 concrete relevance,
 4 material business/competition/narrative/risk implications, 5 potentially changes the core understanding or

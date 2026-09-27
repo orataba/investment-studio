@@ -90,6 +90,7 @@ def _registered(session, iid, kind, calendar, exchange=None):
 def test_daily_scope_uses_registered_calendar_and_explicit_fund_nav_check_clock(client, monkeypatch):
     ids = ["daily-cn", "daily-hk", "daily-us", "daily-private", "daily-public", "daily-index", "daily-unknown", "daily-private-us"]
     monkeypatch.setattr(shared_instrument_registry, "list_shared_active_instrument_ids", lambda **kwargs: ids)
+    monkeypatch.setattr(service, "latest_reviews", lambda session, **kwargs: {iid: {} for iid in ids})
     with get_session_factory()() as session:
         _registered(session, "daily-cn", "etf", "XSHE", "XSHE")
         _registered(session, "daily-hk", "equity", "XHKG", "XHKG")
@@ -134,6 +135,7 @@ def test_scheduled_us_review_deduplicates_across_beijing_midnight_and_reopens_ne
 
 def test_crypto_uses_completed_utc_day_clock_and_keeps_weekends_in_automatic_scope(client, monkeypatch):
     monkeypatch.setattr(shared_instrument_registry, "list_shared_active_instrument_ids", lambda **kwargs: ["btcusd"])
+    monkeypatch.setattr(service, "latest_reviews", lambda session, **kwargs: {"btcusd": {}})
     with get_session_factory()() as session:
         _registered(session, "btcusd", "crypto", None)
         session.commit()
@@ -183,3 +185,101 @@ def test_registered_catalogue_does_not_schedule_list_risk_but_invested_funds_sti
     service.run_daily_reviews(Event())
     assert research_ids == ["registered-fund"]
     assert {"watchlist_id": "all-instruments"} not in risk_scopes
+
+
+def test_new_proposed_instrument_initializes_on_weekend_once_and_retains_seven_day_window(client, monkeypatch):
+    from watchlist_app.services import research_runner, research_workbench, risk_officer
+    now = datetime(2026, 9, 27, 1, tzinfo=UTC)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+    monkeypatch.setattr(service, "datetime", Clock)
+    monkeypatch.setattr(shared_instrument_registry, "list_shared_active_instrument_ids", lambda **kwargs: ["new-proposed"])
+    monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {"portfolios": []})
+    monkeypatch.setattr(risk_officer, "read_snapshot", lambda session, **scope: {"instrument_ids": []})
+    with get_session_factory()() as session:
+        _registered(session, "new-proposed", "equity", "XNAS", "XNAS")
+        session.flush()
+        status = session.query(InstrumentAttributeValue).filter_by(instrument_id="new-proposed").one()
+        status.value_json = "Proposed"
+        session.commit()
+        assert service._research_due("us", now) is False
+        assert service.daily_review_groups(session, now=now) == [["new-proposed"]]
+    dispatched = []
+    def analyze(run_id):
+        dispatched.append(run_id)
+        service.prepare_run(run_id)
+        with get_session_factory()() as session:
+            run = session.get(service.ResearchEntry, run_id)
+            initial = run.context_json["initialization"]
+            assert datetime.fromisoformat(initial["as_of"]) - datetime.fromisoformat(initial["published_after"]) == timedelta(days=7)
+            assert initial["as_of"] == run.context_json["input_snapshot_cutoff"]
+            # A deterministic acquisition fault does not authorize continuous
+            # new initialization jobs outside the ordinary market schedule.
+            run.status = "failed"
+            run.completed_at = now
+            session.commit()
+    monkeypatch.setattr(research_runner, "run_analysis", analyze)
+    service.run_daily_reviews(Event())
+    service.run_daily_reviews(Event())
+    assert len(dispatched) == 1
+    with get_session_factory()() as session:
+        assert service.daily_review_groups(session, now=now) == []
+
+
+@pytest.mark.parametrize("aggregate", [False, True])
+@pytest.mark.parametrize("case_status", ["recorded", "resolved", "handled"])
+def test_pending_research_referrals_reach_officer_outside_market_hours_without_duplicate_scope(client, monkeypatch, aggregate, case_status):
+    from types import SimpleNamespace
+    from watchlist_app.db.models.workbench import RiskCase
+    from watchlist_app.services import research_runner, research_workbench, risk_officer
+    monkeypatch.setattr(service, "daily_review_groups", lambda session: [])
+    monkeypatch.setattr(shared_instrument_registry, "list_shared_active_instrument_ids", lambda **kwargs: ["referral"])
+    monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {"portfolios": [{"portfolio_id": "held"}] if aggregate else []})
+    monkeypatch.setattr(risk_officer, "read_snapshot", lambda session, **scope: {"instrument_ids": ["referral"] if scope.get("portfolio_id") == "held" else []})
+    with get_session_factory()() as session:
+        _registered(session, "referral", "equity", "XNAS", "XNAS")
+        session.add(RiskCase(case_id="pending-referral", instrument_id="referral", signal="sector:development",
+            title="Material new evidence", status=case_status, trigger_active=False,
+            evidence_json={"risk_assessment": {"status": "pending"}}))
+        session.commit()
+    scopes = []
+    def begin_risk(session, **scope):
+        scopes.append(scope)
+        return SimpleNamespace(entry_id="officer", status="completed"), False
+    monkeypatch.setattr(risk_officer, "begin_run", begin_risk)
+    monkeypatch.setattr(research_runner, "run_analysis", lambda *args: pytest.fail("Referral must not launch a fresh instrument investigation"))
+    service.run_daily_reviews(Event())
+    assert len(scopes) == 1
+    assert scopes[0].get("portfolio_id" if aggregate else "instrument_id") == ("held" if aggregate else "referral")
+    assert set(scopes[0]["scheduled_dates"]) == {"referral"}
+
+
+def test_first_published_research_referral_is_processed_in_same_worker_pass(client, monkeypatch):
+    from types import SimpleNamespace
+    from watchlist_app.db.models.workbench import RiskCase
+    from watchlist_app.services import research_runner, research_workbench, risk_officer
+    monkeypatch.setattr(shared_instrument_registry, "list_shared_active_instrument_ids", lambda **kwargs: ["first-referral"])
+    monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {"portfolios": []})
+    monkeypatch.setattr(risk_officer, "read_snapshot", lambda session, **scope: {"instrument_ids": []})
+    with get_session_factory()() as session:
+        _registered(session, "first-referral", "equity", "XNAS", "XNAS")
+        session.commit()
+    order = []
+    def analyze(run_id):
+        with get_session_factory()() as session:
+            session.get(service.ResearchEntry, run_id).status = "completed"
+            session.add(RiskCase(case_id="first-risk", instrument_id="first-referral", signal="sector:development",
+                title="Material new risk", trigger_active=False, evidence_json={"risk_assessment": {"status": "pending"}}))
+            session.commit()
+        order.append("research")
+    def begin_risk(session, **scope):
+        assert scope["instrument_id"] == "first-referral"
+        assert order == ["research"]
+        order.append("officer")
+        return SimpleNamespace(entry_id="officer", status="completed"), False
+    monkeypatch.setattr(research_runner, "run_analysis", analyze)
+    monkeypatch.setattr(risk_officer, "begin_run", begin_risk)
+    service.run_daily_reviews(Event())
+    assert order == ["research", "officer"]

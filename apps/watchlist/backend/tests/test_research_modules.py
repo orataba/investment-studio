@@ -92,3 +92,24 @@ def test_historical_prose_is_readable_without_backdating_modular_research_or_mut
     assert current["schema_version"] == 2 and "fundamental_view" not in current
     with pytest.raises(ValueError, match="Extra inputs"):
         ResearchNotebook(fundamental_view="No parallel writer")
+
+
+def test_market_observations_exclude_financial_figures_but_preserve_fundamental_uses():
+    from watchlist_app.api.research_presentation import dossier_view
+    sources = {
+        'vol': {'source_id': 'vol', 'source_type': 'computed_metric', 'methodology': {'metric': 'ewma_volatility'}, 'data': {'current': {'volatility_pct': 20}}},
+        'cash': {'source_id': 'cash', 'source_type': 'computed_metric', 'observation_domain': 'fundamental', 'methodology': {'analysis_kind': 'python_quant'}, 'data': {'value': 25}},
+        'unknown': {'source_id': 'unknown', 'source_type': 'computed_metric', 'title': 'Market volatility', 'methodology': {'analysis_kind': 'source_transcription'}, 'data': {'value': 25}},
+    }
+    for source in sources.values():
+        source.update(instrument_id='fund', as_of='2026-09-21')
+    paper = lambda sid, key='market-quantitative': ResearchNotebook(modules=[{'key': key, 'figure_source_ids': [sid]}])
+    validate_notebook(paper('vol'), 'fund', sources)
+    for sid in ('cash', 'unknown'):
+        with pytest.raises(ValueError, match='量化观察只接受'):
+            validate_notebook(paper(sid), 'fund', sources)
+        validate_notebook(paper(sid, 'equity-aggregation'), 'fund', sources)
+    before = deepcopy(sources)
+    projected = dossier_view({'notebook': {'sources': list(sources.values())}})['notebook']['sources']
+    assert [item['observation_domain'] for item in projected] == ['market', 'fundamental', 'unclassified']
+    assert sources == before

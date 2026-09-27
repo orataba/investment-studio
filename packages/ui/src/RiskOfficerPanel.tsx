@@ -1,3 +1,5 @@
+import WorkspaceSkeleton from './WorkspaceSkeleton'
+import InfoHint from './InfoHint'
 import { useEffect, useRef, useState } from 'react'
 import type { RiskRequest } from './instrumentRisk'
 import { resolveWorkspaceUrl } from './navigation'
@@ -144,20 +146,13 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
 
   return <section className="risk-officer" aria-label="风险研判">
     <header className="risk-officer-heading">
-      <div><h2>风险研判</h2>{data && <p translate="no">{data.scope.name}</p>}</div>
+      <div><div className="risk-officer-title"><h2>风险研判</h2>{data && <InfoHint label="风控输入" detail={`研究上报 ${data.counts.research} · 量化触发 ${data.counts.quantitative} · 监测受限 ${data.counts.coverage}。输入截至 ${data.input_as_of?.slice(0, 10) || '尚无输入日期'}。`} />}</div>{data && <p translate="no">{data.scope.name}</p>}</div>
       <button type="button" disabled={!canRun || !data?.available || busy} onClick={() => void update()}>
         {busy ? '研判进行中…' : '更新研判'}
       </button>
     </header>
-    {!data && !error && <p className="risk-officer-muted" role="status">正在读取已保存的研判…</p>}
+    {!data && !error && <WorkspaceSkeleton />}
     {data && <>
-      <dl className="risk-officer-counts">
-        <div><dt>研究上报</dt><dd>{data.counts.research}</dd></div>
-        <div><dt>量化触发</dt><dd>{data.counts.quantitative}</dd></div>
-        <div><dt>监测受限</dt><dd>{data.counts.coverage}</dd></div>
-      </dl>
-      <p className="risk-officer-muted">最近输入日期：{data.input_as_of
-        ? <time dateTime={data.input_as_of}>{data.input_as_of.slice(0, 10)}</time> : '尚无输入日期'}</p>
       {!data.available && <p className="risk-officer-warning" role="status">风险研判服务不可用，暂时无法更新。</p>}
       {busy && <p className="risk-officer-muted" role="status">研判进行中，完成后将自动更新。</p>}
       {data.latest_run?.status === 'failed' && !busy && <p className="risk-officer-warning" role="status">
@@ -171,7 +166,7 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
         {completed.stale && <p className="risk-officer-warning">输入版本已有变化，请更新研判。</p>}
         {completed.stale === null && <p className="risk-officer-warning">尚未核对已有结论的当前输入，请更新研判。原结论与依据仍保留。</p>}
         <p className="risk-officer-summary" translate="no">{completed.summary}</p>
-        {completed.review_note && <p className="risk-officer-muted" translate="no">{completed.review_note}</p>}
+        {completed.review_note && <InfoHint label="研判复核说明" detail={completed.review_note} />}
         {completed.priorities.length > 0 && <>
           <ol className="risk-officer-priorities" aria-label="优先事项">{completed.priorities.slice(0, 3).map(renderPriority)}</ol>
           {completed.priorities.length > 3 && <details><summary>其余研判 · {completed.priorities.length - 3} 项</summary>

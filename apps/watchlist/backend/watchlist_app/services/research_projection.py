@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, or_
 from sqlalchemy.orm import Session
 from watchlist_app.db.models.workbench import RiskCase
 
@@ -37,15 +37,31 @@ def build_risk_watchlist_attribute_overrides(
         instrument_id: {"risk_attention": "no_trigger"}
         for instrument_id in normalized_ids
     }
-    for case in session.scalars(select(RiskCase).where(RiskCase.instrument_id.in_(normalized_ids), RiskCase.trigger_active.is_(True))):
-        if case.status in {"handled", "resolved"} or ((case.evidence_json or {}).get("direction") == "opportunity"
-                and not (case.evidence_json or {}).get("risk_assessment")):
+    assessment_status = RiskCase.evidence_json["risk_assessment"]["status"].as_string()
+    # A research submission awaits independent review before trigger_active is
+    # set. Read only the badge facts, not accumulated evidence/history bodies.
+    rows = session.execute(select(
+        RiskCase.instrument_id, RiskCase.severity, RiskCase.status, RiskCase.trigger_active,
+        RiskCase.evidence_json["direction"].as_string().label("direction"),
+        assessment_status.label("assessment_status"),
+    ).where(RiskCase.instrument_id.in_(normalized_ids),
+            or_(RiskCase.trigger_active.is_(True), assessment_status == "pending")))
+    priority = {"no_trigger": 0, "limited": 1, "pending": 2, "attention": 3}
+    for case in rows:
+        active = case.trigger_active and case.status not in {"handled", "resolved"}
+        if case.direction == "opportunity" and not case.assessment_status:
             continue
+        candidate = "no_trigger"
+        if active and case.severity == "attention":
+            candidate = "attention"
+        elif case.assessment_status == "pending":
+            # A new material update can resubmit a formerly resolved case.
+            candidate = "pending"
+        elif active and case.severity == "coverage":
+            candidate = "limited"
         values = overrides[case.instrument_id]
-        if case.severity == "attention":
-            values["risk_attention"] = "attention"
-        elif case.severity == "coverage" and values["risk_attention"] != "attention":
-            values["risk_attention"] = "limited"
+        if priority[candidate] > priority[values["risk_attention"]]:
+            values["risk_attention"] = candidate
     return overrides
 
 

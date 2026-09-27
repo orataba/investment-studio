@@ -1,22 +1,4 @@
-.portfolio-risk-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 1500;
-  display: flex;
-  justify-content: flex-end;
-  background: #14273836;
-}
-
-.portfolio-risk-drawer {
-  width: min(860px, 88vw);
-  height: 100dvh;
-  display: flex;
-  flex-direction: column;
-  background: #fff;
-  border-left: 1px solid #cfd7df;
-  color: #263547;
-}
-
+@import '../../../../../packages/ui/src/workspace-drawer.css';
 .portfolio-risk-heading {
   display: flex;
   align-items: center;
@@ -51,6 +33,5 @@
 }
 
 @media (max-width: 650px) {
-  .portfolio-risk-drawer { width: 100%; }
   .portfolio-risk-heading, .portfolio-risk-body { padding: 14px 16px; }
 }

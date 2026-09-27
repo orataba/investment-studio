@@ -206,3 +206,18 @@ def test_computed_source_is_run_bound_and_unknown_sources_are_unreadable(monkeyp
             tool(section="evidence")
         with pytest.raises(ValueError, match="续读"):
             tool(source_id="computed:one", **({"start": "2026-01-01"} if tool is mcp.read_research_numbers else {"start_date": "2026-01-01"}))
+
+
+def test_observation_overview_pages_large_input_snapshots_losslessly(monkeypatch):
+    source = {'source_id': 'computed:observations', 'source_type': 'computed_metric',
+        'as_of': CUTOFF.isoformat(), 'data': {'analysis_kind': 'watchlist_observations', 'metrics': {'volatility': 20}},
+        'input_snapshot': {'series': {'points': [{'date': '2026-09-01', 'value': i} for i in range(3000)]}},
+        'benchmark_snapshot': {'series': {'points': [{'date': '2026-09-01', 'value': i} for i in range(3000)]}},
+        'sources': []}
+    def request(suffix, payload=None):
+        return deepcopy(source)
+    monkeypatch.setattr(mcp, 'request', request)
+    overview = wire('read_research_numbers', {'action': 'observations', 'instrument_id': 'ONE'})
+    assert overview['data']['metrics'] == {'volatility': 20}
+    assert overview['input_snapshot']['read']['section'] == 'evidence'
+    assert complete('read_research_numbers', source['source_id'], 'evidence') == source

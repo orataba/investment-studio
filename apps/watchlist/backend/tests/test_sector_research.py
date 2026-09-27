@@ -203,8 +203,10 @@ def test_research_publication_creates_multiple_themes_and_preserves_sparse_links
         add_sources(run)
         payload = json.loads(result(sources=["web-one"], follow_up="none", next_watch="", theme_ids=["ai-demand", "margins"]))
         payload["reviews"][0].update(themes=[
-            {"priority_reason": "该问题可能改变投资判断，需要持续核实", "theme_key": "ai-demand", "title": "AI需求与投入回报", "question": "新增需求能否支撑持续投入？", "source_ids": ["web-one"]},
-            {"priority_reason": "该问题可能改变投资判断，需要持续核实", "theme_key": "margins", "title": "利润分配变化", "question": "成本与定价权如何变化？"},
+            {"priority_reason": "该问题可能改变投资判断，需要持续核实", "theme_key": "ai-demand", "title": "AI需求与投入回报", "question": "新增需求能否支撑持续投入？", "source_ids": ["web-one"],
+             "synthesis": "新增政策改变投入条件，但需求能否覆盖资本成本仍待验证。", "next_check": "核对下一次收入指引与资本开支；若新增回报不足则下调判断。"},
+            {"priority_reason": "该问题可能改变投资判断，需要持续核实", "theme_key": "margins", "title": "利润分配变化", "question": "成本与定价权如何变化？", "source_ids": ["web-one"],
+             "synthesis": "政策改变成本约束，利润是否向平台集中仍需后续披露。", "next_check": "比较下一期毛利率与成本；若未传导则修正定价权假设。"},
         ], research={"questions": [{"key": "verify-demand", "theme_id": "ai-demand", "event_key": "new-policy",
             "question": "投入能否转化为收入？", "assessment": "仍需后续数据", "next_check": "下一次指引", "source_ids": ["web-one"]}]})
         draft = service.ReviewResult.model_validate(payload)
@@ -242,7 +244,8 @@ def test_invalid_theme_reference_does_not_publish_new_theme_or_event(client, mon
         run, _ = service.begin_run(session, ["xlk"])
         add_sources(run)
         payload = json.loads(result(sources=["web-one"], theme_ids=["foreign-theme"]))
-        payload["reviews"][0]["themes"] = [{"priority_reason": "该问题可能改变投资判断，需要持续核实", "theme_key": "valid-new", "title": "需求持续性", "question": "需求是否持续？"}]
+        payload["reviews"][0]["themes"] = [{"priority_reason": "该问题可能改变投资判断，需要持续核实", "theme_key": "valid-new", "title": "需求持续性", "question": "需求是否持续？",
+            "source_ids": ["web-one"], "synthesis": "新政策可能带来需求，持续性尚需后续订单验证。", "next_check": "核对下一期订单；若缺少延续则停止持续跟踪。"}]
         with pytest.raises(ValueError, match="未读取"):
             service.apply_result(session, run, json.dumps(payload))
         assert theme_index(session, "xlk") == []
@@ -355,7 +358,8 @@ def test_analyst_can_close_own_active_theme_with_final_question_and_event_in_one
         first, _ = service.begin_run(session, ["xlk"])
         add_sources(first)
         initial = json.loads(result(sources=["web-one"], theme_ids=["policy-effect"]))
-        initial["reviews"][0]["themes"] = [{"priority_reason": "该问题可能改变投资判断，需要持续核实", "theme_key": "policy-effect", "title": "政策兑现", "question": "新政策能否改善收入？"}]
+        initial["reviews"][0]["themes"] = [{"priority_reason": "该问题可能改变投资判断，需要持续核实", "theme_key": "policy-effect", "title": "政策兑现", "question": "新政策能否改善收入？",
+            "source_ids": ["web-one"], "synthesis": "政策已公布，但收入传导仍需公司披露。", "next_check": "读取下一份收入披露；确认兑现或无传导后结束专项跟踪。"}]
         service.apply_result(session, first, json.dumps(initial))
         session.commit()
         theme = theme_index(session, "xlk")[0]
@@ -379,13 +383,17 @@ def test_analyst_can_close_own_active_theme_with_final_question_and_event_in_one
 @pytest.mark.parametrize("status", ["paused", "closed"])
 def test_automatic_publication_cannot_reopen_or_advance_a_pinned_inactive_theme(client, monkeypatch, status):
     from watchlist_app.services.research_dossier import read_dossier
-    from watchlist_app.services.research_themes import AnalystThemeUpdate, ThemePatch, save_analyst_theme, save_theme
+    from watchlist_app.services.research_themes import ThemePatch, save_theme, theme_index
     seed_sector(client, monkeypatch)
     with get_session_factory()() as session:
-        theme = save_analyst_theme(session, "xlk", AnalystThemeUpdate(theme_key="inactive-policy", title="旧政策研究",
-            question="是否值得继续研究？", priority_reason="政策影响尚待核实，曾需要持续观察。",
-            status=status, close_reason="原研究已结束" if status == "closed" else ""))
-        theme = save_theme(session, "xlk", ThemePatch(pinned=True), theme_id=theme["theme_id"])
+        first, _ = service.begin_run(session, ["xlk"])
+        add_sources(first)
+        service.apply_result(session, first, json.dumps({"reviews": [{"instrument_id": "xlk", "themes": [{
+            "theme_key": "inactive-policy", "title": "旧政策研究", "question": "是否值得继续研究？",
+            "priority_reason": "政策影响尚待核实，曾需要持续观察。", "source_ids": ["web-one"],
+            "synthesis": "历史政策专项研究已有结论。", "next_check": "仅有新政策变化时考虑重开。"}]}]}))
+        theme = theme_index(session, "xlk")[0]
+        theme = save_theme(session, "xlk", ThemePatch(status=status, pinned=True), theme_id=theme["theme_id"])
         session.commit()
         run, _ = service.begin_run(session, ["xlk"])
         run.context_json = {**run.context_json, "research_dossiers": [read_dossier(session, "xlk")]}
@@ -499,12 +507,13 @@ def test_missing_owned_sector_snapshot_remains_a_gap_without_estimate_baseline(c
     assert any("本项目留存" in gap for gap in context["data_gaps"])
 
 
-@pytest.mark.parametrize("view,explicit,expected", [
-    ({"direction": "继续跟踪已披露的风险", "coverage_status": "limited"}, False, False),
-    ({"direction": "尚待建立判断", "coverage_status": "not_established"}, False, True),
-    ({"direction": "继续跟踪已披露的风险", "coverage_status": "limited"}, True, True),
+@pytest.mark.parametrize("view,explicit,prior_completed,expected", [
+    ({"direction": "继续跟踪已披露的风险", "coverage_status": "limited"}, False, True, False),
+    ({"direction": "继续跟踪已披露的风险", "coverage_status": "limited"}, False, False, True),
+    ({"direction": "尚待建立判断", "coverage_status": "not_established"}, False, True, True),
+    ({"direction": "继续跟踪已披露的风险", "coverage_status": "limited"}, True, True, True),
 ])
-def test_initialization_scope_distinguishes_followup_from_requested_baseline_completion(client, monkeypatch, view, explicit, expected):
+def test_initialization_scope_distinguishes_followup_from_requested_baseline_completion(client, monkeypatch, view, explicit, prior_completed, expected):
     from watchlist_app.services import research_dossier
     seed_sector(client, monkeypatch)
     original = research_dossier.read_dossier
@@ -512,6 +521,11 @@ def test_initialization_scope_distinguishes_followup_from_requested_baseline_com
         return {**original(session, iid, **kwargs), "notebook": {"investment_view": view}}
     monkeypatch.setattr(research_dossier, "read_dossier", dossier)
     with get_session_factory()() as session:
+        if prior_completed:
+            previous, _ = service.begin_run(session, ["xlk"])
+            previous.status = "completed"
+            previous.completed_at = datetime.now(UTC)
+            session.commit()
         run, _ = service.begin_run(session, ["xlk"], initialization=explicit)
         rid = run.entry_id
     service.prepare_run(rid)
@@ -551,10 +565,13 @@ def test_only_computed_comparable_estimate_changes_can_substantiate_an_event(cli
             else:
                 with pytest.raises(ValueError,match="可比较预期变动"):
                     service.apply_result(session,run,result(theme=theme, sources=[f"fmp:{run.entry_id}:xlk:AAA"]))
+                add_sources(run)
                 cross_etf = json.loads(reply)
                 cross_etf["reviews"][0]["instrument_id"] = "xlf"
                 cross_etf["reviews"][0]["themes"] = [{"theme_key": "financial-estimates", "title": "金融成分预期",
-                    "question": "金融成分的同口径盈利预期是否变化？", "priority_reason": "需要核对基金真实成分预期，避免其他板块信息替代。"}]
+                    "question": "金融成分的同口径盈利预期是否变化？", "priority_reason": "需要核对基金真实成分预期，避免其他板块信息替代。",
+                    "source_ids": ["web-one"], "synthesis": "新政策可能改变金融成分经营预期，需核对实际成分的同口径数据。",
+                    "next_check": "取得实际金融成分的同口径快照后复核；不以其他板块替代。"}]
                 cross_etf["reviews"][0]["events"][0]["theme_ids"] = ["financial-estimates"]
                 cross_etf["reviews"].append({"instrument_id":"xlk","summary":"无新增","events":[],
                     "themes": [{"theme_id": theme["theme_id"], "theme_key": theme["theme_key"]}]})

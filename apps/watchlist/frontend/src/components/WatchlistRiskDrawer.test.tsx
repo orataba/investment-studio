@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest'
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -55,7 +56,7 @@ it('scopes instrument detail risk to the instrument even when opened from a list
   await screen.findByText('a 风险事项')
   expect(request).toHaveBeenCalledWith('/api/risk?instrument_id=a&summary=true', undefined)
   expect(screen.getByTestId('officer-scope').textContent).toBe('instrument_id=a')
-  expect(screen.getByRole('link', { name: 'a 风险事项' }).getAttribute('href')).toBe('/instruments/a?tab=risk&watchlist=source-list')
+  expect(screen.getByRole('link', { name: 'a 风险事项' }).getAttribute('href')).toBe('/instruments/a?tab=investment-research&risk=1&watchlist=source-list')
   expect(container.querySelector('.risk-readings')?.hasAttribute('open')).toBe(false)
   fireEvent.click(screen.getByRole('button', { name: '问助手' }))
   expect(ask).toHaveBeenCalledWith(expect.stringContaining('标的 A'), { instrument_id: 'a', risk_case_id: 'a', risk_case_updated_at: '2026-09-04' })
@@ -82,7 +83,7 @@ it('keeps the full originating list when locating an instrument and closes only 
   )
   await screen.findByText('a 风险事项')
   expect(screen.getByRole('dialog', { name: '风险提示' })).toBeTruthy()
-  expect(screen.getByRole('link', { name: 'a 风险事项' }).getAttribute('href')).toBe('/instruments/a?tab=risk&watchlist=3')
+  expect(screen.getByRole('link', { name: 'a 风险事项' }).getAttribute('href')).toBe('/instruments/a?tab=investment-research&risk=1&watchlist=3')
   expect(screen.getByText('b 风险事项')).toBeTruthy()
   expect(request).toHaveBeenCalledWith('/api/risk?watchlist_id=3&summary=true', undefined)
   expect(screen.getByTestId('officer-scope').textContent).toBe('watchlist_id=3')
@@ -175,7 +176,7 @@ it.each([
     fireEvent.click(screen.getByRole('button', { name: '全部记录 1' }))
   }
   expect(await screen.findByText(label)).toBeTruthy()
-  expect(screen.getByRole('link', { name: 'xlk-us 风险事项' }).getAttribute('href')).toBe('/instruments/xlk-us?tab=events&watchlist=sectors')
+  expect(screen.getByRole('link', { name: 'xlk-us 风险事项' }).getAttribute('href')).toBe('/instruments/xlk-us?tab=investment-research&risk=1&watchlist=sectors')
   expect(screen.getByText('关注下一次云业务指引。')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: '问助手' }))
   expect(ask).toHaveBeenCalledWith('xlk-us', expect.stringContaining(`的${label}事项`), { instrument_id: 'xlk-us', event_case_id: 'xlk-us', event_version_id: 'xlk-us:3' })
@@ -273,4 +274,38 @@ it('retains the current risk when detail fails and retries without treating hist
   await screen.findByText(/恢复的跟进历史/)
   expect(screen.getByText(/触发读数 -13.00%/)).toBeTruthy()
   expect(detailAttempts).toBe(2)
+})
+
+it('opens an inactive research submission awaiting independent review, including a resubmitted closed issue', async () => {
+  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: '标的 A' }], cases: [{
+    ...caseFor('a'), signal: 'sector:new-evidence', trigger_active: false, status: 'resolved',
+    evidence_json: { direction: 'risk', risk_assessment: { status: 'pending' } },
+  }] })
+  render(<WatchlistRiskDrawer watchlistId="3" watchlistName="当前列表" focusInstrumentId="a" onClose={vi.fn()} onAskAssistant={vi.fn()} />)
+  await screen.findByText('a 风险事项')
+  expect(screen.getByRole('button', { name: '待风控复核 1' }).getAttribute('aria-pressed')).toBe('true')
+  expect(screen.getByRole('button', { name: '重点关注 0' }).getAttribute('aria-pressed')).toBe('false')
+})
+
+it('does not refresh an old instrument when a risk save finishes after the scope changes', async () => {
+  let finishSave!: () => void
+  request.mockImplementation(async (path: string, init?: RequestInit) => {
+    if (init?.method === 'PUT') return new Promise<void>((resolve) => { finishSave = resolve })
+    const id = path.includes('instrument_id=b') ? 'b' : 'a'
+    return { instruments: [{ instrument_id: id, name: `标的 ${id}` }], cases: [caseFor(id)] }
+  })
+  const props = { watchlistName: '当前标的', onClose: vi.fn(), onAskAssistant: vi.fn(), onChanged: vi.fn() }
+  const { rerender } = render(<WatchlistRiskDrawer {...props} instrumentId="a" />)
+  await screen.findByText('a 风险事项')
+  fireEvent.click(screen.getByText('跟进与证据'))
+  fireEvent.change(screen.getByRole('textbox', { name: '处理记录' }), { target: { value: 'A的跟进' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存跟进' }))
+  await waitFor(() => expect(finishSave).toBeDefined())
+  rerender(<WatchlistRiskDrawer {...props} instrumentId="b" />)
+  await screen.findByText('b 风险事项')
+  await act(async () => finishSave())
+  expect(screen.queryByText('a 风险事项')).toBeNull()
+  expect(screen.getByText('b 风险事项')).toBeTruthy()
+  expect(props.onChanged).not.toHaveBeenCalled()
+  expect(request.mock.calls.filter(([path, init]) => path.includes('instrument_id=a') && !init?.method)).toHaveLength(1)
 })

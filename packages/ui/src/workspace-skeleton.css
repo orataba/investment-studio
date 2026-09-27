@@ -1,0 +1,4 @@
+.workspace-skeleton { display: grid; gap: 10px; padding: 18px 0; color: #6c7b88; font-size: 12px; }
+.workspace-skeleton i { display: block; height: 10px; background: #edf1f4; border-radius: 2px; }
+.workspace-skeleton i:nth-of-type(2) { width: 82%; }
+.workspace-skeleton i:last-child { width: 58%; }

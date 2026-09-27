@@ -212,7 +212,7 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
   </div>
   return <div className={`research-dossier-panel research-dossier-${variant}`}>
     {variant === 'full' && <nav className="research-reading-nav" aria-label="研究报告目录">
-      <a href={`#research-summary-${instrumentId}`}><span>01</span> 机会与风险</a><a href={`#research-events-${instrumentId}`}><span>02</span> 重要事件</a><a href={`#research-tracking-${instrumentId}`}><span>03</span> 重点主题</a><a href={`#research-quant-${instrumentId}`}><span>04</span> 量化观察</a>
+      <a href={`#research-summary-${instrumentId}`}><span>01</span> 机会与风险</a><a href={`#research-events-${instrumentId}`}><span>02</span> 重要进展</a><a href={`#research-tracking-${instrumentId}`}><span>03</span> 重点主题</a><a href={`#research-quant-${instrumentId}`}><span>04</span> 量化观察</a>
     </nav>}
     {error && <p role="alert">研究档案暂时无法读取：{error}</p>}
     <div id={`research-summary-${instrumentId}`} className="research-report-summary">{notebook?.investment_view || notebook?.decision_brief ? <InvestmentResearchState mode="view" compact instrumentId={instrumentId} notebook={notebook} sources={ids => <SourceList instrumentId={instrumentId} versionId={notebook.version_id} sources={selectedSources(ids)} />} onAskAssistant={ask} /> : <section aria-label="当前机会与风险"><h2>当前机会与风险</h2><p className="research-empty-judgment">研究基线尚未建立，尚不能判断机会与风险。可通过“更新研究”建立初始认识。</p></section>}</div>

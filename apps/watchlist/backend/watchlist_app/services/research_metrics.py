@@ -23,6 +23,23 @@ EWMA_MIN_RETURNS = 63
 EWMA_WINDOW = 252
 
 
+def observation_domain(source):
+    """Classify the calculation contract, never infer a domain from prose/title."""
+    explicit = source.get("observation_domain")
+    if explicit in {"market", "fundamental"}:
+        return explicit
+    data = source.get("data") or {}
+    method = source.get("methodology") or {}
+    method = method if isinstance(method, dict) else {}
+    if (method.get("metric") == "ewma_volatility"
+            or data.get("analysis_kind") in {"watchlist_observations", "event_market_reaction"}
+            or "input_series" in source):
+        return "market"
+    if data.get("dataset") in SERIES_DATASETS and method.get("field") in {"close", "adjusted_close", "volume"}:
+        return "market"
+    return "unclassified"
+
+
 def _evidence(title, cutoff, data, methodology, sources=(), **extra):
     return {
         "source_id": f"computed:{uuid4().hex}", "source_type": "computed_metric",

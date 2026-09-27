@@ -400,7 +400,10 @@ def read_research_numbers(action: Literal["catalogue", "series", "compare", "pri
     result.update(sections={key: shape(value) for key, value in sections.items()},
         next_read={**read, "section": "data"},
         read_note="概览的points/history为完整原数据入口，数值计算使用全部请求样本。续读沿next_offset及全部deferred.path保持同一source_id；原始版本在sources/evidence，不以缩短日期区间代替续读。")
-    return checked_overview(result, pageable_fields=[(["data"], {**read, "section": "data"})])
+    return checked_overview(result, pageable_fields=[
+        ([key], {**read, "section": "evidence", "path": [key]})
+        for key in ("input_snapshot", "benchmark_snapshot", "methodology") if key in result
+    ] + [(["data"], {**read, "section": "data"})])
 
 
 @compact_read_tool
@@ -446,7 +449,8 @@ def read_quant_inputs(instrument_id: str, offset: int = 0, limit: int = 30,
 
 @compact_read_tool
 def run_quant_analysis(instrument_id: str, title: str, source_ids: list[str], code: str,
-                       methodology: str, params: dict | None = None, version_id: str | None = None) -> dict:
+                       methodology: str, params: dict | None = None, version_id: str | None = None,
+                       observation_domain: Literal["market", "fundamental", "unclassified"] = "unclassified") -> dict:
     """Run Python in the checked OS sandbox over selected retained inputs; save reproducible evidence.
     Read read_quant_capability for the exact output schema. Python receives inputs={source_id: full
     source snapshot} and params, with installed numpy/pandas/scipy as reported. Set result to a plain
@@ -461,9 +465,13 @@ def run_quant_analysis(instrument_id: str, title: str, source_ids: list[str], co
     historical strategy test. A successful execution is not verification of analytical validity.
     Return source_id can be cited and used in module/theme figure_source_ids; read full code, inputs
     and outputs with read_quant_analysis, then publish through the existing fact-review path.
+    Declare observation_domain=market for price/return/volatility/breadth/correlation/technical
+    observations, fundamental for financial/operating/valuation analysis. Only market calculations
+    belong to the report's market-quantitative section; the reviewer checks this classification.
     """
     result = request("quant", {"instrument_id": instrument_id, "title": title, "source_ids": source_ids,
-                              "code": code, "methodology": methodology, "params": params or {}, "version_id": version_id}, timeout=50)
+                              "code": code, "methodology": methodology, "params": params or {}, "version_id": version_id,
+                              "observation_domain": observation_domain}, timeout=50)
     read = {"tool": "read_quant_analysis", "source_id": result["source_id"], "section": "data"}
     return checked_overview(result, pageable_fields=[([key], {**read, "path": [key]})
         for key in ("summary", "metrics", "tables", "charts", "limitations")])

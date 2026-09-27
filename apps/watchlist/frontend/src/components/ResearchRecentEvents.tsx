@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { getResearchEvents, type AskResearchAssistant, type ResearchEventsResponse, type ResearchEventScope, type ResearchUpdate } from '../lib/researchDossierApi'
 import { RESEARCH_UPDATED } from '../lib/researchUpdates'
 import ResearchEventCard from './ResearchEventCard'
+import ResearchLoading from '../../../../../packages/ui/src/WorkspaceSkeleton'
+import InfoHint from '../../../../../packages/ui/src/InfoHint'
 
 export default function ResearchRecentEvents({ instrumentId, reviewRunId, reviewStatus, onAskAssistant }: {
   instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant
@@ -39,14 +41,17 @@ export default function ResearchRecentEvents({ instrumentId, reviewRunId, review
   const lateCount = data?.late_arrival_count ?? data?.late_arrivals.length ?? 0
   const groups = new Map<string, ResearchUpdate[]>()
   for (const update of data?.events || []) { const day = update.timeline_date || '日期待核实'; groups.set(day, [...(groups.get(day) || []), update]) }
-  return <section className="research-recent-events" aria-label="近期重要事件" aria-busy={loading}>
-    <div className="research-dossier-section-heading"><h2>近期重要事件</h2><div className="research-event-filters" aria-label="事件范围">
+  return <section className="research-recent-events" aria-label="近期重要进展" aria-busy={loading}>
+    <div className="research-dossier-section-heading"><div className="research-section-title"><h2>近期重要进展</h2><InfoHint label="重要进展范围" detail="近 7 天的重要事件、基本面变化与市场信号，按信息日期排列；持续跟进及补录记录单独保留。" /></div><div className="research-event-filters" aria-label="事件范围">
       {([['recent', '近 7 天'], ['watch', '仍在跟进'], ['history', '历史']] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={scope === value} onClick={() => { setScope(value); setOffset(0) }}>{label}</button>)}
     </div></div>
     {error && <p role="alert">事件暂时无法读取：{error}{data && '。以下保留上次有效内容。'}</p>}
-    {loading && !data && <p className="sector-research-note" role="status">Loading</p>}
+    {loading && !data && <ResearchLoading />}
     {data && !data.events.length && <p className="sector-research-note">{scope === 'recent' ? '近 7 天没有已记录的重要事件；这不代表没有风险。' : scope === 'watch' ? '暂无主动跟进的事件。' : '尚无事件记录。'}</p>}
-    {[...groups].map(([day, events]) => <div className="research-event-day" key={day}><h3>{day}</h3>{events.map(update => <ResearchEventCard key={update.update_id} update={update} onAskAssistant={onAskAssistant} />)}</div>)}
+    <div className="research-event-timeline">{[...groups].map(([day, events]) => <section className="research-event-day" key={day} aria-label={day}>
+      <div className="research-event-date"><time dateTime={/^\d{4}-\d{2}-\d{2}$/.test(day) ? day : undefined}><span>{/^\d{4}-\d{2}-\d{2}$/.test(day) ? day.slice(5).replace('-', '.') : day}</span>{/^\d{4}-\d{2}-\d{2}$/.test(day) && <small>{day.slice(0, 4)}</small>}</time><span className="research-event-day-count">{events.length}</span></div>
+      <div className="research-event-day-entries">{events.map(update => <ResearchEventCard key={update.update_id} update={update} onAskAssistant={onAskAssistant} />)}</div>
+    </section>)}</div>
     {!!data?.late_arrivals.length && <details className="research-event-backfills"><summary>补录与日期待核实 · {lateCount}</summary>{data.late_arrivals.map(update => <ResearchEventCard key={update.update_id} update={update} onAskAssistant={onAskAssistant} />)}
       {lateCount > data.late_arrivals.length && <p className="sector-research-note">已显示 {data.late_arrivals.length} / {lateCount} 项，其余记录保留在历史中。 <button type="button" className="research-support-link" onClick={() => { setScope('history'); setOffset(0) }}>查看历史记录</button></p>}
     </details>}

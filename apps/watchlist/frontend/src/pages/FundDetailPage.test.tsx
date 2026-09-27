@@ -178,7 +178,7 @@ it('keeps section loading beside the active tab without adding an in-flow notice
   expect(screen.getByRole('heading', { level: 1, name: '测试基金 TEST' })).toBe(title)
 })
 
-it('keeps risk alerts scoped to the fund and makes risk and assistant drawers mutually exclusive', async () => {
+it('keeps risk alerts scoped to the fund and returns to them after an assistant follow-up', async () => {
   show('/instruments/fund-1?tab=events&currency=CNY')
   await screen.findByTestId('fund-research-tracking')
   fireEvent.click(screen.getByRole('button', { name: '研究助手' }))
@@ -190,12 +190,12 @@ it('keeps risk alerts scoped to the fund and makes risk and assistant drawers mu
   expect(risk.getAttribute('data-name')).toBe('测试基金')
   expect(risk.getAttribute('data-watchlist')).toBe('fund-list')
   fireEvent.click(within(risk).getByRole('button', { name: '追问当前风险' }))
-  expect(screen.queryByRole('dialog', { name: '风险提示' })).toBeNull()
+  expect(screen.getByRole('dialog', { name: '风险提示' })).toBe(risk)
   const assistant = await screen.findByRole('dialog', { name: '研究助手' })
   expect(assistant.getAttribute('data-instrument')).toBe('fund-1')
   expect(assistant.getAttribute('data-question')).toBe('这只基金的流动性风险有何变化？')
   fireEvent.click(within(assistant).getByRole('button', { name: '关闭研究助手' }))
-  fireEvent.click(screen.getByRole('button', { name: '风险提示' }))
+  expect(screen.getByRole('dialog', { name: '风险提示' })).toBe(risk)
   fireEvent.click(screen.getByRole('button', { name: '关闭风险提示' }))
   expect(screen.queryByRole('dialog')).toBeNull()
   const params = new URLSearchParams(screen.getByTestId('fund-detail-location').textContent || '')
@@ -229,7 +229,7 @@ it('keeps the overview free of duplicate charts and separates personal opinions 
   const { container } = show()
   await screen.findByRole('region', { name: '基金总览' })
   const navigation = container.querySelector('.instrument-detail-tabs')!
-  await waitFor(() => expect(within(navigation as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual(['总览', '投资研究', '投资观点', '业绩与风险', '基金档案']))
+  await waitFor(() => expect(within(navigation as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual(['总览', '投资研究', '投资观点', '表现与指标', '基金档案']))
   expect(container.querySelector('.instrument-chart-stage')).toBeNull()
   fireEvent.click(within(navigation as HTMLElement).getByRole('button', { name: '投资观点' }))
   expect(await screen.findByRole('region', { name: '投资观点时间线' })).toBeTruthy()
@@ -264,8 +264,8 @@ it.each(['public_fund', 'private_fund'] as const)('opens the %s research assista
 
 it('opens an existing risk link in the unified chart and risk surface with a single benchmark selector', async () => {
   const { container } = show('/instruments/fund-1?tab=risk&start=2025-12-31&end=2026-09-04')
-  await screen.findByTestId('fund-price-risk')
-  expect(screen.getByTestId('fund-price-risk').getAttribute('data-mode')).toBe('price')
+  await screen.findByText('Rolling Risk')
+  expect(screen.queryByTestId('fund-price-risk')).toBeNull()
   await waitFor(() => { expect(api.performance).toHaveBeenCalledWith('fund-1'); expect(api.risk).toHaveBeenCalledWith('fund-1') })
   expect(container.querySelectorAll('.instrument-chart-stage')).toHaveLength(1)
   expect(screen.getAllByRole('searchbox')).toHaveLength(1)
@@ -301,7 +301,7 @@ it('withholds fund path risk across missing expected observations while keeping 
     ...nav.calculation_frequency_profile, gap_count: 1, gap_status: 'calendar_gaps',
   } })
   const { container } = show('/instruments/fund-1?tab=risk')
-  await screen.findByTestId('fund-price-risk')
+  await screen.findByText('Rolling Risk')
   const table = container.querySelector('.instrument-metrics-table') as HTMLElement
   const rowValues = (label: string) => within(table).getByText(label).closest('tr')!.querySelectorAll('td strong')
   for (const label of ['Ann. Volatility', 'Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio', 'Max DD']) {
@@ -318,7 +318,7 @@ it.each(['price_return', null, 'total_return'] as const)('requires matched known
   api.resolve.mockResolvedValue({ detail_supported: true, canonical_instrument_id: 'benchmark-1', instrument_name: '测试基准', primary_identifier: 'BENCH', instrument_type: 'index' })
   api.nav.mockImplementation((id: string) => Promise.resolve(id === 'benchmark-1' ? benchmark : fund))
   const { container } = show('/instruments/fund-1?tab=risk&benchmark=benchmark-1')
-  await screen.findByTestId('fund-price-risk')
+  await screen.findByText('Rolling Risk')
   await waitFor(() => expect(screen.getByRole('button', { name: /基准比较口径: 标的/ })).toBeTruthy())
   const table = container.querySelector('.instrument-metrics-table') as HTMLElement
   for (const label of ['Excess Return', 'Beta', 'Upside Capture']) {

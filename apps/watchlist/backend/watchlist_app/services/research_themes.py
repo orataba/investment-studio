@@ -95,11 +95,27 @@ class AnalystThemeUpdate(BaseModel):
     figure_source_ids: list[str] = Field(default_factory=list)
 
 
+def _lifecycle_owner(context):
+    if context.get("lifecycle_owner"):
+        return context["lifecycle_owner"]
+    status = context["theme_status"]
+    if status == "active":
+        return "researcher"
+    # Recover the author of the last actual status change, not a later analyst
+    # correction of the text. Existing dated revisions already own this fact.
+    transition = context
+    for version in reversed(context.get("versions", [])):
+        if version.get("status") != status:
+            break
+        transition = version
+    return "user" if transition.get("updated_by_role", "user") == "user" else "researcher"
+
+
 def theme_record(entry):
     context = entry.context_json
     return serialize_payload({"theme_id": entry.entry_id, "instrument_id": context["instrument_id"],
         "title": entry.title, "question": entry.body, "background": context.get("background", ""),
-        "status": context["theme_status"], "author_user_id": entry.author_user_id,
+        "status": context["theme_status"], "lifecycle_owner": _lifecycle_owner(context), "author_user_id": entry.author_user_id,
         "responsible_user_id": entry.responsible_user_id, "team_id": entry.team_id,
         "author": context["author"], "created_at": entry.created_at.replace(tzinfo=entry.created_at.tzinfo or UTC),
         "updated_at": entry.updated_at.replace(tzinfo=entry.updated_at.tzinfo or UTC),
@@ -152,7 +168,7 @@ def theme_summaries(session, instrument_id, *, actor=None):
         "close_reason", "source_ids", "updated_by", "updated_by_user_id", "updated_by_role", "recorded_via",
         "source_run_id", "publication", "kind", "priority", "priority_reason", "pinned", "synthesis",
         "latest_development", "next_check", "figure_source_ids", "reference", "last_reviewed_at",
-        "baseline_status", "baseline_requested_at", "sources", "migration_origin")}
+        "baseline_status", "baseline_requested_at", "sources", "migration_origin", "lifecycle_owner")}
     fields.update(role=String, theme_status=String)
     relation, payload = research_context_projection(session, fields)
     columns = ("entry_id", "title", "body", "author_user_id", "responsible_user_id", "team_id", "created_at", "updated_at")
@@ -168,6 +184,10 @@ def theme_summaries(session, instrument_id, *, actor=None):
         context = {key: getattr(row, key) for key in fields if getattr(row, key) is not None}
         entry = SimpleNamespace(**{key: getattr(row, key) for key in columns}, context_json=context)
         theme = theme_record(entry)
+        # Legacy inactive ownership requires archived status transitions, which
+        # this current-card projection intentionally does not load.
+        if not context.get("lifecycle_owner") and theme["status"] != "active":
+            theme["lifecycle_owner"] = None
         theme.pop("versions", None)
         theme["sources"] = [{key: value for key, value in source.items()
                              if key not in {"text", "body", "snapshot", "company", "data"}}
@@ -325,8 +345,9 @@ def save_theme(session, instrument_id, payload, *, theme_id=None, actor=None, pr
         if "reference" in payload.model_fields_set:
             value = _reference_context(session, instrument_id, value, actor=actor)
         close_reason = close_reason.strip() if value.status == "closed" else ""
+        lifecycle_owner = ("user" if value.status != "active" else "researcher") if "status" in payload.model_fields_set else old["lifecycle_owner"]
         if (all(old[key] == item for key, item in value.model_dump().items())
-                and old.get("close_reason", "") == close_reason):
+                and old.get("close_reason", "") == close_reason and old["lifecycle_owner"] == lifecycle_owner):
             return old
         context = deepcopy(entry.context_json)
         context["versions"] = [*context.get("versions", []), {key: item for key, item in old.items() if key != "versions"}]
@@ -335,6 +356,7 @@ def save_theme(session, instrument_id, payload, *, theme_id=None, actor=None, pr
         value = ThemeInput.model_validate(payload.model_dump())
         value = _reference_context(session, instrument_id, value, actor=actor)
         close_reason = ""
+        lifecycle_owner = "user" if value.status != "active" else "researcher"
         entry = ResearchEntry(entry_id=uuid4().hex, topic_id=topic.topic_id, kind="note", status="recorded", created_at=timestamp,
                               team_id=actor["team_id"], author_user_id=actor["user_id"], responsible_user_id=actor["user_id"])
         session.add(entry)
@@ -358,6 +380,7 @@ def save_theme(session, instrument_id, payload, *, theme_id=None, actor=None, pr
         raise ValueError("主题图表必须绑定真实留存的数值来源")
     entry.context_json = {**context, **value.model_dump(exclude={"title", "question", "status", "responsible_user_id"}, mode="json"),
                           "theme_status": value.status, "close_reason": close_reason, "sources": saved_sources,
+                          "lifecycle_owner": lifecycle_owner,
                           "baseline_status": "pending" if baseline_requested else context.get("baseline_status", "pending"),
                           "baseline_requested_at": timestamp.isoformat() if baseline_requested else context.get("baseline_requested_at"),
                           "origin": context.get("origin", "user"), "managed_by": "user" if value.pinned else "researcher",
@@ -395,6 +418,9 @@ def analyst_theme_values(update, previous=None):
     if previous.get("pinned") and any(key in update.model_fields_set and getattr(update, key) != previous.get(key)
                                       for key in protected):
         raise ValueError("已固定主题的核心问题、优先级和生命周期由投资经理维护；研究员仍可更新研究结论与进展")
+    if (previous.get("lifecycle_owner") == "user" and previous.get("status") in {"paused", "closed"}
+            and "status" in update.model_fields_set and update.status != previous["status"]):
+        raise ValueError("投资经理已暂停或取消的主题须由投资经理明确恢复；研究员可以纠正原有资料，不能自动重新开始研究")
     values = {key: previous.get(key, default) for key, default in
               (("title", ""), ("question", ""), ("background", ""), ("status", "active"), ("close_reason", ""), ("source_ids", []),
                ("kind", "fundamental"), ("priority", "important"), ("priority_reason", ""), ("synthesis", ""),
@@ -408,6 +434,8 @@ def analyst_theme_values(update, previous=None):
         raise ValueError("研究员新建主题须明确要验证的研究问题")
     if not previous and not values["priority_reason"].strip():
         raise ValueError("研究员新建重点主题须说明它为什么值得占用持续跟踪名额")
+    if not previous and not (values["synthesis"].strip() and values["next_check"].strip() and values["source_ids"]):
+        raise ValueError("研究员新建主题须有已取得的基线依据、当前认识与具体下一验证；仅有宽泛题目不能建立持续研究")
     if values["status"] == "closed" and not values["close_reason"].strip():
         raise ValueError("结束研究员主题需要说明结论或不再跟进的原因")
     if "status" in update.model_fields_set and values["status"] != "closed" and "close_reason" not in update.model_fields_set:
@@ -456,6 +484,7 @@ def save_analyst_theme(session, instrument_id, update, *, actor=None, provenance
     entry.title, entry.body = values.pop("title").strip(), values.pop("question").strip()
     status = values.pop("status")
     entry.context_json = {**context, **values, "theme_status": status,
+                          "lifecycle_owner": (previous or {}).get("lifecycle_owner", "researcher"),
                           "pinned": context.get("pinned", False),
                           "last_reviewed_at": timestamp.isoformat(),
                           "baseline_status": "ready" if values.get("synthesis") else "pending",

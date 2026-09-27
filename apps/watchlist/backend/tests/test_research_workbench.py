@@ -377,3 +377,28 @@ def test_watchlist_risk_indicator_excludes_opportunities_and_handled_items(clien
         case.evidence_json = {'direction': 'uncertain'}
         session.flush()
         assert indicator() == 'attention'
+
+
+def test_watchlist_risk_indicator_exposes_pending_submissions_and_resubmissions(client):
+    seed(client)
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.db.models.workbench import RiskCase
+    from watchlist_app.services.research_projection import build_risk_watchlist_attribute_overrides
+    with get_session_factory()() as session:
+        case = RiskCase(case_id='pending-badge', instrument_id='sxv264', signal='sector:pending-badge',
+            title='新风险证据', body='尚待风控独立复核', severity='attention', status='recorded',
+            trigger_active=False, evidence_json={'direction': 'risk', 'risk_assessment': {'status': 'pending'}}, history_json=[])
+        session.add(case)
+        def indicator():
+            session.flush()
+            return build_risk_watchlist_attribute_overrides(session, instrument_ids=['sxv264'])['sxv264']['risk_attention']
+        assert indicator() == 'pending'
+        case.status = 'resolved'
+        assert indicator() == 'pending'  # New evidence can resubmit a closed issue.
+        case.evidence_json = {'direction': 'risk', 'risk_assessment': {'status': 'resolved'}}
+        assert indicator() != 'pending'
+        case.status, case.trigger_active = 'open', True
+        case.evidence_json = {'direction': 'risk', 'risk_assessment': {'status': 'active'}}
+        assert indicator() == 'attention'
+        case.status = 'handled'
+        assert indicator() != 'attention'

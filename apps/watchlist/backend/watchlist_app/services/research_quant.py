@@ -27,6 +27,8 @@ class QuantAnalysisInput(BaseModel):
     params: dict[str, JsonValue] = Field(default_factory=dict)
     methodology: str = Field(min_length=1, max_length=6000,
         description="Explain the question, assumptions, units, alignment, missingness and calculation. Parameters are assumptions, not observed facts.")
+    observation_domain: Literal["market", "fundamental", "unclassified"] = Field(default="unclassified",
+        description="market: price/returns/volatility/breadth/correlation/technical measures; fundamental: financial/operating/valuation measures. Independent review checks the declared domain against inputs and method.")
     version_id: str | None = Field(default=None, min_length=1, max_length=250,
         description="Optional exact version from referenced_research_versions. All input IDs then resolve only inside that frozen version, never current sources.")
 
@@ -178,6 +180,7 @@ def execute_analysis(run, request: QuantAnalysisInput):
         "source_id": f"computed:{uuid4().hex}", "source_type": "computed_metric",
         "scope": "instrument", "instrument_id": request.instrument_id, "source_run_id": run.entry_id,
         "title": request.title, "as_of": context["cutoff"], "retrieved_at": now,
+        "observation_domain": request.observation_domain,
         "source_ids": list(request.source_ids),
         "methodology": {"analysis_kind": "python_quant", "description": request.methodology,
             "code": request.code, "params": deepcopy(request.params), "input_sources": list(inputs.values()),
@@ -196,6 +199,7 @@ def analysis_overview(source):
     """Avoid returning multi-MiB snapshots through the harness's 50 KiB window."""
     data = source["data"]
     return {"source_id": source["source_id"], "title": source["title"], "as_of": source["as_of"],
+            "observation_domain": source.get("observation_domain", "unclassified"),
             "instrument_id": source["instrument_id"], "summary": data["summary"], "metrics": data["metrics"],
             "tables": [{"key": table["key"], "title": table["title"], "rows": len(table["rows"]),
                         "columns": table["columns"]} for table in data["tables"]],

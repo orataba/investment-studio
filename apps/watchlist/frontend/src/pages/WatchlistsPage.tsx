@@ -171,8 +171,8 @@ const COLUMN_CHOOSER_LABELS: Record<string, [string, string]> = {
 }
 const COLUMN_CHOOSER_DESCRIPTIONS: Record<string, [string, string]> = {
   'attr.risk_attention': [
-    '当前风险事项的状态：重点关注、监测受限或暂无触发。暂无触发不代表已完成全面风险评估。',
-    'Current risk cases: attention, limited monitoring, or no trigger. No trigger does not mean a full risk assessment is complete.',
+    '当前风险事项的状态：重点关注、待风控复核、监测受限或暂无触发。暂无触发不代表已完成全面风险评估。',
+    'Current risk cases: attention, pending risk review, limited monitoring, or no trigger. No trigger does not mean a full risk assessment is complete.',
   ],
   data_freshness_status: [
     '当前指标数据的更新状态；请结合价格 / 净值日期与指标截至日期判断。',
@@ -362,7 +362,13 @@ function removeTaxonomyFilters(filters: FilterState) {
   return next
 }
 
-function formatFilterOptionLabel(value: unknown) {
+function formatFilterOptionLabel(value: unknown, fieldKey?: string, zh = false) {
+  if (fieldKey === 'attr.risk_attention') {
+    const labels: Record<string, string> = zh
+      ? { attention: '重点关注', pending: '待风控复核', limited: '监测受限', no_trigger: '暂无触发' }
+      : { attention: 'Risk attention', pending: 'Pending risk review', limited: 'Limited monitoring', no_trigger: 'No trigger' }
+    return labels[String(value)] || (zh ? '待核查' : 'Awaiting review')
+  }
   if (typeof value === 'boolean') {
     return formatBoolean(value)
   }
@@ -376,6 +382,7 @@ function buildFilterOptions(
   fieldKey: string,
   rows: Array<Record<string, unknown>>,
   selectedValues: unknown[] = [],
+  zh = false,
 ): FilterOption[] {
   const byKey = new Map<string, FilterOption>()
   const addOption = (value: unknown) => {
@@ -386,7 +393,7 @@ function buildFilterOptions(
     if (!byKey.has(key)) {
       byKey.set(key, {
         key,
-        label: formatFilterOptionLabel(value),
+        label: formatFilterOptionLabel(value, fieldKey, zh),
         value,
       })
     }
@@ -582,9 +589,11 @@ function renderCell(
     return (
       <span className="watchlist-instrument-name"><Link translate="no" to={buildInstrumentDetailPath(instrumentId, watchlistId)} className="table-link watchlists-instrument-link">
         {typeof value === 'string' && value ? value : instrumentId.toUpperCase()}
-      </Link>{row['attr.risk_attention'] === 'attention' && <button className="watchlist-risk-indicator" onClick={() => openRisk(instrumentId)}
-        aria-label={zh ? `${value || instrumentId} 有关注事项，查看风险提示` : `View risk alerts for ${value || instrumentId}`}
-        title={zh ? '有重点事项仍需关注 · 点击查看' : 'Open risk alerts'}><WorkspaceToolIcon kind="risk" /></button>}</span>
+      </Link>{['attention', 'pending'].includes(String(row['attr.risk_attention'])) && <button className={`watchlist-risk-indicator${row['attr.risk_attention'] === 'pending' ? ' watchlist-risk-indicator-pending' : ''}`} type="button" onClick={() => openRisk(instrumentId)}
+        aria-label={row['attr.risk_attention'] === 'pending'
+          ? zh ? `${value || instrumentId} 有风险上报待复核，查看风险提示` : `View pending risk review for ${value || instrumentId}`
+          : zh ? `${value || instrumentId} 有关注事项，查看风险提示` : `View risk alerts for ${value || instrumentId}`}
+        title={row['attr.risk_attention'] === 'pending' ? zh ? '待风控复核' : 'Pending risk review' : zh ? '重点关注' : 'Risk alerts'}><WorkspaceToolIcon kind="risk" /></button>}</span>
     )
   }
 
@@ -604,8 +613,7 @@ function renderCell(
     return labels[String(value)] || '观察中'
   }
   if (fieldKey === 'attr.risk_attention') {
-    const labels: Record<string, string> = { attention: '重点关注', limited: '监测受限', no_trigger: '暂无触发' }
-    return <button className="watchlist-risk-cell" onClick={() => openRisk(instrumentId)}>{labels[String(value)] || '待核查'}</button>
+    return <button className="watchlist-risk-cell" onClick={() => openRisk(instrumentId)}>{formatFilterOptionLabel(value, fieldKey, zh)}</button>
   }
   if (fieldKey === 'attr.coverage_status') {
     return value == null || value === '' ? '—' : <span className="status-badge status-attribute">{String(value)}</span>
@@ -1864,11 +1872,11 @@ export default function WatchlistsPage() {
     optionFilterFields.forEach((field) => {
       options.set(
         field.field_key,
-        buildFilterOptions(field.field_key, filterOptionRows, workingFilters[field.field_key] || []),
+        buildFilterOptions(field.field_key, filterOptionRows, workingFilters[field.field_key] || [], zh),
       )
     })
     return options
-  }, [filterOptionRows, optionFilterFields, workingFilters])
+  }, [filterOptionRows, optionFilterFields, workingFilters, zh])
 
   const activeTaxonomyFilterPath = useMemo(
     () => taxonomyPathFromFilters(workingFilters),
@@ -1910,7 +1918,7 @@ export default function WatchlistsPage() {
           fieldKey,
           value,
           label: fieldLabelByKey.get(fieldKey) || formatLabel(fieldKey),
-          valueLabel: formatFilterOptionLabel(value),
+          valueLabel: formatFilterOptionLabel(value, fieldKey, zh),
           isTaxonomy: false,
         }))
       })
@@ -1925,7 +1933,7 @@ export default function WatchlistsPage() {
       }
       return entries
     },
-    [activeTaxonomyFilterLabel, activeTaxonomyFilterNode, fieldLabelByKey, workingFilters],
+    [activeTaxonomyFilterLabel, activeTaxonomyFilterNode, fieldLabelByKey, workingFilters, zh],
   )
   const taxonomyFilterCountByPath = useMemo(() => {
     const counts = new Map<string, number>()
@@ -2553,11 +2561,12 @@ export default function WatchlistsPage() {
     setWatchlistSearchParams(next)
   }
 
-  function openAssistant(id?: string, question?: string, reference?: ResearchAssistantReference) {
+  function openAssistant(id?: string, question?: string, reference?: ResearchAssistantReference, returnToRisk = false) {
     setSelectorMenuOpen(false)
     const next = new URLSearchParams(watchlistSearchParams)
     next.set('assistant', '1')
-    next.delete('risk'); next.delete('risk_instrument'); next.delete('topic')
+    if (!returnToRisk) { next.delete('risk'); next.delete('risk_instrument') }
+    next.delete('topic')
     const ids = id || (rowsAreCurrent ? selectedRows.join(',') : '')
     if (ids) next.set('instruments', ids)
     else next.delete('instruments')
@@ -2588,12 +2597,6 @@ export default function WatchlistsPage() {
   return (
     <>
       {!error && (!rowsAreCurrent || screenerLoading) ? <LoadingOverlay /> : null}
-      {watchlistSearchParams.get('assistant') === '1' && <ResearchPage watchlistId={watchlistId} onClose={() => {
-        const next = new URLSearchParams(watchlistSearchParams)
-        next.delete('assistant'); next.delete('topic'); next.delete('instruments'); next.delete('question')
-        setRiskReferenceParams(next)
-        setWatchlistSearchParams(next)
-      }} />}
       {watchlistSearchParams.get('risk') === '1' && <Suspense fallback={<LoadingOverlay />}><WatchlistRiskDrawer
         key={watchlistId}
         watchlistId={watchlistId}
@@ -2604,9 +2607,15 @@ export default function WatchlistsPage() {
           next.delete('risk'); next.delete('risk_instrument')
           setWatchlistSearchParams(next)
         }}
-        onAskAssistant={openAssistant}
+        onAskAssistant={(id, question, reference) => openAssistant(id, question, reference, true)}
         onChanged={() => setReloadToken((value) => value + 1)}
       /></Suspense>}
+      {watchlistSearchParams.get('assistant') === '1' && <ResearchPage watchlistId={watchlistId} onClose={() => {
+        const next = new URLSearchParams(watchlistSearchParams)
+        next.delete('assistant'); next.delete('topic'); next.delete('instruments'); next.delete('question')
+        setRiskReferenceParams(next)
+        setWatchlistSearchParams(next)
+      }} />}
       <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
       <div className="watchlists-page">
       <div className="watchlists-pagehead">

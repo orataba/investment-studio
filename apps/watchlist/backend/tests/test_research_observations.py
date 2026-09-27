@@ -235,3 +235,38 @@ def test_instrument_observation_reads_actual_retained_market_versions_in_batches
         validate_notebook(ResearchNotebook(modules=[module]), "fixture-etf", {result["source_id"]: result})
     finally:
         store.close()
+
+
+def test_top10_correlation_uses_exact_common_returns_not_price_levels(monkeypatch):
+    from statistics import correlation
+    days = [date(2026, 1, 1) + timedelta(days=i) for i in range(64)]
+    monkeypatch.setattr(observations, '_market_calendar_sessions', lambda *_: tuple(days))
+    holdings = [{'holding_key': str(i), 'holding_symbol': str(i), 'weight_percent': 30 - i} for i in range(3)]
+    returns = [[.001 * ((j % 7) - 2), .002 * ((j % 7) - 2), -.003 * ((j % 7) - 2)] for j in range(63)]
+    members = {}
+    for i in range(3):
+        price = 100
+        prices = [(days[0].isoformat(), price)]
+        for day, row in zip(days[1:], returns):
+            price *= 1 + row[i]
+            prices.append((day.isoformat(), price))
+        members[str(i)] = series(prices)
+    result = observations.top10_correlation(holdings, members, as_of_date=days[-1], calendar='TEST')
+    assert result['status'] == 'available' and result['return_observations'] == 63
+    assert result['average'] == pytest.approx(-1 / 3)
+    assert result['start_date'] == days[0].isoformat()
+    members['2']['points'].pop(20)
+    incomplete = observations.top10_correlation(holdings, members, as_of_date=days[-1], calendar='TEST')
+    assert incomplete['status'] == 'unavailable' and incomplete['average'] is None and incomplete['pairs'] == []
+
+
+def test_top10_correlation_rejects_mixed_currency_and_constant_returns(monkeypatch):
+    days = [date(2026, 1, 1) + timedelta(days=i) for i in range(64)]
+    monkeypatch.setattr(observations, '_market_calendar_sessions', lambda *_: tuple(days))
+    holdings = [{'holding_key': str(i), 'holding_symbol': str(i), 'weight_percent': 40} for i in range(2)]
+    points = [(day.isoformat(), 100) for day in days]
+    members = {'0': series(points), '1': series(points, currency='EUR')}
+    assert observations.top10_correlation(holdings, members, as_of_date=days[-1], calendar='TEST')['status'] == 'unavailable'
+    members['1']['currency'] = 'USD'
+    result = observations.top10_correlation(holdings, members, as_of_date=days[-1], calendar='TEST')
+    assert result['average'] is None and '恒定收益' in result['limitation']

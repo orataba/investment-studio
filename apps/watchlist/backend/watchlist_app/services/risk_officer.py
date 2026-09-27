@@ -324,8 +324,18 @@ def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=No
             return previous, False
         same_days = scheduled_dates and all((previous.context_json.get("research_dates") or {}).get(iid) == day
                                            for iid, day in scheduled_dates.items())
-        if same_days and (previous.status == "failed" or
-                (previous.status == "completed" and previous.context_json.get("risk_inputs") == read_snapshot(session, **scope))):
+        same_inputs = False
+        if same_days and previous.status == "completed":
+            from watchlist_app.services.risk_review_state import current_scope, input_version
+            saved_version = previous.context_json.get("risk_input_version")
+            # Publication incorporates the officer's own case assessments into
+            # this version. Comparing the pre-assessment evidence instead would
+            # trigger another run merely because reviewed_at/run_id changed,
+            # indefinitely when an honest assessment remains pending.
+            same_inputs = (saved_version == input_version(session, current_scope(session, scope))
+                           if saved_version is not None else
+                           previous.context_json.get("risk_inputs") == read_snapshot(session, **scope))
+        if same_days and (previous.status == "failed" or same_inputs):
             if previous.status == "failed":
                 from watchlist_app.services.research_runner import queue_retry
                 if queue_retry(session, previous, now=now):
@@ -464,15 +474,28 @@ def apply_result(session, run, payload):
         if (any(field in bound and getattr(case, field) != bound[field] for field in ("status", "trigger_active"))
                 or (case.evidence_json or {}).get("risk_assessment") != (bound.get("evidence_json") or {}).get("risk_assessment")):
             raise ValueError("风险状态在本轮复核期间已有更新，请基于当前风险状态重新评估")
-        assessed.append((case, assessment))
+        previous_assessment = (case.evidence_json or {}).get("risk_assessment") or {}
+        same_assessment = all(previous_assessment.get(key) == value
+                              for key, value in assessment.model_dump().items())
+        same_state = assessment.status == "pending" or (
+            case.trigger_active == (assessment.status == "active")
+            and case.status == ("open" if assessment.status == "active" else "resolved"))
+        # Overlapping scopes may reach the same conclusion on the same event.
+        # Keep their run receipts below, without rewriting a shared case merely
+        # to attach another reviewed_at/run_id and invalidating all other scopes.
+        if not (same_assessment and same_state):
+            assessed.append((case, assessment))
     from watchlist_app.services.risk_workspace_projection import case_summary_rows
     bound_version = run.context_json.get("risk_input_version")
     before = {row["case_id"]: row for row in case_summary_rows(session, {case.instrument_id for case, _ in assessed})}
     for case, assessment in assessed:
         timestamp = datetime.now(UTC)
         value = {**assessment.model_dump(), "reviewed_at": timestamp.isoformat(), "run_id": run.entry_id}
-        case.evidence_json = {**case.evidence_json, "risk_assessment": {
-            **(case.evidence_json.get("risk_assessment") or {}), **value}}
+        case.evidence_json = {**case.evidence_json,
+            # Legacy events derive their version from history length. A risk
+            # receipt must not advance the underlying research event version.
+            "event_version_id": assessment.event_version_id,
+            "risk_assessment": {**(case.evidence_json.get("risk_assessment") or {}), **value}}
         if assessment.status != "pending":
             case.trigger_active = assessment.status == "active"
             case.status = "open" if case.trigger_active else "resolved"

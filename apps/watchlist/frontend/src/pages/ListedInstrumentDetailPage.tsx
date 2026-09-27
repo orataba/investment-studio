@@ -1,5 +1,4 @@
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
-import InstrumentRiskPanel from '../components/InstrumentRiskPanel'
 import { useCanWriteTeam } from '../components/AccountBoundary'
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { Link, useSearchParams } from 'react-router'
@@ -515,14 +514,29 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const instrumentId = instrument.detail_subject_id || instrument.canonical_instrument_id || instrument.requested_instrument_id
   const listedInstrumentType = instrument.instrument_type as 'etf' | 'equity' | 'index' | 'crypto'
   const [assistant, setAssistant] = useState<{ instrumentId: string; question: string; researchReference?: ResearchReference } | null>(null)
-  const [riskInstrumentId, setRiskInstrumentId] = useState<string | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const riskOwnerId = searchParams.get('risk_instrument')
+  const riskInstrumentId = searchParams.get('risk') === '1' && (!riskOwnerId || riskOwnerId === instrumentId) ? instrumentId : null
+  function setRiskInstrumentId(id: string | null) {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      if (id) { next.set('risk', '1'); next.set('risk_instrument', id) }
+      else { next.delete('risk'); next.delete('risk_instrument') }
+      if (next.get('tab') === 'risk') next.set('tab', 'performance')
+      return next
+    }, { replace: true })
+  }
+  useEffect(() => {
+    if (riskOwnerId && riskOwnerId !== instrumentId) {
+      setSearchParams((current) => { const next = new URLSearchParams(current); next.delete('risk'); next.delete('risk_instrument'); return next }, { replace: true })
+    }
+  }, [instrumentId, riskOwnerId, setSearchParams])
   function openAssistant(question = '', researchReference?: ResearchReference) { setRiskInstrumentId(null); setAssistant({ instrumentId, question, researchReference }) }
   function openRisk() { setAssistant(null); setRiskInstrumentId(instrumentId) }
   const isIndex = listedInstrumentType === 'index'
   const isCrypto = listedInstrumentType === 'crypto'
   const usesCanonicalPriceSeries = isIndex || isCrypto
   const tabs = listedDetailTabs(listedInstrumentType)
-  const [searchParams, setSearchParams] = useSearchParams()
   const [estimateHistoryOpen, setEstimateHistoryOpen] = useState(false)
   const requestedTab = searchParams.get('tab')
   const tab: ListedDetailTab = requestedTab === 'risk' ? 'performance'
@@ -566,7 +580,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   useEffect(() => {
     let cancelled = false
     let researchRequest = 0
-    setRiskInstrumentId(null)
     setAssistant(null)
     setPending(INITIAL_PENDING)
     setError(null)
@@ -1016,8 +1029,8 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
 
   return (
     <div className={`instrument-detail-page listed-detail-page${tab === 'investment-research' ? ' research-document-page' : ''}`}>
+      {riskInstrumentId === instrumentId && <InstrumentRiskDrawer instrumentId={instrumentId} instrumentName={instrument.instrument_name} watchlistId={watchlistContext?.watchlistId} onClose={() => setRiskInstrumentId(null)} onAskAssistant={(question, researchReference) => setAssistant({ instrumentId, question, researchReference })} />}
       {assistant?.instrumentId === instrumentId && <InstrumentAssistantDrawer instrumentId={instrumentId} watchlistId={watchlistContext?.watchlistId} question={assistant.question} researchReference={assistant.researchReference} onClose={() => setAssistant(null)} />}
-      {riskInstrumentId === instrumentId && <InstrumentRiskDrawer instrumentId={instrumentId} instrumentName={instrument.instrument_name} watchlistId={watchlistContext?.watchlistId} onClose={() => setRiskInstrumentId(null)} onAskAssistant={openAssistant} />}
       <div className="instrument-detail-topbar">
         <div className="instrument-detail-breadcrumbs">
           <a data-workspace-link href={HOME_URL} className="watchlist-breadcrumb-link">Home</a>
@@ -1170,7 +1183,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             <button type="button" key={item}
               className={`instrument-detail-tab ${tab === item ? 'instrument-detail-tab-active' : ''}`}
               onClick={() => setTab(item)}>
-              {{ overview: zh ? '总览' : 'Overview', 'investment-research': zh ? '投资研究' : 'Investment Research', views: zh ? '投资观点' : 'Investment Views', performance: zh ? '业绩与风险' : 'Performance & Risk' }[item]}
+              {{ overview: zh ? '总览' : 'Overview', 'investment-research': zh ? '投资研究' : 'Investment Research', views: zh ? '投资观点' : 'Investment Views', performance: zh ? '表现与指标' : 'Performance & Metrics' }[item]}
             </button>
           ))}
         </div>
@@ -1194,7 +1207,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             </div>
             <div className="listed-overview-brief-row">
               <div><h3>{zh ? '当前回撤' : 'Current Drawdown'}</h3><p>{pending.risk ? loadingLabel : percentValue(displayRiskStats.currentDrawdown)} <span className="listed-chart-caption">{pending.risk ? '' : riskAsOfNote}</span></p></div>
-              <button type="button" onClick={() => setTab('performance')}>{zh ? '业绩与风险' : 'Performance & Risk'} →</button>
+              <button type="button" onClick={() => setTab('performance')}>{zh ? '表现与指标' : 'Performance & Metrics'} →</button>
             </div>
           </section>
           <SectorResearchPanel instrumentId={instrumentId} variant="summary" onOpenEvents={() => setTab('investment-research')} />
@@ -1319,7 +1332,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             {risk?.data_quality?.gap_count ? <div className="listed-source-alert">{zh ? '历史行情存在缺口，曲线仅反映已取得的观测值。' : 'History has gaps; the curve reflects available observations only.'}</div> : null}
             {pending.chart ? sectionLoading(zh ? '历史回撤' : 'Historical drawdown') : <GrowthChart bars={canonicalCloseAnalysisBars} kind="drawdown" />}
           </section>
-          <InstrumentRiskPanel instrumentId={instrumentId} mode="price" onAskAssistant={(_id, question, reference) => openAssistant(question, reference)} />
         </div>
       ) : null}
 

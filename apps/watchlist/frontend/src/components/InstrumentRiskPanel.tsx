@@ -12,7 +12,6 @@ export default function InstrumentRiskPanel({
   heading,
   onAskAssistant,
   onChanged,
-  mode = 'attention',
 }: {
   instrumentId?: string
   watchlistId?: string
@@ -21,13 +20,11 @@ export default function InstrumentRiskPanel({
   heading?: string | null
   onAskAssistant?: (id: string, question: string, reference?: ResearchAssistantReference) => void
   onChanged?: () => void
-  mode?: 'attention' | 'price'
 }) {
   const canWrite = useCanWriteTeam()
   return (
       <RiskPanel
         canWrite={canWrite}
-        caseScope={mode === 'price' ? 'traditional' : 'all'}
         attentionLabel="重点关注"
         instrumentId={instrumentId}
         focusInstrumentId={focusInstrumentId}
@@ -38,13 +35,13 @@ export default function InstrumentRiskPanel({
         scopeLabel={scopeLabel}
         heading={
           heading === undefined
-            ? mode === 'price' ? '价格与风险跟进' : '重点关注'
+            ? '重点关注'
             : heading
         }
         onAskAssistant={onAskAssistant}
         onChanged={onChanged}
-        instrumentHref={(id, signal) =>
-          `/instruments/${encodeURIComponent(id)}?${new URLSearchParams({ tab: signal?.startsWith('sector:') ? 'events' : 'risk', ...(watchlistId ? { watchlist: watchlistId } : {}) })}`
+        instrumentHref={(id) =>
+          `/instruments/${encodeURIComponent(id)}?${new URLSearchParams({ tab: 'investment-research', risk: '1', ...(watchlistId ? { watchlist: watchlistId } : {}) })}`
         }
         assistantHref={(id, question, reference) => {
           const params = new URLSearchParams({ instruments: id, question, ...(watchlistId ? { watchlist: watchlistId } : {}) })

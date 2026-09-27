@@ -41,7 +41,9 @@ def reply(iid, *, summary="存在需跟进的重要变化。", sources=None, the
     if themes is None:
         themes = [{"theme_key": "index-exposure", "kind": "event", "title": "指数规则及跟踪敞口",
             "question": "指数编制调整是否改变产品实际跟踪敞口？",
-            "priority_reason": "规则变化的组合影响仍未确认，需要结合后续披露跟进。"}] if events else []
+            "priority_reason": "规则变化的组合影响仍未确认，需要结合后续披露跟进。", "source_ids": sources,
+            "synthesis": "编制机构已公告规则调整，产品实际敞口是否随之改变仍需核实。",
+            "next_check": "对照新编制说明及下一期持仓披露，核对实际敞口变化。"}] if events else []
     return json.dumps({"reviews": [{"instrument_id": iid, "summary": summary,
                                    "change_kind": "investment" if events else "none", "coverage": [], "events": events,
                                    "themes": themes, "research": None}]})
@@ -176,7 +178,7 @@ def test_chat_publishes_explicitly_authorized_research_without_pm_adoption_or_in
             "instrument_type": "private_fund", "holdings": None, "materials": [{"title": "月报目录"}]}],
             "web_evidence": [{"operation": "search", "sources": [{"source_id": "material-directory",
                 "title": "只有目录，没有正文", "published_at": None, "time_status": "unknown"}]}]}
-        with pytest.raises(ValueError, match="原文"):
+        with pytest.raises(ValueError, match="未取得的原始依据：material-directory"):
             service.apply_result(session, ordinary, reply("sxv264", sources=["material-directory"], direction="opportunity", published_at=None))
         assert session.scalar(select(RiskCase).where(RiskCase.instrument_id == "sxv264")) is None
         session.commit()

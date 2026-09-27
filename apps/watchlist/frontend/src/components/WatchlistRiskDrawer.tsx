@@ -1,3 +1,4 @@
+import '../../../../../packages/ui/src/workspace-drawer.css'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import InstrumentRiskPanel from './InstrumentRiskPanel'
 import { WorkspaceToolIcon } from '../../../../../packages/ui/src/WorkspaceTools'
@@ -23,7 +24,7 @@ export default function WatchlistRiskDrawer({
   const dialogRef = useModalDialog(true, onClose)
   return (
     <div
-      className="assistant-backdrop"
+      className="watchlist-risk-backdrop"
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose()
       }}

@@ -119,6 +119,7 @@ export type ResearchCatalyst = {
 }
 
 export type NotebookSource = {
+  observation_domain?: 'market' | 'fundamental' | 'unclassified'
   source_id: string; title?: string; url?: string; source?: string
   document_id?: string; version_id?: string; instrument_id?: string
   source_type?: string; as_of?: string | null; run_cutoff?: string | null

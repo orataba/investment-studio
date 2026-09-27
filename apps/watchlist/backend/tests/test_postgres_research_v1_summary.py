@@ -7,7 +7,7 @@ from sqlalchemy import event
 from watchlist_app.db.models import InstrumentDetail
 from watchlist_app.db.models.workbench import ResearchEntry
 from watchlist_app.db.session import get_session_factory
-from watchlist_app.services.research_themes import ThemeInput, save_theme, theme_summaries
+from watchlist_app.services.research_themes import ThemeInput, save_theme, theme_record, theme_summaries
 from .test_postgres_instrument_registry_constraints import postgres_watchlist_env
 
 
@@ -36,3 +36,34 @@ def test_theme_cards_do_not_fetch_retained_archives_or_foreign_team(postgres_wat
         assert "versions" not in result["themes"][0]
         assert len(statements) == 1 and not session.identity_map
         assert session.get(ResearchEntry, theme["theme_id"]).context_json == original
+
+
+def test_legacy_inactive_card_does_not_guess_ownership_from_text_author(postgres_watchlist_env):
+    iid = postgres_watchlist_env['instrument_id']
+    expected = {}
+    with get_session_factory()() as session:
+        session.add(InstrumentDetail(instrument_id=iid, instrument_type='public_fund', detail_view_type='public_fund',
+                                    instrument_name='Legacy ownership', is_active=True, metadata_json={}))
+        session.flush()
+        for status in ('paused', 'closed'):
+            for owner in ('user', 'researcher'):
+                theme = save_theme(session, iid, ThemeInput(title=f'{status} {owner}'))
+                entry = session.get(ResearchEntry, theme['theme_id'])
+                context = {key: value for key, value in entry.context_json.items() if key != 'lifecycle_owner'}
+                entry.context_json = {**context, 'theme_status': status,
+                    'updated_by_role': 'researcher' if owner == 'user' else 'user',
+                    'versions': [{'status': 'active', 'updated_by_role': 'researcher'},
+                                 {'status': status, 'updated_by_role': owner, 'text': 'retained\x00original' * 2000}]}
+                expected[entry.entry_id] = owner
+        session.commit()
+    with get_session_factory()() as session:
+        statements = []
+        event.listen(session, 'do_orm_execute', lambda state: statements.append(state.statement))
+        summaries = theme_summaries(session, iid)['themes']
+        assert len(summaries) == 4
+        assert all(theme['lifecycle_owner'] is None and 'versions' not in theme for theme in summaries)
+        assert len(statements) == 1 and not session.identity_map
+        for theme in summaries:
+            entry = session.get(ResearchEntry, theme['theme_id'])
+            assert theme_record(entry)['lifecycle_owner'] == expected[entry.entry_id]
+            assert 'lifecycle_owner' not in entry.context_json

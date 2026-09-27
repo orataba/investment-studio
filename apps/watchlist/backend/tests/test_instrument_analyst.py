@@ -130,7 +130,9 @@ def test_daily_notebook_material_and_assistant_share_the_same_instrument_evidenc
                           'status': 'open', 'theme_id': 'fund-exposure', 'source_ids': [sid]}], 'source_ids': [sid]}
         sector_research.apply_result(session, run, json.dumps({'reviews': [{'instrument_id': 'sxv264', 'summary': '继续核实敞口。',
               'themes': [{'theme_key': 'fund-exposure', 'title': '底层敞口核实', 'question': '管理人的实际投资敞口是什么？',
-                          'priority_reason': '未披露敞口限制策略与组合风险判断，需继续核对管理人原始说明。'}],
+                          'priority_reason': '未披露敞口限制策略与组合风险判断，需继续核对管理人原始说明。',
+                          'source_ids': [sid], 'synthesis': '管理人说明了策略机制，但未披露持仓，实际风险敞口仍未知。',
+                          'next_check': '向管理人取得底层持仓说明，核对其与已描述策略机制的一致性。'}],
               'coverage': [], 'events': [], 'research': paper}]}))
         session.commit()
     dossier = client.get('/api/research/instruments/sxv264/dossier').json()
@@ -194,7 +196,9 @@ def test_fund_research_and_assistant_bind_nav_benchmark_common_sample_and_missin
         draft = sector_research.ReviewResult.model_validate({"reviews": [{"instrument_id": "sxv264", "change_kind": "knowledge",
             "themes": [{"theme_key": "fund-performance", "kind": "quantitative", "title": "共同样本表现来源",
                 "question": "共同样本超额表现能否由已披露策略解释？",
-                "priority_reason": "净值差异已观察到，但未披露敞口使收益来源仍需验证。"}],
+                "priority_reason": "净值差异已观察到，但未披露敞口使收益来源仍需验证。",
+                "source_ids": [computed["source_id"]], "synthesis": "共同观察日计算得到超额收益5个百分点，敞口未知，不能归因为特定策略。",
+                "next_check": "取得同期策略与敞口披露，验证共同样本超额收益的来源。"}],
             "research": {"modules": [{"key": "fund-strategy", "summary": "基于共同周度观察日的表现仍需结合策略与敞口解释。"}], "source_ids": [computed["source_id"]]},
             "events": [{"event_key": "common-sample-review", "action": "new", "direction": "uncertain",
                 "importance_score": 3, "importance_reason": "相对表现及未知敞口影响基金判断。",

@@ -209,6 +209,11 @@ Correct research.modules, key_drivers and questions to match the evidence;
 each module's coverage describes its actual cited evidence, not confidence in an investment.
 Check scope, evidence_as_of, uncertainty and the module's current analysis, not only new events.
 figure_source_ids must bind retained numerical sources; the application renders their actual data.
+For market-quantitative, retain only price/return/volatility/breadth/correlation/technical observations.
+Check a computed source's observation_domain against its actual inputs and method: numerical company
+cash flow, revenue, earnings and valuation are fundamental evidence, not market observations. Such
+figures belong in the relevant fundamental module/theme and material dated changes in events.
+Do not accept the domain merely because the source is computed_metric or the calculation ran.
 For computed_metric data.analysis_kind=python_quant, execution success establishes only that code ran.
 Inspect methodology.code, params and input_sources for units, the common sample, missingness and information
 clocks. Tables/charts are derived calculations, not independent original sources. Separate descriptive patterns,
@@ -273,6 +278,19 @@ opportunities/risks item and coverage_status/coverage_note against its linked ev
 sources. No news, a closed theme or event follow-up expiry cannot erase a retained risk. Check any removal's
 explicit basis. Empty lists do not establish no risk, and partial coverage cannot become a full quiet check.
 The current synthesis is derived last from the same research, not an independent recommendation.
+Keep investment_view.direction to two short decision-oriented sentences: current opportunity/risk
+balance and the main condition that could change it. Move numbers, source inventory, tool steps and
+supporting explanations to their existing evidence fields. Opportunities/risks titles are concise
+judgments; their explanations retain the complete reasoning. Do not remove a material qualification
+for brevity. Coverage prose belongs to coverage_note, not the headline.
+For each proposed new continuing theme, verify four distinct elements: a concrete evidenced starting
+point; a plausible transmission mechanism to this instrument; a meaningful question that persists
+beyond the initial headline; and an observable next check with conditions for revision or exit.
+Use the existing question/synthesis/priority_reason/next_check/source_ids fields, not a decorative
+score. Generic categories (AI growth, valuation, concentration, cash flow) are not themes unless a
+specific unresolved mechanism meets these criteria. A new technology can qualify before financial
+results exist if evidence and competing hypotheses are explicit; do not demand proven outcomes.
+Reject an unsupported or redundant proposed theme rather than manufacturing one to fill a quota.
 For an initialization request, verify the coverage statement against the fixed initialization window and
 actual acquisition queries, relevant originals, available baseline and PM/quantitative evidence. A query's
 instrument_id annotation alone does not establish relevance, and a bound source index does not prove the

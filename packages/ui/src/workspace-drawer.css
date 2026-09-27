@@ -1,0 +1,30 @@
+.assistant-backdrop,
+.watchlist-risk-backdrop,
+.portfolio-risk-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  display: flex;
+  justify-content: flex-end;
+  background: #14273836;
+}
+
+.assistant-drawer,
+.watchlist-risk-drawer,
+.portfolio-risk-drawer {
+  box-sizing: border-box;
+  width: min(860px, 88vw);
+  height: 100dvh;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-left: 1px solid #cfd7df;
+  color: #263547;
+}
+
+@media (max-width: 650px) {
+  .assistant-drawer,
+  .watchlist-risk-drawer,
+  .portfolio-risk-drawer { width: 100%; }
+}

@@ -1,6 +1,5 @@
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { accountStorageKey, useCanWriteTeam } from '../components/AccountBoundary'
-import InstrumentRiskPanel from '../components/InstrumentRiskPanel'
 import {
   startTransition,
   useDeferredValue,
@@ -365,7 +364,7 @@ const TAB_LABELS: Record<DetailTab, LocalizedText> = {
   overview: { en: 'Overview', zh: '总览' },
   'investment-research': { en: 'Investment Research', zh: '投资研究' },
   views: { en: 'Investment Views', zh: '投资观点' },
-  performance: { en: 'Performance & Risk', zh: '业绩与风险' },
+  performance: { en: 'Performance & Metrics', zh: '表现与指标' },
   archive: { en: 'Fund Archive', zh: '基金档案' },
 }
 
@@ -2806,7 +2805,22 @@ export default function FundDetailPage({
   const [archiveSection, setArchiveSection] = useState<FundArchiveSection>(() =>
     resolveFundDetailLocation(detailSearchParams.get('tab'), detailSearchParams.get('section'), fundType).section)
   const [assistant, setAssistant] = useState<{ instrumentId: string; question: string; researchReference?: ResearchReference } | null>(null)
-  const [riskOpen, setRiskOpen] = useState<string | null>(null)
+  const riskOwnerId = detailSearchParams.get('risk_instrument')
+  const riskOpen = detailSearchParams.get('risk') === '1' && (!riskOwnerId || riskOwnerId === fundId) ? fundId : null
+  function setRiskOpen(id: string | null) {
+    setDetailSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      if (id) { next.set('risk', '1'); next.set('risk_instrument', id) }
+      else { next.delete('risk'); next.delete('risk_instrument') }
+      if (next.get('tab') === 'risk') next.set('tab', 'performance')
+      return next
+    }, { replace: true })
+  }
+  useEffect(() => {
+    if (riskOwnerId && riskOwnerId !== fundId) {
+      setDetailSearchParams((current) => { const next = new URLSearchParams(current); next.delete('risk'); next.delete('risk_instrument'); return next }, { replace: true })
+    }
+  }, [fundId, riskOwnerId, setDetailSearchParams])
   function openAssistant(question = '', researchReference?: ResearchReference) {
     setRiskOpen(null)
     setAssistant({ instrumentId: fundId, question, researchReference })
@@ -3159,7 +3173,6 @@ export default function FundDetailPage({
   useEffect(() => {
     setTimelineNoteCaptureMode(false)
     setAssistant(null)
-    setRiskOpen(null)
     setRequestedResearchNoteDate(null)
     setTimelineNoteViewAnchorDate(null)
     setChartTimelineNoteContextMenu(null)
@@ -5610,8 +5623,8 @@ export default function FundDetailPage({
 
   return (
     <div className={`terminal-page instrument-detail-page${activeTab === 'investment-research' ? ' research-document-page' : ''}`}>
+      {riskOpen === fundId && <InstrumentRiskDrawer instrumentId={fundId} instrumentName={summary.instrument_name} watchlistId={watchlistContext?.watchlistId || detailSearchParams.get('watchlist') || undefined} onClose={() => setRiskOpen(null)} onAskAssistant={(question, researchReference) => setAssistant({ instrumentId: fundId, question, researchReference })} />}
       {assistant?.instrumentId === fundId && <InstrumentAssistantDrawer instrumentId={fundId} watchlistId={watchlistContext?.watchlistId || detailSearchParams.get('watchlist') || undefined} question={assistant.question} researchReference={assistant.researchReference} onClose={() => setAssistant(null)} />}
-      {riskOpen === fundId && <InstrumentRiskDrawer instrumentId={fundId} instrumentName={summary.instrument_name} watchlistId={watchlistContext?.watchlistId || detailSearchParams.get('watchlist') || undefined} onClose={() => setRiskOpen(null)} onAskAssistant={openAssistant} />}
       <NoticeToast notice={quoteActionNotice} onDismiss={() => setQuoteActionNotice(null)} />
       <section className="panel instrument-detail-shell">
         {loadWarning ? (
@@ -5894,7 +5907,7 @@ export default function FundDetailPage({
           </div>
           <div className="fund-overview-destinations">
             <button type="button" onClick={() => setActiveTab('investment-research')}><strong>{language === 'zh-Hans' ? '投资研究' : 'Investment research'}</strong><span>{language === 'zh-Hans' ? '查阅整理好的跟踪结论、投资机会与风险。' : 'Read prepared findings, opportunities and risks.'}</span></button>
-            <button type="button" onClick={() => setActiveTab('performance')}><strong>{language === 'zh-Hans' ? '业绩与风险' : 'Performance & risk'}</strong><span>{language === 'zh-Hans' ? '净值、回撤、基准比较与区间指标。' : 'NAV, drawdown, benchmark comparisons and period metrics.'}</span></button>
+            <button type="button" onClick={() => setActiveTab('performance')}><strong>{language === 'zh-Hans' ? '表现与指标' : 'Performance & metrics'}</strong><span>{language === 'zh-Hans' ? '净值、回撤、基准比较与区间指标。' : 'NAV, drawdown, benchmark comparisons and period metrics.'}</span></button>
             <button type="button" onClick={() => setActiveTab('archive')}><strong>{language === 'zh-Hans' ? '基金档案' : 'Fund archive'}</strong><span>{fundType === 'public_fund' ? (language === 'zh-Hans' ? '持仓风格、管理团队与披露材料。' : 'Holdings, style, management and disclosures.') : (language === 'zh-Hans' ? '策略、流动性、交易条款与基金材料。' : 'Strategy, liquidity, dealing terms and documents.')}</span></button>
           </div>
         </section>
@@ -6836,7 +6849,6 @@ export default function FundDetailPage({
 
       {activeTab === 'performance' && sectionReady ? (
         <section className="panel instrument-risk-shell">
-          <InstrumentRiskPanel instrumentId={fundId} mode="price" onAskAssistant={(_instrumentId, question, reference) => openAssistant(question, reference)} />
           <div className="instrument-price-topline" />
           <section className="instrument-risk-section instrument-risk-section-rolling">
             <div className="instrument-risk-section-header instrument-risk-rolling-header">

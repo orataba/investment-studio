@@ -31,7 +31,7 @@ export default function PortfolioInstrumentRisk({
   const rows = workspace.rows.filter(
     (row) =>
       row.instrument_core &&
-      ['private_fund', 'public_fund', 'equity', 'etf', 'index'].includes(
+      ['private_fund', 'public_fund', 'equity', 'etf', 'index', 'crypto'].includes(
         row.instrument_core.instrument_type,
       ) &&
       row.quantity !== 0,
@@ -64,8 +64,8 @@ export default function PortfolioInstrumentRisk({
         request={request}
         query={query}
         heading="持仓风险关注"
-        instrumentHref={(id, signal) =>
-          buildWatchlistInstrumentDetailUrl(id, { tab: signal?.startsWith('sector:') ? 'events' : 'risk' })
+        instrumentHref={(id) =>
+          buildWatchlistInstrumentDetailUrl(id, { tab: 'investment-research', risk: '1' })
         }
         onAskAssistant={onAskAssistant}
         scopeLabel="当前组合持仓"
