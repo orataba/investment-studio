@@ -894,19 +894,20 @@ def _validate_research_links(session, run, review, themes):
     event_keys = {item.event_key for item in review.events} | {item.signal.removeprefix("sector:") for item in
         session.scalars(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id, RiskCase.signal.like("sector:%")))}
 
-    def check_theme(theme_id, *, retained_event_link=False):
+    def check_theme(theme_id, *, field, retained_reference=False):
         if theme_id and theme_id not in themes:
-            raise ValueError("研究判断关联了本轮未读取的关注主题")
+            raise ValueError(f"{field} 关联了本轮未读取的关注主题 theme_id={theme_id}")
         if (context.get("sector_run") and theme_id and themes[theme_id]["status"] != "active"
-                and not themes[theme_id].get("_closing_in_run") and not retained_event_link):
-            raise ValueError("已暂停或结束的关注主题不再自动更新")
+                and not themes[theme_id].get("_closing_in_run") and not retained_reference):
+            raise ValueError(f"{field} 的 theme_id={theme_id} 状态为 {themes[theme_id]['status']}："
+                             "已暂停或结束的关注主题不再自动更新；当前跟踪事项须关联活跃主题。")
 
     if review.research is not None:
         view = review.research.investment_view
         if view is not None:
             for item in [*(getattr(view, "opportunities", None) or []), *(getattr(view, "risks", None) or [])]:
                 for theme_id in item.theme_ids:
-                    check_theme(theme_id, retained_event_link=True)
+                    check_theme(theme_id, field=f"research.investment_view[key={item.key}].theme_ids", retained_reference=True)
                 if not set(item.event_keys).issubset(event_keys):
                     raise ValueError("机会或风险引用的事件不属于当前标的")
                 bound_events = {row["event_key"] for row in context.get("prior_events", []) if row["instrument_id"] == review.instrument_id}
@@ -917,7 +918,8 @@ def _validate_research_links(session, run, review, themes):
             previous = {item["key"]: item for item in (dossier.get("notebook") or {}).get(field, [])}
             for model in getattr(review.research, field):
                 row = _merge_partial(model, previous.get(model.key))
-                check_theme(row.get("theme_id"))
+                location = f"research.{field}[key={model.key}]"
+                check_theme(row.get("theme_id"), field=f"{location}.theme_id")
                 active = ((field == "questions" and row.get("tracking_status", "active") == "active")
                           or (field == "forecasts" and row.get("status", "active") == "active")
                           or (field == "catalysts" and row.get("status", "scheduled") == "scheduled"))
@@ -926,13 +928,18 @@ def _validate_research_links(session, run, review, themes):
                 if row.get("event_key") and row["event_key"] not in event_keys:
                     raise ValueError("研究判断关联的事件不属于当前标的")
                 if row.get("related_research_update_id"):
-                    original = _validate_update_reference(session, run, review.instrument_id, row["related_research_update_id"], judgment=True)
-                    check_theme(original["reference"].get("theme_id"))
+                    original = _validate_update_reference(session, run, review.instrument_id, row["related_research_update_id"],
+                                                          judgment=True, field=f"{location}.related_research_update_id")
+                    check_theme(original["reference"].get("theme_id"),
+                                field=f"{location}.related_research_update_id={row['related_research_update_id']}", retained_reference=True)
                 if field in {"forecast_reviews", "lessons"} and row.get("forecast_key") and (
                         row["forecast_key"], row.get("forecast_version_id")) not in forecast_versions:
                     raise ValueError("复盘或经验必须关联此前已保存的预测原版本，不能将事后新建预测作为事前记录")
                 if field in {"forecast_reviews", "lessons"} and row.get("forecast_key"):
-                    check_theme(forecast_versions[(row["forecast_key"], row["forecast_version_id"])].get("theme_id"))
+                    # Reviewing an immutable prior forecast does not resume the
+                    # theme that owned it. The current row's own theme was checked above.
+                    check_theme(forecast_versions[(row["forecast_key"], row["forecast_version_id"])].get("theme_id"),
+                                field=f"{location}.forecast_version_id={row['forecast_version_id']}", retained_reference=True)
                 if field == "forecast_reviews" and not (row.get("forecast_key") or row.get("related_research_update_id")):
                     raise ValueError("复盘需要关联此前已保存的预测版本或研究判断记录")
                 if row.get("pm_note_id"):
@@ -940,11 +947,14 @@ def _validate_research_links(session, run, review, themes):
                     revisions = {item["revision_number"] for item in (note or {}).get("versions", [])}
                     if not note or row.get("pm_note_revision") not in revisions:
                         raise ValueError("请关联本轮已读取的投资经理观点及其原始版本")
-                    note_theme = (note.get("research_context") or {}).get("theme_id")
+                    from watchlist_app.services.research_views import note_version
+                    original_note = note_version(session, review.instrument_id, row["pm_note_id"], row["pm_note_revision"])
+                    note_theme = (original_note.research_context or {}).get("theme_id")
                     theme_id = row.get("theme_id")
                     if theme_id and note_theme != themes[theme_id]["theme_id"]:
                         raise ValueError("研究判断的主题与投资经理原观点不一致")
-                    check_theme(note_theme)
+                    check_theme(note_theme, field=f"{location}.pm_note_id={row['pm_note_id']}@{row['pm_note_revision']}",
+                                retained_reference=True)
     for item in review.events:
         case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id,
                                                      RiskCase.signal == f"sector:{item.event_key}"))
@@ -956,12 +966,13 @@ def _validate_research_links(session, run, review, themes):
             # Pausing a theme stops its assigned research, not later facts about
             # a shared event. Retain existing references without reopening it.
             canonical = themes.get(theme_id, {}).get("theme_id", theme_id)
-            check_theme(theme_id, retained_event_link=canonical in prior_theme_ids)
+            check_theme(theme_id, field=f"events[event_key={item.event_key}].theme_ids", retained_reference=canonical in prior_theme_ids)
     if review.reflection is not None:
         for update_id in review.reflection.reviewed_update_ids:
             original = _validate_update_reference(session, run, review.instrument_id, update_id, judgment=True,
                                                   field="reviews[].reflection.reviewed_update_ids")
-            check_theme(original["reference"].get("theme_id"))
+            check_theme(original["reference"].get("theme_id"),
+                        field=f"reflection.reviewed_update_ids={update_id}", retained_reference=True)
 
 
 def _resolve_theme_aliases(review, aliases):

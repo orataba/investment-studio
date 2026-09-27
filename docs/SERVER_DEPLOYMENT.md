@@ -241,7 +241,14 @@ forward-repair rule below instead of automatically restoring the old database.
 For an application-only follow-up to an already accepted release, verify that
 the migration files, calculation versions and persisted-data contracts are
 unchanged before using `RUN_MIGRATIONS=false`. Finish active research and
-Briefing work before replacing their APIs. This path updates the eight app
+Briefing work before replacing their APIs. External write maintenance alone does
+not stop an in-process research worker. Hold a short PostgreSQL `SHARE` lock on
+the affected job-entry tables, check queued/running work in that same transaction,
+then stop and confirm the old app services before releasing the lock. Use a
+bounded lock timeout; abort without stopping services if the lock is unavailable
+or work remains active. Release the lock before starting the new applications.
+The outer failure handler must restore the previously active app services when
+it stopped them before invoking the installer. This path updates the eight app
 services without pausing independent collectors or Regime; preserve their
 existing timer state and software paths. If a crashed Portfolio calculation
 left a `running` record, stop all Portfolio calculation/API writers and run
