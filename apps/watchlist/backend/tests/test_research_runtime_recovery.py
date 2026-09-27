@@ -1,6 +1,12 @@
 from datetime import UTC, datetime, timedelta
 from copy import deepcopy
 from types import SimpleNamespace
+import os
+import select
+import signal
+import subprocess
+import sys
+import time
 
 import pytest
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
@@ -177,7 +183,10 @@ def test_first_attempt_timeout_recovers_only_a_persisted_bound_review(client, mo
     save_run({'sector_run': True}, status='queued')
     monkeypatch.setattr(sector_research, 'prepare_run', lambda *args: None)
     monkeypatch.setattr(runner, 'resolve_token', lambda *args: current_principal())
-    monkeypatch.setattr(runner.os, 'killpg', lambda *args: None)
+    def exited_group(pid, sig):
+        if sig == 0:
+            raise ProcessLookupError
+    monkeypatch.setattr(runner.os, 'killpg', exited_group)
     def communicate(**kwargs):
         with get_session_factory()() as session:
             run = session.get(ResearchEntry, 'recovery')
@@ -198,6 +207,46 @@ def test_first_attempt_timeout_recovers_only_a_persisted_bound_review(client, mo
             assert run.context_json['submitted_draft']['reviews'] == [{'instrument_id': 'stock'}]
             assert run.context_json['cutoff'] == cutoff
             assert run.context_json['execution']['attempt'] == 1
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Harness uses POSIX process groups')
+def test_timeout_kills_descendant_after_shell_exits_before_group_grace(monkeypatch):
+    child = 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print("ready", flush=True); time.sleep(60)'
+    process = subprocess.Popen(['/bin/sh', '-c', '"$1" -c "$2" & wait', 'research-timeout-test', sys.executable, child],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    killpg = os.killpg
+    killed_after_shell_exit = []
+    def record_group_signal(pid, sig):
+        if sig == signal.SIGKILL:
+            killed_after_shell_exit.append(process.poll() is not None)
+        return killpg(pid, sig)
+    monkeypatch.setattr(runner.os, 'killpg', record_group_signal)
+    try:
+        assert select.select([process.stdout], [], [], 5)[0], 'Child failed to start'
+        assert process.stdout.readline().strip() == 'ready'
+        started = time.monotonic()
+        runner._stop_process_group(process, grace_seconds=0.2)
+        assert time.monotonic() - started >= 0.2
+        assert killed_after_shell_exit == [True]
+        # The descendant inherits the pipe: EOF proves it no longer holds the
+        # timed-out run alive after its parent shell has already been reaped.
+        process.communicate(timeout=2)
+        assert process.returncode == -signal.SIGTERM
+    finally:
+        try:
+            killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.communicate(timeout=3)
+
+
+def test_timeout_cleanup_accepts_an_already_exited_process_group(monkeypatch):
+    waited = []
+    def gone(pid, sig):
+        raise ProcessLookupError
+    monkeypatch.setattr(runner.os, 'killpg', gone)
+    runner._stop_process_group(SimpleNamespace(pid=123, wait=lambda: waited.append(True)))
+    assert waited == [True]
 
 
 @pytest.mark.parametrize('run_kind', ['sector_run', 'risk_run'])

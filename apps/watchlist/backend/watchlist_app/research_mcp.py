@@ -660,9 +660,29 @@ def authorize_team_research(instrument_id: str, source_quote: str) -> dict:
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False))
-def submit_research_review(result: ReviewResult) -> dict:
-    """Submit a research delta from either entrance. Automatic checks cover all requested instruments; conversations may update just studied instruments. reviews[] owns summary, themes, reflection, events and research as sibling fields; never put themes/summary/reflection under research. Theme check receipts belong in themes (theme_id/theme_key); reflection.reviewed_update_ids accepts specific prior judgment/event update_ids, never theme version IDs. change_kind=none needs no summary/notebook; knowledge updates only changed fields; investment publishes material forward changes. Preserve stable keys; omit unchanged fields. Validates scope, original source references and dates; fix reported errors and resubmit. This only retains a draft for independent fact review, and does not publish conclusions or risk events. After success, do not serialize the draft again in prose."""
-    return request("sector-draft", draft_payload(result))
+def submit_research_review(result: SkipValidation[ReviewResult]) -> dict:
+    """Submit a research delta from either entrance. Automatic checks cover all requested instruments; conversations may update just studied instruments. reviews[] owns instrument_id, summary, themes, reflection, events and research as siblings. Under research, modules/questions/facts and investment_view are siblings; coverage_note/coverage_status belong inside investment_view. Never put notebook fields inside investment_view. Theme check receipts belong in themes (theme_id/theme_key); reflection.reviewed_update_ids accepts specific prior judgment/event update_ids, never theme version IDs. change_kind=none needs no summary/notebook; knowledge updates only changed fields; investment publishes material forward changes. Preserve stable keys and omit unchanged fields. On error resubmit the complete result envelope with sparse research deltas, not a copy of the whole notebook or only the last missing field. This only retains a draft for independent fact review, and does not publish conclusions or risk events. After success, do not serialize the draft again in prose."""
+    # Validate raw arguments here: the SDK's default nested models can otherwise
+    # silently discard notebook fields misplaced inside investment_view.
+    try:
+        validated = ReviewResult.model_validate(result, extra="forbid")
+    except ValidationError as error:
+        schema = ReviewResult.model_json_schema()
+        definitions = schema["$defs"]
+        diagnostic = {
+            "error": "invalid_research_review",
+            "issues": [{"loc": ["result", *issue["loc"]], "type": issue["type"], "msg": issue["msg"]}
+                       for issue in error.errors(include_input=False, include_context=False, include_url=False)],
+            "required_result_fields": schema["required"],
+            "required_review_fields": definitions["SectorReview"]["required"],
+            "field_levels": {path: list(definitions[model]["properties"]) for path, model in (
+                ("result.reviews[]", "SectorReview"), ("result.reviews[].research", "ResearchNotebook"),
+                ("result.reviews[].research.investment_view", "InvestmentView"))},
+            "resubmit_mode": "complete_result",
+            "next_action": "本次未保存草稿。按字段路径和field_levels保留正确层级，修正全部错误后重新提交完整result；research仅含实际变化的字段，不重写无关研究。禁止用移动或删除正确内容来绕过错误。",
+        }
+        raise ValueError(json.dumps(diagnostic, ensure_ascii=False, separators=(",", ":"))) from error
+    return request("sector-draft", draft_payload(validated))
 
 
 if __name__ == "__main__":

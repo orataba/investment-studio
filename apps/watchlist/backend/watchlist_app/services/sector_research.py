@@ -919,10 +919,15 @@ def _validate_research_links(session, run, review, themes):
             for model in getattr(review.research, field):
                 row = _merge_partial(model, previous.get(model.key))
                 location = f"research.{field}[key={model.key}]"
-                check_theme(row.get("theme_id"), field=f"{location}.theme_id")
                 active = ((field == "questions" and row.get("tracking_status", "active") == "active")
                           or (field == "forecasts" and row.get("status", "active") == "active")
                           or (field == "catalysts" and row.get("status", "scheduled") == "scheduled"))
+                prior = previous.get(model.key)
+                # Correcting an existing question while keeping it inactive (or
+                # synchronizing its pause) does not resume its original theme.
+                retained_question = (field == "questions" and not active and prior and row.get("theme_id")
+                    and themes.get(row["theme_id"], {}).get("theme_id", row["theme_id"]) == prior.get("theme_id"))
+                check_theme(row.get("theme_id"), field=f"{location}.theme_id", retained_reference=bool(retained_question))
                 if active and not row.get("theme_id"):
                     raise ValueError("持续跟踪的问题和量化判断必须归入重点主题；请关联或建立主题，避免独立跟进事项。")
                 if row.get("event_key") and row["event_key"] not in event_keys:

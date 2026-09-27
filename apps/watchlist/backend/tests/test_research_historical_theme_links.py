@@ -87,6 +87,42 @@ def test_current_item_cannot_resume_stopped_theme_and_error_identifies_field(res
         assert 'theme_id=old-theme' in message and 'paused' in message
 
 
+@pytest.mark.parametrize('theme_status', ['paused', 'closed'])
+@pytest.mark.parametrize('prior_status,update', [
+    ('active', {'tracking_status': 'paused', 'tracking_reason': '同步所属主题的暂停安排'}),
+    ('paused', {}),
+    ('closed', {}),
+])
+def test_existing_question_can_correct_evidence_without_resuming_its_theme(research_client, theme_status, prior_status, update):
+    run, themes = bound_run(theme_status)
+    prior = {'key': 'xlk-volatility-regime', 'theme_id': 'old-theme', 'question': '波动是否持续处于高位？',
+        'assessment': '旧波动率27.5%', 'next_check': '继续观察', 'tracking_status': prior_status,
+        'tracking_reason': '' if prior_status == 'active' else '已停止独立跟踪'}
+    run.context_json['research_dossiers'][0]['notebook']['questions'] = [prior]
+    original = deepcopy(run.context_json)
+    item = {'key': prior['key'], 'theme_id': prior['theme_id'], 'question': prior['question'],
+        'assessment': '现有记录为25.74%，纠正旧证据，未恢复独立跟踪', 'next_check': '由市场量化模块观察', **update}
+    with get_session_factory()() as session:
+        sector_research._validate_research_links(session, run, review(research={'questions': [item]}), themes)
+    assert run.context_json == original
+    assert themes['old-theme']['status'] == theme_status
+
+
+@pytest.mark.parametrize('change', ['new_key', 'different_theme', 'resume'])
+def test_inactive_question_exception_cannot_create_reassign_or_resume_tracking(research_client, change):
+    run, themes = bound_run()
+    prior = {'key': 'existing-question', 'theme_id': 'old-theme', 'question': '原问题',
+        'assessment': '保留判断', 'next_check': '现有观察', 'tracking_status': 'paused', 'tracking_reason': '暂停跟踪'}
+    run.context_json['research_dossiers'][0]['notebook']['questions'] = [prior]
+    themes['another-stopped-theme'] = {'theme_id': 'another-stopped-theme', 'status': 'closed'}
+    item = {**prior, **({'key': 'new-question'} if change == 'new_key' else
+                      {'theme_id': 'another-stopped-theme'} if change == 'different_theme' else
+                      {'tracking_status': 'active', 'tracking_reason': '拟恢复'})}
+    with get_session_factory()() as session:
+        with pytest.raises(ValueError, match=r'research.questions\[key=.*\].theme_id.*(paused|closed)'):
+            sector_research._validate_research_links(session, run, review(research={'questions': [item]}), themes)
+
+
 def test_pm_review_uses_original_revision_ownership_after_note_moves_to_another_theme(research_client):
     from datetime import UTC, datetime
     from watchlist_app.services.research_dossier import read_dossier

@@ -8,6 +8,7 @@ import re
 import shutil
 import signal
 import subprocess
+import time
 from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
 from fastapi import HTTPException
@@ -19,6 +20,34 @@ from watchlist_app.db.session import get_session_factory
 
 ROOT = Path(__file__).resolve().parents[5]
 SCRIPT = ROOT / "apps/watchlist/backend/scripts/run_research_harness.sh"
+
+
+def _stop_process_group(process, *, grace_seconds=5):
+    """Give the whole Harness group its grace period, even if its shell exits first."""
+    deadline = time.monotonic() + grace_seconds
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        process.wait()
+        return
+    try:
+        process.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        pass
+    while True:
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            break
+        time.sleep(min(0.05, remaining))
+    process.wait()
 
 
 def _provider_failure(errors):
@@ -285,12 +314,7 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
             outcome = reply.strip()
             completed = True
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGTERM)
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
+        _stop_process_group(process)
         outcome = "研究助手本次运行超时；可以缩小问题范围后重试。"
         runtime_error = {"type": "TimeoutExpired", "summary": outcome, "exit_code": process.returncode,
                          "retryable": resume_review, "stage": "review" if resume_review else "generation"}
