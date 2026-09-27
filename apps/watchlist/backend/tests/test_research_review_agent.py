@@ -1,3 +1,5 @@
+import asyncio
+from copy import deepcopy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +28,91 @@ def _complete_read(tool, **selector):
                 read(child["path"])
             offset = page["next_offset"]
     read([])
+
+
+def test_review_tool_schema_does_not_share_mutable_registration_or_packet_metadata(monkeypatch, tmp_path):
+    state = _bound(monkeypatch, tmp_path, {"draft_reviews": [], "sources": []})
+    first = next(tool for tool in asyncio.run(review_mcp.mcp.list_tools())
+                 if tool.name == "submit_review_receipts")
+    first.input_schema["required"].clear()
+    first.input_schema["properties"]["receipts"]["properties"]["reviews"]["maxItems"] = 99
+    second = next(tool for tool in asyncio.run(review_mcp.mcp.list_tools())
+                  if tool.name == "submit_review_receipts")
+    assert second.input_schema["required"] == ["receipts"]
+    assert second.input_schema["properties"]["receipts"] == state["response_schema"]
+    assert json.loads((tmp_path / "packet.json").read_text()) == state
+    assert not (tmp_path / "reads.jsonl").exists()
+
+
+def test_reviewer_stdio_advertises_bound_schema_and_preserves_submission_checks(monkeypatch, tmp_path):
+    import os
+    import sys
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    proposed = {"instrument_id": "asset", "summary": "", "events": [{
+        "event_key": "disclosure", "action": "new", "direction": "uncertain", "title": "Disclosure",
+        "body": "The original discloses a fact.", "confidence": "confirmed", "information_type": "fact",
+        "recording_type": "new", "source_ids": ["original"]}], "coverage": [], "research": None,
+        "themes": [{"theme_key": "demand", "title": "Demand", "question": "Does demand persist?",
+                    "synthesis": "The disclosure establishes the baseline.", "next_check": "Next disclosure",
+                    "priority_reason": "Demand affects the investment outlook.", "source_ids": ["original"]}],
+        "reflection": {"status": "reviewed", "summary": "Checked the original.",
+                       "reviewed_update_ids": [], "source_ids": ["original"]}}
+    state = _bound(monkeypatch, tmp_path, {"draft_reviews": [proposed],
+        "sources": [{"source_id": "original", "source_type": "public_source", "instrument_id": "asset",
+                     "text": "The complete retained original."}]})
+    receipts = {"reviews": [{"instrument_id": "asset", "summary": {"decision": "accept"},
+        "change_kind": {"decision": "accept"}, "coverage": {"decision": "accept"},
+        "decisions": [{"event_key": "disclosure", "decision": "accept"}], "research": None,
+        "themes": [{"theme_key": "demand", "decision": "accept"}], "reflection": {"decision": "accept"}}]}
+
+    async def smoke():
+        params = StdioServerParameters(command=sys.executable, args=["-m", "watchlist_app.review_mcp"],
+            cwd=str(Path(__file__).resolve().parents[1]), env={key: os.environ[key] for key in (
+                "INVESTMENT_STUDIO_REVIEW_PACKET", "INVESTMENT_STUDIO_REVIEW_RESULT", "INVESTMENT_STUDIO_REVIEW_READS")})
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                listed = await session.list_tools()
+                tool = next(tool for tool in listed.tools if tool.name == "submit_review_receipts")
+                wire = tool.model_dump(by_alias=True)
+                assert wire["inputSchema"]["required"] == ["receipts"]
+                schema = wire["inputSchema"]["properties"]["receipts"]
+                assert schema == state["response_schema"]
+                fields = schema["properties"]["reviews"]["items"]
+                assert {"themes", "reflection"} <= set(fields["required"])
+                assert fields["properties"]["instrument_id"] == {"const": "asset"}
+                for name, key, identity in (("decisions", "event_key", "disclosure"), ("themes", "theme_key", "demand")):
+                    assert all(variant["properties"][key] == {"enum": [identity]}
+                               for variant in fields["properties"][name]["items"]["oneOf"])
+                assert wire["annotations"]["readOnlyHint"] is False
+                assert not (tmp_path / "reads.jsonl").exists()
+
+                async def rejected(payload, message):
+                    response = await session.call_tool(tool.name, {"receipts": payload})
+                    assert response.is_error
+                    assert message in response.content[0].text
+                    assert not (tmp_path / "result.json").exists()
+
+                await rejected(receipts, "complete draft_reviews")
+                await session.call_tool("read_review_context", {"section": "draft_reviews"})
+                await rejected(receipts, "substantive original evidence")
+                await session.call_tool("read_review_source", {"source_id": "original"})
+                for field in ("themes", "reflection"):
+                    invalid = deepcopy(receipts)
+                    del invalid["reviews"][0][field]
+                    await rejected(invalid, "missing fields: " + field)
+                invalid = deepcopy(receipts)
+                invalid["reviews"][0]["themes"][0]["theme_key"] = "unbound"
+                await rejected(invalid, "Invalid receipt")
+                response = await session.call_tool(tool.name, {"receipts": receipts})
+                assert not response.is_error
+                assert response.structured_content == {"accepted": True, "publication": "pending_application_validation"}
+
+    asyncio.run(smoke())
+    assert json.loads((tmp_path / "result.json").read_text())["receipts"] == receipts
+    assert json.loads((tmp_path / "packet.json").read_text()) == state
 
 
 def test_reviewer_rejects_directory_only_acceptance_and_accepts_selected_complete_original(monkeypatch, tmp_path):
