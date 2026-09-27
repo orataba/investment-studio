@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 import WatchlistsPage from './WatchlistsPage'
@@ -44,12 +44,18 @@ function rows(id: string) {
 
 function Navigation() {
   const navigate = useNavigate()
-  return <button onClick={() => navigate('/watchlists/Beta')}>Open Beta</button>
+  const location = useLocation()
+  return <>
+    <button onClick={() => navigate('/watchlists/Beta')}>Open Beta</button>
+    <button onClick={() => navigate(-1)}>Back</button>
+    <button onClick={() => navigate(1)}>Forward</button>
+    <span aria-label="Current location">{location.pathname}{location.search}</span>
+  </>
 }
 
-function openPage() {
+function openPage(initialEntry = '/watchlists/Alpha') {
   return render(<LanguageProvider enableDomTranslation={false}>
-    <MemoryRouter initialEntries={['/watchlists/Alpha']}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <Navigation />
       <Routes><Route path="/watchlists/:watchlistId" element={<WatchlistsPage />} /></Routes>
     </MemoryRouter>
@@ -151,4 +157,51 @@ it('aborts old row requests without allowing their late result to replace the ne
   expect(screen.getByText('Beta security')).toBeTruthy()
   expect(screen.queryByRole('status')).toBeNull()
   expect(mocks.runScreenerQuery.mock.calls.map(([payload]) => payload.watchlist_id)).toEqual(['Alpha', 'Beta'])
+})
+
+it('preserves navigation when the user switches lists as the first row request starts', async () => {
+  const old = deferred<ReturnType<typeof rows>>()
+  mocks.runScreenerQuery.mockImplementation((payload) => {
+    if (payload.watchlist_id === 'Alpha') {
+      // Dispatch at the loading boundary without nesting testing-library act
+      // inside the component's effect. The pending Alpha request stays unresolved.
+      screen.getByRole('button', { name: 'Open Beta' }).click()
+      return old.promise
+    }
+    return Promise.resolve(rows('Beta'))
+  })
+  openPage()
+  expect(await screen.findByText('Beta security')).toBeTruthy()
+  expect(mocks.runScreenerQuery.mock.calls[0][1].aborted).toBe(true)
+  await act(async () => old.resolve(rows('Alpha')))
+  expect(screen.queryByText('Alpha security')).toBeNull()
+  expect(screen.getByRole('heading', { level: 1, name: 'Beta' })).toBeTruthy()
+  expect(mocks.runScreenerQuery.mock.calls.map(([payload]) => payload.watchlist_id)).toEqual(['Alpha', 'Beta'])
+})
+
+it('restores saved view criteria when navigating back and forward between lists', async () => {
+  const registry = await mocks.getFieldRegistry()
+  mocks.getFieldRegistry.mockResolvedValue({ ...registry, filter_field_keys: ['currency'] })
+  mocks.getWatchlistDetail.mockImplementation(async (id: string) => ({ ...detail(id),
+    available_group_bys: [{ code: 'none', label: 'None' }, { code: 'currency', label: 'Currency' }] }))
+  const search = new URLSearchParams({ view: 'Alpha-overview', q: 'security', group: 'currency',
+    filters: JSON.stringify({ currency: ['USD'] }), sort: JSON.stringify([{ field: 'currency', direction: 'desc' }]) })
+  const alphaLocation = `/watchlists/Alpha?${search}`
+  openPage(alphaLocation)
+  expect(await screen.findByText('Alpha security')).toBeTruthy()
+  expect(screen.getByLabelText('Current location').textContent).toBe(alphaLocation)
+  fireEvent.click(screen.getByRole('button', { name: 'Open Beta' }))
+  expect(await screen.findByText('Beta security')).toBeTruthy()
+  const betaLocation = '/watchlists/Beta?view=Beta-overview'
+  await waitFor(() => expect(screen.getByLabelText('Current location').textContent).toBe(betaLocation))
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+  expect(await screen.findByText('Alpha security')).toBeTruthy()
+  expect(screen.getByLabelText('Current location').textContent).toBe(alphaLocation)
+  expect(mocks.runScreenerQuery.mock.lastCall?.[0]).toMatchObject({
+    watchlist_id: 'Alpha', view_id: 'Alpha-overview', group_by: 'currency',
+    filters: { currency: ['USD'] }, sort: [{ field: 'currency', direction: 'desc' }],
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Forward' }))
+  expect(await screen.findByText('Beta security')).toBeTruthy()
+  await waitFor(() => expect(screen.getByLabelText('Current location').textContent).toBe(betaLocation))
 })

@@ -1,5 +1,5 @@
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
-import React, { lazy, startTransition, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import React, { lazy, startTransition, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useCanWriteTeam } from '../components/AccountBoundary'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { LanguageSelector, matchesSystemLabel, useLanguage } from '../../../../../packages/ui/src/i18n'
@@ -1633,9 +1633,9 @@ export default function WatchlistsPage() {
     ]),
   })
 
-  useEffect(() => {
+  const nextWatchlistSearchKey = useMemo(() => {
     if (!detailIsCurrent || !activeView) {
-      return
+      return null
     }
     const next = new URLSearchParams(watchlistSearchParams)
     next.set('view', activeView.view_id)
@@ -1659,22 +1659,27 @@ export default function WatchlistsPage() {
     } else {
       next.delete('sort')
     }
-    if (next.toString() !== watchlistSearchKey) {
-      setWatchlistSearchParams(next, { replace: true })
-    }
+    return next.toString()
   }, [
     activeView,
     baseFilters,
     baseGroupBy,
     baseSort,
     detailIsCurrent,
-    setWatchlistSearchParams,
     watchlistSearchKey,
     sortRules,
     watchlistSearch,
     workingFilters,
     workingGroupBy,
   ])
+  useLayoutEffect(() => {
+    // Sync the committed view before loading/interaction can navigate away.
+    // Depend on URL values, so equivalent filter objects cannot repeat a stale
+    // replacement while the router is transitioning to another list.
+    if (nextWatchlistSearchKey !== null && nextWatchlistSearchKey !== watchlistSearchKey) {
+      setWatchlistSearchParams(nextWatchlistSearchKey, { replace: true })
+    }
+  }, [nextWatchlistSearchKey, setWatchlistSearchParams, watchlistSearchKey])
   const compactWatchlistColumns = useMemo(
     () =>
       compactTableColumnWidths(
