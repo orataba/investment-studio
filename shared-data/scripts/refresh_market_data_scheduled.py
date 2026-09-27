@@ -183,6 +183,19 @@ def _write_json_atomic(target: Path, payload: dict[str, object]) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
+def _default_summary_file(channel: str, market_scope: str | None) -> Path:
+    if channel == "settlement":
+        name = "market-data-refresh"
+    elif channel == "market":
+        name = f"{market_scope or 'all'}-market-data-refresh"
+    elif channel == "reference":
+        prefix = f"{market_scope}-" if market_scope else ""
+        name = f"{prefix}reference-data-refresh"
+    else:
+        name = f"{channel}-data-refresh"
+    return STATE_ROOT / f"{name}-summary.json"
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Refresh Investment Studio market data without a browser session.")
     parser.add_argument(
@@ -277,10 +290,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--summary-file",
         type=Path,
-        default=STATE_ROOT / "market-data-refresh-summary.json",
-        help="Latest run summary, atomically replaced after each acquired run.",
+        help="Latest run summary, atomically replaced after each acquired run; defaults to a channel/market-specific file.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.summary_file is None:
+        args.summary_file = _default_summary_file(args.channel, args.market_scope)
+    return args
 
 
 def _channels(selected_channel: str) -> list[str]:

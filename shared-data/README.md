@@ -94,6 +94,8 @@ bin/investment-studio data reference refresh INSTRUMENT_ID --apply
 
 `jobs run` 是立即执行的维护作业，不是预览。现有 launchd/systemd 定时任务继续自动运行；`all` 包含邮件/行情/基金净值投影以及资料快照更新。Watchlist 从自己的只读接口读取已采集的共享资料，不因打开页面调用供应商。目录、附件和解析失败仍保留在原来的持久状态中，可用状态命令检查并通过作业重试。
 
+未指定 `--summary-file` 时，摘要按渠道和市场分开保存：`settlement` 保留 `market-data-refresh-summary.json`，`reference` 和有市场范围的行情沿用 `[市场-]reference-data-refresh-summary.json`、`市场-market-data-refresh-summary.json`，无市场范围的行情使用 `all-market-data-refresh-summary.json`，其余渠道使用 `渠道-data-refresh-summary.json`；显式指定的路径保持原样，公共数据投影不会覆盖结算摘要或运行状态。
+
 ### 比特币现货
 
 BTC/USD现货使用独立`crypto`身份和已采集的`market_series_daily/BTCUSD`，沿用共享数值库的来源版本与原文引用。`refresh instrument`的FMP路径将已完成UTC日线投影到Instrument Data；全年保留周末，未结束当日不发布close。不把供应商单位未明确的aggregate volume写成BTC数量或股票股数，不使用股票的拆股复权通道。完整保留的序列重放也会更新较早的来源修订，未变化的数据写入幂等。

@@ -20,6 +20,71 @@ scheduled_refresh = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(scheduled_refresh)
 
 
+@pytest.mark.parametrize(
+    ("arguments", "filename"),
+    [
+        ([], "all-data-refresh-summary.json"),
+        (["--channel", "all"], "all-data-refresh-summary.json"),
+        (["--channel", "settlement"], "market-data-refresh-summary.json"),
+        (["--channel", "market"], "all-market-data-refresh-summary.json"),
+        (["--channel", "reference"], "reference-data-refresh-summary.json"),
+        *[
+            (["--channel", channel], f"{channel}-data-refresh-summary.json")
+            for channel in ("email", "tushare", "fmp", "projection")
+        ],
+        *[
+            (
+                ["--channel", channel, "--market-scope", scope],
+                f"{scope}-{channel}-data-refresh-summary.json",
+            )
+            for channel in ("market", "reference")
+            for scope in ("cn", "hk", "cn-hk", "us")
+        ],
+    ],
+)
+def test_summary_default_separates_channels_and_preserves_scheduled_names(
+    monkeypatch, tmp_path, arguments, filename
+):
+    monkeypatch.setattr(scheduled_refresh, "STATE_ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT_PATH), *arguments])
+    args = scheduled_refresh._parse_args()
+    assert args.summary_file == tmp_path / filename
+    assert args.lock_file == tmp_path / "market-data-refresh.lock"
+
+
+@pytest.mark.parametrize("channel", ["all", "settlement", "market", "reference"])
+def test_explicit_summary_file_keeps_caller_path(monkeypatch, tmp_path, channel):
+    target = tmp_path / "private" / "receipt.json"
+    monkeypatch.setattr(
+        sys, "argv", [str(SCRIPT_PATH), "--channel", channel, "--summary-file", str(target)]
+    )
+    assert scheduled_refresh._parse_args().summary_file == target
+
+
+def test_pipeline_projection_summaries_do_not_replace_settlement(monkeypatch, tmp_path):
+    monkeypatch.setattr(scheduled_refresh, "STATE_ROOT", tmp_path)
+    settlement = tmp_path / "market-data-refresh-summary.json"
+    run_state = tmp_path / "market-data-refresh-run-state.json"
+    original = b'{"channel":"settlement","status":"failed","exit_code":1}\n'
+    settlement.write_bytes(original)
+    run_state.write_bytes(original)
+    monkeypatch.setattr(scheduled_refresh, "_wait_for_database", lambda **kwargs: 1)
+    monkeypatch.setattr(
+        scheduled_refresh, "_run_refresh",
+        lambda args, **kwargs: (0, {"channel": args.channel, "status": "succeeded"}),
+    )
+    for channel, filename in (
+        ("market", "all-market-data-refresh-summary.json"),
+        ("reference", "reference-data-refresh-summary.json"),
+        ("all", "all-data-refresh-summary.json"),
+    ):
+        monkeypatch.setattr(sys, "argv", [str(SCRIPT_PATH), "--channel", channel])
+        assert scheduled_refresh.main() == 0
+        assert json.loads((tmp_path / filename).read_text())["channel"] == channel
+        assert settlement.read_bytes() == run_state.read_bytes() == original
+    assert json.loads((tmp_path / "all-market-data-refresh-summary.json").read_text())["channel"] == "market"
+
+
 def test_configured_fmp_failure_keeps_later_scheduled_instruments_running(monkeypatch):
     from contextlib import nullcontext
     from studio_data.services import market_data_ops
