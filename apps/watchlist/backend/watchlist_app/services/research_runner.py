@@ -249,7 +249,10 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
                 env={**os.environ, "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN": current_principal().credential,
                      "INVESTMENT_STUDIO_RESEARCH_RESUME_GENERATION": "1" if sector_run and prepared and not resume_review else "0",
                      "INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW": "1" if resume_review else "0"})
-            reply, errors = process.communicate(timeout=1800 if not risk_run else 900)
+            # A portfolio's complete current/prior evidence can require more
+            # reads than one instrument investigation. Keep the same bounded
+            # runtime for both, including all required evidence continuations.
+            reply, errors = process.communicate(timeout=1800)
             returncode = process.returncode
         if returncode:
             runtime_error = {"type": "ProcessExit", "summary": "研究运行进程退出，未生成有效结果。", "exit_code": process.returncode}

@@ -531,6 +531,7 @@ def test_structured_submission_preserves_quotes_and_runner_uses_it_without_conso
     class Process:
         returncode = 0
         def communicate(self, timeout):
+            assert timeout == 1800
             read_required_pages(client, rid)
             response = client.post(f"/api/research/runs/{rid}/risk-draft", json=payload)
             assert response.status_code == 200, response.text
