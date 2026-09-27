@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from copy import deepcopy
 
 import pytest
 from studio_identity import Principal, principal_context
@@ -6,16 +7,16 @@ from studio_identity import Principal, principal_context
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
 from watchlist_app.services import research_access, sector_research
-from watchlist_app.services.research_activity import research_activity, review_agenda
+from watchlist_app.services.research_activity import research_activity, review_agenda, review_receipts
 from watchlist_app.services.research_dossier import _notebooks
-from watchlist_app.services.research_themes import ThemeInput, ThemePatch, save_theme
+from watchlist_app.services.research_themes import ThemeInput, ThemePatch, get_theme, save_theme
 
 from .test_research_activity import activity_client, event, publish
 
 
 @pytest.mark.parametrize("original_kind", ["question", "forecast"])
-def test_automatic_review_cannot_resume_paused_theme_through_implicit_original_link(activity_client, original_kind):
-    """An original-version reference carries the same lifecycle scope as theme_id."""
+def test_automatic_historical_review_preserves_paused_theme_and_original_link(activity_client, original_kind):
+    """A retained reference permits review without creating a current theme assignment."""
     with get_session_factory()() as session:
         theme = save_theme(session, "xlk", ThemeInput(title="融资效果", question="资金是否改善经营？"))
         session.commit()
@@ -30,9 +31,23 @@ def test_automatic_review_cannot_resume_paused_theme_through_implicit_original_l
         session.commit()
         reference = ({"related_research_update_id": original["update_id"]} if original_kind == "question" else
             {"forecast_key": "funding", "forecast_version_id": original["reference"]["forecast_version_id"]})
+        stopped_theme = deepcopy(get_theme(session, "xlk", theme["theme_id"]).context_json)
+        notebook_before, _ = _notebooks(session, "xlk", False)
+        review = {"key": "funding-review", **reference,
+            "outcome": "回看原判断的经营效果，不恢复已暂停主题。", "source_ids": ["original"]}
+        publish(session, research={"forecast_reviews": [review]})
+        notebook_after, _ = _notebooks(session, "xlk", False)
+        assert notebook_after[f"{original_kind}s"] == notebook_before[f"{original_kind}s"]
+        retained_review = notebook_after["forecast_reviews"][0]
+        assert all(retained_review[key] == value for key, value in reference.items())
+        assert get_theme(session, "xlk", theme["theme_id"]).context_json == stopped_theme
+        assert next(row for row in research_activity(session, "xlk")["updates"]
+                    if row["update_id"] == original["update_id"]) == original
+        agenda = review_agenda(session, "xlk", notebook_after, [])
+        assert agenda["tracked_questions"] == [] and agenda["active_forecasts"] == []
+        # Assigning the current review itself to the stopped theme still fails.
         with pytest.raises(ValueError, match="暂停或结束"):
-            publish(session, research={"forecast_reviews": [{"key": "funding-review", **reference,
-                "outcome": "自动研究继续评估了已暂停问题。", "source_ids": ["original"]}]})
+            publish(session, research={"forecast_reviews": [{**review, "key": "new-current-review", "theme_id": theme["theme_id"]}]})
 
 
 @pytest.mark.parametrize("status", ["paused", "closed"])
@@ -65,7 +80,7 @@ def test_review_agenda_omits_inactive_theme_assignments_but_keeps_shared_events(
 
 @pytest.mark.parametrize("status", ["paused", "closed"])
 @pytest.mark.parametrize("kind", ["question", "forecast"])
-def test_reflection_cannot_recheck_an_inactive_theme_assignment(activity_client, status, kind):
+def test_reflection_can_check_history_without_resuming_an_inactive_theme_assignment(activity_client, status, kind):
     with get_session_factory()() as session:
         theme = save_theme(session, "xlk", ThemeInput(title="融资效果", question="资金是否改善经营？"))
         session.commit()
@@ -79,17 +94,25 @@ def test_reflection_cannot_recheck_an_inactive_theme_assignment(activity_client,
         shared_event = next(row for row in updates if row["kind"] == "event")
         save_theme(session, "xlk", ThemePatch(status=status), theme_id=theme["theme_id"])
         session.commit()
-        with pytest.raises(ValueError, match="暂停或结束"):
-            publish(session, reflection={"status": "reviewed", "summary": "专属问题已复核",
-                "reviewed_update_ids": [assignment["update_id"]]})
-        session.rollback()
-        # A failed validation is not a completed run; clear this fixture's queue before the next attempt.
-        for run in session.query(ResearchEntry).filter(ResearchEntry.status == "queued"):
-            run.status = "failed"
-        session.commit()
+        stopped_theme = deepcopy(get_theme(session, "xlk", theme["theme_id"]).context_json)
+        notebook_before, _ = _notebooks(session, "xlk", False)
+        reviewed = publish(session, reflection={"status": "reviewed", "summary": "回看原判断，不恢复跟踪",
+            "reviewed_update_ids": [assignment["update_id"]]})
+        receipt = review_receipts(session, "xlk")[assignment["update_id"]]
+        assert receipt["last_reviewed_at"] == reviewed.completed_at.isoformat()
         published = publish(session, reflection={"status": "reviewed", "summary": "只复核共享事件的新事实",
             "reviewed_update_ids": [shared_event["update_id"]]})
         assert published.context_json["reviews"]["xlk"]["reflection"]["reviewed_update_ids"] == [shared_event["update_id"]]
+        assert review_receipts(session, "xlk")[assignment["update_id"]] == receipt
+        assert get_theme(session, "xlk", theme["theme_id"]).context_json == stopped_theme
+        notebook_after, _ = _notebooks(session, "xlk", False)
+        assert notebook_after[f"{kind}s"] == notebook_before[f"{kind}s"]
+        assert next(row for row in research_activity(session, "xlk")["updates"]
+                    if row["update_id"] == assignment["update_id"]) == assignment
+        agenda = review_agenda(session, "xlk", notebook_after, [])
+        assert agenda["tracked_questions"] == [] and agenda["active_forecasts"] == []
+        with pytest.raises(ValueError, match="暂停或结束"):
+            publish(session, research={f"{kind}s": [{**research[f"{kind}s"][0], "key": "new-current-assignment"}]})
 
 
 def test_theme_creation_or_status_change_is_not_a_checked_judgment(activity_client):

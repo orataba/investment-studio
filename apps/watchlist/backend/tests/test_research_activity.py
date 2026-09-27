@@ -403,6 +403,7 @@ def test_activity_clock_normalizes_database_and_source_offsets_before_ordering()
 @pytest.mark.parametrize("status", ["paused", "closed"])
 def test_review_agenda_excludes_inactive_theme_pm_checks_but_preserves_original_opinions(activity_client, status):
     from watchlist_app.services.research_dossier import read_dossier
+    from watchlist_app.services.research_themes import get_theme
     client = activity_client
     theme = client.post("/api/research/instruments/xlk/themes", json={"title": "资金改善", "question": "资金是否改善经营"}).json()
     for title, context in (("主题内投资观点", {"theme_id": theme["theme_id"]}), ("独立投资观点", {"background": "基于融资披露形成的独立经营判断"})):
@@ -420,9 +421,20 @@ def test_review_agenda_excludes_inactive_theme_pm_checks_but_preserves_original_
         assert {row["title"] for row in dossier["pm_views"]} == {"主题内投资观点", "独立投资观点"}
         original = next(row for row in research_activity(session, "xlk")["updates"]
                         if row["kind"] == "opinion" and row["title"] == "主题内投资观点")
+        stopped_theme = deepcopy(get_theme(session, "xlk", theme["theme_id"]).context_json)
+        reviewed = publish(session, reflection={"status": "reviewed", "summary": "复核历史观点，不恢复主题研究",
+            "reviewed_update_ids": [original["update_id"]]})
+        after = read_dossier(session, "xlk")
+        assert after["pm_views"] == dossier["pm_views"]
+        assert [row["title"] for row in after["review_agenda"]["pm_views"]] == ["独立投资观点"]
+        assert get_theme(session, "xlk", theme["theme_id"]).context_json == stopped_theme
+        assert next(row for row in research_activity(session, "xlk")["updates"]
+                    if row["update_id"] == original["update_id"]) == original
+        assert review_receipts(session, "xlk")[original["update_id"]]["last_reviewed_at"] == reviewed.completed_at.isoformat()
         with pytest.raises(ValueError, match="暂停或结束"):
-            publish(session, reflection={"status": "reviewed", "summary": "复核暂停主题观点",
-                "reviewed_update_ids": [original["update_id"]]})
+            publish(session, research={"questions": [{"key": "new-theme-followup", "theme_id": theme["theme_id"],
+                "question": "继续跟踪这项历史观点？", "assessment": "准备重新核对经营效果", "next_check": "下一次披露",
+                "tracking_status": "active", "source_ids": ["original"]}]})
 
 
 def test_event_receipt_does_not_check_its_grouped_question_or_theme_judgment(activity_client):

@@ -23,11 +23,15 @@ def bound_context():
         "research_context": {"records": [{"kind": "pm_view", "source_id": f"{iid}-{i}",
             "value": {"body": "原始判断" * 1500}} for i in range(4)]}}
         for iid in ("risk-a", "risk-b")]
-    snapshot = {"instrument_ids": [row["instrument_id"] for row in instruments], "instruments": instruments,
+    snapshot = {"scope": {"kind": "watchlist", "id": "risk-list", "name": "范围列表"},
+                "instrument_ids": [row["instrument_id"] for row in instruments], "instruments": instruments,
                 "research": [], "quantitative": [], "coverage": [], "limitations": []}
     prior = copy.deepcopy(snapshot)
     snapshot["instruments"][1]["research_context"]["records"] = []  # Previous-only evidence remains required.
-    snapshot["research"] = [{"instrument_id": "risk-a", "case_id": f"case-{i}", "body": "风险原文" * 1200} for i in range(4)]
+    snapshot["research"] = [{"instrument_id": "risk-a", "case_id": f"case-{i}",
+        "signal": f"sector:risk-{i}", "body": "风险原文" * 1200,
+        "evidence_json": {"event_version_id": f"event-version-{i}", "risk_assessment": {"status": "pending"}}}
+        for i in range(4)]
     return {"risk_run": True, "risk_scope": {"watchlist_id": "risk-list"},
             "cutoff": "2026-09-20T00:00:00+00:00", "prepared_at": "2026-09-20T00:00:01+00:00",
             "risk_inputs": snapshot, "prior_inputs": prior, "risk_delivered_pages": []}
@@ -54,6 +58,11 @@ def read(client, run_id, instruction):
 
 
 RESULT = {"summary": "保留范围与证据限制。", "priorities": [], "limitations": []}
+# Bound research referrals must have individual versioned assessments; these
+# delivery tests reject only unread pages, not an incomplete risk proposal.
+REFERRAL_RESULT = {**RESULT, "case_assessments": [{"case_id": f"case-{i}",
+    "event_version_id": f"event-version-{i}", "status": "pending",
+    "reason": "已核对原事件，现有证据不足以确认风险影响，保留待跟踪。"} for i in range(4)]}
 
 
 def test_missing_page_blocks_submission_until_exact_bound_next_pages_delivered(client):
@@ -69,7 +78,7 @@ def test_missing_page_blocks_submission_until_exact_bound_next_pages_delivered(c
     # Reading the end, a subset offset, or the first page twice is not closure.
     read(client, rid, first)
     read(client, rid, {**first, "offset": packet["total"]})
-    reply = client.post(f"/api/research/runs/{rid}/risk-draft", json=RESULT)
+    reply = client.post(f"/api/research/runs/{rid}/risk-draft", json=REFERRAL_RESULT)
     assert reply.status_code == 422
     detail = reply.json()["detail"]
     assert detail["error"] == "risk_reads_incomplete"
@@ -81,8 +90,8 @@ def test_missing_page_blocks_submission_until_exact_bound_next_pages_delivered(c
         assert response.status_code == 200, response.text
         assert len(response.content) <= 48000
     assert missing_required_reads(state(rid)) == []
-    assert client.post(f"/api/research/runs/{rid}/risk-draft", json=RESULT).status_code == 200
-    assert state(rid)["submitted_risk_review"] == {**RESULT, "case_assessments": []}
+    assert client.post(f"/api/research/runs/{rid}/risk-draft", json=REFERRAL_RESULT).status_code == 200
+    assert state(rid)["submitted_risk_review"] == REFERRAL_RESULT
 
 
 def test_batch_overview_delivers_every_member_and_repeat_does_not_rewrite_context(client):
@@ -154,18 +163,18 @@ def test_prepare_resets_delivery_and_accepted_draft_and_terminal_history_is_immu
     rid = prepare_fixture(client)
     for instruction in missing_required_reads(state(rid)):
         assert read(client, rid, instruction).status_code == 200
-    assert client.post(f"/api/research/runs/{rid}/risk-draft", json=RESULT).status_code == 200
+    assert client.post(f"/api/research/runs/{rid}/risk-draft", json=REFERRAL_RESULT).status_code == 200
     monkeypatch.setattr(service, "read_snapshot", lambda *a, **k: {**bound_context()["risk_inputs"], "scope_available": True})
     service.prepare_run(rid)
     assert state(rid)["risk_delivered_pages"] == []
     assert "submitted_risk_review" not in state(rid)
-    assert client.post(f"/api/research/runs/{rid}/risk-draft", json=RESULT).status_code == 422
+    assert client.post(f"/api/research/runs/{rid}/risk-draft", json=REFERRAL_RESULT).status_code == 422
     with get_session_factory()() as session:
         session.get(ResearchEntry, rid).status = "completed"
         session.commit()
     before = state(rid)
     assert read(client, rid, {"section": "instrument_overviews"}).status_code == 409
-    assert client.post(f"/api/research/runs/{rid}/risk-draft", json=RESULT).status_code == 409
+    assert client.post(f"/api/research/runs/{rid}/risk-draft", json=REFERRAL_RESULT).status_code == 409
     with pytest.raises(ValueError, match="已结束"):
         service.prepare_run(rid)
     assert state(rid) == before
