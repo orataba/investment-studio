@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useStudioAccount } from './AccountBoundary'
 import ResearchMandateRecord from './ResearchMandateRecord'
 import InvestmentResearchState from './InvestmentResearchState'
@@ -170,6 +170,9 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
   const [adding, setAdding] = useState(false)
   const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
   const [refresh, setRefresh] = useState(0)
+  const [themeIndex, setThemeIndex] = useState<{ instrumentId: string; names: Record<string, string> } | null>(null)
+  const onThemeNamesChange = useCallback((names: Record<string, string>) => setThemeIndex({ instrumentId, names }), [instrumentId])
+  const themeNames = themeIndex?.instrumentId === instrumentId ? themeIndex.names : {}
   useEffect(() => {
     const updated = (event: Event) => {
       if ((event as CustomEvent<string[]>).detail.includes(instrumentId)) setRefresh(value => value + 1)
@@ -217,8 +220,8 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
     {error && <p role="alert">研究档案暂时无法读取：{error}</p>}
     <div id={`research-summary-${instrumentId}`} className="research-report-summary">{notebook?.investment_view || notebook?.decision_brief ? <InvestmentResearchState mode="view" compact instrumentId={instrumentId} notebook={notebook} sources={ids => <SourceList instrumentId={instrumentId} versionId={notebook.version_id} sources={selectedSources(ids)} />} onAskAssistant={ask} /> : <section aria-label="当前机会与风险"><h2>当前机会与风险</h2><p className="research-empty-judgment">研究基线尚未建立，尚不能判断机会与风险。可通过“更新研究”建立初始认识。</p></section>}</div>
     {variant === 'full' && <>
-      <div id={`research-events-${instrumentId}`} className="research-report-events"><ResearchRecentEvents instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={ask} /></div>
-      <section id={`research-tracking-${instrumentId}`} className="research-report-tracking"><ResearchThemesPanel instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={ask} /></section>
+      <div id={`research-events-${instrumentId}`} className="research-report-events"><ResearchRecentEvents instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={ask} themeNames={themeNames} /></div>
+      <section id={`research-tracking-${instrumentId}`} className="research-report-tracking"><ResearchThemesPanel instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={ask} onThemeNamesChange={onThemeNamesChange} /></section>
       <div id={`research-quant-${instrumentId}`}><ResearchQuantObservations instrumentId={instrumentId} notebook={notebook} onAskAssistant={ask} /></div>
       <footer className="research-report-library" aria-label="研究资料与设置"><div className="research-library-links">
       <ResearchReadingAside label="基础档案" title="基础档案">

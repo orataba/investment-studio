@@ -107,8 +107,8 @@ function ThemeRecord({ theme, instrumentId, canWrite, onAskAssistant }: ThemeRec
   </article>
 }
 
-export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, readOnly = false }: {
-  instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; readOnly?: boolean
+export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, readOnly = false, onThemeNamesChange }: {
+  instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; readOnly?: boolean; onThemeNamesChange?: (names: Record<string, string>) => void
 }) {
   const [snapshot, setSnapshot] = useState<{ instrumentId: string; data: ResearchThemesResponse } | null>(null)
   const data = snapshot?.instrumentId === instrumentId ? snapshot.data : null
@@ -119,6 +119,9 @@ export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewS
   const [refresh, setRefresh] = useState(0)
   const mutationScope = useRef<object | null>(null)
   const canWrite = Boolean(data && data.identity.team_role !== 'reader' && !readOnly)
+  useEffect(() => {
+    if (data) onThemeNamesChange?.(Object.fromEntries(data.themes.map(theme => [theme.theme_id, theme.title])))
+  }, [data, onThemeNamesChange])
   useEffect(() => {
     mutationScope.current = {}
     setSnapshot(null); setDraft(null); setNotice(null); setSaving(false)

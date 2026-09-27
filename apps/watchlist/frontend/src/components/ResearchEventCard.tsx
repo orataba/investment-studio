@@ -23,7 +23,7 @@ export function ReferencedResearchEvent({ instrumentId, eventKey }: { instrument
   return state.event ? <ResearchEventCard update={state.event} initiallyOpen /> : state.error ? <p role="alert">{state.error}</p> : <ResearchLoading />
 }
 
-function EventHistory({ update, onAskAssistant }: { update: ResearchUpdate; onAskAssistant?: AskResearchAssistant }) {
+function EventHistory({ update, onAskAssistant, themeNames }: { update: ResearchUpdate; onAskAssistant?: AskResearchAssistant; themeNames: Record<string, string> }) {
   const [data, setData] = useState<ResearchEventsResponse | null>(null)
   const [offset, setOffset] = useState(0)
   const [error, setError] = useState('')
@@ -40,12 +40,12 @@ function EventHistory({ update, onAskAssistant }: { update: ResearchUpdate; onAs
   return <div className="research-event-history" aria-busy={loading}>
     {error && <p role="alert">{error}</p>}
     {loading && !data && <ResearchLoading />}
-    {data?.events.map(record => <ResearchUpdateCard key={record.update_id} update={record} onAskAssistant={onAskAssistant} compact />)}
+    {data?.events.map(record => <ResearchUpdateCard key={record.update_id} update={record} onAskAssistant={onAskAssistant} themeNames={themeNames} compact />)}
     {data?.has_more && data.next_offset !== null && <button type="button" disabled={loading} onClick={() => setOffset(data.next_offset!)}>加载更多版本</button>}
   </div>
 }
 
-export default function ResearchEventCard({ update, onAskAssistant, initiallyOpen = false }: { update: ResearchUpdate; onAskAssistant?: AskResearchAssistant; initiallyOpen?: boolean }) {
+export default function ResearchEventCard({ update, onAskAssistant, initiallyOpen = false, themeNames = {} }: { update: ResearchUpdate; onAskAssistant?: AskResearchAssistant; initiallyOpen?: boolean; themeNames?: Record<string, string> }) {
   const [recordOpen, setRecordOpen] = useState(false)
   const [pinState, setPinState] = useState<{ updateId: string; version: string; pinned: boolean } | null>(null)
   const [saving, setSaving] = useState(false)
@@ -59,6 +59,7 @@ export default function ResearchEventCard({ update, onAskAssistant, initiallyOpe
   const pinned = pinState?.updateId === update.update_id ? pinState.pinned : update.follow_up_pinned
   const views = update.market_views || []
   const reaction = update.market_reaction
+  const linkedThemes = [...new Set(update.theme_ids)].filter(id => themeNames[id])
   async function togglePin() {
     if (!canWrite || saving || !reference.event_case_id || !versionId) return
     setSaving(true); setError('')
@@ -108,9 +109,12 @@ export default function ResearchEventCard({ update, onAskAssistant, initiallyOpe
     {(update.risk_assessment?.status === 'pending' || update.risk_assessment?.status === 'failed') && <p className="research-event-risk-status">{update.risk_assessment.status === 'pending' ? '已提交／待风控复核' : '风控复核未完成'}</p>}
     <div className="research-event-reading-tools">
       {!initiallyOpen && <ResearchReadingAside label="查看影响、公开观点与依据" title={update.title}>{details}</ResearchReadingAside>}
-      {update.event_key && <ResearchReadingAside label="研究修订历史" title={`${update.title} · 研究修订历史`} onOpenChange={setRecordOpen}>{recordOpen && <EventHistory update={update} onAskAssistant={onAskAssistant} />}</ResearchReadingAside>}
-      {update.theme_ids.map(id => <a className="research-support-link" key={id} href={`#research-theme-${encodeURIComponent(id)}`}>关联主题</a>)}
+      {update.event_key && <ResearchReadingAside label="研究修订历史" title={`${update.title} · 研究修订历史`} onOpenChange={setRecordOpen}>{recordOpen && <EventHistory update={update} onAskAssistant={onAskAssistant} themeNames={themeNames} />}</ResearchReadingAside>}
     </div>
+    {linkedThemes.length > 0 && <div className="research-update-themes" aria-label="关联主题">{linkedThemes.map(id => <a key={id} href={`#research-theme-${encodeURIComponent(id)}`} onClick={() => {
+      let ancestor = document.getElementById(`research-theme-${encodeURIComponent(id)}`)?.parentElement
+      while (ancestor) { if (ancestor instanceof HTMLDetailsElement) ancestor.open = true; ancestor = ancestor.parentElement }
+    }} translate="no">{themeNames[id]}</a>)}</div>}
     {initiallyOpen && details}
     <ResearchEntryActions update={update} onAskAssistant={onAskAssistant} />
   </article>

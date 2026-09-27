@@ -201,9 +201,12 @@ it('translates the working surface while preserving original research text', asy
 it('loads theme detail only when expanded and opens an archived theme from a link', async () => {
   const second = theme({ theme_id: 'second', title: '盈利能否覆盖投入？', synthesis: '第二个主题的完整分析。', status: 'paused' })
   api.get.mockResolvedValue({ identity, themes: [theme(), second] })
-  const { container } = render(<ResearchThemesPanel instrumentId="gold" />)
+  const namesChanged = vi.fn()
+  const { container } = render(<ResearchThemesPanel instrumentId="gold" onThemeNamesChange={namesChanged} />)
   await screen.findByRole('heading', { name: theme().title })
   expect(api.get).toHaveBeenCalledWith('gold', expect.any(AbortSignal), false)
+  expect(namesChanged).toHaveBeenLastCalledWith({ [theme().theme_id]: theme().title, second: second.title })
+  expect(api.get).toHaveBeenCalledTimes(1)
   expect(api.detail).not.toHaveBeenCalled()
   expect(container.querySelectorAll('.research-theme-record')).toHaveLength(0)
   await openTheme(theme().title)

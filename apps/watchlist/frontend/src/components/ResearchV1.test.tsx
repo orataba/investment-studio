@@ -243,3 +243,22 @@ it('presents dated facts, investment impact, ratings and direct actions before o
   fireEvent.click(screen.getByRole('button', { name: '保存投资观点' }))
   await waitFor(() => expect(api.note).toHaveBeenCalledWith('stock', expect.objectContaining({ note: expect.objectContaining({ research_context: expect.objectContaining({ event_case_id: 'case-1', event_version_id: 'event:1:v1' }) }) })))
 })
+
+it('names linked themes from the existing index and reveals an archived target before navigation', async () => {
+  api.events.mockResolvedValue(response([event({ theme_ids: ['demand', 'paused-theme', 'demand', 'missing'] })]))
+  const names = { demand: 'AI需求兑现', 'paused-theme': '算力投入回报' }
+  const { container } = render(<><ResearchRecentEvents instrumentId="stock" themeNames={names} />
+    <details><summary>暂停主题</summary><article id="research-theme-paused-theme">已暂停的研究</article></details>
+  </>)
+  const demand = await screen.findByRole('link', { name: names.demand })
+  expect(demand.getAttribute('href')).toBe('#research-theme-demand')
+  const paused = screen.getByRole('link', { name: names['paused-theme'] })
+  expect(paused.getAttribute('href')).toBe('#research-theme-paused-theme')
+  expect(screen.queryByRole('link', { name: '关联主题' })).toBeNull()
+  expect(container.querySelectorAll('.research-update-themes a')).toHaveLength(2)
+  const archive = screen.getByText('暂停主题').closest('details')!
+  expect(archive.open).toBe(false)
+  fireEvent.click(paused)
+  expect(archive.open).toBe(true)
+  expect(api.events).toHaveBeenCalledTimes(1)
+})

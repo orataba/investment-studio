@@ -5,8 +5,8 @@ import ResearchEventCard from './ResearchEventCard'
 import ResearchLoading from '../../../../../packages/ui/src/WorkspaceSkeleton'
 import InfoHint from '../../../../../packages/ui/src/InfoHint'
 
-export default function ResearchRecentEvents({ instrumentId, reviewRunId, reviewStatus, onAskAssistant }: {
-  instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant
+export default function ResearchRecentEvents({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, themeNames = {} }: {
+  instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; themeNames?: Record<string, string>
 }) {
   const [scope, setScope] = useState<ResearchEventScope>('recent')
   const [offset, setOffset] = useState(0)
@@ -50,9 +50,9 @@ export default function ResearchRecentEvents({ instrumentId, reviewRunId, review
     {data && !data.events.length && <p className="sector-research-note">{scope === 'recent' ? '近 7 天没有已记录的重要事件；这不代表没有风险。' : scope === 'watch' ? '暂无主动跟进的事件。' : '尚无事件记录。'}</p>}
     <div className="research-event-timeline">{[...groups].map(([day, events]) => <section className="research-event-day" key={day} aria-label={day}>
       <div className="research-event-date"><time dateTime={/^\d{4}-\d{2}-\d{2}$/.test(day) ? day : undefined}><span>{/^\d{4}-\d{2}-\d{2}$/.test(day) ? day.slice(5).replace('-', '.') : day}</span>{/^\d{4}-\d{2}-\d{2}$/.test(day) && <small>{day.slice(0, 4)}</small>}</time><span className="research-event-day-count">{events.length}</span></div>
-      <div className="research-event-day-entries">{events.map(update => <ResearchEventCard key={update.update_id} update={update} onAskAssistant={onAskAssistant} />)}</div>
+      <div className="research-event-day-entries">{events.map(update => <ResearchEventCard key={update.update_id} update={update} onAskAssistant={onAskAssistant} themeNames={themeNames} />)}</div>
     </section>)}</div>
-    {!!data?.late_arrivals.length && <details className="research-event-backfills"><summary>补录与日期待核实 · {lateCount}</summary>{data.late_arrivals.map(update => <ResearchEventCard key={update.update_id} update={update} onAskAssistant={onAskAssistant} />)}
+    {!!data?.late_arrivals.length && <details className="research-event-backfills"><summary>补录与日期待核实 · {lateCount}</summary>{data.late_arrivals.map(update => <ResearchEventCard key={update.update_id} update={update} onAskAssistant={onAskAssistant} themeNames={themeNames} />)}
       {lateCount > data.late_arrivals.length && <p className="sector-research-note">已显示 {data.late_arrivals.length} / {lateCount} 项，其余记录保留在历史中。 <button type="button" className="research-support-link" onClick={() => { setScope('history'); setOffset(0) }}>查看历史记录</button></p>}
     </details>}
     {data?.has_more && data.next_offset !== null && <button type="button" disabled={loading} onClick={() => setOffset(data.next_offset!)}>加载更多事件</button>}
