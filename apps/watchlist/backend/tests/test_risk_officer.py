@@ -458,6 +458,67 @@ def read_required_pages(client, run_id):
         assert response.status_code == 200, response.text
 
 
+def test_large_risk_page_requires_actual_continuations_before_submission(client):
+    import copy
+    from watchlist_app.services.risk_read_projection import missing_required_reads
+    seed(client)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, instrument_id="risk-a")
+        rid = run.entry_id
+    service.prepare_run(rid)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, rid)
+        context = copy.deepcopy(run.context_json)
+        case = context["risk_inputs"]["research"][0]
+        case["evidence_json"]["source_views"] = [{"source_id": "retained-source", "view": "原始完整来源及反证。" * 7000}]
+        context["prior_inputs"] = copy.deepcopy(context["risk_inputs"])
+        context["prior_inputs"]["research"][0]["body"] = "上次完整风险判断。" * 7000
+        run.context_json, run.status = context, "running"
+        immutable = {key: copy.deepcopy(context.get(key)) for key in ("risk_inputs", "prior_inputs", "cutoff")}
+        prior_case = copy.deepcopy(session.get(RiskCase, "research").evidence_json)
+        session.commit()
+    # All original indexes/pages are delivered, but the large row is only a directory.
+    read_required_pages(client, rid)
+    response = client.post(f"/api/research/runs/{rid}/risk-draft", json=reply())
+    assert response.status_code == 422
+    remaining = response.json()["detail"]["missing_reads"]
+    assert remaining and all(read.get("page_offset") is not None for read in remaining)
+    with get_session_factory()() as session:
+        delivered_before = copy.deepcopy(session.get(ResearchEntry, rid).context_json["risk_delivered_pages"])
+    for invalid in (
+        {"instrument_id": "risk-a", "section": "cases", "page_offset": 0, "path": ["outside"]},
+        {"instrument_id": "outside", "section": "cases", "page_offset": 0, "path": []},
+        {"instrument_id": "risk-a", "section": "cases", "page_offset": 0, "path": [], "offset": 9999},
+        {"instrument_id": "risk-a", "section": "cases", "path": ["current"]},
+    ):
+        assert client.post(f"/api/research/runs/{rid}/risk-read", json=invalid).status_code == 422
+    with get_session_factory()() as session:
+        assert session.get(ResearchEntry, rid).context_json["risk_delivered_pages"] == delivered_before
+    calls = 0
+    while remaining:
+        for read in remaining:
+            response = client.post(f"/api/research/runs/{rid}/risk-read",
+                                  json={key: value for key, value in read.items() if key != "tool"})
+            assert response.status_code == 200, response.text
+            assert len(response.content) <= 48000
+            calls += 1
+        assert calls < 100
+        with get_session_factory()() as session:
+            context = session.get(ResearchEntry, rid).context_json
+            remaining = missing_required_reads(context)
+            assert "submitted_risk_review" not in context
+            assert {key: context.get(key) for key in immutable} == immutable
+        if remaining:
+            assert client.post(f"/api/research/runs/{rid}/risk-draft", json=reply()).status_code == 422
+    assert calls > 3
+    assert client.post(f"/api/research/runs/{rid}/risk-draft", json=reply()).status_code == 200
+    with get_session_factory()() as session:
+        saved = session.get(ResearchEntry, rid)
+        assert saved.status == "running" and "result" not in saved.context_json
+        assert saved.context_json["submitted_risk_review"] == service.RiskReview.model_validate(reply()).model_dump(mode="json")
+        assert session.get(RiskCase, "research").evidence_json == prior_case
+
+
 def test_structured_submission_preserves_quotes_and_runner_uses_it_without_console_json(client, monkeypatch):
     from watchlist_app.services import research_runner
     seed(client)

@@ -20,6 +20,8 @@ class RiskReadInput(BaseModel):
     instrument_id: str | None = None
     offset: int = Field(default=0, ge=0)
     comparison_source_id: str | None = None
+    page_offset: int | None = Field(default=None, ge=0)
+    path: list[str | int] | None = None
 
 
 def _running_risk_run(session, run_id):

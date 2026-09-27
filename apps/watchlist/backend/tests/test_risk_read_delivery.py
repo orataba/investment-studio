@@ -121,17 +121,19 @@ def test_invalid_reads_cannot_claim_delivery(client, bad):
     assert state(rid) == before
 
 
-def test_oversized_or_unserializable_projection_never_records_delivery(client, monkeypatch):
+def test_large_directory_needs_continuations_and_invalid_projection_never_records_delivery(client, monkeypatch):
     context = bound_context()
     context["risk_inputs"]["research"][0]["body"] = "过大原文" * 20000
     rid = prepare_fixture(client, context)
+    assert required_detail_reads(state(rid))
+    directory = read(client, rid, {"instrument_id": "risk-a", "section": "cases"})
+    assert directory.status_code == 200 and directory.json()["deferred"]
     before = state(rid)
-    assert required_detail_reads(before)  # Scope plan stays available with an explicit unreadable page.
-    assert read(client, rid, {"instrument_id": "risk-a", "section": "cases"}).status_code == 422
-    assert state(rid) == before
-    monkeypatch.setattr(route, "project_risk_read", lambda *a, **k: {"bad": object()})
-    assert read(client, rid, {"instrument_id": "risk-a", "section": "overview"}).status_code == 422
-    assert state(rid) == before
+    assert any(r.get("page_offset") == 0 for r in missing_required_reads(before))
+    for invalid_packet in ({"bad": object()}, {"bad": "正文" * 20000}):
+        monkeypatch.setattr(route, "project_risk_read", lambda *a, **k: invalid_packet)
+        assert read(client, rid, {"instrument_id": "risk-a", "section": "overview"}).status_code == 422
+        assert state(rid) == before
 
 
 def test_schema_errors_precede_coverage_and_empty_sections_need_no_read(client):
@@ -204,4 +206,6 @@ def test_risk_pages_require_matching_run_token_and_recheck_portfolio_revocation(
     assert client.post(path.replace(rid, "other"), json={"section": "instrument_overviews"}).status_code == 403
     grants["alice"].clear()
     assert client.post(path, json={"instrument_id": "risk-a", "section": "research_context"}).status_code == 404
+    assert client.post(path, json={"instrument_id": "risk-a", "section": "research_context",
+                                   "page_offset": 0, "path": ["current"], "offset": 0}).status_code == 404
     assert state(rid) == before

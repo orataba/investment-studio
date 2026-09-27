@@ -209,6 +209,7 @@ V1 复用既有 `research_entry`、主题、来源与 `risk_case` JSON；不新�
 - 风险判断独立保存在 `risk_case.evidence_json.risk_assessment`。新风险线索先待复核；团队风控通过绑定事件版本的 `case_assessments` 写入 `pending` / `active` / `resolved` / `dismissed` 及原因。仅停止跟进、主题接管或调整研究方向不能清除既有有效风险；组合私有复核不得修改团队风险状态。Watchlist 和 Portfolio 读取同一风险事项。
 - 研究与团队风控在发布时重新校验当前团队角色／服务研究权限，组合风控重新校验组合访问。PM 跟进与自动风险刷新在行锁下读取最新事项并追加历史；批量风险评估按事项标识排序加锁。首次自动风险创建和阈值更新按标的串行，避免并发创建重复事项或丢失 PM 记录。
 - 风控的暂时失败沿既有 `queue_retry` 恢复同一运行与原发起人，最多三次总尝试；绑定快照、信息截止和已读取页不在恢复中替换。已失去发布权限的发起人不能重排共享研究或风险任务。
+- 风控工具保留 48KB 返回上限；单条当前或历史记录过大时，返回同一分区原页的 `deferred` 目录，以 `page_offset` 绑定原页、`path` 定位字段、`offset` 续读该字段。原文、来源与 PM 判断不截断；全部 `next_offset` 和 `deferred.path` 分支实际交付后才通过必读检查，目录本身不能充当已读证据，未完成时返回精确 `missing_reads`。
 - 公开来源统一由 `/research/runs/{run_id}/sector-evidence` 留存；旧 `/tools` 的 `search` / `source` 与任意 `public_result` 写入口已删除。历史 `tool_evidence` 仍可读取，搜索目录不能当作原文证据。PM 讨论引用同时携带 `pm_note_id` 和 `pm_note_revision`，服务器按原版本绑定，失效引用在入队前返回 422。
 
 新增或扩展的读取／工具合同：

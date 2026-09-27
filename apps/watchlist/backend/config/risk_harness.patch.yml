@@ -26,6 +26,9 @@
       do not read the same overview again individually. Execute EVERY instrument_detail_reads
       entry using read_risk_instrument; these are the exact required cases/research_context pages.
       If submission returns missing_reads, read those exact tool arguments and resubmit the COMPLETE result.
+      An oversized original page returns deferred: keep its section and page_offset, follow path/offset
+      through every next_offset and deferred.path. Offsets then refer to that nested text/array/object;
+      do not change page_offset, invent pagination arguments or treat a directory as evidence delivery.
       Read comparisons when needed. These packets contain full researcher reports,
       plus the previous snapshot (or unchanged=true). The context index is not the full evidence.
       For a portfolio, also call read_portfolio_risk for EVERY portfolio_risk_sections entry.

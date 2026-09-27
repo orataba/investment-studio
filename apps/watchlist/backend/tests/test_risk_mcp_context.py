@@ -121,7 +121,7 @@ def test_batch_risk_overviews_preserve_every_individual_packet_and_authorize_eac
         mcp.read_risk_instruments(offset=offset)
 
 
-def test_batch_risk_overviews_reject_invalid_scope_offsets_and_oversized_single_item(monkeypatch):
+def test_batch_risk_overviews_reject_invalid_scope_offsets_and_route_large_items(monkeypatch):
     context = {"risk_run": True, "cutoff": "2026-09-20T00:00:00Z", "risk_inputs": {
         "instrument_ids": [], "instruments": [], "research": [], "quantitative": [], "coverage": []}}
     bind_context(monkeypatch, context)
@@ -136,10 +136,11 @@ def test_batch_risk_overviews_reject_invalid_scope_offsets_and_oversized_single_
     context["risk_run"] = True
     context["risk_inputs"].update(instrument_ids=["oversized"], instruments=[{
         "instrument_id": "oversized", "risk": {"unclipped_evidence": "完整" * 50000}}])
-    with pytest.raises(ValueError, match="未截断"):
-        mcp.read_risk_instruments()
-    assert mcp._risk_overview_pages(context) == [{"tool": "read_risk_instrument", "instrument_id": "oversized",
-                                                "section": "overview", "instrument_count": 1}]
+    page = mcp.read_risk_instruments()
+    assert page["instruments"][0]["deferred"][0]["page_offset"] == 0
+    assert "current" not in page["instruments"][0]
+    assert mcp._risk_overview_pages(context) == [{"tool": "read_risk_instruments", "offset": 0,
+                                                "instrument_count": 1}]
 
 
 def test_scope_plan_keeps_single_overview_that_fits_without_batch_envelope(monkeypatch):
@@ -270,18 +271,110 @@ def test_risk_instrument_pages_real_peer_evidence_cases_and_exact_samples(monkey
         mcp.read_risk_instrument("target", section="sample_dates", comparison_source_id="outside")
 
 
-def test_risk_instrument_rejects_unreadable_single_record_without_truncating(monkeypatch):
+def _reassemble_risk_continuation(instrument_id, section, page_offset, *, path=None, on_page=None):
+    """Client-side reconstruction from only the advertised lossless read contract."""
+    offset, result = 0, None
+    while True:
+        packet = mcp.read_risk_instrument(instrument_id, section=section, page_offset=page_offset,
+                                           path=path or [], offset=offset)
+        assert len(json.dumps(packet, ensure_ascii=False, separators=(",", ":")).encode()) <= 48000
+        if on_page:
+            on_page(packet)
+        kind = packet["data_type"]
+        if result is None:
+            result = {} if kind == "object" else [None] * packet["total"] if kind == "array" else "" if kind == "text" else packet["data"]
+        if kind == "object":
+            result.update(packet["data"])
+        elif kind == "array":
+            result[offset:offset + len(packet["data"])] = packet["data"]
+        elif kind == "text":
+            assert len(result) == offset
+            result += packet["data"]
+        for child in packet["deferred"]:
+            result[child["path"][-1]] = _reassemble_risk_continuation(instrument_id, section, page_offset,
+                path=child["path"], on_page=on_page)
+        if packet["next_offset"] is None:
+            return result
+        assert packet["next_offset"] > offset
+        offset = packet["next_offset"]
+
+
+def test_risk_instrument_pages_large_single_record_without_truncating(monkeypatch):
     context = {"risk_run": True, "cutoff": "2026-09-13", "risk_inputs": {
         "instrument_ids": ["target"], "instruments": [], "research": [
             {"case_id": "large", "instrument_id": "target", "body": "原始风险" * 20000}],
         "quantitative": [], "coverage": []}}
     bind_context(monkeypatch, context)
-    with pytest.raises(ValueError, match="未截断"):
-        mcp.read_risk_instrument("target", section="cases")
+    packet = mcp.read_risk_instrument("target", section="cases")
+    assert packet["deferred"][0]["page_offset"] == 0 and "current" not in packet
+    complete = _reassemble_risk_continuation("target", "cases", 0)
+    assert complete["current"]["research"][0]["body"] == context["risk_inputs"]["research"][0]["body"]
     with pytest.raises(ValueError, match="非负整数"):
         mcp.read_risk_instrument("target", section="cases", offset=-1)
     with pytest.raises(ValueError, match="超出"):
         mcp.read_risk_instrument("target", section="cases", offset=2)
+
+
+@pytest.mark.parametrize("section", ["overview", "cases", "research_context"])
+def test_large_current_prior_and_nested_sources_are_lossless_and_required(monkeypatch, section):
+    from watchlist_app.services.risk_read_projection import delivered_page_keys, missing_required_reads
+    text = "完整中文来源、反证与计量口径。" * 9000
+    instrument = {"instrument_id": "target", "investment_view": {"risk": text, "source_ids": ["view-source"]},
+                  "research_context": {"records": [{"source_id": "pm-source", "value": {
+                      "author": "PM", "body": text, "currency": "CNY", "return_kind": "total_return"}}]}}
+    case = {"case_id": "large", "instrument_id": "target", "body": "完整风险正文",
+            "evidence_json": {"source_views": [{"publisher": "原发布人", "view": text}],
+                "sources": [{"source_id": "source", "summary": text, "published_at": "2026-09-01"}],
+                "source_ids": ["source"]}}
+    snapshot = {"instrument_ids": ["target"], "instruments": [instrument],
+                "research": [case], "quantitative": [], "coverage": []}
+    previous = copy.deepcopy(snapshot)
+    previous["instruments"][0]["investment_view"]["risk"] = "旧观点" + text
+    previous["instruments"][0]["research_context"]["records"][0]["value"]["body"] = "旧PM观点" + text
+    previous["research"][0]["body"] = "旧风险正文" + text
+    previous["research"].append({"case_id": "prior-only", "instrument_id": "target", "body": text})
+    context = {"risk_run": True, "cutoff": "2026-09-27T00:00:00Z", "risk_inputs": snapshot,
+               "prior_inputs": previous, "risk_delivered_pages": []}
+    original = copy.deepcopy(context)
+    bind_context(monkeypatch, context)
+    packet = mcp.read_risk_instrument("target", section=section)
+    context["risk_delivered_pages"].extend(delivered_page_keys(packet))
+    missing = missing_required_reads(context)
+    assert any(read["section"] == section and read.get("page_offset") == 0 for read in missing)
+    pages = []
+    complete = _reassemble_risk_continuation("target", section, 0, on_page=pages.append)
+    if section == "overview":
+        assert complete["current"]["instrument"]["investment_view"] == instrument["investment_view"]
+        assert complete["previous"]["instrument"]["investment_view"] == previous["instruments"][0]["investment_view"]
+    elif section == "cases":
+        assert complete["current"]["research"] == [_risk_case_brief(case)]
+        assert complete["previous"]["research"] == [_risk_case_brief(previous["research"][0])]
+        root = mcp.read_risk_instrument("target", section="cases", offset=1)
+        assert root["deferred"][0]["page_offset"] == 1
+        old_only = _reassemble_risk_continuation("target", "cases", 1)
+        assert old_only["current"]["research"] == []
+        assert old_only["previous"]["research"][0]["body"] == text
+    else:
+        assert complete["current"]["records"] == instrument["research_context"]["records"]
+        assert complete["previous"]["records"] == previous["instruments"][0]["research_context"]["records"]
+    # Skipping even one actual text continuation cannot be satisfied by its directory.
+    omitted = next(page for page in pages if page["data_type"] == "text" and page["offset"] > 0)
+    for page in pages:
+        if page is not omitted:
+            context["risk_delivered_pages"].extend(delivered_page_keys(page))
+    missing = missing_required_reads(context)
+    assert any(read.get("path") == omitted["path"] and read["offset"] == omitted["offset"] for read in missing)
+    context["risk_delivered_pages"].extend(delivered_page_keys(omitted))
+    assert not any(read["section"] == section and read.get("page_offset") == 0
+                   for read in missing_required_reads(context))
+    for key in ("risk_inputs", "prior_inputs", "cutoff"):
+        assert context[key] == original[key]
+    for kwargs in ({"path": ["current"]}, {"page_offset": 0, "path": ["outside"]},
+                   {"page_offset": 0, "path": ["current", "not-in-snapshot"]}, {"page_offset": True}):
+        with pytest.raises(ValueError):
+            mcp.read_risk_instrument("target", section=section, **kwargs)
+    with pytest.raises(ValueError, match="本次风控范围"):
+        mcp.read_risk_instrument("other", section=section, page_offset=0, path=[])
 
 
 def test_conversation_is_preserved_and_cannot_read_risk_scope(monkeypatch):

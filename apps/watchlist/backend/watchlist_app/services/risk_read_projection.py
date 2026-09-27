@@ -4,6 +4,8 @@ Shared by the delivery endpoint and scope/read-completeness checks. No I/O.
 """
 import json
 
+from watchlist_app.services.research_read_projection import read_page, shape
+
 
 def _risk_case_brief(case):
     evidence = case.get("evidence_json") or {}
@@ -41,17 +43,26 @@ class _RiskToolSizeError(ValueError):
     """A complete bound record cannot fit this tool's result envelope."""
 
 
-def _risk_instrument_page(build, count):
+def _risk_instrument_page(build, count, *, unbounded_single=False):
+    if unbounded_single:
+        return build(min(1, count))
     while True:
         packet = build(count)
         if len(json.dumps(packet, ensure_ascii=False, separators=(",", ":")).encode()) <= 48000:
             return packet
         if count <= 1:
-            raise _RiskToolSizeError("单条风控记录超过工具返回上限，无法完整读取；未截断记录，也不能将未读证据视为没有风险。")
+            # This is a directory for the exact original page, not delivery of
+            # its current/prior evidence. Both sides remain in the bound run.
+            return {key: packet[key] for key in (
+                "instrument_id", "cutoff", "section", "current_counts", "previous_counts",
+                "research_context_counts", "offset", "next_offset", "total",
+            )} | {"deferred": [{"page_offset": packet["offset"], "path": [], **shape(packet)}],
+                "read_note": "本页正文尚未交付。保持instrument_id和section，以deferred.page_offset绑定本原页，path定位字段，offset读取该路径的后续内容；读完全部next_offset和deferred分支后才算完整。不得将目录视为已读或无风险。"}
         count -= 1
 
 
-def _risk_instrument_packet(context, instrument_id, *, section="overview", offset=0, comparison_source_id=None):
+def _risk_instrument_packet(context, instrument_id, *, section="overview", offset=0,
+                            comparison_source_id=None, _unbounded_single=False):
     if not context.get("risk_run") or instrument_id not in context["risk_inputs"]["instrument_ids"]:
         raise ValueError("只能读取本次风控范围内的标的。")
     if section not in {"overview", "cases", "comparisons", "sample_dates", "research_context"}:
@@ -89,7 +100,8 @@ def _risk_instrument_packet(context, instrument_id, *, section="overview", offse
             raise ValueError("overview不使用分页，请从其他分区读取后续证据。")
         current = {"instrument": _risk_instrument_overview(instruments[0])}
         previous = {"instrument": _risk_instrument_overview(instruments[1])} if snapshots[1] else None
-        return _risk_instrument_page(lambda _: packet(current, previous, total=1, end=1), 1)
+        return _risk_instrument_page(lambda _: packet(current, previous, total=1, end=1), 1,
+                                     unbounded_single=_unbounded_single)
 
     if section == "sample_dates":
         if not any(comparison_source_id in rows for rows in comparison_maps):
@@ -102,7 +114,8 @@ def _risk_instrument_packet(context, instrument_id, *, section="overview", offse
             current, previous = [{"comparison_source_id": comparison_source_id,
                 "dates": sample[offset:offset + count], "total_dates": len(sample)} for sample in samples]
             return packet(current, previous if snapshots[1] else None, total=total, end=offset + count)
-        return _risk_instrument_page(sample_page, min(500, total - offset))
+        return _risk_instrument_page(sample_page, min(500, total - offset),
+                                     unbounded_single=_unbounded_single)
 
     maps = case_maps if section == "cases" else judgment_maps if section == "research_context" else comparison_maps
     keys = list(dict.fromkeys([*maps[0], *maps[1]]))
@@ -127,7 +140,8 @@ def _risk_instrument_packet(context, instrument_id, *, section="overview", offse
                 result["changed_sample_source_ids"] = changed_samples
                 result["previous"] = values[1]
         return result
-    return _risk_instrument_page(rows_page, min(20, len(keys) - offset))
+    return _risk_instrument_page(rows_page, min(20, len(keys) - offset),
+                                 unbounded_single=_unbounded_single)
 
 
 def _risk_overview_pages(context):
@@ -208,20 +222,40 @@ def required_detail_reads(context):
     return required
 
 
-def project_risk_read(context, *, section, instrument_id=None, offset=0, comparison_source_id=None):
+def project_risk_read(context, *, section, instrument_id=None, offset=0, comparison_source_id=None,
+                      page_offset=None, path=None):
     if section == 'instrument_overviews':
-        if instrument_id is not None or comparison_source_id is not None:
+        if instrument_id is not None or comparison_source_id is not None or page_offset is not None or path is not None:
             raise ValueError('批量概览仅接受offset，不接受单标的或比较来源。')
         return _risk_overview_page(context, offset)
+    if page_offset is not None or path is not None:
+        if type(page_offset) is not int or page_offset < 0:
+            raise ValueError('续读必须用page_offset绑定原页，offset仅表示该路径内的位置。')
+        original = _risk_instrument_packet(context, instrument_id, section=section,
+            offset=page_offset, comparison_source_id=comparison_source_id, _unbounded_single=True)
+        if len(json.dumps(original, ensure_ascii=False, separators=(",", ":")).encode()) <= 48000:
+            raise ValueError('该页没有待续读的大记录；请使用原section和offset读取。')
+        return read_page(original, {"instrument_id": instrument_id, "cutoff": context["cutoff"],
+            "section": section, "page_offset": page_offset,
+            **({"comparison_source_id": comparison_source_id} if comparison_source_id else {}),
+            "continuation_note": "所有续读必须保持同一instrument_id、section、page_offset及比较来源；path来自本原页，offset是该路径内的字符、数组项或对象字段位置。目录不等于原文已读。"},
+            offset=offset, path=path)
     return _risk_instrument_packet(context, instrument_id, section=section, offset=offset,
                                    comparison_source_id=comparison_source_id)
+
+
+def _read_key(read):
+    if read.get('page_offset') is not None:
+        return [read['instrument_id'], read['section'], 'continuation',
+                read['page_offset'], read.get('offset', 0), *(read.get('path') or [])]
+    return [read['instrument_id'], read['section'], read.get('offset', 0)]
 
 
 def delivered_page_keys(packet):
     if packet['section'] == 'instrument_overviews':
         return [[item['instrument_id'], 'overview', 0] for item in packet['instruments']]
     if packet['section'] in ('overview', 'cases', 'research_context'):
-        return [[packet['instrument_id'], packet['section'], packet['offset']]]
+        return [_read_key(packet)]
     return []
 
 
@@ -230,5 +264,19 @@ def missing_required_reads(context):
     required = [{'tool': 'read_risk_instrument', 'instrument_id': instrument_id, 'section': 'overview', 'offset': 0}
                 for instrument_id in context['risk_inputs']['instrument_ids']]
     required.extend(required_detail_reads(context))
-    return [read for read in required
-            if (read['instrument_id'], read['section'], read['offset']) not in delivered]
+    missing, pending = [], list(reversed(required))
+    while pending:
+        read = pending.pop()
+        if tuple(_read_key(read)) not in delivered:
+            missing.append(read)
+            continue
+        packet = project_risk_read(context, **{key: value for key, value in read.items() if key != 'tool'})
+        continuations = []
+        if read.get('page_offset') is not None and packet['next_offset'] is not None:
+            continuations.append({**read, 'offset': packet['next_offset']})
+        for child in packet.get('deferred', []):
+            continuations.append({'tool': 'read_risk_instrument', 'instrument_id': read['instrument_id'],
+                'section': read['section'], 'page_offset': child.get('page_offset', read.get('page_offset')),
+                'path': child['path'], 'offset': 0})
+        pending.extend(reversed(continuations))
+    return missing
