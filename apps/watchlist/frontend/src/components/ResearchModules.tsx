@@ -33,6 +33,7 @@ export function fundamentalSectionTitle(plan?: ResearchPlan) {
 // Only saved numeric results choose the figure; prose cannot supply chart values or markup.
 export function EvidenceFigure({ source }: { source: SavedResearchSource }) {
   const quantitative = quantAnalysis(source.data?.analysis_kind) || isVolatilityFigure(source)
+  const fixedObservations = source.data?.analysis_kind === 'watchlist_observations'
   const snapshot = source.snapshot
   const holdings = Array.isArray(snapshot?.top_holdings) ? snapshot.top_holdings.filter((row): row is { symbol: string; name?: string; weight_percent: number } => Boolean(row) && typeof row.symbol === 'string' && typeof row.weight_percent === 'number' && Number.isFinite(row.weight_percent)) : []
   const holdingsMin = Math.min(0, ...holdings.map(row => row.weight_percent))
@@ -66,8 +67,9 @@ export function EvidenceFigure({ source }: { source: SavedResearchSource }) {
       {source.changes?.length ? <table><thead><tr><th>公司 / 预测财期</th><th>指标</th><th>前次 → 本次</th><th>变化</th></tr></thead><tbody>{source.changes.map((change, index) => <tr key={index}><td>{change.symbol}<small>{change.frequency} · {change.target_period_end}</small></td><td>{change.metric === 'revenue_avg' ? '平均营收预期' : change.metric === 'eps_avg' ? '平均每股收益预期' : change.metric}</td><td>{change.previous_value.toLocaleString()} → {change.current_value.toLocaleString()} {change.currency || '币种待核实'}{change.metric === 'eps_avg' && '/股'}{change.current_currency_status === 'inferred_from_reporting_currency' && <small>币种按财报币种推定</small>}</td><td>{change.delta_pct === null ? '未取得' : `${change.delta_pct.toFixed(2)}%`}{change.analyst_count_changed && <small>分析师样本有变化</small>}</td></tr>)}</tbody></table> : <p className="sector-research-note">本份快照未保存可比变化。</p>}
     </div>}
     {source.data ? quantitative || comparison ? <>
-      {Boolean(source.data.limitations?.length) && (!comparison || comparisonIncomplete) && <p className="research-figure-limitations" translate="no">{source.data.limitations!.join(' ')}</p>}
-      <ResearchReadingAside label="计算口径与输入依据"><ComputedEvidence source={source} /></ResearchReadingAside>
+      {fixedObservations && ['partial', 'unavailable'].includes(String(source.data.status)) && <p className="sector-research-limitation">{source.data.status === 'partial' ? '量化数据部分可用。' : '量化证据不足。'}</p>}
+      {Boolean(source.data.limitations?.length) && !fixedObservations && (!comparison || comparisonIncomplete) && <p className="research-figure-limitations" translate="no">{source.data.limitations!.join(' ')}</p>}
+      <ResearchReadingAside label={fixedObservations ? '数据覆盖与口径' : '计算口径与输入依据'}><ComputedEvidence source={source} /></ResearchReadingAside>
     </> : <ComputedEvidence source={source} /> : !holdings.length && source.source_type !== 'analyst_estimate_changes' ? <p className="sector-research-note">此记录未包含支持当前图形的数值结构，可在模块来源中查看已保存依据。</p> : null}
   </figure>
 }

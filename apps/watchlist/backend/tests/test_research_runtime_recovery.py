@@ -53,6 +53,66 @@ def test_deterministic_fault_or_exhausted_retry_requires_manual_recovery(client,
         assert run.context_json["execution"]["failures"][0]["manual_recovery"]
 
 
+@pytest.mark.parametrize("manual", [False, True])
+def test_risk_retry_redelivers_frozen_inputs_and_requires_a_new_proposal(client, monkeypatch, manual):
+    from studio_identity import current_principal
+    from watchlist_app.services import risk_officer
+    from watchlist_app.services.risk_read_projection import missing_required_reads
+    from .test_risk_read_delivery import bound_context, prepare_fixture, read, state, REFERRAL_RESULT
+
+    context = bound_context()
+    context["input_snapshot_cutoff"] = context["cutoff"]
+    run_id = prepare_fixture(client, context)
+    for instruction in missing_required_reads(state(run_id)):
+        response = read(client, run_id, instruction)
+        assert response.status_code == 200, response.text
+    assert missing_required_reads(state(run_id)) == []
+    assert client.post(f"/api/research/runs/{run_id}/risk-draft", json=REFERRAL_RESULT).status_code == 200
+    retained = state(run_id)
+    stamp = datetime.now(UTC) - timedelta(minutes=2)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        run.status, run.completed_at = "failed", stamp
+        run.context_json = {**run.context_json, "execution": {"attempt": 1},
+            "runtime_error": {"type": "TimeoutExpired" if manual else "ProviderUnavailable", "retryable": not manual}}
+        session.commit()
+        assert runner.queue_retry(session, run, manual=manual)
+        assert run.context_json["risk_delivered_pages"] == []
+        assert "submitted_risk_review" not in run.context_json
+        session.commit()
+
+    monkeypatch.setattr(risk_officer, "prepare_run", lambda *_: pytest.fail("Risk retry must not rebind frozen inputs"))
+    monkeypatch.setattr(runner, "resolve_token", lambda *_: current_principal())
+    new_result = {**REFERRAL_RESULT, "summary": "新会话已重新完整读取冻结资料并重新提交。"}
+    def launch(*args, **kwargs):
+        assert args[0][-1] == "risk"
+        assert kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RESUME_GENERATION"] == "0"
+        assert kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW"] == "0"
+        reply = client.post(f"/api/research/runs/{run_id}/risk-draft", json=new_result)
+        assert reply.status_code == 422
+        assert reply.json()["detail"]["error"] == "risk_reads_incomplete"
+        for instruction in reply.json()["detail"]["missing_reads"]:
+            response = read(client, run_id, instruction)
+            assert response.status_code == 200, response.text
+        assert missing_required_reads(state(run_id)) == []
+        assert client.post(f"/api/research/runs/{run_id}/risk-draft", json=new_result).status_code == 200
+        return SimpleNamespace(communicate=lambda **_: ("", ""), returncode=0)
+    def publish(session, run, reply):
+        assert reply == new_result
+        run.status = "completed"
+    monkeypatch.setattr(runner.subprocess, "Popen", launch)
+    monkeypatch.setattr(risk_officer, "apply_result", publish)
+    runner._run_analysis(run_id)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        assert run.status == "completed"
+        assert run.context_json["execution"]["attempt"] == 2
+        assert run.context_json["execution"]["failures"][-1]["manual_recovery"] is manual
+        for key in ("cutoff", "input_snapshot_cutoff", "prepared_at", "risk_inputs", "prior_inputs", "research_actor"):
+            assert run.context_json[key] == retained[key]
+        assert run.context_json["submitted_risk_review"] == new_result
+
+
 def test_recovery_does_not_adopt_another_users_research(client, monkeypatch):
     from studio_identity import Principal
     save_run({"sector_run": True, "research_actor": {"kind": "user", "user_id": "original"}})
@@ -372,7 +432,8 @@ def test_retry_rechecks_current_shared_write_authority(client, run_kind, subject
         assert session.get(ResearchEntry, 'recovery').status == 'failed'
 
 
-def test_risk_retry_keeps_bound_inputs_and_shares_the_existing_attempt_budget(client, monkeypatch):
+@pytest.mark.parametrize("submits_again", [False, True])
+def test_risk_retry_keeps_bound_inputs_and_shares_the_existing_attempt_budget(client, monkeypatch, submits_again):
     from studio_identity import current_principal
     from watchlist_app.services import risk_officer
     stamp = datetime.now(UTC) - timedelta(minutes=2)
@@ -387,18 +448,31 @@ def test_risk_retry_keeps_bound_inputs_and_shares_the_existing_attempt_budget(cl
         session.commit()
     monkeypatch.setattr(risk_officer, 'prepare_run', lambda *args: pytest.fail('A risk retry must keep its original snapshot'))
     monkeypatch.setattr(runner, 'resolve_token', lambda *args: current_principal())
-    monkeypatch.setattr(runner.subprocess, 'Popen', lambda *args, **kwargs: SimpleNamespace(
-        communicate=lambda **kw: ('', ''), returncode=0))
+    fresh_proposal = {'summary': 'new session proposal'}
+    def launch(*args, **kwargs):
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, 'recovery')
+            assert 'submitted_risk_review' not in run.context_json
+            if submits_again:
+                run.context_json = {**run.context_json, 'submitted_risk_review': fresh_proposal}
+                session.commit()
+        return SimpleNamespace(communicate=lambda **kw: ('', ''), returncode=0)
+    monkeypatch.setattr(runner.subprocess, 'Popen', launch)
     def publish(session, run, payload):
         assert run.context_json['risk_inputs'] == snapshot
         assert run.context_json['cutoff'] == cutoff
-        assert payload == context['submitted_risk_review']
+        assert submits_again and payload == fresh_proposal
         run.status = 'completed'
     monkeypatch.setattr(risk_officer, 'apply_result', publish)
     runner._run_analysis('recovery')
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, 'recovery')
-        assert run.status == 'completed' and run.context_json['execution']['attempt'] == 2
+        assert run.status == ('completed' if submits_again else 'failed')
+        assert run.context_json['execution']['attempt'] == 2
+        assert run.context_json['risk_inputs'] == snapshot and run.context_json['cutoff'] == cutoff
+        if not submits_again:
+            assert 'submitted_risk_review' not in run.context_json
+            assert 'submitted_risk_review' in run.context_json['validation_error']
         run.status, run.completed_at = 'failed', stamp
         run.context_json = {**run.context_json, 'runtime_error': context['runtime_error'],
                            'execution': {**run.context_json['execution'], 'attempt': 3}}

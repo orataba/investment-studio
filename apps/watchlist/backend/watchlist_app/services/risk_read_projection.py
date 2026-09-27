@@ -4,7 +4,7 @@ Shared by the delivery endpoint and scope/read-completeness checks. No I/O.
 """
 import json
 
-from watchlist_app.services.research_read_projection import read_page, shape
+from watchlist_app.services.research_read_projection import json_bytes, read_page, shape
 
 
 def _risk_case_brief(case):
@@ -14,6 +14,69 @@ def _risk_case_brief(case):
         "evidence_json": {key: value for key, value in evidence.items() if key not in {"body", "title", "sources"}},
         "sources": [{key: value for key, value in source.items() if key != "text"}
                     for source in evidence.get("sources", [])]}
+
+
+def _same_evidence(left, right):
+    # JSON equality also preserves scalar types (Python considers True == 1)
+    # and numeric representations; object key order does not identify evidence.
+    return left == right and json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
+
+
+def _reference_case_evidence(packet, case_maps):
+    """Reuse exact case evidence only within this original, still-required page.
+
+    References point directly to a full source, never another reference. Compare
+    the original sources, including text omitted by the existing brief, before
+    reusing a current source for its previous counterpart. Do not mutate inputs.
+    """
+    current_sources = {}
+    for side_index, side in enumerate(("current", "previous")):
+        for category in ("research", "quantitative", "coverage"):
+            for index, case in enumerate((packet.get(side) or {}).get(category, [])):
+                original = case_maps[side_index][case["case_id"]][1]
+                sources = (original.get("evidence_json") or {}).get("sources", [])
+                source_paths = []
+                for source_index, source in enumerate(sources):
+                    path = [side, category, index, "sources", source_index]
+                    if side == "previous":
+                        for candidate, candidate_path in current_sources.get(case["case_id"], []):
+                            if not _same_evidence(source, candidate):
+                                continue
+                            reference = {key: value for key, value in source.items()
+                                         if key in {"source_id", "document_id", "version_id", "source_type"}}
+                            reference["same_as_path"] = candidate_path
+                            if json_bytes(reference) < json_bytes(case["sources"][source_index]):
+                                case["sources"][source_index] = reference
+                                path = candidate_path
+                            break
+                    source_paths.append(path)
+                if side == "current":
+                    current_sources[case["case_id"]] = list(zip(sources, source_paths))
+
+                views = case["evidence_json"].get("source_views")
+                if not isinstance(views, list):
+                    continue
+                projected_views = []
+                for view in views:
+                    if not isinstance(view, dict):
+                        projected_views.append(view)
+                        continue
+                    projected = dict(view)
+                    for source, path in zip(sources, source_paths):
+                        identity = ("source_id", "document_id", "version_id")
+                        if not view.get("source_id") or any(view.get(key) != source.get(key) for key in identity):
+                            continue
+                        for field, value in view.items():
+                            # Keep small metadata and scalars readable. Only a
+                            # repeated structure that actually shrinks is reused.
+                            if not value or not isinstance(value, (dict, list)) or not _same_evidence(value, source.get(field)):
+                                continue
+                            reference = {"same_as_path": [*path, field]}
+                            if json_bytes(reference) < json_bytes(value):
+                                projected[field] = reference
+                        break
+                    projected_views.append(projected)
+                case["evidence_json"]["source_views"] = projected_views
 
 
 def _risk_instrument_overview(item):
@@ -93,7 +156,8 @@ def _risk_instrument_packet(context, instrument_id, *, section="overview", offse
         return {**base, "current": current,
             "previous": {"unchanged": True} if previous == current else previous,
             "offset": offset, "next_offset": end if end < total else None, "total": total,
-            "read_note": "按overview计数，前后均为0的分区可跳过；有内容的cases/research_context从offset=0读至next_offset=null。cases包含完整风险事项；research_context保留PM档案、观点原文、当前问题与预测，不能当作已核实事实；comparisons按需读完各页后依各自共同样本比较，不合成排名。sample_dates按comparison_source_id另读实际共同日期。"}
+            "read_note": "按overview计数，前后均为0的分区可跳过；有内容的cases/research_context从offset=0读至next_offset=null。cases包含完整风险事项；research_context保留PM档案、观点原文、当前问题与预测，不能当作已核实事实；comparisons按需读完各页后依各自共同样本比较，不合成排名。sample_dates按comparison_source_id另读实际共同日期。"
+                + ("same_as_path指向同一原页内完全相同的完整依据，保留本页offset（续读时为page_offset），沿目标的next_offset/deferred读完，引用本身不代表原件已读。" if section == "cases" else "")}
 
     if section == "overview":
         if offset:
@@ -133,6 +197,16 @@ def _risk_instrument_packet(context, instrument_id, *, section="overview", offse
             else:
                 values.append({"comparisons": [_risk_comparison_brief(rows[key]) for key in selected if key in rows]})
         result = packet(values[0], values[1] if snapshots[1] else None, total=len(keys), end=offset + count)
+        if section == "cases":
+            # The brief omits source text; differing originals must not become
+            # an unchanged prior page merely because their brief fields match.
+            if snapshots[1] and result["previous"] == {"unchanged": True} and any(
+                not _same_evidence((maps[0][key][1].get("evidence_json") or {}).get("sources", []),
+                                   (maps[1][key][1].get("evidence_json") or {}).get("sources", []))
+                for key in selected
+            ):
+                result["previous"] = values[1]
+            _reference_case_evidence(result, case_maps)
         if section == "comparisons" and snapshots[1]:
             changed_samples = [key for key in selected if key in maps[0] and key in maps[1]
                 and (maps[0][key].get("comparison") or {}).get("dates") != (maps[1][key].get("comparison") or {}).get("dates")]

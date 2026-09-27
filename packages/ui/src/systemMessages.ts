@@ -1,5 +1,11 @@
 // System UI copy only. User content must be marked translate="no".
 export const systemMessages: Record<string, string> = {
+  "View data gaps": "查看数据缺口",
+  "Data coverage and methodology": "数据覆盖与口径",
+  "Close data gaps": "关闭查看数据缺口",
+  "Close data coverage and methodology": "关闭数据覆盖与口径",
+  "Quantitative data is partially available.": "量化数据部分可用。",
+  "Insufficient quantitative evidence.": "量化证据不足。",
   "Current annualized volatility": "当前年化波动率",
   "Previous annualized volatility": "前次年化波动率",
   "Change since previous observation": "较前次变化",

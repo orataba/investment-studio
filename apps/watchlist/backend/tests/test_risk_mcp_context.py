@@ -299,6 +299,23 @@ def _reassemble_risk_continuation(instrument_id, section, page_offset, *, path=N
         offset = packet["next_offset"]
 
 
+def _resolve_case_evidence_references(packet):
+    """Verify references alone can restore the original case projection."""
+    def expand(value):
+        if isinstance(value, list):
+            return [expand(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        if "same_as_path" in value:
+            target = packet
+            for part in value["same_as_path"]:
+                target = target[part]
+            assert "same_as_path" not in target  # No chains or cycles to interpret.
+            return copy.deepcopy(target)
+        return {key: expand(item) for key, item in value.items()}
+    return expand(packet)
+
+
 def test_risk_instrument_pages_large_single_record_without_truncating(monkeypatch):
     context = {"risk_run": True, "cutoff": "2026-09-13", "risk_inputs": {
         "instrument_ids": ["target"], "instruments": [], "research": [
@@ -347,8 +364,9 @@ def test_large_current_prior_and_nested_sources_are_lossless_and_required(monkey
         assert complete["current"]["instrument"]["investment_view"] == instrument["investment_view"]
         assert complete["previous"]["instrument"]["investment_view"] == previous["instruments"][0]["investment_view"]
     elif section == "cases":
-        assert complete["current"]["research"] == [_risk_case_brief(case)]
-        assert complete["previous"]["research"] == [_risk_case_brief(previous["research"][0])]
+        restored = _resolve_case_evidence_references(complete)
+        assert restored["current"]["research"] == [_risk_case_brief(case)]
+        assert restored["previous"]["research"] == [_risk_case_brief(previous["research"][0])]
         root = mcp.read_risk_instrument("target", section="cases", offset=1)
         assert root["deferred"][0]["page_offset"] == 1
         old_only = _reassemble_risk_continuation("target", "cases", 1)
@@ -375,6 +393,118 @@ def test_large_current_prior_and_nested_sources_are_lossless_and_required(monkey
             mcp.read_risk_instrument("target", section=section, **kwargs)
     with pytest.raises(ValueError, match="本次风控范围"):
         mcp.read_risk_instrument("other", section=section, page_offset=0, path=[])
+
+
+def test_case_evidence_references_restore_exact_prior_and_views_and_require_full_source(monkeypatch):
+    from watchlist_app.services.risk_read_projection import delivered_page_keys, missing_required_reads
+
+    sources = [{"source_id": f"computed-{label}", "document_id": f"document-{label}",
+        "version_id": "v1", "source_type": "computed_metric", "text": "相同完整原文",
+        "methodology": {"formula": "相同方法", "input_sources": [{"source_id": f"prices-{label}",
+            "input_series": [{"date": f"day-{day}", "value": day / 100} for day in range(1800)]}]}}
+        for label in ("a", "b")]
+
+    def case(body, originals):
+        return {"case_id": "case", "instrument_id": "target", "body": body, "evidence_json": {
+            "sources": copy.deepcopy(originals), "source_views": [{
+                "source_id": source["source_id"], "document_id": source["document_id"],
+                "version_id": source["version_id"], "title": None,
+                "methodology": copy.deepcopy(source["methodology"]), "view_note": "单独保留的解释"}
+                for source in originals]}}
+
+    current_case = case("当前风险判断", sources)
+    prior_only = {**copy.deepcopy(sources[0]), "source_id": "prior-only", "version_id": "older"}
+    previous_case = case("此前风险判断", [sources[1], sources[0], prior_only])
+    snapshot = {"instrument_ids": ["target"], "instruments": [],
+                "research": [current_case], "quantitative": [], "coverage": []}
+    context = {"risk_run": True, "cutoff": "2026-09-27T00:00:00Z", "risk_inputs": snapshot,
+               "prior_inputs": {**snapshot, "research": [previous_case]}, "risk_delivered_pages": []}
+    frozen = copy.deepcopy(context)
+    bind_context(monkeypatch, context)
+    for section in ("overview", "cases"):
+        directory = mcp.read_risk_instrument("target", section=section)
+        context["risk_delivered_pages"].extend(delivered_page_keys(directory))
+    pages = []
+    complete = _reassemble_risk_continuation("target", "cases", 0, on_page=pages.append)
+    current, previous = (complete[side]["research"][0] for side in ("current", "previous"))
+    assert current["sources"] == _risk_case_brief(current_case)["sources"]
+    for prior_index, current_index in ((0, 1), (1, 0)):
+        reference = previous["sources"][prior_index]
+        assert reference == {**{key: sources[current_index][key]
+            for key in ("source_id", "document_id", "version_id", "source_type")},
+            "same_as_path": ["current", "research", 0, "sources", current_index]}
+        assert previous["evidence_json"]["source_views"][prior_index]["methodology"] == {
+            "same_as_path": [*reference["same_as_path"], "methodology"]}
+    assert previous["sources"][2] == _risk_case_brief(previous_case)["sources"][2]
+    assert current["evidence_json"]["source_views"][0]["title"] is None
+    assert current["evidence_json"]["source_views"][0]["view_note"] == "单独保留的解释"
+    restored = _resolve_case_evidence_references(complete)
+    assert restored["current"]["research"] == [_risk_case_brief(current_case)]
+    assert restored["previous"]["research"] == [_risk_case_brief(previous_case)]
+    assert len(json.dumps(complete)) < len(json.dumps(restored))
+
+    # Deliver all references and all other pages, but withhold actual current
+    # input observations. A reference to that source cannot satisfy its read.
+    source_path = ["current", "research", 0, "sources", 0]
+    omitted = next(page for page in pages if page["path"][:len(source_path)] == source_path
+                   and page["data_type"] == "array" and page["offset"] > 0 and page["data"])
+    for page in pages:
+        if page is not omitted:
+            context["risk_delivered_pages"].extend(delivered_page_keys(page))
+    assert any(read.get("path") == omitted["path"] and read["offset"] == omitted["offset"]
+               for read in missing_required_reads(context))
+    context["risk_delivered_pages"].extend(delivered_page_keys(omitted))
+    assert missing_required_reads(context) == []
+    for key in ("risk_inputs", "prior_inputs", "cutoff"):
+        assert context[key] == frozen[key]
+
+
+@pytest.mark.parametrize("changed", ["text", "version_id", "number", "scalar_type"])
+def test_same_source_id_does_not_merge_different_originals(monkeypatch, changed):
+    source = {"source_id": "same-id", "version_id": "v1", "text": "当前原文",
+              "methodology": {"input_series": [{"value": 1}] * 80}, "data": {"value": 0.00000125}}
+    previous = copy.deepcopy(source)
+    if changed == "text":
+        previous["text"] = "不同原文，即使brief省略也不合并"
+    elif changed == "version_id":
+        previous["version_id"] = "v0"
+    elif changed == "number":
+        previous["data"]["value"] = 0.00000126
+    else:
+        previous["methodology"]["input_series"][0]["value"] = True
+    case = {"case_id": "case", "instrument_id": "target", "body": "同一判断",
+            "evidence_json": {"sources": [source]}}
+    snapshot = {"instrument_ids": ["target"], "instruments": [], "research": [case],
+                "quantitative": [], "coverage": []}
+    prior = copy.deepcopy(snapshot)
+    prior["research"][0]["evidence_json"]["sources"] = [previous]
+    context = {"risk_run": True, "cutoff": "2026-09-27", "risk_inputs": snapshot, "prior_inputs": prior}
+    bind_context(monkeypatch, context)
+    packet = mcp.read_risk_instrument("target", section="cases")
+    assert packet["previous"] != {"unchanged": True}
+    assert packet["previous"]["research"][0]["sources"] == _risk_case_brief(prior["research"][0])["sources"]
+    assert "same_as_path" not in packet["previous"]["research"][0]["sources"][0]
+
+
+def test_case_source_views_keep_different_values_versions_and_small_metadata(monkeypatch):
+    source = {"source_id": "same-id", "version_id": "v1", "methodology": {
+        "input_series": [{"value": value / 100} for value in range(80)]}, "metadata": {"unit": "%"}}
+    exact = {"source_id": "same-id", "version_id": "v1", "methodology": copy.deepcopy(source["methodology"]),
+             "metadata": {"unit": "%"}, "title": None, "status": "complete"}
+    changed_value = copy.deepcopy(exact)
+    changed_value["methodology"]["input_series"][0]["value"] = 0.00000125
+    changed_version = {**copy.deepcopy(exact), "version_id": "v0"}
+    views = [exact, changed_value, changed_version]
+    context = {"risk_run": True, "cutoff": "2026-09-27", "risk_inputs": {
+        "instrument_ids": ["target"], "instruments": [], "quantitative": [], "coverage": [], "research": [{
+            "case_id": "case", "instrument_id": "target", "evidence_json": {"sources": [source], "source_views": views}}]}}
+    before = copy.deepcopy(context)
+    bind_context(monkeypatch, context)
+    packet = mcp.read_risk_instrument("target", section="cases")
+    observed = packet["current"]["research"][0]["evidence_json"]["source_views"]
+    assert observed[0] == {**exact, "methodology": {"same_as_path": ["current", "research", 0, "sources", 0, "methodology"]}}
+    assert observed[1:] == [changed_value, changed_version]
+    assert context == before
 
 
 def test_conversation_is_preserved_and_cannot_read_risk_scope(monkeypatch):

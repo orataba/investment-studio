@@ -132,6 +132,10 @@ it.each(['watchlist_observations', 'event_market_reaction'])('renders fixed reta
   render(<EvidenceFigure source={{ source_id: 'computed:fixed', title: '确定性观察', source_type: 'computed_metric', data: { analysis_kind, metrics: { 相对表现: null, 波动率: 18.2 }, tables: [], charts: [], limitations: ['只有部分成分行情。'] } }} />)
   expect(screen.getByText('18.2')).toBeTruthy()
   expect(screen.getByText('—')).toBeTruthy()
+  if (analysis_kind === 'watchlist_observations') {
+    expect(screen.queryByText('只有部分成分行情。')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '数据覆盖与口径' }))
+  }
   expect(screen.getByText('只有部分成分行情。')).toBeTruthy()
   expect(screen.queryByText('0')).toBeNull()
 })

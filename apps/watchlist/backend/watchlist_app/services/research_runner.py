@@ -159,6 +159,12 @@ def queue_retry(session, run, *, now=None, manual=False, recheck_review=False):
     execution.update(attempt=attempt, stage="queued", resume=True)
     context.pop("runtime_error", None)
     context.pop("validation_error", None)
+    if context.get("risk_run"):
+        # Risk retries launch a new Harness session over the frozen evidence.
+        # Old delivery receipts (including prior projection layouts) cannot prove
+        # this session received the required pages or submitted a fresh proposal.
+        context["risk_delivered_pages"] = []
+        context.pop("submitted_risk_review", None)
     run.context_json = {**context, "execution": execution}
     run.status, run.body, run.completed_at = "queued", "", None
     session.flush()
