@@ -152,6 +152,32 @@ def test_event_times_preserve_precision_and_cannot_invent_publication(client, mo
         assert case.evidence_json["published_at"] == "2026-08-01" and case.evidence_json["occurred_at"] is None
 
 
+@pytest.mark.parametrize("target", ["event", "market_view"])
+@pytest.mark.parametrize("published_at, original_time, valid", [
+    ("2026-09-23", "2026-09-23", True),
+    ("2026-09-23T08:00:00+08:00", "2026-09-23T00:00:00Z", True),
+    ("2026-09-23", "2026-09-23T00:00:00Z", False),
+    (None, "2026-09-27", False),
+    (None, None, True),
+])
+def test_shared_event_clock_check_preserves_precision_timezone_and_cutoff(target, published_at, original_time, valid):
+    source = {"source_id": "original", "text": "The retained disclosure.", "published_at": original_time}
+    changes = {"published_at": published_at} if target == "event" else {"market_views": [{
+        "publisher": "Original publisher", "view": "The disclosure may affect demand.",
+        "published_at": published_at, "source_ids": ["original"]}]}
+    event = service.ReviewResult.model_validate_json(result(sources=["original"], **changes)).reviews[0].events[0]
+    check = lambda: service.validate_event_source_consistency(event, {"original": source},
+        datetime(2026, 9, 26, tzinfo=UTC), "xlk")
+    if valid:
+        check()
+    else:
+        with pytest.raises(ValueError, match="new-policy") as rejected:
+            check()
+        assert ("source_ids" if published_at is None else "published_at") in str(rejected.value)
+        if target == "market_view":
+            assert "market_views[0]" in str(rejected.value)
+
+
 def test_legacy_events_remain_readable_without_fabricated_history_snapshots(client, monkeypatch):
     seed_sector(client, monkeypatch)
     with get_session_factory()() as session:

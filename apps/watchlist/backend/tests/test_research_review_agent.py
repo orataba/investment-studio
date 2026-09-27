@@ -11,6 +11,7 @@ from watchlist_app.services import sector_fact_review as review
 
 
 def _bound(monkeypatch, tmp_path, packet):
+    packet = {"cutoff": "2026-09-26T00:00:00+00:00", **packet}
     state = {"packet": packet, "response_schema": review._review_schema(packet["draft_reviews"], packet["sources"])}
     for key, filename in (("PACKET", "packet.json"), ("RESULT", "result.json"), ("READS", "reads.jsonl")):
         monkeypatch.setenv("INVESTMENT_STUDIO_REVIEW_" + key, str(tmp_path / filename))
@@ -113,6 +114,81 @@ def test_reviewer_stdio_advertises_bound_schema_and_preserves_submission_checks(
     asyncio.run(smoke())
     assert json.loads((tmp_path / "result.json").read_text())["receipts"] == receipts
     assert json.loads((tmp_path / "packet.json").read_text()) == state
+
+
+@pytest.mark.parametrize("target", ["event", "market_view"])
+@pytest.mark.parametrize("repair", ["restore_source", "correct_date"])
+def test_review_citation_correction_rechecks_dates_and_can_be_repaired_in_same_session(monkeypatch, tmp_path, target, repair):
+    event = {"event_key": "ai-dialogue", "action": "new", "direction": "uncertain", "title": "AI dialogue",
+        "body": "The original describes the dialogue.", "confidence": "confirmed", "information_type": "fact",
+        "recording_type": "new", "source_ids": ["old"], "published_at": "2026-09-23",
+        "market_views": [{"publisher": "Original publisher", "view": "The dialogue may affect demand.",
+                          "source_ids": ["old"], "published_at": "2026-09-23"}]}
+    state = _bound(monkeypatch, tmp_path, {"draft_reviews": [{"instrument_id": "xlk", "events": [event]}],
+        "sources": [{"source_id": key, "source_type": "public_source", "instrument_id": "xlk",
+                     "text": "The retained original disclosure.", "published_at": date}
+                    for key, date in (("old", "2026-09-23"), ("new", "2026-09-25"))]})
+    patch = {"source_ids": ["new"]} if target == "event" else {
+        "market_views": [{**event["market_views"][0], "source_ids": ["new"]}]}
+    receipt = {"event_key": "ai-dialogue", "decision": "correct", "reason": "Use the follow-up original.", "patch": patch}
+    receipts = {"reviews": [{"instrument_id": "xlk", "summary": {"decision": "accept"},
+        "change_kind": {"decision": "accept"}, "coverage": {"decision": "accept"}, "decisions": [receipt],
+        "themes": [], "research": None, "reflection": None}]}
+    _complete_read(review_mcp.read_review_context, section="draft_reviews")
+    for source in state["packet"]["sources"]:
+        review_mcp.read_review_source(source["source_id"])
+
+    async def submit():
+        return await review_mcp.mcp.call_tool("submit_review_receipts", {"receipts": receipts})
+
+    from mcp.server.mcpserver.exceptions import ToolError
+    with pytest.raises(ToolError) as rejected:
+        asyncio.run(submit())
+    field = "published_at" if target == "event" else "market_views[0].published_at"
+    assert f"ai-dialogue {field}:" in str(rejected.value)
+    assert event["body"] not in str(rejected.value)
+    assert not (tmp_path / "result.json").exists()
+    corrected = patch if target == "event" else patch["market_views"][0]
+    corrected.update({"source_ids": ["old", "new"]} if repair == "restore_source" else {"published_at": "2026-09-25"})
+    assert asyncio.run(submit()).structured_content["accepted"]
+    stored = json.loads((tmp_path / "result.json").read_text())["result"]["reviews"][0]["decisions"][0]["event"]
+    selected = stored if target == "event" else stored["market_views"][0]
+    assert selected["published_at"] == ("2026-09-23" if repair == "restore_source" else "2026-09-25")
+    assert selected["source_ids"] == corrected["source_ids"]
+    assert json.loads((tmp_path / "packet.json").read_text()) == state
+
+
+def test_review_counts_complete_inline_snapshot_subtree_but_not_unread_or_partial_evidence(monkeypatch, tmp_path):
+    sources = [
+        {"source_id": "snapshot", "snapshot": {"instrument_id": "xlk", "reference_data": "reference" * 10000,
+            "risk": {"drawdown_pct": -4.5, "volatility_pct": 18.2}, "analyst_estimate_history": "history" * 10000}},
+        {"source_id": "computed", "data": {"analysis_kind": "python_quant", "status": "available",
+            "method_version": "1", "observation_key": "market", "as_of_date": "2026-09-25", "benchmark_id": None,
+            "metrics": [{"name": "volatility", "value": 18.2}], "observations": [{"value": n} for n in range(10)]}},
+        {"source_id": "deferred", "data": {"metrics": [{"value": n} for n in range(10000)]}},
+    ]
+    _bound(monkeypatch, tmp_path, {"draft_reviews": [], "sources": sources})
+
+    def reads(source_id):
+        return [row for row in map(json.loads, (tmp_path / "reads.jsonl").read_text().splitlines())
+                if row.get("source_id") == source_id]
+
+    review_mcp.read_review_context(section="sources")
+    assert not any(review_mcp._evidence_read(source, reads(source["source_id"])) for source in sources)
+    risk_page = review_mcp.read_review_source("snapshot", path=["snapshot"], offset=2, limit=1)
+    assert risk_page["data"] == {"risk": sources[0]["snapshot"]["risk"]} and not risk_page["deferred"]
+    assert not review_mcp._complete(sources[0]["snapshot"], ["snapshot"], reads("snapshot"))
+    assert review_mcp._evidence_read(sources[0], reads("snapshot"))
+    metadata_page = review_mcp.read_review_source("computed", path=["data"], limit=6)
+    assert metadata_page["next_offset"] == 6
+    assert not review_mcp._evidence_read(sources[1], reads("computed"))
+    deferred_page = review_mcp.read_review_source("deferred", path=["data"])
+    assert deferred_page["deferred"][0]["path"] == ["data", "metrics"]
+    assert not review_mcp._evidence_read(sources[2], reads("deferred"))
+    review_mcp.read_review_source("deferred", path=["data", "metrics"], limit=2)
+    assert not review_mcp._evidence_read(sources[2], reads("deferred"))
+    review_mcp.read_review_source("computed", path=["data"], offset=6, limit=1)
+    assert review_mcp._evidence_read(sources[1], reads("computed"))
 
 
 def test_reviewer_rejects_directory_only_acceptance_and_accepts_selected_complete_original(monkeypatch, tmp_path):

@@ -77,7 +77,9 @@ def _provider_failure(errors):
 
 def review_checkpoint(context):
     """A checkpoint belongs to the exact submitted draft and information horizon."""
-    for capture in reversed(context.get("web_evidence", [])):
+    recheck = (context.get("execution") or {}).get("review_recheck") or {}
+    captures = context.get("web_evidence", [])[recheck.get("after_evidence_count", 0):]
+    for capture in reversed(captures):
         checkpoint = (capture.get("review") or {}).get("checkpoint")
         if (checkpoint and checkpoint.get("draft") == context.get("submitted_draft")
                 and checkpoint.get("cutoff") == context.get("cutoff")):
@@ -102,12 +104,14 @@ def automatic_retry_due(context, completed_at, body, *, now=None):
             and (now or datetime.now(UTC)) >= ended + timedelta(seconds=60 if attempt == 1 else 300))
 
 
-def queue_retry(session, run, *, now=None, manual=False):
+def queue_retry(session, run, *, now=None, manual=False, recheck_review=False):
     """Requeue an authorized failed research/risk run without rebinding its evidence.
 
     Automatic recovery is bounded to two retries of an identified transient fault.
     Manual recovery is useful after an operator repairs a deterministic defect;
     publication still verifies the studied dossier versions and current access.
+    Explicit manual rechecking retains the accepted draft and all old receipts,
+    but only checkpoints written after that request may be reused.
     The caller holds the same instrument/topic lock used by begin_run.
     """
     session.refresh(run, with_for_update=True)
@@ -124,6 +128,10 @@ def queue_retry(session, run, *, now=None, manual=False):
         require_portfolio(portfolio_id)
     else:
         require_team_write()
+    if recheck_review and (not manual or not context.get("sector_run")
+            or not context.get("submitted_draft") or not context.get("input_snapshot_cutoff")
+            or not context.get("cutoff")):
+        return False
     execution = dict(context.get("execution") or {})
     attempt = execution.get("attempt", 1)
     error = context.get("runtime_error") or {}
@@ -132,9 +140,22 @@ def queue_retry(session, run, *, now=None, manual=False):
         ended = ended.replace(tzinfo=ended.tzinfo or UTC)
     if not manual and not automatic_retry_due(context, ended, run.body, now=now):
         return False
-    execution["failures"] = [*execution.get("failures", []), {
+    validation_error = context.get("validation_error")
+    failure = {
         "attempt": attempt, "failed_at": ended.isoformat() if ended else None,
-        "error": error or {"type": "Interrupted"}, "manual_recovery": manual}]
+        "error": error or {"type": "PublicationValidation" if validation_error else "Interrupted"},
+        "manual_recovery": manual}
+    if validation_error:
+        failure["validation_error"] = validation_error
+    if recheck_review:
+        # web_evidence is append-only. This boundary keeps old receipts auditable
+        # while letting a newly checked result recover without another review.
+        recheck = {"after_evidence_count": len(context.get("web_evidence", [])),
+            "requested_at": (now or datetime.now(UTC)).isoformat(), "failed_attempt": attempt,
+            "publication_error": str(validation_error or "").split("\n", 1)[0][:1000]}
+        execution["review_recheck"] = recheck
+        failure["review_recheck"] = recheck
+    execution["failures"] = [*execution.get("failures", []), failure]
     execution.update(attempt=attempt, stage="queued", resume=True)
     context.pop("runtime_error", None)
     context.pop("validation_error", None)

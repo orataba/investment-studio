@@ -99,6 +99,57 @@ def test_removes_or_corrects_each_event_and_preserves_unreviewed_sectors(monkeyp
     ]
 
 
+def test_explicit_recheck_uses_real_context_boundary_and_feeds_prior_publication_error(client, monkeypatch, retained_run):
+    from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services.research_runner import queue_retry
+
+    original = draft()
+    context = review._api_request("test-run", "context?originals=true")
+    context.update(submitted_draft=original, input_snapshot_cutoff=context["cutoff"],
+        validation_error="events[event_key=oil-rsi].published_at must match the cited original",
+        rejected_reply="Do not copy the rejected output into the review diagnostic", execution={"attempt": 3})
+    old_checkpoint = {"operation": "review", "review": {"checkpoint": {
+        "draft": deepcopy(original), "cutoff": context["cutoff"], "result": {"reviews": []}}}}
+    context["web_evidence"].append(old_checkpoint)
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="explicit-recheck", title="Research"))
+        session.flush()
+        run = ResearchEntry(entry_id="test-run", topic_id="explicit-recheck", kind="analysis", title="Research",
+                            status="failed", context_json=context)
+        session.add(run)
+        session.flush()
+        assert queue_retry(session, run, manual=True, recheck_review=True)
+        session.commit()
+
+    reads, captures, packets = [], [], []
+    def api(run_id, suffix, payload=None):
+        assert run_id == "test-run"
+        if suffix == "context?originals=true":
+            response = client.get("/api/research/runs/test-run/" + suffix)
+            assert response.status_code == 200, response.text
+            reads.append(response.json())
+            return response.json()
+        assert suffix == "sector-evidence"
+        captures.append(payload)
+        return payload
+    monkeypatch.setattr(review, "_api_request", api)
+    monkeypatch.setattr(review, "_call_reviewer", lambda packet: packets.append(packet) or checked())
+    output = review.review_output(json.dumps(original))
+    assert len(packets) == 1, "The child reviewer must not replay the pre-boundary checkpoint"
+    assert len(reads[0]["web_evidence"]) == len(context["web_evidence"])
+    assert reads[0]["web_evidence"][-1]["review"] == old_checkpoint["review"]
+    diagnostic = packets[0]["acquisition"]["review_recheck"]
+    assert diagnostic["after_evidence_count"] == len(context["web_evidence"])
+    assert diagnostic["publication_error"] == context["validation_error"]
+    assert "不是投资证据" in diagnostic["note"]
+    assert "rejected_reply" not in json.dumps(packets[0])
+    assert context["rejected_reply"] not in json.dumps(packets[0])
+    assert output["reviews"][0]["events"] == []
+    checkpoint = captures[-1]["review"]["checkpoint"]
+    assert checkpoint == {"draft": original, "cutoff": context["cutoff"], "result": output}
+
+
 def test_deleting_all_candidates_replaces_the_original_summary(monkeypatch, retained_run):
     monkeypatch.setattr(review, "_call_reviewer", lambda _: checked())
     output = review.review_output(json.dumps(draft()))

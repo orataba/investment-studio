@@ -5,6 +5,7 @@ The output is a draft-bound receipt; the application owns validation/publication
 """
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 from functools import wraps
 from mcp.server import MCPServer
@@ -87,14 +88,25 @@ def _evidence_read(source, reads):
               "background", "event", "timeline", "analysis", "lesson", "outcome"}
     # A selected complete subpath is sufficient; an unselected years-long table
     # elsewhere in the same retained source does not have to enter model context.
+    def substantive(value, path):
+        return isinstance(value, (dict, list)) and bool(value) or (
+            path[-1] in {"text", "content_text", "body", "description"} and isinstance(value, str) and bool(value))
+
     for row in reads:
         path = row.get("path", [])
         if path and path[0] in fields:
             value = _value_at(source, path)
-            substantive = isinstance(value, (dict, list)) and bool(value) or (
-                path[-1] in {"text", "content_text", "body", "description"} and isinstance(value, str) and bool(value))
-            if substantive and _complete(value, path, reads):
+            if substantive(value, path) and _complete(value, path, reads):
                 return True
+            if isinstance(value, dict):
+                # A parent page also delivers its non-deferred children in full.
+                # Inspect only this page; scalar metadata does not count as evidence.
+                keys = list(value)
+                end = row["next_offset"] if row.get("next_offset") is not None else row["total"]
+                deferred = {tuple(item["path"]) for item in row.get("deferred", [])}
+                if any(tuple([*path, key]) not in deferred and substantive(value[key], [*path, key])
+                       for key in keys[row["offset"]:end]):
+                    return True
         if not path and _complete(source, [], reads) and any(source.get(key) for key in fields):
             return True
         if not path:
@@ -158,11 +170,12 @@ def submit_review_receipts(receipts: dict) -> dict:
     import jsonschema
     from watchlist_app.services.sector_review_protocol import expand_review_receipts
     from watchlist_app.services.sector_fact_review import _Checks
+    from watchlist_app.services.sector_research import validate_event_source_consistency
     state = _state()
     try:
         jsonschema.validate(receipts, state["response_schema"])
         result = expand_review_receipts(state["packet"]["draft_reviews"], receipts)
-        _Checks.model_validate(result)
+        checked = _Checks.model_validate(result)
     except jsonschema.ValidationError as error:
         # The rejected value may contain private original text; expose only the
         # schema location/rule and missing schema field names, never its values.
@@ -192,6 +205,11 @@ def submit_review_receipts(receipts: dict) -> dict:
                if sid not in originals or not _evidence_read(originals[sid], [row for row in reads if row.get("source_id") == sid])]
     if missing:
         raise ValueError("Read substantive original evidence (not its directory) for supported citations, or correct/remove unsupported claims: " + ", ".join(missing))
+    cutoff = datetime.fromisoformat(state["packet"]["cutoff"])
+    for review in checked.reviews:
+        for decision in review.decisions:
+            if decision.event is not None:
+                validate_event_source_consistency(decision.event, originals, cutoff, review.instrument_id)
     output = Path(os.environ["INVESTMENT_STUDIO_REVIEW_RESULT"])
     temporary = output.with_suffix(".tmp")
     temporary.write_text(json.dumps({"receipts": receipts, "result": result}, ensure_ascii=False))

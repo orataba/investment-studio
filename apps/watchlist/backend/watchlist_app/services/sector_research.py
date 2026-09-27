@@ -631,6 +631,30 @@ def usable_original(source: dict, cutoff: datetime) -> bool:
     return not any(re.search(r"(?:^|[·|])\s*Compiled by [^\n·|]*\bEngine\b", line, re.I) for line in opening)
 
 
+def validate_event_source_consistency(item: SectorEvent, sources: dict, cutoff: datetime, instrument_id: str):
+    """Check event clocks against the same eligible originals in review and publication."""
+    for index, view in enumerate(item.market_views):
+        if any(s not in sources or not usable_original(sources[s], cutoff) for s in view.source_ids):
+            raise ValueError(f"事件 {item.event_key} market_views[{index}].source_ids: 公开观点需要实际读取的原文，搜索摘要或来源目录不足以支持观点")
+        if view.published_at is not None and SectorEvent.retain_time_precision(view.published_at) not in {
+            SectorEvent.retain_time_precision(sources[s].get("published_at")) for s in view.source_ids
+        }:
+            raise ValueError(f"事件 {item.event_key} market_views[{index}].published_at: 公开观点日期必须来自引用原文")
+    if any(s not in sources for s in item.source_ids):
+        raise ValueError(f"事件 {item.event_key} source_ids: 事件引用了未取得的来源")
+    originals = [sources[s] for s in item.source_ids if usable_original(sources[s], cutoff)]
+    estimate_changes = [sources[s] for s in item.source_ids if usable_estimate_change(sources[s], cutoff, instrument_id)]
+    computed = [sources[s] for s in item.source_ids if usable_computed(sources[s], cutoff, instrument_id)]
+    if not originals and not estimate_changes and not computed:
+        raise ValueError(f"事件 {item.event_key} source_ids: 事件缺少截至检查时可核对的原文或可比较预期变动；未来首发或自动汇编不能独立支撑事件")
+    if item.published_at is not None and item.published_at not in {
+        SectorEvent.retain_time_precision(source.get("published_at")) for source in originals
+    }:
+        raise ValueError(f"事件 {item.event_key} published_at: 事件发布时间必须来自已引用原文，不得以收录时间代替")
+    if not originals and item.occurred_at is not None:
+        raise ValueError(f"事件 {item.event_key} occurred_at: 数值快照不能确定外部事件发生时间，发生时间必须留空")
+
+
 def _source_views(sources):
     fields = ("source_id", "document_id", "version_id", "url", "title", "source_type", "as_of", "published_at", "published_at_raw",
               "occurred_at", "observed_at", "received_at", "retrieved_at", "discovered_at", "time_status", "run_cutoff", "pm_binding_note")
@@ -1087,26 +1111,7 @@ def validate_result(session, run, parsed: ReviewResult):
             existing = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id,
                 RiskCase.signal == f"sector:{item.event_key}"))
             effective = _effective_event(item, existing, checked_at=_event_check_time(session, review.instrument_id, cutoff))
-            for view in item.market_views:
-                if any(s not in sources or not usable_original(sources[s], cutoff) for s in view.source_ids):
-                    raise ValueError("公开观点需要实际读取的原文，搜索摘要或来源目录不足以支持观点")
-                if view.published_at is not None and SectorEvent.retain_time_precision(view.published_at) not in {
-                    SectorEvent.retain_time_precision(sources[s].get("published_at")) for s in view.source_ids
-                }:
-                    raise ValueError("公开观点日期必须来自引用原文")
-            if any(s not in sources for s in item.source_ids):
-                raise ValueError("事件引用了未取得的来源")
-            originals = [sources[s] for s in item.source_ids if usable_original(sources[s], cutoff)]
-            estimate_changes = [sources[s] for s in item.source_ids if usable_estimate_change(sources[s], cutoff, review.instrument_id)]
-            computed = [sources[s] for s in item.source_ids if usable_computed(sources[s], cutoff, review.instrument_id)]
-            if not originals and not estimate_changes and not computed:
-                raise ValueError("事件缺少截至检查时可核对的原文或可比较预期变动；未来首发或自动汇编不能独立支撑事件")
-            if item.published_at is not None and item.published_at not in {
-                SectorEvent.retain_time_precision(source.get("published_at")) for source in originals
-            }:
-                raise ValueError("事件发布时间必须来自已引用原文，不得以收录时间代替")
-            if not originals and item.occurred_at is not None:
-                raise ValueError("数值快照不能确定外部事件发生时间，发生时间必须留空")
+            validate_event_source_consistency(item, sources, cutoff, review.instrument_id)
             existing = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id,
                 RiskCase.signal == f"sector:{item.event_key}"))
             effective = _effective_event(item, existing, checked_at=_event_check_time(session, review.instrument_id, cutoff))

@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from copy import deepcopy
 from types import SimpleNamespace
+import json
 import os
 import select
 import signal
@@ -67,6 +68,109 @@ def test_checkpoint_belongs_to_exact_draft_and_cutoff():
     assert runner.review_checkpoint(context) == result
     assert runner.review_checkpoint({**context, "cutoff": "new clock"}) is None
     assert runner.review_checkpoint({**context, "submitted_draft": {"reviews": [{"instrument_id": "new"}]}}) is None
+
+
+@pytest.mark.parametrize("manual,changes", [
+    (False, {}),
+    (True, {"submitted_draft": None}),
+    (True, {"input_snapshot_cutoff": None}),
+    (True, {"cutoff": None}),
+    (True, {"sector_run": False, "risk_run": True}),
+])
+def test_explicit_recheck_requires_manual_recovery_of_an_accepted_frozen_research_draft(client, manual, changes):
+    context = {"sector_run": True, "submitted_draft": {"reviews": []},
+        "input_snapshot_cutoff": "2026-09-23T00:00:00Z", "cutoff": "2026-09-23T00:00:00Z", **changes}
+    save_run(context)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "recovery")
+        retained = deepcopy(run.context_json)
+        assert not runner.queue_retry(session, run, manual=manual, recheck_review=True)
+        assert run.status == "failed" and run.context_json == retained
+
+
+def test_explicit_recheck_keeps_initiator_authorization(client, monkeypatch):
+    from studio_identity import Principal
+    context = {"sector_run": True, "research_actor": {"kind": "user", "user_id": "original"},
+        "submitted_draft": {"reviews": []}, "input_snapshot_cutoff": "clock", "cutoff": "clock"}
+    save_run(context)
+    monkeypatch.setattr(runner, "current_principal", lambda: Principal("other", "Other", "default"))
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "recovery")
+        assert not runner.queue_retry(session, run, manual=True, recheck_review=True)
+        assert run.status == "failed" and run.context_json == context
+
+
+def test_explicit_recheck_retains_history_and_new_checkpoint_recovers_without_rechecking(client, monkeypatch):
+    from studio_identity import current_principal
+    stamp = datetime.now(UTC)
+    draft = {"reviews": []}
+    old_result, new_result = {"reviews": [], "version": "old"}, {"reviews": [], "version": "new"}
+    context = {"sector_run": True, "input_snapshot_cutoff": "2026-09-23T00:00:00Z",
+        "cutoff": "2026-09-23T00:00:00Z", "submitted_draft": draft,
+        "validation_error": "events[event_key=dialogue].published_at must match the cited original",
+        "execution": {"attempt": 3}, "instrument_inputs": [{"instrument_id": "xlk", "retained_value": 7}],
+        "computed_metrics": [{"source_id": "computed:retained"}],
+        "web_evidence": [{"review": {"checkpoint": {"draft": draft,
+            "cutoff": "2026-09-23T00:00:00Z", "result": old_result}}}]}
+    save_run(context, completed=stamp)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "recovery")
+        assert runner.queue_retry(session, run, manual=True, recheck_review=True, now=stamp)
+        recheck = run.context_json["execution"]["review_recheck"]
+        assert recheck == {"after_evidence_count": 1, "failed_attempt": 3,
+            "requested_at": stamp.isoformat(), "publication_error": context["validation_error"]}
+        failure = run.context_json["execution"]["failures"][-1]
+        assert failure["error"]["type"] == "PublicationValidation"
+        assert failure["validation_error"] == context["validation_error"]
+        assert failure["review_recheck"] == recheck
+        assert runner.review_checkpoint(run.context_json) is None
+        session.commit()
+
+    response = client.get("/api/research/runs/recovery/context?originals=true")
+    assert response.status_code == 200, response.text
+    api_context = response.json()
+    assert api_context["execution"]["review_recheck"] == recheck
+    assert [capture["review"] for capture in api_context["web_evidence"]] == [capture["review"] for capture in context["web_evidence"]]
+    assert runner.review_checkpoint(api_context) is None
+
+    monkeypatch.setattr(sector_research, "prepare_run", lambda *a: pytest.fail("Frozen input must not be rebound"))
+    monkeypatch.setattr(sector_research, "prepare_initialization_searches", lambda *a: pytest.fail("No new generation/search"))
+    monkeypatch.setattr(runner, "resolve_token", lambda *a: current_principal())
+    launches, publications = [], []
+    def launch(*args, **kwargs):
+        launches.append(kwargs["env"])
+        assert kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW"] == "1"
+        assert kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RESUME_GENERATION"] == "0"
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, "recovery")
+            assert run.context_json["execution"]["stage"] == "review"
+            # The normal reviewer appends a new bound checkpoint before publication.
+            capture = {"review": {"checkpoint": {"draft": draft, "cutoff": context["cutoff"], "result": new_result}}}
+            run.context_json = {**run.context_json, "web_evidence": [*run.context_json["web_evidence"], capture]}
+            session.commit()
+        return SimpleNamespace(communicate=lambda **kw: (json.dumps(new_result), ""), returncode=0)
+    def publish(session, run, reply):
+        publications.append(json.loads(reply))
+        if len(publications) == 1:
+            raise ValueError("publication interrupted after the new checkpoint")
+        run.status = "completed"
+    monkeypatch.setattr(runner.subprocess, "Popen", launch)
+    monkeypatch.setattr(sector_research, "apply_result", publish)
+    runner._run_analysis("recovery")
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "recovery")
+        assert run.status == "failed"
+        assert runner.review_checkpoint(run.context_json) == new_result
+        assert runner.queue_retry(session, run, manual=True)
+        session.commit()
+    runner._run_analysis("recovery")
+    assert len(launches) == 1 and publications == [new_result, new_result]
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "recovery")
+        assert run.status == "completed" and run.context_json["execution"]["stage"] == "publication"
+        assert run.context_json["web_evidence"][:1] == context["web_evidence"]
+        for key in ("submitted_draft", "cutoff", "input_snapshot_cutoff", "instrument_inputs", "computed_metrics"):
+            assert run.context_json[key] == context[key]
 
 
 @pytest.mark.parametrize("checkpoint", [False, True])

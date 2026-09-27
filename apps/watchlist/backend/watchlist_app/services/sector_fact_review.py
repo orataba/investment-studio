@@ -270,6 +270,11 @@ knowledge means a useful internal research update; none is a completed check wit
 upgrade a draft's none/knowledge merely to publish. A quiet run needs no working paper or summary.
 
 This response is only a factual review; it cannot search or perform external actions.
+If acquisition.review_recheck is present, this is an explicitly requested new review of the same
+accepted draft and frozen evidence after a failed attempt. Its publication_error is application
+validation feedback, not investment evidence. Recheck the implicated fields against their originals
+and the complete receipt contract; do not repeat the previous invalid correction, guess a date,
+or alter an unchanged source to make publication pass. Retain the original draft scope and cutoff.
 Use the overview's compact receipt contract and bound object index. Read the complete draft and necessary
 original evidence through paged tools. Read the listed response_schema path when correcting a specific
 field or fixing a validation error; do not traverse every optional correction branch just to accept a fact.
@@ -667,6 +672,9 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
         "tool_evidence": _tool_receipts(context),
         "acquisition": {
             "initialization": context.get("initialization"),
+            **({"review_recheck": {**context["execution"]["review_recheck"],
+                "note": "本次显式恢复的校验诊断，不是投资证据；重新核证原已接受草稿及冻结来源，不复用边界之前的核证结果。"}}
+               if (context.get("execution") or {}).get("review_recheck") else {}),
             **({"initialization_searches": initialization_searches,
                 "candidate_read": "read_review_context(section='initialization_candidates')；仅目录，原文仍须读取 sources 中实际已取得的版本。"}
                if initialization_searches is not None else {}),
