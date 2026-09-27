@@ -9,6 +9,7 @@ import ResearchEntryActions from './ResearchEntryActions'
 import ResearchReadingAside from './ResearchReadingAside'
 import InfoHint from '../../../../../packages/ui/src/InfoHint'
 import ResearchLoading from '../../../../../packages/ui/src/WorkspaceSkeleton'
+import { riskPendingState } from '../../../../../packages/ui/src/instrumentRisk'
 
 export function ReferencedResearchEvent({ instrumentId, eventKey }: { instrumentId: string; eventKey: string }) {
   const [state, setState] = useState<{ event?: ResearchUpdate; error?: string }>({})
@@ -54,6 +55,7 @@ export default function ResearchEventCard({ update, onAskAssistant, initiallyOpe
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   const canWrite = useStudioAccount()?.team_role !== 'reader'
   const reference = update.reference
+  const pendingRisk = riskPendingState(update.risk_assessment, reference.event_version_id)
   const sources = update.sources.map((source, index) => ({ ...source, source_id: source.source_id || `${update.update_id}:${index}` }))
   const versionId = pinState?.updateId === update.update_id ? pinState.version : reference.event_version_id
   const pinned = pinState?.updateId === update.update_id ? pinState.pinned : update.follow_up_pinned
@@ -106,7 +108,7 @@ export default function ResearchEventCard({ update, onAskAssistant, initiallyOpe
     <time className="research-event-inline-date" dateTime={update.timeline_date || undefined}>{update.timeline_date || '日期待核实'}</time>
     {update.body && <p className="research-event-summary" translate="no">{update.body}</p>}
     {update.impact_analysis && update.impact_analysis !== update.body && <p className="research-event-impact"><span>投资影响</span><span translate="no">{update.impact_analysis}</span></p>}
-    {(update.risk_assessment?.status === 'pending' || update.risk_assessment?.status === 'failed') && <p className="research-event-risk-status">{update.risk_assessment.status === 'pending' ? '已提交／待风控复核' : '风控复核未完成'}</p>}
+    {(pendingRisk || update.risk_assessment?.status === 'failed') && <p className="research-event-risk-status">{pendingRisk === 'verification' ? '风控已评估／待核实' : pendingRisk === 'review' ? '已提交／待风控复核' : '风控复核未完成'}</p>}
     <div className="research-event-reading-tools">
       {!initiallyOpen && <ResearchReadingAside label="查看影响、公开观点与依据" title={update.title}>{details}</ResearchReadingAside>}
       {update.event_key && <ResearchReadingAside label="研究修订历史" title={`${update.title} · 研究修订历史`} onOpenChange={setRecordOpen}>{recordOpen && <EventHistory update={update} onAskAssistant={onAskAssistant} themeNames={themeNames} />}</ResearchReadingAside>}

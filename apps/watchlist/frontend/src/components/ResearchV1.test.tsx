@@ -21,6 +21,17 @@ const response = (events: ResearchUpdate[], extra: Partial<ResearchEventsRespons
 beforeEach(() => { vi.resetAllMocks(); api.role = 'member'; api.events.mockResolvedValue(response([])); api.pin.mockResolvedValue({ event_version_id: 'event:1:v2', follow_up_pinned: true }) })
 afterEach(cleanup)
 
+it('distinguishes reviewed pending risk from a newer referral retaining an old receipt', () => {
+  const assessment = { status: 'pending', event_version_id: 'event:1:v1', run_id: 'risk-run',
+    submitted_at: '2026-09-25T09:00:00Z', reviewed_at: '2026-09-25T10:00:00Z', reason: '尚缺盈利影响的直接证据。' }
+  const { rerender } = render(<ResearchEventCard update={event({ risk_assessment: assessment })} />)
+  expect(screen.getByText('风控已评估／待核实')).toBeTruthy()
+  expect(screen.queryByText('已提交／待风控复核')).toBeNull()
+  rerender(<ResearchEventCard update={event({ risk_assessment: { ...assessment, submitted_at: '2026-09-25T11:00:00Z' } })} />)
+  expect(screen.getByText('已提交／待风控复核')).toBeTruthy()
+  expect(screen.queryByText('风控已评估／待核实')).toBeNull()
+})
+
 it('keeps opportunity and risk together, discloses all hidden counts and binds each item to evidence', () => {
   const state = notebook(view({ opportunities: [{ ...insight(0), title: '新增机会' }], risks: [1, 2, 3, 4].map(insight), coverage_status: 'assessed' }))
   render(<InvestmentResearchState instrumentId="stock" compact notebook={state} sources={ids => <span>{ids.join(',')}</span>} />)

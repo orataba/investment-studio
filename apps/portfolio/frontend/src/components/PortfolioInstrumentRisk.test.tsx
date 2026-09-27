@@ -31,6 +31,10 @@ it('retains independently assessed risk after research follow-up stops and separ
       evidence_json: { direction: 'risk', follow_up: 'none', risk_assessment: { status: 'pending' } } },
     { ...base, case_id: 'pending', title: '新线索等待核查', body: '不能冒充已确认风险', trigger_active: false,
       evidence_json: { direction: 'uncertain', follow_up: 'watch', risk_assessment: { status: 'pending' } } },
+    { ...base, case_id: 'assessed-pending', title: '风控已核查的线索', body: '独立评估后仍需补充证据', trigger_active: false,
+      evidence_json: { event_version_id: 'assessed-pending:2', risk_assessment: { status: 'pending',
+        event_version_id: 'assessed-pending:2', run_id: 'risk-run', submitted_at: '2026-09-25T09:00:00Z',
+        reviewed_at: '2026-09-25T10:00:00Z', reason: '需等待公司披露确认项目影响。' } } },
   ] })
   render(<MemoryRouter><PortfolioInstrumentRisk portfolioId="3" workspace={holdingsWorkspaceFixture({ rows: [holding] })} onAskAssistant={vi.fn()} /></MemoryRouter>)
   await screen.findByText('原风险仍未解除')
@@ -40,6 +44,11 @@ it('retains independently assessed risk after research follow-up stops and separ
   fireEvent.click(screen.getByRole('button', { name: /待风控复核/ }))
   expect(screen.getByText('新线索等待核查')).toBeInTheDocument()
   expect(screen.getByText('已提交／待复核')).toBeInTheDocument()
+  expect(screen.queryByText('风控已核查的线索')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '待核实 1' }))
+  expect(screen.getByText('风控已核查的线索')).toBeInTheDocument()
+  expect(screen.getByText('已评估／待核实')).toBeInTheDocument()
+  expect(screen.getByText('需等待公司披露确认项目影响。')).toBeInTheDocument()
 })
 
 it('keeps team-reader risk records readable without shared write controls and allows portfolio analysis', async () => {

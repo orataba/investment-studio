@@ -42,7 +42,7 @@ def basket_fixture(monkeypatch, count=12):
     days = [d for d in days if d.weekday() < 5][:51]
     monkeypatch.setattr(observations, "_market_calendar_sessions", lambda calendar, start, end: tuple(d for d in days if start <= d <= end))
     holdings = [{"holding_key": f"security-{i}", "holding_symbol": f"S{i}", "holding_name": f"Synthetic {i}",
-        "weight_percent": 12 - i, "snapshot_date": days[-1].isoformat(), "source_id": f"holding:{i}"} for i in range(count)]
+        "holding_type": "equity", "weight_percent": 12 - i, "snapshot_date": days[-1].isoformat(), "source_id": f"holding:{i}"} for i in range(count)]
     # Last current price 110/90, all earlier observations 100. Previous breadth
     # is 0 (price equals mean), current is 50%; weights sum to 78% for 12 names.
     members = {f"S{i}": series([(d.isoformat(), 100 if index < 50 else 110 if i % 2 == 0 else 90)
@@ -53,7 +53,7 @@ def basket_fixture(monkeypatch, count=12):
 def test_breadth_hand_calculation_top10_and_concentration(monkeypatch):
     days, holdings, members = basket_fixture(monkeypatch)
     result = observations.basket_observations(list(reversed(holdings)), members,
-        as_of_date=days[-1], total_members=12, ordinary_equity=True, calendar="TEST")
+        as_of_date=days[-1], information_as_of_date=days[-1], calendar="TEST")
     assert [r["symbol"] for r in result["top10"]] == [f"S{i}" for i in range(10)]
     assert result["concentration_pct"] == 75
     breadth = result["breadth"]
@@ -74,7 +74,7 @@ def test_breadth_changed_coverage_compares_only_common_members(monkeypatch):
     # S1 lacks a current session and must not be filled with yesterday's price.
     del members["S1"]["points"][-1]
     result = observations.basket_observations(holdings, members, as_of_date=days[-1],
-        total_members=12, ordinary_equity=True, calendar="TEST")["breadth"]
+        information_as_of_date=days[-1], calendar="TEST")["breadth"]
     assert result["status"] == "partial"
     assert result["valid_members"] == 11
     assert result["current_pct"] == pytest.approx(6 / 11 * 100)
@@ -88,7 +88,7 @@ def test_top10_only_does_not_claim_full_etf_breadth(monkeypatch):
     days, holdings, members = basket_fixture(monkeypatch)
     members = {key: value for key, value in members.items() if key not in {"S10", "S11"}}
     result = observations.basket_observations(holdings, members, as_of_date=days[-1],
-        total_members=12, ordinary_equity=True, calendar="TEST")
+        information_as_of_date=days[-1], calendar="TEST")
     assert result["breadth"]["status"] == "unavailable"
     assert result["breadth"]["scope"] == "top10_only"
     assert result["breadth"]["current_pct"] is None
@@ -96,17 +96,43 @@ def test_top10_only_does_not_claim_full_etf_breadth(monkeypatch):
 
 
 @pytest.mark.parametrize("change", ["negative", "levered", "missing", "mixed_dates", "unknown_structure"])
-def test_unverified_weights_and_structure_never_publish_ordinary_concentration(monkeypatch, change):
+def test_unverified_weights_and_classification_never_publish_stock_aggregates(monkeypatch, change):
     days, holdings, members = basket_fixture(monkeypatch)
     if change == "negative": holdings[0]["weight_percent"] = -10
     if change == "levered": holdings[0]["weight_percent"] = 120
     if change == "missing": holdings[0]["weight_percent"] = None
     if change == "mixed_dates": holdings[0]["snapshot_date"] = days[-2].isoformat()
+    if change == "unknown_structure": holdings[0]["holding_type"] = "unclassified"
     result = observations.basket_observations(holdings, members, as_of_date=days[-1],
-        total_members=12, ordinary_equity=change != "unknown_structure", calendar="TEST")
+        information_as_of_date=days[-1], calendar="TEST")
     assert result["concentration_pct"] is None
+    assert result["breadth"]["current_pct"] is None
+    assert result["correlation"]["average"] is None
     if change != "mixed_dates":
         assert result["top10"]
+
+
+@pytest.mark.parametrize("field,value", [("holding_key", None), ("holding_key", "security-1"),
+    ("holding_symbol", None), ("holding_symbol", "S1")])
+def test_stock_basket_requires_unique_known_positions_and_security_identities(monkeypatch, field, value):
+    days, holdings, members = basket_fixture(monkeypatch)
+    holdings[0][field] = value
+    result = observations.basket_observations(holdings, members, as_of_date=days[-1],
+        information_as_of_date=days[-1], calendar="TEST")
+    assert result["top10"] == []
+    assert result["breadth"]["current_pct"] is None
+
+
+def test_weight_rounding_budget_is_limited_to_disclosed_precision_and_keeps_original_values():
+    # Seventy-seven 8-decimal disclosures can accumulate a few last-place units.
+    weights = [{"weight_percent": 1.0} for _ in range(76)] + [{"weight_percent": 24.00000003}]
+    assert observations._disclosed_weights_valid(weights)
+    assert weights[-1]["weight_percent"] == 24.00000003
+    weights[-1]["weight_percent"] = 24.000001
+    assert not observations._disclosed_weights_valid(weights)
+    assert not observations._disclosed_weights_valid([{"weight_percent": 100.1}])
+    assert not observations._disclosed_weights_valid([{"weight_percent": 100.000000001}])
+    assert not observations._disclosed_weights_valid([{"weight_percent": -.000000001}, {"weight_percent": 100}])
 
 
 def test_event_date_only_and_after_close_never_reuse_prior_day_move():
@@ -190,16 +216,21 @@ def test_snapshot_clock_and_retained_figure_schema():
     QuantOutput.model_validate({key: saved["data"][key] for key in ("summary", "metrics", "tables", "charts", "limitations")})
 
 
-def test_instrument_observation_reads_actual_retained_market_versions_in_batches(tmp_path):
+@pytest.mark.parametrize("scenario", ["cash", "mixed_weekend", "future_snapshot", "future_available",
+    "excess_weight", "short_future", "negative_future"])
+def test_instrument_observation_reads_actual_retained_market_versions_in_batches(tmp_path, scenario):
     from investment_studio_instrument_core.db_models import Instrument
     from studio_market.config import MarketSettings
     from studio_market.numeric import NumericStore
     from watchlist_app.db.models import InstrumentChartReadModel
     from watchlist_app.services.research_notebook import ResearchModule, ResearchNotebook, validate_notebook
     from watchlist_app.services.research_quant import QuantOutput
-    cutoff = datetime(2026, 9, 25, 22, tzinfo=UTC)
-    known = datetime(2026, 9, 25, 21, tzinfo=UTC)
-    days = observations._market_calendar_sessions("XNYS", date(2026, 6, 1), date(2026, 9, 24))[-51:]
+    cutoff = datetime(2026, 9, 27, 5, 26, tzinfo=UTC)
+    known = datetime(2026, 9, 27, 1, tzinfo=UTC)
+    days = observations._market_calendar_sessions("XNYS", date(2026, 6, 1), date(2026, 9, 25))[-64:]
+    snapshot_date = date(2026, 9, 25) if scenario == "cash" else date(2026, 9, 26)
+    if scenario == "future_snapshot":
+        snapshot_date = date(2026, 9, 28)
     instrument = SimpleNamespace(instrument_type="etf", source_settings_json={}, exchange_code="XNYS",
         identifiers=[SimpleNamespace(identifier_type="provider_symbol", identifier_value="fmp:FIXTURE")])
     own_series = series([(d.isoformat(), 100 + index) for index, d in enumerate(days)])
@@ -209,24 +240,65 @@ def test_instrument_observation_reads_actual_retained_market_versions_in_batches
     store = NumericStore(MarketSettings(f"sqlite:///{tmp_path / 'market.db'}", tmp_path / "data"))
     store.create_schema_for_testing()
     try:
-        def save(dataset, rows):
-            store.ingest(dataset, [[{**row, "collected_at": known} for row in rows]], source="synthetic-fixture")
-        save("etf_holdings", [{"etf_symbol": "FIXTURE", "holding_key": f"holding-{i}", "holding_symbol": f"S{i}",
-            "holding_name": f"Synthetic {i}", "snapshot_date": days[-1], "weight_percent": weight}
+        def save(dataset, rows, collected_at=known):
+            store.ingest(dataset, [[{**row, "collected_at": collected_at} for row in rows]], source="synthetic-fixture")
+        holdings = [{"etf_symbol": "FIXTURE", "holding_key": f"holding-{i}", "holding_symbol": f"S{i}",
+            "holding_name": f"Synthetic {i}", "snapshot_date": snapshot_date, "weight_percent": weight, "shares": 100}
             for i, weight in enumerate((20, 30, 49))] + [{"etf_symbol": "FIXTURE", "holding_key": "cash",
-                "holding_symbol": "CASH", "holding_name": "US DOLLAR", "snapshot_date": days[-1], "weight_percent": 1}])
-        save("etf_info", [{"symbol": "FIXTURE", "holdings_count": 4, "asset_class": "Equity"}])
+                "holding_symbol": "CASH", "holding_name": "US DOLLAR", "snapshot_date": snapshot_date,
+                "weight_percent": 1 if scenario == "cash" else .10000003}]
+        if scenario != "cash":
+            holdings.extend([
+                {"etf_symbol": "FIXTURE", "holding_key": "fund", "holding_name": "US MONEY MARKET",
+                    "snapshot_date": snapshot_date, "weight_percent": .5},
+                {"etf_symbol": "FIXTURE", "holding_key": "future", "holding_symbol": "IXTZ6",
+                    "holding_name": "TECHNOLOGY DEC26", "snapshot_date": snapshot_date, "weight_percent": .4, "shares": 10},
+            ])
+        if scenario == "excess_weight": holdings[3]["weight_percent"] = .101
+        if scenario == "short_future": holdings[-1]["shares"] = -1
+        if scenario == "negative_future": holdings[-1]["weight_percent"] = -.4
+        save("etf_holdings", holdings, collected_at=cutoff + timedelta(seconds=1) if scenario == "future_available" else known)
+        # Provider counts can refer to equities while positions also include cash,
+        # money-market funds and futures. Neither count certifies ETF leverage.
+        save("etf_info", [{"symbol": "FIXTURE", "holdings_count": 4 if scenario == "cash" else 3, "asset_class": "Equity"}])
         save("company_profiles", [{"symbol": f"S{i}", "company_name": f"Synthetic {i}", "currency": "USD", "is_fund": False, "is_etf": False} for i in range(3)])
         save("us_eod_daily", [{"symbol": symbol, "date": day, "close": 100 + index, "adjusted_close": 100 + index, "volume": 100 + index}
             for symbol in ("FIXTURE", "S0", "S1", "S2") for index, day in enumerate(days)])
         result = observations.instrument_observations(session, "fixture-etf", as_of=cutoff, store=store)
         basket = result["data"]["observations"]["basket"]
+        assert result["data"]["method_version"] == "watchlist-observations/v3"
+        assert result["data"]["information_cutoff_at"] == cutoff.isoformat()
+        assert basket["price_as_of_date"] == "2026-09-25"
+        assert basket["information_as_of_date"] == "2026-09-27"
+        if scenario not in {"cash", "mixed_weekend"}:
+            assert basket["concentration_pct"] is None
+            assert basket["breadth"]["current_pct"] is None
+            assert basket["correlation"]["average"] is None
+            if scenario in {"future_snapshot", "future_available"}:
+                assert basket["top10"] == []
+            else:
+                assert [row["symbol"] for row in basket["top10"]] == ["S2", "S1", "S0"]
+            return
+        assert basket["holdings_date"] == snapshot_date.isoformat()
+        assert basket["scope"] == "disclosed_equity_positions"
+        assert basket["status"] == "available"
+        assert result["data"]["status"] == "partial"  # No benchmark is configured.
         assert basket["concentration_pct"] == 99
         assert basket["breadth"]["current_pct"] == 100
         assert basket["breadth"]["weight_coverage_pct"] == 99
-        assert basket["total_members"] == 3 and basket["total_positions"] == 4
+        assert basket["breadth"]["scope"] == "full_disclosed_equity_basket"
+        assert basket["correlation"]["status"] == "available"
+        assert basket["correlation"]["return_observations"] == 63
+        assert basket["correlation"]["end_date"] == "2026-09-25"
+        assert basket["total_members"] == 3 and basket["total_positions"] == len(holdings)
+        assert basket["provider_reported_holdings_count"] == (4 if scenario == "cash" else 3)
+        assert len(basket["non_equity_positions"]) == len(holdings) - 3
+        if scenario == "mixed_weekend":
+            assert {row["holding_type"] for row in basket["non_equity_positions"]} == {"fund", "future", "cash"}
+            assert basket["non_equity_positions"][0]["weight_percent"] == .10000003
+            assert any("名义敞口" in text for text in basket["limitations"])
         assert [row["symbol"] for row in basket["top10"]] == ["S2", "S1", "S0"]
-        assert len(result["sources"]) == 4 + 1 + 3 + 4 * 51
+        assert len(result["sources"]) == len(holdings) + 1 + 3 + 4 * 64
         assert store.read_source(basket["top10"][0]["source_id"])["weight_percent"] == 49
         QuantOutput.model_validate({key: result["data"][key] for key in ("summary", "metrics", "tables", "charts", "limitations")})
         # The actual figure-source validator accepts this retained evidence;

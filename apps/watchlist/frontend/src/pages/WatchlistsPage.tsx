@@ -171,8 +171,8 @@ const COLUMN_CHOOSER_LABELS: Record<string, [string, string]> = {
 }
 const COLUMN_CHOOSER_DESCRIPTIONS: Record<string, [string, string]> = {
   'attr.risk_attention': [
-    '当前风险事项的状态：重点关注、待风控复核、监测受限或暂无触发。暂无触发不代表已完成全面风险评估。',
-    'Current risk cases: attention, pending risk review, limited monitoring, or no trigger. No trigger does not mean a full risk assessment is complete.',
+    '当前风险事项的状态：重点关注、风险线索、监测受限或暂无触发。风险线索包括待风控复核或已评估但仍待核实的事项；暂无触发不代表已完成全面风险评估。',
+    'Current risk cases: attention, risk leads, limited monitoring, or no trigger. Risk leads include items awaiting review or still requiring verification after assessment. No trigger does not mean a full risk assessment is complete.',
   ],
   data_freshness_status: [
     '当前指标数据的更新状态；请结合价格 / 净值日期与指标截至日期判断。',
@@ -365,8 +365,8 @@ function removeTaxonomyFilters(filters: FilterState) {
 function formatFilterOptionLabel(value: unknown, fieldKey?: string, zh = false) {
   if (fieldKey === 'attr.risk_attention') {
     const labels: Record<string, string> = zh
-      ? { attention: '重点关注', pending: '待风控复核', limited: '监测受限', no_trigger: '暂无触发' }
-      : { attention: 'Risk attention', pending: 'Pending risk review', limited: 'Limited monitoring', no_trigger: 'No trigger' }
+      ? { attention: '重点关注', pending: '风险线索', limited: '监测受限', no_trigger: '暂无触发' }
+      : { attention: 'Risk attention', pending: 'Risk leads', limited: 'Limited monitoring', no_trigger: 'No trigger' }
     return labels[String(value)] || (zh ? '待核查' : 'Awaiting review')
   }
   if (typeof value === 'boolean') {
@@ -591,9 +591,9 @@ function renderCell(
         {typeof value === 'string' && value ? value : instrumentId.toUpperCase()}
       </Link>{['attention', 'pending'].includes(String(row['attr.risk_attention'])) && <button className={`watchlist-risk-indicator${row['attr.risk_attention'] === 'pending' ? ' watchlist-risk-indicator-pending' : ''}`} type="button" onClick={() => openRisk(instrumentId)}
         aria-label={row['attr.risk_attention'] === 'pending'
-          ? zh ? `${value || instrumentId} 有风险上报待复核，查看风险提示` : `View pending risk review for ${value || instrumentId}`
+          ? zh ? `${value || instrumentId} 有风险线索，查看风险提示` : `View risk leads for ${value || instrumentId}`
           : zh ? `${value || instrumentId} 有关注事项，查看风险提示` : `View risk alerts for ${value || instrumentId}`}
-        title={row['attr.risk_attention'] === 'pending' ? zh ? '待风控复核' : 'Pending risk review' : zh ? '重点关注' : 'Risk alerts'}><WorkspaceToolIcon kind="risk" /></button>}</span>
+        title={row['attr.risk_attention'] === 'pending' ? zh ? '风险线索' : 'Risk leads' : zh ? '重点关注' : 'Risk alerts'}><WorkspaceToolIcon kind="risk" /></button>}</span>
     )
   }
 

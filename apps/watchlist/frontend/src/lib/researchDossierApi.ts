@@ -1,5 +1,6 @@
 import { fetchJson, type InstrumentResearchNote } from './api'
 import type { ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
+import type { RiskAssessment } from '../../../../../packages/ui/src/instrumentRisk'
 
 // Published research keeps the clock actually retained with its source evidence.
 type EstimateSnapshot = { observation_id?: string; collected_at?: string; run_id?: string; read_at?: string | null; cutoff?: string | null }
@@ -264,7 +265,7 @@ export function uploadResearchMaterial(instrumentId: string, file: File, materia
 }
 
 export type ResearchUpdate = {
-  risk_assessment?: { status: string; issue_key?: string; reason?: string }
+  risk_assessment?: RiskAssessment
   event_key?: string; importance_score?: number | null; importance_reason?: string
   market_views?: Array<{ publisher: string; published_at: string | null; view: string; source_ids: string[] }>
   market_reaction?: { status: 'available' | 'partial' | 'unavailable' | 'pending'; figure_source_ids: string[]; explanation: string } | null

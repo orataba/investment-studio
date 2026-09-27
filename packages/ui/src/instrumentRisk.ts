@@ -58,6 +58,31 @@ export type RiskCase = {
 }
 export type RiskWorkspace = { instruments: RiskAsset[]; cases: RiskCase[] }
 
+export type RiskAssessment = {
+  status: string
+  issue_key?: string
+  event_version_id?: string
+  run_id?: string
+  submitted_at?: string
+  reviewed_at?: string
+  reason?: string
+}
+
+export function riskPendingState(assessment: unknown, eventVersion: unknown): 'review' | 'verification' | null {
+  if (!assessment || typeof assessment !== 'object' || !('status' in assessment) || assessment.status !== 'pending') return null
+  const receipt = assessment as RiskAssessment
+  const reviewedAt = typeof receipt.reviewed_at === 'string' ? Date.parse(receipt.reviewed_at) : NaN
+  const submittedAt = typeof receipt.submitted_at === 'string' ? Date.parse(receipt.submitted_at) : NaN
+  // A new referral retains the previous receipt, so its review must also postdate this submission.
+  return typeof eventVersion === 'string' && Boolean(eventVersion.trim())
+    && receipt.event_version_id === eventVersion
+    && typeof receipt.run_id === 'string' && Boolean(receipt.run_id.trim())
+    && typeof receipt.reason === 'string' && Boolean(receipt.reason.trim())
+    && Number.isFinite(reviewedAt)
+    && (receipt.submitted_at == null || (Number.isFinite(submittedAt) && reviewedAt >= submittedAt))
+    ? 'verification' : 'review'
+}
+
 export type RiskRequest = <T>(path: string, init?: RequestInit) => Promise<T>
 export const percent = (value: number | null | undefined) =>
   value == null ? '—' : `${value.toFixed(2)}%`

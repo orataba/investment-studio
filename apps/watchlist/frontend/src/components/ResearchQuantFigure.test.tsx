@@ -83,6 +83,19 @@ it('formats explicitly percentage-valued metrics without rounding unknown units 
   expect(container.querySelector('.research-quant-metrics dt')?.textContent).toBe('累计收益')
 })
 
+it('formats only the defined watchlist Top 10 correlation metrics to three decimals', () => {
+  const saved = source()
+  saved.data!.analysis_kind = 'watchlist_observations'
+  saved.data!.metrics = { '股票Top 10平均相关性（63交易日）': 0.2664975773, 'Top 10平均相关性（63交易日）': 0.2664975773,
+    correlation: 0.2664975773, variance: 0.00000125 }
+  const { container, rerender } = render(<ResearchQuantFigure source={saved} />)
+  const values = () => [...container.querySelectorAll('.research-quant-metrics dd')].map(item => item.textContent)
+  expect(values()).toEqual(['0.266', '0.266', '0.2664975773', '0.00000125'])
+  rerender(<ResearchQuantFigure source={{ ...saved, data: { ...saved.data, analysis_kind: 'python_quant' } }} />)
+  expect(values()).toEqual(['0.2664975773', '0.2664975773', '0.2664975773', '0.00000125'])
+  expect(saved.data!.metrics['股票Top 10平均相关性（63交易日）']).toBe(0.2664975773)
+})
+
 it('presents retained EWMA observations compactly and keeps exact values and method in evidence', () => {
   const saved: SavedResearchSource = { source_id: 'computed:ewma', source_type: 'computed_metric', title: '价格波动研究',
     methodology: { metric: 'ewma_volatility', half_life_sessions: 21, annualization: 252 },
@@ -112,4 +125,51 @@ it('keeps unavailable EWMA observations empty and retains their limitation', () 
   expect(screen.getByText('交易观察不足。')).toBeTruthy()
   expect(container.querySelector('svg')).toBeNull()
   expect(container.querySelector('.research-quant-metrics')?.textContent).not.toContain('0.00')
+})
+
+it('keeps a common-sample comparison focused on the chart and opens precise supporting records on demand', () => {
+  const method = '共同实际观察日；不填充缺失值；不年化。'
+  const saved: SavedResearchSource = { source_id: 'computed:comparison', source_type: 'computed_metric', title: '已登记标的共同观察区间比较', methodology: method,
+    data: { sample_start: '2026-01-01', sample_end: '2026-09-25', observations: 182, currency: 'USD', method,
+      rows: [{ instrument_id: 'xlk', return_pct: 12.345678, max_drawdown_pct: -6.123456, correlation_to_target: 1, excess_return_pp: null },
+        { instrument_id: 'spy', return_pct: -2.345678, max_drawdown_pct: -8.123456, correlation_to_target: 0.87654321, excess_return_pp: 0.123456 }],
+      limitations: ['仅覆盖已登记标的，不代表全市场排名。', '历史相关性不代表危机对冲。'] } }
+  const { container } = render(<EvidenceFigure source={saved} />)
+  expect(screen.getByRole('img', { name: '共同样本区间收益对比' })).toBeTruthy()
+  expect(screen.getByText('共同样本 2026-01-01 至 2026-09-25 · 实际观察数 182 · USD')).toBeTruthy()
+  expect(screen.getByText('+12.35%')).toBeTruthy()
+  expect(screen.getByText('-2.35%')).toBeTruthy()
+  expect(screen.queryByRole('table')).toBeNull()
+  expect(screen.queryByText(method)).toBeNull()
+  expect(screen.queryByText(saved.data!.limitations![0])).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '计算口径与输入依据' }))
+  const evidence = screen.getByRole('dialog')
+  expect(within(evidence).getAllByText(method)).toHaveLength(1)
+  expect(within(evidence).getByText('-6.12%')).toBeTruthy()
+  expect(within(evidence).getByText('0.877')).toBeTruthy()
+  expect(within(evidence).getByText('0.12 个百分点')).toBeTruthy()
+  expect(within(evidence).getByText(saved.data!.limitations![0])).toBeTruthy()
+  const original = within(evidence).getByText('完整计算记录与输入依据').closest('details')!
+  original.open = true
+  fireEvent(original, new Event('toggle'))
+  expect(evidence.querySelector('pre')?.textContent).toContain('0.87654321')
+  expect(evidence.querySelector('pre')?.textContent).toContain('12.345678')
+  expect(container.querySelectorAll('.research-return-track i')).toHaveLength(2)
+})
+
+it('keeps unavailable comparison rows and their sample gap visible without drawing zero for missing returns', () => {
+  const saved: SavedResearchSource = { source_id: 'computed:partial', source_type: 'computed_metric',
+    data: { sample_start: '2026-01-01', sample_end: '2026-09-25', observations: 182,
+      rows: [{ instrument_id: 'missing', return_pct: null, max_drawdown_pct: null }, { instrument_id: 'known', return_pct: 0, max_drawdown_pct: 0 }],
+      limitations: ['一个标的尚未取得共同样本。'] } }
+  const { container, rerender } = render(<EvidenceFigure source={saved} />)
+  expect(screen.getByText('missing')).toBeTruthy()
+  expect(screen.getByText('未取得')).toBeTruthy()
+  expect(screen.getByText('0.00%')).toBeTruthy()
+  expect(container.querySelectorAll('.research-return-track i')).toHaveLength(1)
+  expect(screen.getByText('一个标的尚未取得共同样本。')).toBeTruthy()
+  rerender(<EvidenceFigure source={{ ...saved, data: { sample_start: null, sample_end: null, observations: 0, rows: [], limitations: ['没有足够的共同实际观察日。'] } }} />)
+  expect(screen.getByText('本次计算未取得可用结果。')).toBeTruthy()
+  expect(screen.getByText('没有足够的共同实际观察日。')).toBeTruthy()
+  expect(screen.queryByRole('img')).toBeNull()
 })

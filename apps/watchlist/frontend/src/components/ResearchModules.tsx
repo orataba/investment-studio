@@ -38,16 +38,22 @@ export function EvidenceFigure({ source }: { source: SavedResearchSource }) {
   const holdingsMin = Math.min(0, ...holdings.map(row => row.weight_percent))
   const holdingsMax = Math.max(100, ...holdings.map(row => row.weight_percent))
   const holdingsRange = holdingsMax - holdingsMin
-  const rows = source.data?.rows?.filter(row => typeof row.return_pct === 'number' && Number.isFinite(row.return_pct)) || []
-  const maximum = Math.max(1, ...rows.map(row => Math.abs(row.return_pct!)))
+  const comparison = Boolean(source.data?.rows)
+  const rows = source.data?.rows || []
+  const observedRows = rows.filter(row => typeof row.return_pct === 'number' && Number.isFinite(row.return_pct))
+  const maximum = Math.max(1, ...observedRows.map(row => Math.abs(row.return_pct!)))
+  const comparisonIncomplete = comparison && (source.data?.available === false || observedRows.length < 2
+    || observedRows.length !== rows.length || !source.data?.sample_start || !source.data?.sample_end || (source.data?.observations ?? 0) < 2)
   return <figure className="research-evidence-figure">
     <figcaption>{source.title || '留存数值依据'}</figcaption>
     {quantitative && <ResearchQuantFigure source={source} captioned />}
+    {comparison && <p className="sector-research-note">共同样本 {source.data?.sample_start || '未取得'} 至 {source.data?.sample_end || '未取得'} · 实际观察数 {source.data?.observations ?? '未取得'}{source.data?.currency && ` · ${source.data.currency}`}</p>}
+    {comparison && (source.data?.available === false || !observedRows.length) && <p className="sector-research-note">本次计算未取得可用结果。</p>}
     {rows.length > 0 && <div className="research-return-chart" role="img" aria-label="共同样本区间收益对比">
       {rows.map(row => <div className="research-return-row" key={row.instrument_id}>
         <span translate="no">{row.name || row.instrument_id}</span>
-        <div className="research-return-track"><i className={row.return_pct! < 0 ? 'negative' : 'positive'} style={{ width: `${Math.abs(row.return_pct!) / maximum * 50}%`, left: row.return_pct! < 0 ? `${50 - Math.abs(row.return_pct!) / maximum * 50}%` : '50%' }} /></div>
-        <strong>{row.return_pct! > 0 ? '+' : ''}{row.return_pct!.toFixed(2)}%</strong>
+        <div className="research-return-track">{Number.isFinite(row.return_pct) && row.return_pct !== null && <i className={row.return_pct < 0 ? 'negative' : 'positive'} style={{ width: `${Math.abs(row.return_pct) / maximum * 50}%`, left: row.return_pct < 0 ? `${50 - Math.abs(row.return_pct) / maximum * 50}%` : '50%' }} />}</div>
+        <strong>{Number.isFinite(row.return_pct) && row.return_pct !== null ? `${row.return_pct > 0 ? '+' : ''}${row.return_pct.toFixed(2)}%` : '未取得'}</strong>
       </div>)}
     </div>}
     {holdings.length > 0 && <>
@@ -59,8 +65,8 @@ export function EvidenceFigure({ source }: { source: SavedResearchSource }) {
       <p className="sector-research-note">快照采集：{dateLabel(source.previous_snapshot?.collected_at)} → {dateLabel(source.current_snapshot?.collected_at)}。仅为采集区间内的同财期共识变化，不能确定精确调整日期。</p>
       {source.changes?.length ? <table><thead><tr><th>公司 / 预测财期</th><th>指标</th><th>前次 → 本次</th><th>变化</th></tr></thead><tbody>{source.changes.map((change, index) => <tr key={index}><td>{change.symbol}<small>{change.frequency} · {change.target_period_end}</small></td><td>{change.metric === 'revenue_avg' ? '平均营收预期' : change.metric === 'eps_avg' ? '平均每股收益预期' : change.metric}</td><td>{change.previous_value.toLocaleString()} → {change.current_value.toLocaleString()} {change.currency || '币种待核实'}{change.metric === 'eps_avg' && '/股'}{change.current_currency_status === 'inferred_from_reporting_currency' && <small>币种按财报币种推定</small>}</td><td>{change.delta_pct === null ? '未取得' : `${change.delta_pct.toFixed(2)}%`}{change.analyst_count_changed && <small>分析师样本有变化</small>}</td></tr>)}</tbody></table> : <p className="sector-research-note">本份快照未保存可比变化。</p>}
     </div>}
-    {source.data ? quantitative ? <>
-      {Boolean(source.data.limitations?.length) && <p className="research-figure-limitations" translate="no">{source.data.limitations!.join(' ')}</p>}
+    {source.data ? quantitative || comparison ? <>
+      {Boolean(source.data.limitations?.length) && (!comparison || comparisonIncomplete) && <p className="research-figure-limitations" translate="no">{source.data.limitations!.join(' ')}</p>}
       <ResearchReadingAside label="计算口径与输入依据"><ComputedEvidence source={source} /></ResearchReadingAside>
     </> : <ComputedEvidence source={source} /> : !holdings.length && source.source_type !== 'analyst_estimate_changes' ? <p className="sector-research-note">此记录未包含支持当前图形的数值结构，可在模块来源中查看已保存依据。</p> : null}
   </figure>

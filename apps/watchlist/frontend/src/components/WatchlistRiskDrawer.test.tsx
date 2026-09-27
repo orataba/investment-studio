@@ -10,16 +10,73 @@ import {
 } from '@testing-library/react'
 import WatchlistRiskDrawer from './WatchlistRiskDrawer'
 import InstrumentRiskDrawer from './InstrumentRiskDrawer'
+import { riskPendingState } from '../../../../../packages/ui/src/instrumentRisk'
 const request = vi.hoisted(() => vi.fn())
+const officer = vi.hoisted(() => ({ onCompleted: undefined as undefined | (() => void) }))
 const permission = vi.hoisted(() => ({ canWrite: true }))
 vi.mock('./AccountBoundary', () => ({ useCanWriteTeam: () => permission.canWrite }))
 vi.mock('../lib/api', () => ({ fetchJson: request }))
 vi.mock('./SectorResearchPanel', () => ({ default: () => null }))
-vi.mock('../../../../../packages/ui/src/RiskOfficerPanel', () => ({ default: ({ scopeQuery, canRun }: { scopeQuery: string; canRun: boolean }) => <span data-testid="officer-scope" data-can-run={String(canRun)}>{scopeQuery}</span> }))
+vi.mock('../../../../../packages/ui/src/RiskOfficerPanel', () => ({ default: ({ scopeQuery, canRun, onCompleted }: { scopeQuery: string; canRun: boolean; onCompleted: () => void }) => {
+  officer.onCompleted = onCompleted
+  return <span data-testid="officer-scope" data-can-run={String(canRun)}>{scopeQuery}</span>
+} }))
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
   permission.canWrite = true
+  officer.onCompleted = undefined
+})
+const pendingReceipt = {
+  status: 'pending', event_version_id: 'a:2', run_id: 'officer-run',
+  submitted_at: '2026-09-27T07:51:49Z', reviewed_at: '2026-09-27T07:56:41Z',
+  reason: '已复核现有披露，仍缺项目延期与盈利影响之间的直接证据。',
+}
+
+it.each([
+  { event_version_id: 'a:1' },
+  { submitted_at: '2026-09-27T08:00:00Z' },
+  { run_id: '' },
+  { reviewed_at: undefined },
+  { reviewed_at: 'invalid' },
+  { submitted_at: 'invalid' },
+  { reason: ' ' },
+])('does not treat an old or incomplete receipt as assessment of the current referral: %j', override => {
+  expect(riskPendingState({ ...pendingReceipt, ...override }, 'a:2')).toBe('review')
+})
+
+it('shows current assessed pending leads and the reason without implying confirmed risk', async () => {
+  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: '标的 A' }], cases: [
+    { ...caseFor('a'), signal: 'sector:project', trigger_active: false,
+      evidence_json: { event_version_id: 'a:2', risk_assessment: pendingReceipt } },
+  ] })
+  render(<InstrumentRiskDrawer instrumentId="a" instrumentName="标的 A" onClose={vi.fn()} onAskAssistant={vi.fn()} />)
+  expect((await screen.findByRole('button', { name: '待核实 1' })).getAttribute('aria-pressed')).toBe('true')
+  expect(screen.getByRole('button', { name: '重点关注 0' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: /待风控复核/ })).toBeNull()
+  expect(screen.getByText('已评估／待核实')).toBeTruthy()
+  expect(screen.getByText(pendingReceipt.reason)).toBeTruthy()
+})
+
+it('moves the pending tab to verification when the officer completes and treats a new referral as unreviewed', async () => {
+  let reviewed = false
+  const snapshot = () => ({ instruments: [{ instrument_id: 'a', name: '标的 A' }, { instrument_id: 'b', name: '标的 B' }], cases: [
+    { ...caseFor('a'), signal: 'sector:project', trigger_active: false,
+      evidence_json: { event_version_id: 'a:2', risk_assessment: reviewed ? pendingReceipt : { ...pendingReceipt, submitted_at: '2026-09-27T08:00:00Z' } } },
+    { ...caseFor('b'), signal: 'sector:other', trigger_active: false, evidence_json: { risk_assessment: { status: 'pending' } } },
+  ] })
+  request.mockImplementation(async () => snapshot())
+  render(<WatchlistRiskDrawer watchlistId="3" watchlistName="当前列表" focusInstrumentId="a" onClose={vi.fn()} onAskAssistant={vi.fn()} />)
+  expect((await screen.findByRole('button', { name: '待风控复核 2' })).getAttribute('aria-pressed')).toBe('true')
+  expect(screen.queryByText(pendingReceipt.reason)).toBeNull()
+  reviewed = true
+  await act(async () => officer.onCompleted?.())
+  expect((await screen.findByRole('button', { name: '待核实 1' })).getAttribute('aria-pressed')).toBe('true')
+  expect(screen.getByText(pendingReceipt.reason)).toBeTruthy()
+  reviewed = false
+  await act(async () => officer.onCompleted?.())
+  expect((await screen.findByRole('button', { name: '待风控复核 2' })).getAttribute('aria-pressed')).toBe('true')
+  expect(screen.queryByText(pendingReceipt.reason)).toBeNull()
 })
 const caseFor = (id: string, severity = 'attention') => ({
   case_id: id,

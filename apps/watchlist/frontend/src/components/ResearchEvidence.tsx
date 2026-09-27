@@ -17,8 +17,8 @@ export function sourceUrl(value?: string) {
   try { const url = new URL(value || ''); return ['http:', 'https:'].includes(url.protocol) ? url.href : null } catch { return null }
 }
 
-const evidenceNumber = (value: number | null | undefined, unit = '') => typeof value === 'number' && Number.isFinite(value)
-  ? `${value.toLocaleString('zh-CN', { maximumFractionDigits: 6 })}${unit}` : '未取得'
+const evidenceNumber = (value: number | null | undefined, unit = '', digits = 2) => typeof value === 'number' && Number.isFinite(value)
+  ? `${value.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits })}${unit}` : '未取得'
 const comparisonRoles: Record<string, string> = { configured_benchmark: '已配置基准', taxonomy_peer: '已登记分类同类', configured_peer: '指定对照' }
 const evidenceLabels: Record<string, string> = {
   daily: '日度', weekly: '周度', monthly: '月度', total_return: '总收益', price_return: '价格收益', unit_nav_return: '单位净值收益',
@@ -30,7 +30,7 @@ function ComparisonEvidence({ comparison }: { comparison: SavedComparison }) {
   return <div className="research-computed-comparison">
     <p>共同样本 {comparison.sample_start || '未取得'} 至 {comparison.sample_end || '未取得'} · 实际观察数 {comparison.observations ?? '未取得'}{comparison.currency && ` · ${comparison.currency}`}</p>
     {Boolean(comparison.rows?.length) && <table><thead><tr><th>标的</th><th>区间收益</th><th>最大回撤</th><th>与目标相关性</th><th>较基准超额收益</th></tr></thead><tbody>
-      {comparison.rows!.map(row => <tr key={row.instrument_id}><td><span translate="no">{row.name || row.instrument_id}</span><small>{evidenceLabel(row.return_kind)} · {evidenceLabel(row.quote_basis)}</small></td><td>{evidenceNumber(row.return_pct, '%')}</td><td>{evidenceNumber(row.max_drawdown_pct, '%')}</td><td>{evidenceNumber(row.correlation_to_target)}</td><td>{evidenceNumber(row.excess_return_pp, ' 个百分点')}</td></tr>)}
+      {comparison.rows!.map(row => <tr key={row.instrument_id}><td><span translate="no">{row.name || row.instrument_id}</span><small>{evidenceLabel(row.return_kind)} · {evidenceLabel(row.quote_basis)}</small></td><td>{evidenceNumber(row.return_pct, '%')}</td><td>{evidenceNumber(row.max_drawdown_pct, '%')}</td><td>{evidenceNumber(row.correlation_to_target, '', 3)}</td><td>{evidenceNumber(row.excess_return_pp, ' 个百分点')}</td></tr>)}
     </tbody></table>}
     {comparison.method && <p className="sector-research-note" translate="no">{comparison.method}</p>}
     {Boolean(comparison.limitations?.length) && <ul className="research-dossier-list">{comparison.limitations!.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul>}
@@ -44,7 +44,7 @@ export function ComputedEvidence({ source }: { source: SavedResearchSource }) {
   const number = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 6 })
   const change = (value: number) => `${value > 0 ? '+' : ''}${number(value)} 个百分点`
   return <div className="research-computed-evidence">
-    {typeof source.methodology === 'string' && <p className="sector-research-note" translate="no">{source.methodology}</p>}
+    {typeof source.methodology === 'string' && (!data?.rows || source.methodology.trim() !== data.method?.trim()) && <p className="sector-research-note" translate="no">{source.methodology}</p>}
     {data?.available === false && <p>本次计算未取得可用结果。</p>}
     {data && 'sample_return_pct' in data && <>
       <p>实际样本 {data.sample_start || '未取得'} 至 {data.sample_end || '未取得'} · 实际观察数 {data.observations ?? '未取得'}</p>

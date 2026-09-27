@@ -24,7 +24,7 @@ from watchlist_app.services.return_windows import (
 from watchlist_app.services.sector_market_data import all_rows, holding_type, numeric_store
 
 
-OBSERVATION_METHOD_VERSION = "watchlist-observations/v2"
+OBSERVATION_METHOD_VERSION = "watchlist-observations/v3"
 REACTION_METHOD_VERSION = "event-daily-reaction/v1"
 
 
@@ -113,10 +113,17 @@ def volume_observation(rows, *, calendar, as_of):
     return result
 
 
-def _long_only_weights(holdings):
+def _disclosed_weights_valid(holdings):
     weights = [_number(row.get("weight_percent")) for row in holdings]
-    return (bool(holdings) and all(w is not None and w >= 0 for w in weights)
-        and sum(Decimal(str(w)) for w in weights) <= Decimal("100")
+    if not holdings or any(w is None or w < 0 for w in weights):
+        return False
+    decimals = [Decimal(str(w)) for w in weights]
+    # Retained FMP disclosures round weights to eight decimal percentage points.
+    # Allow at most half that last place per row; finer reported values tighten
+    # the bound. Never infer a large tolerance from coarse integer weights, or
+    # change/renormalize the original weights. This is not a leverage test.
+    rounding = sum(min(Decimal("0.00000001"), Decimal(1).scaleb(w.as_tuple().exponent)) / 2 for w in decimals)
+    return (sum(decimals) <= Decimal("100") + rounding
         and all(_number(row.get("shares")) is None or _number(row.get("shares")) >= 0 for row in holdings))
 
 
@@ -158,31 +165,45 @@ def top10_correlation(holdings, member_series, *, as_of_date, calendar):
     return result
 
 
-def basket_observations(holdings, member_series, *, as_of_date, total_members=None, ordinary_equity=False, calendar=None):
-    """Current disclosed basket only; no historic constituents or contribution claims.
+def basket_observations(positions, member_series, *, as_of_date, information_as_of_date, calendar=None):
+    """Identified stocks in the current disclosure, not the whole ETF's exposure.
 
-    `ordinary_equity` is certified by the caller from actual dated holdings and
-    product structure, never from the name or an LLM argument.
+    Price windows end at `as_of_date`. Holdings must already be known by the
+    caller's information cutoff, and their snapshot date cannot be later than
+    `information_as_of_date`; it may be later than the last completed price day.
     """
-    limits = ["当前持仓篮子的历史表现，不代表当时真实持仓、ETF收益贡献或策略回测。"]
-    dates = {r.get("snapshot_date") for r in holdings}
-    valid_date = len(dates) == 1 and None not in dates and next(iter(dates)) <= as_of_date.isoformat()
-    keys = [r.get("holding_key") for r in holdings]
-    weights = [_number(r.get("weight_percent")) for r in holdings]
-    weights_valid = _long_only_weights(holdings)
-    identities_valid = None not in keys and len(set(keys)) == len(keys)
+    limits = ["已披露股票篮子的历史表现，不代表当时真实持仓、ETF收益贡献或策略回测；不据此判断整个ETF是否非杠杆。"]
+    dates = {r.get("snapshot_date") for r in positions}
+    valid_date = len(dates) == 1 and None not in dates and next(iter(dates)) <= information_as_of_date.isoformat()
+    keys = [r.get("holding_key") for r in positions]
+    holdings = [r for r in positions if r.get("holding_type") == "equity"]
+    symbols = [r.get("holding_symbol") for r in holdings]
+    identities_valid = (all(keys) and len(set(keys)) == len(keys)
+        and all(symbols) and len(set(symbols)) == len(symbols))
+    classification_complete = all(r.get("holding_type") in {"equity", "cash", "fund", "future"} for r in positions)
+    weights = [_number(row.get("weight_percent")) for row in holdings]
+    weights_valid = _disclosed_weights_valid(positions)
+    total_members = len(holdings)
+    non_equities = [{key: row.get(key) for key in ("holding_key", "holding_symbol", "holding_name", "holding_type",
+        "weight_percent", "shares", "snapshot_date", "source_id")} for row in positions if row.get("holding_type") != "equity"]
     result = {"status": "unavailable", "holdings_date": next(iter(dates)) if len(dates) == 1 else None,
+        "price_as_of_date": as_of_date.isoformat(), "information_as_of_date": information_as_of_date.isoformat(),
+        "scope": "disclosed_equity_positions", "total_positions": len(positions), "non_equity_positions": non_equities,
         "total_members": total_members, "disclosed_members": len(holdings), "top10": [],
-        "ranking_status": "available" if all(w is not None for w in weights) else "partial",
+        "ranking_status": "available" if classification_complete and all(w is not None for w in weights) else "partial",
         "concentration_pct": None, "concentration_status": "unavailable",
         "correlation": {"status": "unavailable", "average": None, "pairs": [],
-            "limitation": "需先确认当前披露成分、权重与普通股票篮子结构。"},
+            "limitation": "需先确认已披露股票的身份、日期和权重。"},
         "breadth": {"status": "unavailable", "current_pct": None, "previous_pct": None, "change_pp": None,
             "valid_members": 0, "above_members": 0, "weight_coverage_pct": None, "common_members": [],
             "as_of_date": as_of_date.isoformat(), "previous_date": None, "scope": "unavailable"},
         "limitations": limits}
+    if non_equities:
+        limits.append(f"另有 {len(non_equities)} 个非股票或未分类头寸，保留原披露但不计入股票广度、排序与相关性；股票权重沿用披露分母，未归一为100%。")
+    if any(row.get("holding_type") == "future" for row in non_equities):
+        limits.append("期货披露权重不等于名义敞口；未取得完整衍生敞口，不能由股票篮子推断整个ETF的杠杆或风险贡献。")
     if not holdings or not valid_date or not identities_valid:
-        limits.append("持仓日期、身份或实际持仓资料不足；未按名称猜测成分。")
+        limits.append("持仓日期晚于研究资料截点、日期不一致或股票身份不足；未按名称猜测成分。")
         return result
     ranked = sorted(holdings, key=lambda r: (-(_number(r.get("weight_percent")) if _number(r.get("weight_percent")) is not None else -1), r["holding_key"]))
     for row in ranked[:10]:
@@ -193,16 +214,16 @@ def basket_observations(holdings, member_series, *, as_of_date, total_members=No
             "source_id": row.get("source_id"), "returns": returns,
             "status": "available" if all(r["target_return_pct"] is not None for r in returns) else "partial" if any(r["target_return_pct"] is not None for r in returns) else "unavailable"})
     result["status"] = "partial"
-    if ordinary_equity and weights_valid and all(w is not None for w in weights):
+    if classification_complete and weights_valid:
         result.update(concentration_status="available", concentration_pct=sum(_number(r.get("weight_percent")) for r in ranked[:10]))
     else:
-        limits.append("未确认普通非杠杆多头股票篮子与统一权重分母，不发布普通Top 10集中度。")
+        limits.append("股票分类或披露权重未确认，不发布股票Top 10权重合计。")
     if not weights_valid:
-        limits.append("持仓存在缺失、负权重或总权重超过100%；不合并为普通权重覆盖。")
+        limits.append("持仓存在缺失、负权重/负份额或总权重超过100%且超出披露精度尾差；不合并为股票权重覆盖。")
     if result["ranking_status"] == "partial":
-        limits.append("部分成分权重缺失，已知权重排序不能保证是整个篮子的真实Top 10。")
-    if not ordinary_equity or not weights_valid:
-        limits.append("底层股票及非杠杆结构未完整确认；仅保留披露的Top 10信息，不套用股票内部广度。")
+        limits.append("部分头寸分类或权重缺失，已知股票排序不能保证是整个披露股票篮子的真实Top 10。")
+    if not classification_complete or not weights_valid:
+        limits.append("股票分类或权重资料不足；仅保留已识别股票信息，不发布股票广度与相关性。")
         return result
     result["correlation"] = top10_correlation(holdings, member_series, as_of_date=as_of_date, calendar=calendar)
     sessions = _market_calendar_sessions(calendar, as_of_date - timedelta(days=200), as_of_date) if calendar else None
@@ -229,14 +250,14 @@ def basket_observations(holdings, member_series, *, as_of_date, total_members=No
         if previous is not None:
             both.append(item)
     top_symbols = {r.get("holding_symbol") for r in ranked[:10]}
-    if valid and {r["symbol"] for r in valid}.issubset(top_symbols) and (total_members is None or total_members > len(valid)):
-        limits.append("目前行情仅覆盖披露Top 10范围，不能输出整个ETF的内部广度。")
+    if valid and {r["symbol"] for r in valid}.issubset(top_symbols) and total_members > len(valid):
+        limits.append("目前行情仅覆盖股票Top 10范围，不能输出整个已披露股票篮子的广度。")
         result["breadth"]["scope"] = "top10_only"
         return result
     breadth = result["breadth"]
     if valid:
-        complete = total_members == len(valid) == len(holdings)
-        breadth.update(status="available" if complete else "partial", scope="full_disclosed_basket" if complete else "covered_members",
+        complete = total_members == len(valid)
+        breadth.update(status="available" if complete else "partial", scope="full_disclosed_equity_basket" if complete else "covered_members",
             current_pct=sum(r["above"] for r in valid) / len(valid) * 100, valid_members=len(valid),
             above_members=sum(r["above"] for r in valid), members=valid,
             weight_coverage_pct=sum(r["weight_percent"] for r in valid) if weights_valid else None,
@@ -248,6 +269,9 @@ def basket_observations(holdings, member_series, *, as_of_date, total_members=No
                 change_pp=current_common - previous, comparison_members=len(both))
         if not complete:
             limits.append("仅为已覆盖成分广度；前后变化只用同时有效的共同成员，样本变化不解释为行情变化。")
+    if (breadth["status"] == "available" and result["correlation"]["status"] == "available"
+        and result["concentration_status"] == "available" and all(row["status"] == "available" for row in result["top10"])):
+        result["status"] = "available"
     return result
 
 
@@ -379,36 +403,29 @@ def instrument_observations(session, instrument_id, *, as_of, benchmark_id=None,
         ("target_return_pct", "标的收益", "%"), ("benchmark_return_pct", "基准收益", "%"),
         ("difference_pp", "收益差", "百分点"), ("limitation", "限制", "")], relative)]
     if instrument.instrument_type == "etf":
-        count = (info or {}).get("holdings_count")
-        # Actual complete all-equity positions and net-asset weights establish a
-        # long-only unlevered basket. Partial disclosures cannot certify it.
-        ordinary = (bool(holdings) and count == len(holdings)
-            and all(r["holding_type"] in {"equity", "cash"} for r in holdings) and _long_only_weights(holdings))
-        cash_count = sum(row["holding_type"] == "cash" for row in holdings) if ordinary else 0
-        equities = [row for row in holdings if row["holding_type"] == "equity"] if ordinary else holdings
-        member_count = count - cash_count if ordinary else count
-        basket = basket_observations(equities, members, as_of_date=as_of_date, total_members=member_count,
-            ordinary_equity=ordinary, calendar=calendar)
-        if cash_count:
-            basket["limitations"].append(f"已披露的 {cash_count} 个现金头寸不作为股票成分；股票权重仍以产品净资产为分母，未归一为100%。")
-        basket["total_positions"] = count
+        basket = basket_observations(holdings, members, as_of_date=as_of_date,
+            information_as_of_date=source_calendar_date(cutoff, calendar), calendar=calendar)
+        # The provider's count may count stocks while disclosure rows also
+        # include cash/funds/futures. Keep it as provenance, not a structure gate.
+        basket["provider_reported_holdings_count"] = (info or {}).get("holdings_count")
+        member_count = basket["total_members"]
         observations["basket"] = basket
         limits.extend(basket["limitations"])
         breadth = basket["breadth"]
-        metrics["Top 10集中度（%）"] = basket["concentration_pct"]
-        metrics["已覆盖成分高于50观察均价（%）"] = breadth["current_pct"]
-        metrics["Top 10平均相关性（63交易日）"] = basket["correlation"]["average"]
+        metrics["股票Top 10披露权重合计（%）"] = basket["concentration_pct"]
+        metrics["已覆盖股票高于50观察均价（%）"] = breadth["current_pct"]
+        metrics["股票Top 10平均相关性（63交易日）"] = basket["correlation"]["average"]
         limits.append(basket["correlation"]["limitation"])
         if basket["correlation"]["pairs"]:
-            tables.append(_table("top10_correlation", "Top 10共同样本相关性 · 最近63交易日", [
+            tables.append(_table("top10_correlation", "股票Top 10共同样本相关性 · 最近63交易日", [
                 ("left", "证券A", ""), ("right", "证券B", ""), ("correlation", "相关系数", "")],
                 basket["correlation"]["pairs"]))
-        limits.append(f"广度有效成员 {breadth['valid_members']} / 总股票成员 {member_count if member_count is not None else '未知'}；"
+        limits.append(f"广度有效成员 {breadth['valid_members']} / 总股票成员 {member_count}；"
             f"可确认权重覆盖 {breadth['weight_coverage_pct'] if breadth['weight_coverage_pct'] is not None else '未知'}%；"
             f"持仓日期 {basket['holdings_date'] or '未知'}。")
         if breadth["change_pp"] is not None:
             limits.append(f"共同成员 {breadth['comparison_members']} 个，较 {breadth['previous_date']} 的广度变化 {breadth['change_pp']:.4g} 个百分点。")
-        tables.append(_table("top10", ("已披露Top 10" if basket["ranking_status"] == "available" else "已知权重排序（权重覆盖不完整）") + " · 当前持仓篮子的历史表现", [
+        tables.append(_table("top10", ("已披露股票Top 10" if basket["ranking_status"] == "available" else "已知权重排序（权重覆盖不完整）") + " · 当前披露股票篮子的历史表现", [
             ("symbol", "证券", ""), ("name", "名称", ""), ("weight_percent", "披露权重", "%"),
             ("currency", "报价币种", ""), ("return_kind", "收益口径", ""), ("return_1w", "1W收益", "%"), ("return_1m", "1M收益", "%"),
             ("anchor_1w", "1W实际起点", ""), ("anchor_1m", "1M实际起点", ""), ("end", "实际终点", ""),
@@ -428,13 +445,14 @@ def instrument_observations(session, instrument_id, *, as_of, benchmark_id=None,
     status = "available" if available and complete else "partial" if available else "unavailable"
     data = {"analysis_kind": "watchlist_observations", "status": status, "method_version": OBSERVATION_METHOD_VERSION,
         "observation_key": f"watchlist-observations:{instrument_id}", "as_of_date": as_of_date.isoformat() if points else None,
-        "benchmark_id": benchmark_id, "summary": (f"截至 {as_of_date.isoformat()} 的固定量化观察；各项保留实际区间与覆盖样本。" if points else "固定量化观察；仅披露已取得部分的实际日期与覆盖样本。") if available else "量化数据不足，尚不能形成有效观察。",
+        "information_cutoff_at": cutoff.isoformat(), "benchmark_id": benchmark_id, "summary": (f"截至 {as_of_date.isoformat()} 的固定量化观察；各项保留实际区间与覆盖样本。" if points else "固定量化观察；仅披露已取得部分的实际日期与覆盖样本。") if available else "量化数据不足，尚不能形成有效观察。",
         "metrics": metrics, "tables": tables, "charts": [], "limitations": list(dict.fromkeys(limits)), "observations": observations}
     return _evidence("量化观察", cutoff, data, {"version": OBSERVATION_METHOD_VERSION,
         "relative_return": "same-currency same-return-kind observed endpoints; arithmetic difference in percentage points",
         "breadth": "price above mean of 50 completed observations; changes use common members",
         "correlation": "mean pairwise Pearson correlation; exact common 63 daily returns of current disclosed top10; same currency and return kind",
-        "holdings": "dated disclosed weights; current basket history, not historical holdings or contribution"}, originals,
+        "holdings": "identified disclosed stock positions known by information cutoff; price windows end at completed price date; non-equities retained separately; not historical holdings, contribution or ETF leverage classification",
+        "weight_precision": "unmodified disclosed weights; total may exceed 100 only by at most half 1e-8 percentage points per row, or less for finer values"}, originals,
         instrument_id=instrument_id, input_snapshot=snapshot, benchmark_snapshot=benchmark_snapshot)
 
 

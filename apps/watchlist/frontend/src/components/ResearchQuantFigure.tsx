@@ -84,7 +84,12 @@ export default function ResearchQuantFigure({ source, captioned = false }: { sou
       { label: '较前次变化', value: data?.change_pp, unit: '个百分点' },
       { label: '近5次交易观察变化', value: data?.five_session_change_pp, unit: '个百分点' },
     ].map(item => <div key={item.label}><dt>{item.label}</dt><dd>{numeric(item.value) ? `${item.unit === '个百分点' && item.value > 0 ? '+' : ''}${item.value.toFixed(2)}` : '未取得'}{numeric(item.value) && <span>{item.unit}</span>}{item.date && <small><time dateTime={item.date}>{item.date}</time></small>}</dd></div>)}</dl>}
-    {data?.metrics && Object.keys(data.metrics).length > 0 && <dl className="research-quant-metrics">{Object.entries(data.metrics).map(([key, value]) => { const column = tables.flatMap(table => table.columns).find(item => item.key === key); return <div key={key}><dt translate="no">{column?.label || key}</dt><dd translate="no">{metricValue(key, value, column?.unit)}</dd></div> })}</dl>}
+    {data?.metrics && Object.keys(data.metrics).length > 0 && <dl className="research-quant-metrics">{Object.entries(data.metrics).map(([key, value]) => {
+      const column = tables.flatMap(table => table.columns).find(item => item.key === key)
+      const topTenCorrelation = data.analysis_kind === 'watchlist_observations'
+        && ['股票Top 10平均相关性（63交易日）', 'Top 10平均相关性（63交易日）'].includes(key)
+      return <div key={key}><dt translate="no">{column?.label || key}</dt><dd translate="no">{topTenCorrelation && numeric(value) ? value.toFixed(3) : metricValue(key, value, column?.unit)}</dd></div>
+    })}</dl>}
     {charts.map(chart => { const table = tables.find(item => item.key === chart.table_key); return table ? <Chart key={chart.key} chart={chart} table={table} showTitle={!captioned || chart.title !== source.title} /> : <p key={chart.key} className="sector-research-note">图表所引用的留存表格不可用。</p> })}
     {tables.map(table => <div className="research-quant-table" key={table.key}><ResearchReadingAside label={`${table.title} · ${table.rows.length} 条观测`} title={`${table.title} · 留存数据`}><div className="research-table-scroll"><table><thead><tr>{table.columns.map(column => <th key={column.key}>{column.label}{column.unit && `（${column.unit}）`}</th>)}</tr></thead><tbody>{table.rows.map((row, index) => <tr key={index}>{table.columns.map(column => <td key={column.key}>{row[column.key] === null || row[column.key] === undefined ? '—' : numeric(row[column.key]) ? number(row[column.key] as number) : String(row[column.key])}</td>)}</tr>)}</tbody></table></div></ResearchReadingAside></div>)}
   </div>

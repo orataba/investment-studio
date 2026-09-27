@@ -66,9 +66,9 @@ it('shows retained fund performance and each comparison on its own common sample
   expect(screen.getByText('指定对照')).toBeTruthy()
   const row = within(screen.getByRole('table')).getAllByRole('row')[1]
   expect(within(row).getByText('总收益 · 复权累计净值')).toBeTruthy()
-  expect(within(row).getByText('2.5%')).toBeTruthy()
+  expect(within(row).getByText('2.50%')).toBeTruthy()
   expect(within(row).getByText('未取得')).toBeTruthy()
-  expect(within(row).getByText('0.5 个百分点')).toBeTruthy()
+  expect(within(row).getByText('0.50 个百分点')).toBeTruthy()
   expect(screen.getByText('周度')).toBeTruthy()
   expect(screen.getByText('最新月并非完整月份。')).toBeTruthy()
   expect(screen.queryByText(/"sample_return_pct"/)).toBeNull()

@@ -10,6 +10,8 @@ import {
   type RiskRequest,
   type RiskWorkspace,
   type RiskCase,
+  type RiskAssessment,
+  riskPendingState,
   percent,
   today,
 } from './instrumentRisk'
@@ -25,10 +27,9 @@ const due = (c: RiskCase) =>
 const attention = (c: RiskCase) =>
   c.trigger_active && c.severity === 'attention' && c.status !== 'handled'
   && (Boolean(c.evidence_json.risk_assessment) || c.evidence_json.direction !== 'opportunity')
-const pendingReview = (c: RiskCase) => {
-  const assessment = c.evidence_json.risk_assessment
-  return Boolean(assessment && typeof assessment === 'object' && 'status' in assessment && assessment.status === 'pending')
-}
+const pendingState = (c: RiskCase) => riskPendingState(c.evidence_json.risk_assessment, c.evidence_json.event_version_id)
+const pendingReview = (c: RiskCase) => pendingState(c) === 'review'
+const pendingVerification = (c: RiskCase) => pendingState(c) === 'verification'
 const coverage = (c: RiskCase) => c.trigger_active && c.severity === 'coverage'
 const priority = (c: RiskCase) =>
   (attention(c) && c.evidence_json.importance === 'high' ? 4 : 0) +
@@ -88,6 +89,8 @@ function CaseRow({
     return () => { cancelled = true }
   }, [detailsOpen, record.case_id, record.updated_at, record.detail_available, request, detailRetry])
   const evidence = (detail || record).evidence_json
+  const pending = riskPendingState(evidence.risk_assessment, evidence.event_version_id)
+  const assessmentReason = pending === 'verification' ? (evidence.risk_assessment as RiskAssessment).reason : null
   const history = (detail || record).history_json || []
   const detailStatus = <>
     {detailLoading && <WorkspaceSkeleton />}
@@ -164,7 +167,8 @@ function CaseRow({
               : ''
           }
         >
-          {pendingReview(record) ? (record.trigger_active ? '风险仍有效 · 新进展待复核' : '风险线索待复核') : sectorEvent && direction
+          {pending === 'verification' ? (record.trigger_active ? '风险仍有效 · 部分事项待核实' : '风险线索待核实')
+            : pending === 'review' ? (record.trigger_active ? '风险仍有效 · 新进展待复核' : '风险线索待复核') : sectorEvent && direction
             ? evidence.risk_assessment && record.trigger_active ? '风险' : direction
             : record.severity === 'coverage'
               ? '监测受限'
@@ -175,11 +179,12 @@ function CaseRow({
                   : '需要复核'}
         </span>
         <span>
-          {pendingReview(record) && !record.trigger_active ? '已提交／待复核' : record.trigger_active ? statusLabels[record.status] : '当前未触发'}
+          {pending === 'verification' ? '已评估／待核实' : pending === 'review' && !record.trigger_active ? '已提交／待复核' : record.trigger_active ? statusLabels[record.status] : '当前未触发'}
         </span>
       </div>
       <h3><a href={instrumentHref(record.instrument_id, record.signal)} translate="no">{record.title}</a></h3>
       <p translate="no">{record.body}</p>
+      {assessmentReason && <p className="risk-next-step"><strong>风控评估</strong> <span translate="no">{assessmentReason}</span></p>}
       {record.trigger_active && record.severity !== 'observation' && (
         <p className="risk-next-step">
           <strong>下一步</strong> {nextStep}
@@ -619,6 +624,12 @@ function ScopedInstrumentRiskPanel({
         : null
   function receive(response: RiskWorkspace) {
     setData(response)
+    const relevant = response.cases.filter(record => !focusInstrumentId || record.instrument_id === focusInstrumentId)
+    setFilter(current => {
+      if (current === 'pending' && !relevant.some(pendingReview)) return relevant.some(pendingVerification) ? 'verification' : 'attention'
+      if (current === 'verification' && !relevant.some(pendingVerification)) return relevant.some(pendingReview) ? 'pending' : 'attention'
+      return current
+    })
   }
   async function load() {
     const sequence = ++readSequence.current
@@ -640,7 +651,10 @@ function ScopedInstrumentRiskPanel({
         if (cancelled || sequence !== readSequence.current) return
         receive(response)
         const relevant = response.cases.filter((record) => !focusInstrumentId || record.instrument_id === focusInstrumentId)
-        if (!relevant.some(attention) && relevant.some(pendingReview)) setFilter('pending')
+        if (!relevant.some(attention)) {
+          if (relevant.some(pendingReview)) setFilter('pending')
+          else if (relevant.some(pendingVerification)) setFilter('verification')
+        }
       })
       .catch((e) => {
         if (!cancelled && sequence === readSequence.current) setError(e.message)
@@ -677,6 +691,8 @@ function ScopedInstrumentRiskPanel({
           ? attention(c)
           : filter === 'pending'
             ? pendingReview(c)
+          : filter === 'verification'
+            ? pendingVerification(c)
           : filter === 'coverage'
             ? coverage(c)
             : due(c)),
@@ -709,6 +725,7 @@ function ScopedInstrumentRiskPanel({
       count: cases.filter(attention).length,
     },
     ...(cases.some(pendingReview) ? [{ key: 'pending', label: '待风控复核', count: cases.filter(pendingReview).length }] : []),
+    ...(cases.some(pendingVerification) ? [{ key: 'verification', label: '待核实', count: cases.filter(pendingVerification).length }] : []),
     { key: 'due', label: '到期待跟进', count: cases.filter(due).length },
     {
       key: 'coverage',
