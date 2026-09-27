@@ -7,6 +7,17 @@ const number = (value: number) => value.toLocaleString('zh-CN', { maximumSignifi
 const axisNumber = (value: number) => value !== 0 && (Math.abs(value) < 0.0001 || Math.abs(value) >= 1e9)
   ? value.toExponential(2) : number(value)
 
+export const isVolatilityFigure = (source: SavedResearchSource) =>
+  (typeof source.methodology === 'object' && source.methodology?.metric === 'ewma_volatility') || Boolean(source.data?.current && 'volatility_pct' in source.data.current)
+
+function metricValue(key: string, value: unknown, unit?: string) {
+  if (value === null || value === undefined) return '—'
+  if (!numeric(value)) return typeof value === 'object' ? JSON.stringify(value) : String(value)
+  if (['%', 'percent', 'pct'].includes(unit || '') || /(?:_pct|[（(]%[）)]|%)$/.test(key)) return `${value.toFixed(2)}%`
+  if (['pp', 'percentage_points', '个百分点'].includes(unit || '') || /(?:_pp|[（(]个百分点[）)]|百分点)$/.test(key)) return `${value.toFixed(2)} 个百分点`
+  return value.toLocaleString('zh-CN', { maximumSignificantDigits: 21 })
+}
+
 function Chart({ chart, table, showTitle }: { chart: ResearchQuantChart; table: ResearchQuantTable; showTitle: boolean }) {
   const columns = new Set(table.columns.map(column => column.key))
   if (!columns.has(chart.x_key) || !chart.series.length || chart.series.some(series => !columns.has(series.key))) return <p className="sector-research-note">图表引用的列不在留存数据中。</p>
@@ -58,11 +69,23 @@ function Chart({ chart, table, showTitle }: { chart: ResearchQuantChart; table: 
 
 export default function ResearchQuantFigure({ source, captioned = false }: { source: SavedResearchSource; captioned?: boolean }) {
   const data = source.data
-  const tables = data?.tables || []
+  const volatility = isVolatilityFigure(source)
+  const history: ResearchQuantTable | null = volatility && data?.history?.length ? {
+    key: 'ewma-history', title: '波动率历史', columns: [{ key: 'date', label: '观测日期' }, { key: 'volatility_pct', label: '年化波动率', unit: '%' }],
+    rows: data.history.map(row => ({ date: row.date, volatility_pct: row.volatility_pct })),
+  } : null
+  const tables = [...(data?.tables || []), ...(history ? [history] : [])]
+  const charts: ResearchQuantChart[] = [...(data?.charts || []), ...(history ? [{ key: 'ewma-history', title: '年化波动率', kind: 'line' as const, table_key: history.key, x_key: 'date', series: [{ key: 'volatility_pct', label: 'EWMA年化波动率' }], y_label: '%' }] : [])]
   return <div className="research-quant-result">
     {data?.summary && <p translate="no">{data.summary}</p>}
-    {data?.metrics && Object.keys(data.metrics).length > 0 && <dl className="research-quant-metrics">{Object.entries(data.metrics).map(([key, value]) => <div key={key}><dt translate="no">{key}</dt><dd translate="no">{value === null ? '—' : numeric(value) ? number(value) : typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>)}</dl>}
-    {data?.charts?.map(chart => { const table = tables.find(item => item.key === chart.table_key); return table ? <Chart key={chart.key} chart={chart} table={table} showTitle={!captioned || chart.title !== source.title} /> : <p key={chart.key} className="sector-research-note">图表所引用的留存表格不可用。</p> })}
+    {volatility && <dl className="research-quant-metrics">{[
+      { label: '当前年化波动率', value: data?.current?.volatility_pct, unit: '%', date: data?.current?.date },
+      { label: '前次年化波动率', value: data?.previous?.volatility_pct, unit: '%', date: data?.previous?.date },
+      { label: '较前次变化', value: data?.change_pp, unit: '个百分点' },
+      { label: '近5次交易观察变化', value: data?.five_session_change_pp, unit: '个百分点' },
+    ].map(item => <div key={item.label}><dt>{item.label}</dt><dd>{numeric(item.value) ? `${item.unit === '个百分点' && item.value > 0 ? '+' : ''}${item.value.toFixed(2)}` : '未取得'}{numeric(item.value) && <span>{item.unit}</span>}{item.date && <small><time dateTime={item.date}>{item.date}</time></small>}</dd></div>)}</dl>}
+    {data?.metrics && Object.keys(data.metrics).length > 0 && <dl className="research-quant-metrics">{Object.entries(data.metrics).map(([key, value]) => { const column = tables.flatMap(table => table.columns).find(item => item.key === key); return <div key={key}><dt translate="no">{column?.label || key}</dt><dd translate="no">{metricValue(key, value, column?.unit)}</dd></div> })}</dl>}
+    {charts.map(chart => { const table = tables.find(item => item.key === chart.table_key); return table ? <Chart key={chart.key} chart={chart} table={table} showTitle={!captioned || chart.title !== source.title} /> : <p key={chart.key} className="sector-research-note">图表所引用的留存表格不可用。</p> })}
     {tables.map(table => <div className="research-quant-table" key={table.key}><ResearchReadingAside label={`${table.title} · ${table.rows.length} 条观测`} title={`${table.title} · 留存数据`}><div className="research-table-scroll"><table><thead><tr>{table.columns.map(column => <th key={column.key}>{column.label}{column.unit && `（${column.unit}）`}</th>)}</tr></thead><tbody>{table.rows.map((row, index) => <tr key={index}>{table.columns.map(column => <td key={column.key}>{row[column.key] === null || row[column.key] === undefined ? '—' : numeric(row[column.key]) ? number(row[column.key] as number) : String(row[column.key])}</td>)}</tr>)}</tbody></table></div></ResearchReadingAside></div>)}
   </div>
 }

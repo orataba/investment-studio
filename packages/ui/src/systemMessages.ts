@@ -1,5 +1,12 @@
 // System UI copy only. User content must be marked translate="no".
 export const systemMessages: Record<string, string> = {
+  "Current annualized volatility": "当前年化波动率",
+  "Previous annualized volatility": "前次年化波动率",
+  "Change since previous observation": "较前次变化",
+  "Change over 5 trading observations": "近5次交易观察变化",
+  "Volatility history": "波动率历史",
+  "Annualized Volatility": "年化波动率",
+  "EWMA annualized volatility": "EWMA年化波动率",
   "Price monitoring coverage": "价格监测范围",
   "Risk review details": "研判复核说明",
   "Risk inputs": "风控输入",
@@ -3462,6 +3469,13 @@ export const systemMessages: Record<string, string> = {
 
 // Original system values are retained in storage; aliases localize their display only.
 export const systemSourceAliases: Record<string, string> = {
+  "当前年化波动率": "Current annualized volatility",
+  "前次年化波动率": "Previous annualized volatility",
+  "较前次变化": "Change since previous observation",
+  "近5次交易观察变化": "Change over 5 trading observations",
+  "波动率历史": "Volatility history",
+  "年化波动率": "Annualized Volatility",
+  "EWMA年化波动率": "EWMA annualized volatility",
   "价格监测范围": "Price monitoring coverage",
   "研判复核说明": "Risk review details",
   "风控输入": "Risk inputs",

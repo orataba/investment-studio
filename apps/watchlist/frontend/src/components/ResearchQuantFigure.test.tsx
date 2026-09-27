@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, expect, it } from 'vitest'
 import ResearchQuantFigure from './ResearchQuantFigure'
+import { EvidenceFigure } from './ResearchModules'
 import type { SavedResearchSource } from '../lib/researchDossierApi'
 afterEach(cleanup)
 const source = (): SavedResearchSource => ({ source_id: 'computed:quant', source_type: 'computed_metric', data: { analysis_kind: 'python_quant', summary: '使用留存共同样本。', tables: [{ key: 'observed', title: '实际观测', columns: [{ key: 'date', label: '日期' }, { key: 'return', label: '累计收益', unit: '%' }], rows: [{ date: '2026-01-01', return: 10 }, { date: '2026-01-02', return: 11 }, { date: '2026-01-11', return: 12 }] }], charts: [{ key: 'returns', title: '留存收益路径', kind: 'line', table_key: 'observed', x_key: 'date', series: [{ key: 'return', label: '累计收益' }], y_label: '%' }] } })
@@ -71,4 +72,44 @@ it('draws an all-zero bar series on a finite axis without inventing nonzero obse
   expect(bars).toHaveLength(2)
   expect(bars.every(bar => Number(bar.getAttribute('height')) === 0)).toBe(true)
   expect(bars[0].textContent).toContain('累计收益: 0')
+})
+
+it('formats explicitly percentage-valued metrics without rounding unknown units or replacing missing values', () => {
+  const saved = source()
+  saved.data!.metrics = { return: 12.34567, breadth_pct: 51.45678, change_pp: -1.23456, variance: 0.00000125, correlation: 0.1234567890123456, missing: null }
+  const { container } = render(<ResearchQuantFigure source={saved} />)
+  const values = [...container.querySelectorAll('.research-quant-metrics dd')].map(item => item.textContent)
+  expect(values).toEqual(['12.35%', '51.46%', '-1.23 个百分点', '0.00000125', '0.1234567890123456', '—'])
+  expect(container.querySelector('.research-quant-metrics dt')?.textContent).toBe('累计收益')
+})
+
+it('presents retained EWMA observations compactly and keeps exact values and method in evidence', () => {
+  const saved: SavedResearchSource = { source_id: 'computed:ewma', source_type: 'computed_metric', title: '价格波动研究',
+    methodology: { metric: 'ewma_volatility', half_life_sessions: 21, annualization: 252 },
+    data: { current: { date: '2026-01-11', volatility_pct: 22.12345678 }, previous: { date: '2026-01-10', volatility_pct: 21.98765432 }, change_pp: 0.13580246, five_session_change_pp: null,
+      history: [{ date: '2026-01-01', volatility_pct: 18 }, { date: '2026-01-02', volatility_pct: null }, { date: '2026-01-11', volatility_pct: 22.12345678 }], limitations: ['尚无足够观察计算五次变化。'] } }
+  const { container } = render(<EvidenceFigure source={saved} />)
+  expect([...container.querySelectorAll('.research-quant-metrics dd')].map(item => item.textContent)).toEqual(['22.12%2026-01-11', '21.99%2026-01-10', '+0.14个百分点', '未取得'])
+  expect(screen.queryByText(/EWMA 半衰期/)).toBeNull()
+  expect(screen.getByText(saved.data!.limitations![0])).toBeTruthy()
+  expect(screen.getByRole('img', { name: '年化波动率' })).toBeTruthy()
+  expect(container.querySelectorAll('circle')).toHaveLength(2)
+  expect(container.querySelectorAll('polyline')).toHaveLength(2)
+  expect(container.querySelector('circle title')?.textContent).toContain('2026-01-01')
+  fireEvent.click(screen.getByRole('button', { name: '计算口径与输入依据' }))
+  const evidence = screen.getByRole('dialog')
+  expect(within(evidence).getByText('EWMA 半衰期 21 个交易观察')).toBeTruthy()
+  const original = within(evidence).getByText('完整计算记录与输入依据').closest('details')!
+  original.open = true
+  fireEvent(original, new Event('toggle'))
+  expect(evidence.querySelector('pre')?.textContent).toContain('22.12345678')
+})
+
+it('keeps unavailable EWMA observations empty and retains their limitation', () => {
+  const saved: SavedResearchSource = { source_id: 'computed:unavailable', source_type: 'computed_metric', methodology: { metric: 'ewma_volatility' }, data: { status: 'unavailable', current: null, previous: null, change_pp: null, five_session_change_pp: null, history: [], limitations: ['交易观察不足。'] } }
+  const { container } = render(<EvidenceFigure source={saved} />)
+  expect(screen.getAllByText('未取得')).toHaveLength(4)
+  expect(screen.getByText('交易观察不足。')).toBeTruthy()
+  expect(container.querySelector('svg')).toBeNull()
+  expect(container.querySelector('.research-quant-metrics')?.textContent).not.toContain('0.00')
 })

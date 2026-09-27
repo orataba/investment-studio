@@ -234,6 +234,7 @@ export type SavedResearchSource = NotebookSource & EventSource & {
   snapshot?: Record<string, unknown>; company?: Record<string, unknown>
   data?: SavedComparison & Record<string, unknown> & {
     analysis_kind?: string; summary?: string; metrics?: Record<string, unknown>; tables?: ResearchQuantTable[]; charts?: ResearchQuantChart[]
+    history?: Array<{ date: string; volatility_pct: number | null }>
     current?: { date: string; volatility_pct: number } | null
     previous?: { date: string; volatility_pct: number } | null
     change_pp?: number | null; five_session_change_pp?: number | null
