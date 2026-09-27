@@ -1046,3 +1046,77 @@ def test_revised_assessment_reason_remains_a_real_shared_case_update(client):
         assert case.evidence_json["event_version_id"] == "research:1"
         run, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-27"})
         assert created and run.entry_id != first_id
+
+
+@pytest.mark.parametrize('outcome', ['active', 'resolved', 'dismissed', 'pending'])
+def test_pending_research_referrals_require_individual_assessment_before_completion(client, outcome):
+    from copy import deepcopy
+    from types import SimpleNamespace
+    seed(client)
+    with get_session_factory()() as session:
+        for case_id, status in [('research', 'recorded'), ('uncertain', 'handled')]:
+            case = session.get(RiskCase, case_id)
+            case.status, case.trigger_active = status, False
+            case.evidence_json = {**case.evidence_json, 'risk_assessment': {'status': 'pending'}}
+        session.add(RiskCase(case_id='old-active', instrument_id='risk-a', signal='sector:old', title='既有活跃风险',
+            severity='attention', status='open', trigger_active=True, evidence_json={'direction': 'risk'}))
+        session.commit()
+        run, _ = service.begin_run(session, watchlist_id='risk-list')
+        run.status = 'running'
+        session.commit()
+        run_id = run.entry_id
+    service.prepare_run(run_id)
+    read_required_pages(client, run_id)
+    response = client.post(f'/api/research/runs/{run_id}/risk-draft', json=reply())
+    assert response.status_code == 422, response.text
+    assert 'case_assessments' in response.text and 'research, uncertain' in response.text
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        assert run.status == 'running' and 'submitted_risk_review' not in run.context_json
+        snapshot = run.context_json['risk_inputs']
+        pending = [case for case in snapshot['research'] if case['case_id'] in {'research', 'uncertain'}]
+        assessments = [{'case_id': case['case_id'], 'event_version_id': case['evidence_json']['event_version_id'],
+            'status': outcome, 'reason': '依据本轮原始资料作出独立风险判断；证据不足时保留待确认。'} for case in pending]
+        # Portfolio private judgment must not take ownership of shared referrals.
+        private_snapshot = {**deepcopy(snapshot), 'scope': {'kind': 'portfolio', 'id': 'private'}}
+        private = SimpleNamespace(context_json={'risk_inputs': private_snapshot})
+        service.validate_result(private, service.RiskReview.model_validate(reply()))
+        with pytest.raises(ValueError, match='组合私有'):
+            service.validate_result(private, service.RiskReview.model_validate({**reply(), 'case_assessments': assessments}))
+    partial = client.post(f'/api/research/runs/{run_id}/risk-draft', json={**reply(), 'case_assessments': assessments[:1]})
+    assert partial.status_code == 422 and assessments[1]['case_id'] in partial.text
+    payload = {**reply(), 'case_assessments': assessments}
+    response = client.post(f'/api/research/runs/{run_id}/risk-draft', json=payload)
+    assert response.status_code == 200, response.text
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        service.apply_result(session, run, run.context_json['submitted_risk_review'])
+        session.commit()
+        assert run.status == 'completed'
+        for case_id in ('research', 'uncertain'):
+            case = session.get(RiskCase, case_id)
+            assert case.evidence_json['risk_assessment']['status'] == outcome
+            assert case.evidence_json['risk_assessment']['reason']
+        assert session.get(RiskCase, 'old-active').evidence_json == {'direction': 'risk'}
+        assert session.get(RiskCase, 'price').history_json == []
+
+
+def test_legacy_completed_report_without_pending_referral_receipt_is_requeued_once(client):
+    seed(client)
+    dates = {'risk-a': '2026-09-27'}
+    with get_session_factory()() as session:
+        case = session.get(RiskCase, 'research')
+        case.evidence_json = {**case.evidence_json, 'risk_assessment': {'status': 'pending'}}
+        session.commit()
+        run, _ = service.begin_run(session, instrument_id='risk-a', scheduled_dates=dates)
+        run_id = run.entry_id
+    service.prepare_run(run_id)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        run.status = 'completed'
+        run.context_json = {**run.context_json, 'result': reply()}  # Accepted by the former optional contract.
+        session.commit()
+        replacement, created = service.begin_run(session, instrument_id='risk-a', scheduled_dates=dates)
+        assert created and replacement.entry_id != run_id
+        same, created = service.begin_run(session, instrument_id='risk-a', scheduled_dates=dates)
+        assert not created and same.entry_id == replacement.entry_id

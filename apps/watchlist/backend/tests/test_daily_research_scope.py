@@ -228,18 +228,25 @@ def test_new_proposed_instrument_initializes_on_weekend_once_and_retains_seven_d
         assert service.daily_review_groups(session, now=now) == []
 
 
-@pytest.mark.parametrize("aggregate", [False, True])
+@pytest.mark.parametrize("aggregate", ["none", "watchlist", "portfolio", "portfolio-and-watchlist"])
 @pytest.mark.parametrize("case_status", ["recorded", "resolved", "handled"])
 def test_pending_research_referrals_reach_officer_outside_market_hours_without_duplicate_scope(client, monkeypatch, aggregate, case_status):
     from types import SimpleNamespace
+    from watchlist_app.db.models import Watchlist
     from watchlist_app.db.models.workbench import RiskCase
     from watchlist_app.services import research_runner, research_workbench, risk_officer
     monkeypatch.setattr(service, "daily_review_groups", lambda session: [])
     monkeypatch.setattr(shared_instrument_registry, "list_shared_active_instrument_ids", lambda **kwargs: ["referral"])
-    monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {"portfolios": [{"portfolio_id": "held"}] if aggregate else []})
-    monkeypatch.setattr(risk_officer, "read_snapshot", lambda session, **scope: {"instrument_ids": ["referral"] if scope.get("portfolio_id") == "held" else []})
+    in_portfolio = "portfolio" in aggregate
+    in_watchlist = "watchlist" in aggregate
+    monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {
+        "portfolios": [{"portfolio_id": "held"}] if in_portfolio else []})
+    monkeypatch.setattr(risk_officer, "read_snapshot", lambda session, **scope: {"instrument_ids": ["referral"]
+        if scope.get("portfolio_id") == "held" or scope.get("watchlist_id") == "named-list" else []})
     with get_session_factory()() as session:
         _registered(session, "referral", "equity", "XNAS", "XNAS")
+        if in_watchlist:
+            session.add(Watchlist(watchlist_id="named-list", name="Shared research", owner_type="user", owner_id="pm"))
         session.add(RiskCase(case_id="pending-referral", instrument_id="referral", signal="sector:development",
             title="Material new evidence", status=case_status, trigger_active=False,
             evidence_json={"risk_assessment": {"status": "pending"}}))
@@ -251,9 +258,10 @@ def test_pending_research_referrals_reach_officer_outside_market_hours_without_d
     monkeypatch.setattr(risk_officer, "begin_run", begin_risk)
     monkeypatch.setattr(research_runner, "run_analysis", lambda *args: pytest.fail("Referral must not launch a fresh instrument investigation"))
     service.run_daily_reviews(Event())
-    assert len(scopes) == 1
-    assert scopes[0].get("portfolio_id" if aggregate else "instrument_id") == ("held" if aggregate else "referral")
-    assert set(scopes[0]["scheduled_dates"]) == {"referral"}
+    expected = ([{"portfolio_id": "held"}] if in_portfolio else []) + [
+        {"watchlist_id": "named-list"} if in_watchlist else {"instrument_id": "referral"}]
+    assert [{key: value for key, value in scope.items() if key != "scheduled_dates"} for scope in scopes] == expected
+    assert all(set(scope["scheduled_dates"]) == {"referral"} for scope in scopes)
 
 
 def test_first_published_research_referral_is_processed_in_same_worker_pass(client, monkeypatch):

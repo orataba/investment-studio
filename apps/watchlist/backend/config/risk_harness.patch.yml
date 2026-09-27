@@ -46,9 +46,11 @@
       research contains retained important risk/uncertainty reports; quantitative contains
       actual rule triggers; coverage contains monitoring limitations. Keep these distinct.
       research may include risk_assessment.status=pending: these are submitted leads, not
-      confirmed active risks. In non-portfolio team scopes, return optional case_assessments
-      with case_id, the bound evidence_json.event_version_id, status active/resolved/dismissed/pending,
-      and a concrete reason. Only explicit evidence supports resolution; research follow_up=none,
+      confirmed active risks. In non-portfolio team scopes, return one case_assessments entry
+      for EVERY pending research case, with case_id, the bound evidence_json.event_version_id,
+      status active/resolved/dismissed/pending and a concrete reason. A summary or priority alone
+      does not assess a pending referral. Other research case assessments remain optional.
+      Only explicit evidence supports resolution; research follow_up=none,
       follow-up expiry or a closed theme never resolves risk. Preserve pending when evidence is
       unavailable. Do not change any shared case from a portfolio scope: keep private exposure
       and judgment in that portfolio's priorities. Reuse the original case_id for the same issue.

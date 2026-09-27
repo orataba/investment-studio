@@ -295,6 +295,14 @@ def _topic_id(scope):
     return f"{TOPIC_PREFIX}{key.removesuffix('_id')}:{value}"
 
 
+def _pending_research_case_ids(snapshot):
+    if (snapshot.get("scope") or {}).get("kind") == "portfolio":
+        return set()
+    return {case["case_id"] for case in snapshot.get("research", [])
+            if case["signal"].startswith("sector:")
+            and ((case.get("evidence_json") or {}).get("risk_assessment") or {}).get("status") == "pending"}
+
+
 def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=None, scheduled_dates=None):
     from watchlist_app.services.research_identity import research_identity
     from watchlist_app.services.research_access import require_portfolio, require_team_write
@@ -335,6 +343,11 @@ def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=No
             same_inputs = (saved_version == input_version(session, current_scope(session, scope))
                            if saved_version is not None else
                            previous.context_json.get("risk_inputs") == read_snapshot(session, **scope))
+            # Older reports could complete without assessing a pending referral.
+            # Reuse an unchanged report only after that handoff has a receipt.
+            assessed_ids = {item["case_id"] for item in (previous.context_json.get("result") or {}).get("case_assessments", [])}
+            if _pending_research_case_ids(previous.context_json.get("risk_inputs") or {}) - assessed_ids:
+                same_inputs = False
         if same_days and (previous.status == "failed" or same_inputs):
             if previous.status == "failed":
                 from watchlist_app.services.research_runner import queue_retry
@@ -426,6 +439,10 @@ def validate_result(run, result: RiskReview):
             raise ValueError("风险评估必须绑定实际复核的事件版本")
         if snapshot["scope"]["kind"] == "portfolio":
             raise ValueError("组合私有风险判断不能写入团队共享事件，请仅保留在本组合研判中")
+    missing = sorted(_pending_research_case_ids(snapshot) - seen)
+    if missing:
+        raise ValueError("case_assessments 缺少待风控复核的研究上报：" + ", ".join(missing)
+                         + "。请逐项绑定事件原版本并说明结论；证据不足可明确保留 pending 并说明原因。")
     for priority in result.priorities:
         if (not set(priority.instrument_ids).issubset(ids) or not set(priority.case_ids).issubset(cases)
                 or not set(priority.holding_ids).issubset(holdings)):

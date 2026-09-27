@@ -1585,7 +1585,10 @@ def _run_daily_reviews(stop):
             try:
                 with get_session_factory()() as session:
                     member_ids = set(read_risk_snapshot(session, **scope)["instrument_ids"])
-                covered_ids.update(member_ids)
+                # Portfolio reviews are private and cannot adjudicate shared
+                # research cases; only a named watchlist can cover their referral.
+                if scope.get("watchlist_id"):
+                    covered_ids.update(member_ids)
                 scope_dates = {iid: day for iid, day in research_dates.items() if iid in member_ids}
                 if not scope_dates:
                     continue
