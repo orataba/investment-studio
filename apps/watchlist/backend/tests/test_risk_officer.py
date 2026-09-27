@@ -749,8 +749,9 @@ def test_risk_binds_attributed_pm_views_active_questions_and_due_forecasts(clien
             {"key": "withdrawn", "status": "withdrawn"},
             {"key": "closed-theme", "status": "active", "theme_id": "closed-theme"}]}
     completed = {"current_research": notebook, "summary": "旧摘要不可复活", "current_summary": "旧摘要不可复活"}
-    def scoped_states(_, *, instrument_ids):
+    def scoped_states(_, *, instrument_ids, for_risk):
         assert instrument_ids == ["risk-a"]
+        assert for_risk is True
         return {"latest": {"risk-a": {"status": "limited", "coverage": ["当前原文覆盖不足"]}},
                 "last_completed": {"risk-a": completed}}
     monkeypatch.setattr(sector_research, "review_states", scoped_states)

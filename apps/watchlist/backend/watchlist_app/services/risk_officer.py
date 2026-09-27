@@ -7,7 +7,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import JSON, select, true
 
 from watchlist_app.db.models import InstrumentDetail, Watchlist, WatchlistItem
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic, RiskCase
@@ -222,7 +222,7 @@ def read_snapshot(session, **scope):
         ids, name = [identifier], record.instrument_name
     workspace = risk_workspace(instrument_ids=",".join(ids), session=session)
     instruments = sorted(workspace["instruments"], key=lambda item: item["instrument_id"])
-    states = review_states(session, instrument_ids=[item["instrument_id"] for item in instruments])
+    states = review_states(session, instrument_ids=[item["instrument_id"] for item in instruments], for_risk=True)
     latest_research, completed_research = states["latest"], states["last_completed"]
     peer_scope = peer_context(session) if instruments else None
     instrument_ids = [item["instrument_id"] for item in instruments]
@@ -377,16 +377,21 @@ def prepare_run(run_id):
         after = input_version(session, current_scope(session, scope))
         # A concurrent source update must not label the older bound evidence current.
         bound_version = before if before is not None and before == after else None
-        prior = session.scalar(select(ResearchEntry).where(ResearchEntry.topic_id == run.topic_id,
+        from watchlist_app.services.research_access import research_context_projection, research_projection_rows
+        relation, fields = research_context_projection(session, {"risk_inputs": JSON})
+        prior_query = select(fields["risk_inputs"].label("risk_inputs")).select_from(ResearchEntry)
+        if relation is not None:
+            prior_query = prior_query.join(relation, true())
+        prior = research_projection_rows(session, prior_query.where(ResearchEntry.topic_id == run.topic_id,
             ResearchEntry.status == "completed", ResearchEntry.entry_id != run.entry_id)
-            .order_by(ResearchEntry.created_at.desc()).limit(1))
+            .order_by(ResearchEntry.created_at.desc()).limit(1), {"risk_inputs": ("risk_inputs",)})
         topic = session.get(ResearchTopic, run.topic_id)
         topic.instrument_ids = snapshot["instrument_ids"]
         prepared_at = datetime.now(UTC).isoformat()
         run.context_json = {**run.context_json, "risk_inputs": snapshot, "risk_input_version": bound_version, "prepared_at": prepared_at,
             "cutoff": prepared_at,
             **({"input_snapshot_cutoff": prepared_at} if snapshot["scope_available"] else {}),
-            "prior_inputs": (prior.context_json or {}).get("risk_inputs") if prior else None,
+            "prior_inputs": prior[0].risk_inputs if prior else None,
             "risk_delivered_pages": [],
             "catalogue": [{"instrument_id": item["instrument_id"], "name": item["name"]} for item in snapshot["instruments"]]}
         run.context_json.pop("submitted_risk_review", None)

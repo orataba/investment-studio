@@ -592,6 +592,15 @@ On a memory-constrained host, a private, persistent swap file can absorb short
 peaks while those workloads are serialized. Verify free disk space, restrictive
 file permissions and activation after reboot; swap does not justify retaining
 unnecessary research JSON or raising concurrency beyond available memory.
+Check the effective `vm.swappiness` as well as swap capacity: a value of `0`
+delays swapping until free and file-backed pages fall below the zone's high
+watermark, so unused swap alone does not establish protection against a peak.
+The shared cloud host uses the [kernel default of `60`](https://docs.kernel.org/admin-guide/sysctl/vm.html#swappiness)
+through `/etc/sysctl.d/99-zz-investment-studio-memory.conf`; the vendor override
+remains intact for rollback. After changing this host setting, verify memory,
+I/O pressure, service responsiveness and kernel OOM messages under actual work.
+It is a host-level operating setting, not an application installer default or
+permission to increase research concurrency.
 Underlying data gaps remain visible and must not be mistaken for execution
 failure or complete research coverage. A completed run alone is insufficient:
 check the accepted review, current opportunity/risk judgment, source dates,

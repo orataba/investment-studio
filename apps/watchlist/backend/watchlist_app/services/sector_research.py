@@ -70,7 +70,57 @@ def latest_reviews(session, *, completed_only=False, instrument_ids=None):
     return review_states(session, instrument_ids=instrument_ids)["last_completed" if completed_only else "latest"]
 
 
-def review_states(session, *, instrument_ids=None):
+def _risk_notebook(notebook):
+    """Keep exactly the current judgment and open checks consumed by risk."""
+    if not notebook:
+        return notebook
+    view = notebook.get("investment_view")
+    return {"investment_view": {key: value for key, value in view.items() if key != "versions"} if view else view,
+        "source_run_id": notebook.get("source_run_id"),
+        **{field: [{key: value for key, value in item.items() if key not in {"versions", "sources"}}
+                   for item in notebook.get(field, []) if item.get(status, "active") == "active"]
+           for field, status in (("questions", "tracking_status"), ("forecasts", "status"))}}
+
+
+def _risk_reviews_projection(reviews, instrument_ids):
+    """Discard notebook originals/history in SQL, before transferring any rows."""
+    from sqlalchemy import cast, column
+    from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by
+    entries = func.json_each(case((func.json_typeof(reviews) == "object", reviews), else_=cast({}, JSON))).table_valued(
+        column("key", String), column("value", JSON)).render_derived()
+    notebook = entries.c.value["research"]
+
+    def active_items(field, status):
+        array = case((func.json_typeof(notebook[field]) == "array", notebook[field]), else_=cast([], JSON))
+        items = func.json_array_elements(array).table_valued(column("value", JSON), with_ordinality="position").render_derived()
+        item = cast(items.c.value, JSONB)
+        return select(func.coalesce(func.jsonb_agg(aggregate_order_by(
+            item.op("-")("versions").op("-")("sources"), items.c.position)), cast([], JSONB))).where(
+            case((item.has_key(status), item[status].as_string()), else_="active") == "active"
+        ).correlate(entries).scalar_subquery()
+
+    view = cast(notebook["investment_view"], JSONB)
+    slim = func.json_build_object(
+        "investment_view", case((func.jsonb_typeof(view) == "object", view.op("-")("versions")), else_=view),
+        "source_run_id", notebook["source_run_id"],
+        "questions", active_items("questions", "tracking_status"),
+        "forecasts", active_items("forecasts", "status"))
+    # A notebook containing only other modules still supersedes an older view.
+    keys = func.json_object_keys(case((func.json_typeof(notebook) == "object", notebook),
+                                     else_=cast({}, JSON))).table_valued("key")
+    research = case((select(1).select_from(keys).correlate(entries).exists(), slim), else_=notebook)
+    metadata = func.json_each(entries.c.value).table_valued(column("key", String), column("value", JSON)).render_derived()
+    value = select(func.coalesce(func.json_object_agg(metadata.c.key,
+        case((metadata.c.key == "research", research), else_=metadata.c.value)), cast({}, JSON))).where(metadata.c.key.in_(
+            ("status", "summary", "view_updated_at", "change_kind", "coverage", "reflection", "research"))
+        ).correlate(entries).scalar_subquery()
+    query = select(func.json_object_agg(entries.c.key, value)).select_from(entries)
+    if instrument_ids is not None:
+        query = query.where(entries.c.key.in_(sorted(instrument_ids)))
+    return query.scalar_subquery()
+
+
+def review_states(session, *, instrument_ids=None, for_risk=False):
     """Build current and last-published states from one authorized history read."""
     from studio_identity import current_principal
     from watchlist_app.services.research_access import (
@@ -88,6 +138,8 @@ def review_states(session, *, instrument_ids=None):
         "instrument_ids": JSON, "reviews": JSON, "cutoff": String,
         "sector_run": Boolean, "research_run": Boolean, "recordkeeping_only": Boolean,
     })
+    if for_risk and session.get_bind().dialect.name == "postgresql":
+        values["reviews"] = _risk_reviews_projection(values["reviews"], requested_ids)
     query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.status,
         case((ResearchEntry.status == "failed", ResearchEntry.body), else_="").label("body"),
         *(value.label(name) for name, value in values.items()),
@@ -127,6 +179,10 @@ def review_states(session, *, instrument_ids=None):
                 if requested_ids is not None and iid not in requested_ids:
                     continue
                 review = (context.get("reviews") or {}).get(iid, {})
+                if for_risk:
+                    # Also narrow exact originals restored after a selected NUL,
+                    # and keep SQLite's existing JSON reader behavior equivalent.
+                    review = {**review, "research": _risk_notebook(review.get("research"))}
                 accepted = published and review.get("status") in {"completed", "limited"}
                 # A conversation is not a daily check until it actually publishes research.
                 if not context.get("sector_run") and not accepted:
