@@ -3604,7 +3604,7 @@ class LedgerPostingListResponse(BaseModel):
 
 class PhysicalOptionDelivery(BaseModel):
     stock_record_reference: str | None = Field(default=None, max_length=200)
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", validate_default=True)
     stock_account_id: str = Field(min_length=1)
     settlement_cash_account_id: str = Field(min_length=1)
     allow_stock_short: bool = False

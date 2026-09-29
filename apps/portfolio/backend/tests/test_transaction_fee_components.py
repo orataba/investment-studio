@@ -2,7 +2,10 @@ from decimal import Decimal
 
 import pytest
 
-from portfolio_app.api.contracts import PhysicalOptionDelivery, TransactionCreateRequest
+from portfolio_app.api.contracts import (
+    PhysicalOptionDelivery, TransactionCreateRequest,
+    TransactionImportCommitRequest, TransactionImportPreviewRequest,
+)
 from portfolio_app.db.models import TransactionRecordModel
 from portfolio_app.db.session import get_session_factory
 
@@ -74,6 +77,35 @@ def test_physical_delivery_fee_total_uses_the_same_source_precision_as_its_compo
     })
     assert delivery.fees == Decimal("0.30000000")
     assert delivery.fee_category == "unknown"
+
+
+@pytest.mark.parametrize("charges", [
+    {}, {"fees": "3"}, {"taxes": "0.5"},
+    {"fee_components": COMPONENTS},
+    {"fees": 0.1 + 0.2, "fee_components": [
+        {"category": "performance_fee", "amount": "0.1"},
+        {"category": "transaction_cost", "amount": "0.2"},
+    ]},
+])
+def test_physical_delivery_preview_command_roundtrip_preserves_commit_digest(charges):
+    from portfolio_app.services.transaction_import import transaction_import_digest
+
+    preview = TransactionImportPreviewRequest.model_validate({
+        "source_system": "audit", "records": [{
+            "external_reference": "physical-assignment", "asset_type": "option",
+            "transaction_action": "physical_written", "trade_date": "2026-01-09",
+            "account_id": "writer", "derivative_contract_id": "option", "quantity": "1",
+            "gross_amount": "0", "currency": "USD", "option_delivery": {
+                "stock_account_id": "security", "settlement_cash_account_id": "cash", **charges,
+            },
+        }],
+    })
+    digest = transaction_import_digest(preview)
+    commit = TransactionImportCommitRequest.model_validate({
+        **preview.model_dump(mode="json"), "preview_digest": digest,
+    })
+    assert transaction_import_digest(commit) == digest
+    assert commit.records[0].option_delivery == preview.records[0].option_delivery
 
 
 @pytest.mark.migration_base_revision("20260924_0069")
