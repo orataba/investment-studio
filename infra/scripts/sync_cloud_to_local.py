@@ -77,8 +77,9 @@ def load_config(path):
     host = config["ssh_host"]
     if not host or host.startswith("-") or any(char.isspace() for char in host):
         raise ValueError("Invalid SSH host")
-    for name in ("market", "documents", "research"):
-        item = config["files"][name]
+    if set(config["files"]) != {"market", "documents", "research", "evidence"}:
+        raise ValueError("Configure market, documents, research and evidence file roots")
+    for item in config["files"].values():
         for key in ("remote", "local"):
             value = Path(item[key]).expanduser()
             if not value.is_absolute() or value == Path("/") or value.is_relative_to(ROOT):
@@ -206,6 +207,15 @@ def copy_credentials(connection, credentials):
                 sql.SQL(",").join(map(sql.Identifier, columns)),
                 sql.SQL(",").join(sql.Placeholder() for _ in columns)),
                 [tuple(Json(value) if isinstance(value, (dict, list)) else value for value in row) for row in rows])
+
+
+def refresh_local_credentials(config, stage_name):
+    """Preserve rotations and revocations made while the snapshot was staged."""
+    with psycopg.connect(config["database_url"]) as original:
+        credentials = local_credentials(original)
+    with psycopg.connect(database_url(config["admin_url"], stage_name)) as staged:
+        staged.execute("DELETE FROM identity.service_credentials")
+        copy_credentials(staged, credentials)
 
 
 def reset_copied_jobs(connection):
@@ -364,6 +374,7 @@ def publish(config, directory, stage_name):
     print("Switching local services to the verified snapshot", flush=True)
     try:
         control_services("stop", service_state)
+        refresh_local_credentials(config, stage_name)
         write_cutover_journal(journal, record, "switching_database")
         with psycopg.connect(config["admin_url"], autocommit=True) as admin:
             busy = admin.execute("SELECT count(*) FROM pg_stat_activity WHERE datname=%s AND backend_type='client backend' AND state<>'idle'", (original,)).fetchone()[0]
@@ -388,7 +399,6 @@ def publish(config, directory, stage_name):
         control_services("start", service_state)
         healthcheck(config)
         write_cutover_journal(journal, record, "published")
-        (directory / "recovery.json").write_text(json.dumps({"database": backup, "data_roots": config["files"]}, indent=2))
     except BaseException as failure:
         recovery_errors = []
         data_restored = True

@@ -173,7 +173,7 @@ launchctl kickstart "gui/$UID/com.orataba.investment-studio.market-data-refresh"
 `bin/investment-studio cloud-sync --config /private/cloud-sync.json` 的流程为：
 
 1. 云端以 PostgreSQL 一致性快照导出八个 schema，云端服务继续运行。
-2. 后台下载市场文件、研究产物和上传材料，在独立本地数据库恢复；本机页面继续使用原库。
+2. 后台下载市场文件、研究产物、上传材料和保留的私募确认函，在独立本地数据库恢复；本机页面继续使用原库。
    市场目录先以 macOS/APFS 写时复制克隆为增量基线，各副本保持独立文件身份，云端已删除的文件也从暂存副本移除。
 3. 核对迁移版本、外键约束、市场文件大小、原文内容散列及研究产物引用。版本与当前代码
    不一致或缺文件时停止，不发布半份快照。
@@ -206,14 +206,15 @@ PostgreSQL 的维护账户，用于建立临时库与切换库名，不能指向
   "files": {
     "market": {"remote": "/var/lib/investment-studio/market-data", "local": "/absolute/local/market-data"},
     "documents": {"remote": "/home/investment-studio/.local/share/investment-studio/watchlist-documents", "local": "/absolute/local/watchlist-documents"},
-    "research": {"remote": "/home/investment-studio/.local/share/investment-studio/portfolio-research-outputs", "local": "/absolute/local/portfolio-research-outputs"}
+    "research": {"remote": "/home/investment-studio/.local/share/investment-studio/portfolio-research-outputs", "local": "/absolute/local/portfolio-research-outputs"},
+    "evidence": {"remote": "/home/investment-studio/.local/share/investment-studio/private-evidence", "local": "/absolute/local/private-evidence"}
   }
 }
 ```
 
 首次手动同步成功后，增加 `--install-schedule` 安装每周日 09:00 的 LaunchAgent；登录、唤醒及每日
 检查只补跑已经超过七天的同步，不重复覆盖。日志和 `last-success.json` 位于配置的 `state_root`；
-每批 `cutover.json` 持久化切换阶段、原库名称与各文件位置，`recovery.json` 记录成功后的恢复入口。
+每批 `cutover.json` 持久化切换阶段、原库名称与各文件位置，作为唯一恢复记录。
 若进程在切换中断或恢复不完整，下次同步会在下载前停止；先按 `cutover.json` 恢复整套数据库、
 文件和原服务，验收后将阶段标记为 `rolled_back`（恢复原数据）或 `published`（完成新快照），
 再允许后续同步。失败批次不自动清理，排查后人工清理其暂存库及文件。恢复前停止本机写入，将记录的数据库与文件一起恢复，

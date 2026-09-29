@@ -48,6 +48,7 @@ def cutover(tmp_path, monkeypatch):
     monkeypatch.setattr(sync, 'rename_database', rename)
     monkeypatch.setattr(sync, 'allow_connections', lambda admin, name, allow: connections.update({name: allow}))
     monkeypatch.setattr(sync, 'healthcheck', lambda config: None)
+    monkeypatch.setattr(sync, 'refresh_local_credentials', lambda config, stage_name: None)
     return config, directory, databases, connections
 
 
