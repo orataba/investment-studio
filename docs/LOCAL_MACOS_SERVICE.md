@@ -179,6 +179,8 @@ launchctl kickstart "gui/$UID/com.orataba.investment-studio.market-data-refresh"
 
 1. 云端以 PostgreSQL 一致性快照导出八个 schema，云端服务继续运行。custom dump 关闭内层压缩，
    流式送入 `gzip -n --rsyncable -1`；云端只保存压缩包，管道成功后才原子发布为不可变临时文件。
+   云端暂存目录由服务用户的 `$HOME/.local/state/investment-studio/cloud-sync` 下 `mktemp` 私有创建，
+   使用该用户实际主目录所在的数据盘，不占用可能较小的 `/tmp` 内存盘。
    本机用最近成功同步的 `cloud.pgdump.gz` 独立克隆作增量基线，rsync 复用相同数据块；
    没有旧压缩包时完整传输。旧包仅帮助减少传输字节，本次云端包的 SHA-256 校验通过后才解压与恢复。
    云端临时包在传输成功或失败后清理，本机保留已校验的压缩包及散列供后续同步使用。

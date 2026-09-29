@@ -66,6 +66,8 @@ def snapshot_transfer(tmp_path, monkeypatch):
     control = {'archive': archive, 'checksum': digest, 'failure': None}
     def ssh(config, command, **kwargs):
         calls.append(('ssh', command))
+        if 'mktemp -d' in command:
+            return SimpleNamespace(stdout='/srv/runtime/.local/state/investment-studio/cloud-sync/snapshot.aB12345678\n')
         if 'sha256sum' in command:
             if control['failure'] == 'dump':
                 raise RuntimeError('remote dump failed')
@@ -92,6 +94,11 @@ def snapshot_transfer(tmp_path, monkeypatch):
 def test_download_preserves_complete_snapshot_and_excludes_runtime_credentials(tmp_path, snapshot_transfer):
     config, calls, control = snapshot_transfer
     dump = sync.remote_snapshot(config, tmp_path, '/test/rsync')
+    setup = next(command for kind, command in calls if kind == 'ssh' and 'mktemp -d' in command)
+    assert 'runuser -u studio -- bash -c' in setup
+    assert '$HOME/.local/state/investment-studio/cloud-sync' in setup
+    assert 'umask 077' in setup
+    assert '/tmp/' not in setup and '/home/studio' not in setup
     command = next(command for kind, command in calls if kind == 'ssh' and 'sha256sum' in command)
     assert all("--exclude-table-data=identity." + table in command for table in sync.PRIVATE_CREDENTIAL_TABLES)
     assert all('--schema=' + name in command for name in sync.SCHEMAS)
@@ -104,6 +111,7 @@ def test_download_preserves_complete_snapshot_and_excludes_runtime_credentials(t
     assert (tmp_path / 'cloud.pgdump.gz.sha256').read_text().strip() == control['checksum']
     transfer = next(command for kind, command in calls if kind == 'run' and command[0] == '/test/rsync')
     assert '--no-whole-file' in transfer and '--stats' in transfer
+    assert transfer[-2] == 'cloud:/srv/runtime/.local/state/investment-studio/cloud-sync/snapshot.aB12345678/cloud.pgdump.gz'
     assert any(kind == 'ssh' and 'rmdir --' in command for kind, command in calls)
 
 

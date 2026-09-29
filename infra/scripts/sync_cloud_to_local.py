@@ -24,7 +24,6 @@ import sys
 import time
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import urlopen
-from uuid import uuid4
 
 import psycopg
 from psycopg import sql
@@ -118,14 +117,21 @@ def remote_snapshot(config, directory, rsync_path):
             run(["/bin/cp", "-c", basis, archive])
 
     owner = ["runuser", "-u", config["remote_user"], "--"]
-    remote = "/tmp/investment-studio-cloud-sync-" + uuid4().hex
+    setup = ('set -eu; umask 077; remote_state="$HOME/.local/state/investment-studio/cloud-sync"; '
+             'mkdir -p -- "$remote_state"; mktemp -d "$remote_state/snapshot.XXXXXXXXXX"')
+    result = ssh(config, shlex.join(owner + ["bash", "-c", setup]), stdout=subprocess.PIPE, text=True)
+    remote = result.stdout.strip()
+    remote_path = Path(remote)
+    if (not remote_path.is_absolute() or "\n" in remote or ".." in remote_path.parts
+            or remote_path.parent.parts[-4:] != (".local", "state", "investment-studio", "cloud-sync")
+            or not re.fullmatch(r"snapshot\.[A-Za-z0-9]{10}", remote_path.name)):
+        raise ValueError("Cloud snapshot staging directory is invalid")
     remote_archive = remote + "/cloud.pgdump.gz"
     command = ["pg_dump", "--format=custom", "--compress=0", "--no-owner", "--no-acl", "--host=127.0.0.1",
                f"--port={int(config['remote_port'])}", f"--username={config['remote_database_user']}",
                f"--dbname={config['remote_database']}"]
     command += [f"--schema={name}" for name in SCHEMAS]
     command += [f"--exclude-table-data=identity.{name}" for name in PRIVATE_CREDENTIAL_TABLES]
-    ssh(config, shlex.join(owner + ["mkdir", "-m", "700", remote]))
     try:
         print("Preparing a consistent compressed cloud database snapshot", flush=True)
         script = ("set -euo pipefail; umask 077; gzip -n --rsyncable -1 </dev/null >/dev/null; " + shlex.join(command)
