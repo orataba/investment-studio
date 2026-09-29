@@ -86,6 +86,24 @@ def source_index(source):
     return {key: item for key, item in source.items() if key in fields}
 
 
+def browser_source_view(source):
+    """Source-list metadata only; complete calculations/originals load by ID.
+
+    Computed sources can embed other sources, series and input snapshots. They
+    belong to the saved-evidence endpoint, including when nested below a source.
+    """
+    fields = {"source", "scope", "published_at_raw", "discovered_at", "time_status",
+              "measurement", "methodology", "pm_binding_note", "current_snapshot",
+              "previous_snapshot", "changes"}
+    result = {**source_index(source), **{key: source[key] for key in fields if key in source}}
+    if isinstance(source.get("metadata"), dict) and "published_at" in source["metadata"]:
+        result["metadata"] = {"published_at": source["metadata"]["published_at"]}
+    if source.get("source_type") == "computed_metric":
+        from watchlist_app.services.research_metrics import observation_domain
+        result["observation_domain"] = observation_domain(source)
+    return result
+
+
 def run_source_index(context):
     """Only originals actually fetched/read in this run, with immutable versions."""
     originals = [source for capture in context.get("web_evidence") or []

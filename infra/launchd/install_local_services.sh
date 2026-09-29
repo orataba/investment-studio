@@ -53,6 +53,10 @@ services=(
 
 # Preserve a retired job only in the install rollback snapshot.
 retired_services=(us-reference-data-refresh)
+if [[ -f "$ENV_ROOT/cloud-sync.json" ]]; then
+  services=("${services[@]/market-sync/cloud-sync}")
+  retired_services+=(market-sync)
+fi
 previous_services=("${services[@]}" "${retired_services[@]}")
 
 for executable in "$PYTHON_BIN" "$NODE_BIN"; do
@@ -347,10 +351,15 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$DATABASE_URL" \
   --refresh-retry-hour "$REFRESH_RETRY_HOUR" \
   --refresh-retry-minute "$REFRESH_RETRY_MINUTE"
 
-"$PYTHON_BIN" "$PROJECT_ROOT/infra/scripts/install_market_pipeline.py" \
+if [[ -f "$ENV_ROOT/cloud-sync.json" ]]; then
+  "$PYTHON_BIN" "$PROJECT_ROOT/infra/scripts/sync_cloud_to_local.py" \
+    --config "$ENV_ROOT/cloud-sync.json" --write-schedule --output-dir "$LAUNCH_AGENTS_DIR" --label-prefix "$LABEL_PREFIX"
+else
+  "$PYTHON_BIN" "$PROJECT_ROOT/infra/scripts/install_market_pipeline.py" \
   --scheduler launchd --role replica --project-root "$PROJECT_ROOT" \
   --env-root "$ENV_ROOT" --python "$PYTHON_BIN" \
   --output-dir "$LAUNCH_AGENTS_DIR" --label-prefix "$LABEL_PREFIX"
+fi
 
 for service in "${retired_services[@]}"; do
   rm -f "$LAUNCH_AGENTS_DIR/$LABEL_PREFIX.$service.plist"

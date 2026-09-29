@@ -1,8 +1,20 @@
-.investment-studio-notice-toast {
+.investment-studio-notice-stack {
   position: fixed;
   top: 72px;
   right: 24px;
-  z-index: 2000;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100dvh - 96px);
+  overflow-y: auto;
+  pointer-events: none;
+}
+
+.investment-studio-notice-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
   box-sizing: border-box;
   width: min(360px, calc(100vw - 32px));
   padding: 10px 12px;
@@ -13,8 +25,23 @@
   color: #111827;
   font-size: 13px;
   line-height: 1.45;
-  pointer-events: none;
+  pointer-events: auto;
   animation: investment-studio-notice-toast-enter 140ms ease-out;
+}
+
+.investment-studio-notice-content { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.investment-studio-notice-close {
+  appearance: none; border: 0; background: transparent; color: inherit;
+  padding: 0 3px; cursor: pointer; font-size: 18px; line-height: 1;
+}
+.investment-studio-notice-spinner {
+  flex: 0 0 13px; width: 13px; height: 13px; margin-top: 2px;
+  border: 2px solid #d5dbe5; border-top-color: #526b86; border-radius: 50%;
+  animation: investment-studio-notice-spin 750ms linear infinite;
+}
+@keyframes investment-studio-notice-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .investment-studio-notice-toast, .investment-studio-notice-spinner { animation: none; }
 }
 
 .investment-studio-notice-toast-success {
@@ -45,7 +72,7 @@
 }
 
 @media (max-width: 640px) {
-  .investment-studio-notice-toast {
+  .investment-studio-notice-stack {
     top: 64px;
     right: 16px;
   }

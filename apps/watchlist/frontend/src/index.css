@@ -265,39 +265,6 @@ select {
   color: #4b5563;
 }
 
-.watchlist-loading-overlay {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  z-index: 90;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 13px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
-  color: var(--ink);
-  font-size: 13px;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-}
-
-.watchlist-loading-spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid #d1d5db;
-  border-top-color: var(--ink);
-  border-radius: 999px;
-  animation: watchlist-loading-spin 700ms linear infinite;
-}
-
-@keyframes watchlist-loading-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 .error-state {
   color: #8f1d1d;
 }
@@ -1761,6 +1728,33 @@ th {
 
 .watchlists-add-modal {
   width: min(760px, 100%);
+  height: min(720px, calc(100dvh - 48px));
+  overflow: hidden;
+}
+
+.watchlists-add-modal .watchlists-modal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.watchlists-add-modal .watchlists-registry-list {
+  flex: 1;
+  min-height: 120px;
+  max-height: none;
+  align-content: start;
+  scrollbar-gutter: stable;
+}
+
+.watchlists-add-modal .watchlists-modal-actions {
+  flex-shrink: 0;
+}
+
+.watchlists-selection-count {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .watchlists-compact-modal {
@@ -6542,23 +6536,13 @@ td:last-child {
   overflow-wrap: anywhere;
 }
 
-.instrument-framework-load-error button,
-.instrument-section-load-error button {
+.instrument-framework-load-error button {
   flex: 0 0 auto;
   padding: 5px 10px;
   border-color: #b42318;
   color: #8f1d1d;
 }
 
-.instrument-section-load-error {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding-top: 8px;
-  line-height: 1.45;
-}
 
 .instrument-price-shell {
   border: none;
@@ -8289,4 +8273,11 @@ input[type='checkbox'] {
 .instrument-chart-settings-trigger svg {
   width: 19px;
   height: 19px;
+}
+
+.overview-opinion-excerpt {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
 }

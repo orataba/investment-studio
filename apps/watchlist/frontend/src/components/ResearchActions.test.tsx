@@ -43,7 +43,7 @@ it('saves a PM opinion directly with the selected event version and editable bac
   fireEvent.click(screen.getByRole('button', { name: '保存投资观点' }))
   await waitFor(() => expect(api.note).toHaveBeenCalledWith('fund', expect.objectContaining({ note: expect.objectContaining({ body: '关注资本回报，暂不调整立场。', research_context: expect.objectContaining({ research_update_id: event.update_id, event_case_id: 'case', event_version_id: 'version', source_ids: ['original'], background: '已读配售原文；投资用途仍待披露。' }) }) })))
   expect(ask).not.toHaveBeenCalled()
-  expect(await screen.findByText('投资观点已保存。')).toHaveProperty('role', 'status')
+  expect((await screen.findByText('投资观点已保存。')).closest('[role="status"]')).not.toBeNull()
 })
 
 it('links an event to an existing theme without creating a duplicate theme', async () => {
@@ -97,7 +97,7 @@ it('shows the backend research availability message after creating a theme from 
   render(<ResearchUpdateCard update={event} />)
   fireEvent.click(screen.getByRole('button', { name: '转为跟踪主题' }))
   fireEvent.click(screen.getByRole('button', { name: '创建并开始研究' }))
-  expect(await screen.findByText(message)).toHaveProperty('role', 'status')
+  expect((await screen.findByText(message)).closest('[role="status"]')).not.toBeNull()
 })
 
 it('preserves the draft on a failed direct save and does not offer theme creation for linked events', async () => {

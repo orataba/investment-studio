@@ -58,6 +58,18 @@ describe('Portfolio account boundaries', () => {
     expect(api.clearPortfolioApiCache).toHaveBeenCalledTimes(1)
   })
 
+  it.each([new TypeError('Failed to fetch'), Object.assign(new Error('Unavailable'), { status: 503 })])('keeps an authorized draft after transient revalidation failure', async reason => {
+    bootstrap.mockResolvedValueOnce(response()).mockRejectedValueOnce(reason)
+    render(<Boundary><input aria-label="未保存交易" /></Boundary>)
+    const input = await screen.findByRole('textbox')
+    fireEvent.change(input, { target: { value: '明泓赎回' } })
+    fireEvent(window, new Event('focus'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('已保留当前页面')
+    expect(screen.getByRole('textbox')).toBe(input)
+    expect(input).toHaveValue('明泓赎回')
+    expect(api.clearPortfolioApiCache).toHaveBeenCalledTimes(1)
+  })
+
   it('remounts account-bound state after a different session is confirmed', async () => {
     bootstrap.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ user_id: 'bob', session_id: 'session-b' }))
     render(<Boundary><input aria-label="账号内草稿" defaultValue="" /></Boundary>)

@@ -191,10 +191,13 @@ def test_lists_share_status_and_removal_preserves_instrument_research_and_settin
         "values": [{"attribute_key": "coverage_status", "value": "Invested"}],
     })
     assert updated.status_code == 200
+    assert updated.json()["recalculated"] is False
+    for wid in [*list_ids, "all-instruments"]:
+        response = client.post("/api/screener/query", json={"watchlist_id": wid,
+            "selected_fields": ["instrument_name", "attr.coverage_status"], "group_by": "none"})
+        assert response.status_code == 200
+        assert next(item for item in response.json()["rows"] if item["instrument_id"] == iid)["attr.coverage_status"] == "Invested"
     with get_session_factory()() as session:
-        for wid in [*list_ids, "all-instruments"]:
-            row = SQLAlchemyReadModelRepository().list_watchlist_rows(session, wid)
-            assert next(item for item in row if item.instrument_id == iid).attributes_json["coverage_status"] == "Invested"
         topic = ResearchTopic(topic_id=f"dossier:{iid}", title="Retained research", instrument_ids=[iid], visibility="team")
         session.add(topic)
         session.flush()

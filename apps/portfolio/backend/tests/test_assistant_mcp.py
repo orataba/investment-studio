@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 
 from mcp import Client
 from mcp.types import ImageContent
@@ -53,6 +54,40 @@ def test_mcp_catalog_exposes_analysis_without_commit() -> None:
         assert "model_name" not in submission_properties
 
     asyncio.run(inspect_catalog())
+
+
+def test_decimal_tool_schema_uses_strings_without_weakening_runtime_validation(monkeypatch):
+    from portfolio_app.api.contracts import TransactionImportPreviewRequest
+    original = TransactionImportPreviewRequest.model_json_schema()
+
+    async def exercise():
+        async with Client(assistant_mcp.mcp) as client:
+            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+            schema = tools["preview_screenshot_transaction_proposal"].input_schema
+            gross = schema["$defs"]["TransactionImportCommand"]["properties"]["gross_amount"]
+            assert any(item["type"] == "string" for item in gross["anyOf"])
+            assert all(item["type"] != "number" for item in gross["anyOf"])
+            assert "100000000000000000000" not in json.dumps(schema)
+            result = await client.call_tool("preview_screenshot_transaction_proposal", {
+                "proposal": {"source_system": "test", "records": [{
+                    "external_reference": "test", "asset_type": "cash", "transaction_action": "deposit",
+                    "account_id": "cash", "currency": "USD", "trade_date": "2026-09-01",
+                    "settlement_date": "2026-09-01", "gross_amount": "100000000000000000000"}]}})
+            assert result.is_error
+
+    monkeypatch.setattr(assistant_mcp, "_api_json", lambda *args, **kwargs: pytest.fail("Invalid money reached API"))
+    asyncio.run(exercise())
+    assert TransactionImportPreviewRequest.model_json_schema() == original
+
+
+def test_context_schema_matches_tool_decimal_representation(monkeypatch):
+    from portfolio_app.api.contracts import TransactionCaptureAnalysisCreateRequest
+    monkeypatch.setattr(assistant_mcp, "_api_json", lambda *args: {
+        "submission_schema": TransactionCaptureAnalysisCreateRequest.model_json_schema(),
+        "batch": {"untrusted_text": "100000000000000000000"}})
+    value = assistant_mcp.get_screenshot_analysis_context()
+    assert "100000000000000000000" not in json.dumps(value["submission_schema"])
+    assert value["batch"]["untrusted_text"] == "100000000000000000000"
 
 
 def test_mcp_returns_only_images_belonging_to_the_requested_batch(monkeypatch) -> None:

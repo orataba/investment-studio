@@ -22,6 +22,7 @@ printf '%s\n' \
   '    *) exit 1 ;;' \
   '  esac' \
   'fi' \
+  'if [[ "${FAIL_ACTION:-}" == "$1" && "$*" == *home-api* ]]; then exit 1; fi' \
   'exit 0' \
   > "$MOCK_BIN/launchctl"
 chmod +x "$MOCK_BIN/uname" "$MOCK_BIN/launchctl"
@@ -60,4 +61,18 @@ if grep -Eq 'kickstart .*test.investment-studio.(.*data-refresh|market-sync)' "$
   exit 1
 fi
 
-echo "launchd stop/start state preservation test passed."
+# A broken early service must not prevent restoration of later services.
+for action in stop start; do
+  : > "$CALL_LOG"
+  failure_action=bootout
+  [[ "$action" == start ]] && failure_action=bootstrap
+  if PATH="$MOCK_BIN:$PATH" LABEL_PREFIX=test.investment-studio \
+    LAUNCH_AGENTS_DIR="$PLIST_ROOT" FAIL_ACTION="$failure_action" \
+    "$REPOSITORY_ROOT/infra/launchd/control_local_services.sh" "$action" "$STATE_FILE"; then
+    echo "Expected partial $action failure" >&2
+    exit 1
+  fi
+  grep -q "$failure_action .*test.investment-studio.market-sync" "$CALL_LOG"
+done
+
+echo "launchd stop/start state preservation and partial failure tests passed."

@@ -1676,6 +1676,8 @@ def test_move_watchlist_items_transfers_membership_to_target_watchlist(
         json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     move_response = client.post(
         f"/api/watchlists/{source_watchlist_id}/items/move",
@@ -1742,6 +1744,8 @@ def test_copy_watchlist_items_adds_membership_to_target_without_removing_source(
         json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     copy_response = client.post(
         f"/api/watchlists/{source_watchlist_id}/items/copy",
@@ -1876,7 +1880,9 @@ def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
     )
     assert add_response.status_code == 200
     assert add_response.json()["accepted_count"] == 1
-    assert add_response.json()["recalculated_instrument_ids"] == ["sxv264"]
+    assert add_response.json()["pending_recalc_instrument_ids"] == ["sxv264"]
+    from watchlist_app.services.recalc_worker import process_next_recalc_job
+    assert process_next_recalc_job() is True
 
     screener = client.post(
         "/api/screener/query",
@@ -1971,8 +1977,8 @@ def test_adding_existing_watchlist_item_is_noop_without_membership_recalc(
         raise AssertionError("duplicate membership add should not execute recalc")
 
     monkeypatch.setattr(
-        watchlists_route.canonical_recalc_service,
-        "execute_recalc",
+        watchlists_route,
+        "queue_watchlist_recalculation",
         _unexpected_recalc,
     )
 
@@ -1986,7 +1992,6 @@ def test_adding_existing_watchlist_item_is_noop_without_membership_recalc(
         "watchlist_id": watchlist_id,
         "accepted_count": 0,
         "pending_recalc_instrument_ids": [],
-        "recalculated_instrument_ids": [],
     }
 
 
@@ -2018,6 +2023,8 @@ def test_screener_sort_keeps_missing_values_last_for_descending_metrics(
         json={"instrument_ids": ["fund-no-return", "sxv264"]},
     )
     assert add_response.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     screener = client.post(
         "/api/screener/query",
@@ -2088,6 +2095,8 @@ def test_calendar_period_returns_use_prior_close_as_base(
         json={"instrument_ids": ["calendar-boundary-fund"]},
     )
     assert add_response.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     screener = client.post(
         "/api/screener/query",
@@ -2157,6 +2166,8 @@ def test_aligned_decimal_nav_series_materializes_path_risk_metrics(
         json={"instrument_ids": ["aligned-decimal-risk-fund"]},
     )
     assert add_response.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     risk_response = client.get("/api/instruments/aligned-decimal-risk-fund/risk")
     assert risk_response.status_code == 200
@@ -2218,7 +2229,9 @@ def test_index_close_series_calculates_watchlist_performance_metrics(
         json={"instrument_ids": ["index-close-only"]},
     )
     assert add_response.status_code == 200
-    assert add_response.json()["recalculated_instrument_ids"] == ["index-close-only"]
+    assert add_response.json()["pending_recalc_instrument_ids"] == ["index-close-only"]
+    from watchlist_app.services.recalc_worker import process_next_recalc_job
+    assert process_next_recalc_job() is True
 
     screener = client.post(
         "/api/screener/query",
@@ -2340,6 +2353,8 @@ def test_screener_returns_are_anchored_to_each_instruments_own_as_of_date(
         json={"instrument_ids": ["asof-fund-0724", "asof-fund-0727"]},
     )
     assert add_response.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     screener = client.post(
         "/api/screener/query",
@@ -2384,6 +2399,8 @@ def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
         json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     performance_response = client.get("/api/instruments/sxv264/performance")
     assert performance_response.status_code == 200
@@ -2489,6 +2506,8 @@ def test_instrument_detail_payload_uses_daily_calculation_frequency(
         json={"instrument_ids": ["weekly-risk-fund"]},
     )
     assert add_response.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     nav_response = client.get("/api/instruments/weekly-risk-fund/nav-series")
     assert nav_response.status_code == 200
@@ -2872,7 +2891,7 @@ def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
     assert clear_response.json()["peer_baseline_instrument_ids"] == []
 
 
-def test_watchlist_add_rolls_back_when_recalc_fails(
+def test_watchlist_add_rolls_back_when_queue_publication_fails(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2886,21 +2905,28 @@ def test_watchlist_add_rolls_back_when_recalc_fails(
     watchlist_id = created_watchlist.json()["watchlist_id"]
     call_count = 0
 
-    def _recalc_then_fail(*args, **kwargs):
+    def _queue_then_fail(*args, **kwargs):
         nonlocal call_count
         call_count += 1
         if call_count == 2:
-            raise HTTPException(status_code=500, detail="recalc failed")
-        return {"job_status": "completed", "result": {}}
+            raise HTTPException(status_code=500, detail="queue failed")
+        return None
 
-    monkeypatch.setattr(watchlists_route.canonical_recalc_service, "execute_recalc", _recalc_then_fail)
+    monkeypatch.setattr(watchlists_route, "queue_watchlist_recalculation", _queue_then_fail)
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"instrument_ids": ["sxv264", "savf63"]},
+        json={"instrument_ids": ["sxv264", "savf63"], "coverage_status": "Invested"},
     )
     assert add_response.status_code == 500
-    assert add_response.json()["detail"] == "recalc failed"
+    assert add_response.json()["detail"] == "queue failed"
+
+    from watchlist_app.db.models.watchlists import InstrumentAttributeValue
+    from watchlist_app.db.session import get_session_factory
+    with get_session_factory()() as session:
+        assert not session.scalars(select(InstrumentAttributeValue).where(
+            InstrumentAttributeValue.instrument_id.in_(["sxv264", "savf63"]),
+            InstrumentAttributeValue.attribute_key == "coverage_status")).all()
 
     detail = client.get(f"/api/watchlists/{watchlist_id}")
     assert detail.status_code == 200
@@ -2953,6 +2979,8 @@ def test_screener_query_triggers_async_refresh_when_shared_data_is_newer(
         json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     scheduled: list[dict[str, object]] = []
 
@@ -3053,6 +3081,8 @@ def test_stale_read_repair_enqueues_single_durable_recalc_job(client: TestClient
         json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     first = schedule_instrument_refresh_if_stale(
         instrument_id="sxv264",
@@ -3149,6 +3179,8 @@ def test_worker_reconciliation_repairs_a_missed_market_data_notification(
         f"/api/watchlists/{watchlist_id}/items",
         json={"instrument_ids": ["sxv264"]},
     ).status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     session_factory = session_module.get_session_factory()
     revised = deepcopy(TEST_SHARED_INSTRUMENTS["sxv264"])
@@ -3192,6 +3224,8 @@ def test_stale_read_repair_commits_requeued_existing_job(client: TestClient) -> 
         json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     session_factory = session_module.get_session_factory()
     repo = SQLAlchemyRecalcJobRepository()
@@ -3482,6 +3516,8 @@ def test_process_next_recalc_job_refreshes_shared_metadata_drift(
         json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     session_factory = session_module.get_session_factory()
     before_drift = shared_store.get_instrument(session_factory, "sxv264")
@@ -3585,6 +3621,8 @@ def test_process_next_recalc_job_recovers_stale_running_job(
         json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     session_factory = session_module.get_session_factory()
     repository = SQLAlchemyRecalcJobRepository()
@@ -3746,6 +3784,8 @@ def test_lost_recalc_lease_rolls_back_materialized_changes(
         f"/api/watchlists/{created_watchlist.json()['watchlist_id']}/items",
         json={"instrument_ids": ["sxv264"]},
     ).status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
     repository = SQLAlchemyRecalcJobRepository()
     service = CanonicalRecalcService()
@@ -5379,6 +5419,8 @@ def test_risk_only_watchlist_query_does_not_read_legacy_research(
         json={"instrument_ids": ["sxv264", "fund-us-agg"]},
     )
     assert added.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
     with get_session_factory()() as session:
         session.add(RiskCase(
             case_id="risk-only-projection", instrument_id="sxv264", signal="manual",
@@ -6082,6 +6124,8 @@ def test_monitoring_dashboard_surfaces_missing_metadata_quotes_and_open_recalc_j
         json={"instrument_ids": ["sxv264", "fund-no-data"]},
     )
     assert add_response.status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
     assert add_response.json()["accepted_count"] == 2
 
     status_response = client.post(

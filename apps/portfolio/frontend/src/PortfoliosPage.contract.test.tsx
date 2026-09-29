@@ -141,7 +141,7 @@ describe('Portfolios rendered page contract', () => {
         base_currency: 'CNY',
       })
     })
-    expect(await screen.findByText(/historical values are recalculating/i)).toHaveClass('investment-studio-notice-toast-success')
+    expect((await screen.findByText(/historical values are recalculating/i)).closest('[role="status"]')).toHaveClass('investment-studio-notice-toast-success')
     expect(screen.getByText('Recalculating')).toBeInTheDocument()
   })
 

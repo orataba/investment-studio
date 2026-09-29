@@ -435,6 +435,7 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch, migrated_portfolio_
             additive_transaction_columns = {
                 "asset_deliveries_json": "JSON",
                 "settlement_cashflows_json": "JSON",
+                "fee_components_json": "JSON",
                 "lot_selections_json": "JSON",
                 "transaction_sequence": "INTEGER NOT NULL DEFAULT 1",
                 "lifecycle_event_type": "VARCHAR",

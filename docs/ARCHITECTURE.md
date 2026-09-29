@@ -30,7 +30,7 @@ Watchlist/Portfolio 共用 `investment_studio` 数据库，包含：
 
 Regime 的独立 `market_data` 数据库保存模型私有输入与运行事实，区别于 Studio 的同名 schema。
 两者不共用业务事务；Regime 来源适配器读取共享 `studio_market` 数据后物化自己的输入。
-云端是公开数值采集主端，本地复制公开数据；两端的账户、交易、研究判断与私有材料分别维护。
+云端是公开数据和 Studio 业务数据的权威来源；本机每周接收完整快照，期间独立运行。人员与历史署名随数据同步，运行凭据及本机免登录配置独立。同步与恢复见 [本机服务](LOCAL_MACOS_SERVICE.md#每周从云端同步)。
 外部 Market Intelligence 只提供文本／事件包。其他项目的数据库和源代码不是运行依赖。
 
 ## 文件与运行归属
@@ -102,7 +102,7 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 
 - 直接读写 `portfolio`
 - 直接读取 `instrument_data`
-- 在所属应用的 schema 内维护 ledger、lots、performance、risk、taxonomy、target set、research；本地与云端分别持有各自业务数据
+- 在所属应用的 schema 内维护 ledger、lots、performance、risk、taxonomy、target set、research；云端权威数据每周覆盖同步至本机，本机修改不回传
 - Portfolio 管理分类和目标只有当前配置；自动版本用于审计与失效，修改后重述历史派生分析。Research 将当前配置冻结到每次运行，已保存结果不随以后修改漂移；金融事实与来源保留各自日期
 - 在所属应用的 schema 内维护 FCN/期权不可变合约及事件交易；只有合约的 underlying / deliverable 引用 Instrument Data 市场资产
 - 风险面板经 Watchlist API 读取和更新跟进记录及范围内风控研判；研判读取 Portfolio 实际持仓，市值敞口不等于风险贡献。组合风险、风险预算和研究求解仍由 Portfolio 独立计算；该连接失败不影响账本和绩效计算

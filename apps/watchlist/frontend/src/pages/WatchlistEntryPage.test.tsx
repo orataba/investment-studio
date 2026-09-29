@@ -18,7 +18,7 @@ it('shows the shared floating loader while the directory loads, without title st
   mocks.getWatchlists.mockReturnValue(new Promise<WatchlistRecord[]>((done) => { resolve = done }))
   render(<LanguageProvider enableDomTranslation={false}><MemoryRouter><WatchlistEntryPage /></MemoryRouter></LanguageProvider>)
   const status = screen.getByRole('status')
-  expect(status.classList.contains('watchlist-loading-overlay')).toBe(true)
+  expect(status.classList.contains('investment-studio-notice-toast-loading')).toBe(true)
   expect(within(screen.getByRole('heading', { name: 'All Watchlists' }).parentElement!).queryByText('Loading')).toBeNull()
   await act(async () => resolve([]))
   expect(screen.queryByRole('status')).toBeNull()

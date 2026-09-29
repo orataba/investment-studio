@@ -12,6 +12,7 @@ from watchlist_app.api.contracts import (
     WatchlistCreateRequest,
     WatchlistItemsCopyRequest,
     WatchlistItemsCreateRequest,
+    WatchlistCoverageStatusRequest,
     WatchlistItemsDeleteRequest,
     WatchlistItemsMoveRequest,
     WatchlistReorderRequest,
@@ -40,7 +41,7 @@ from watchlist_app.repositories.sqlalchemy.watchlists import (
     SQLAlchemyWatchlistRepository,
     SystemWatchlistSpec,
 )
-from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+from watchlist_app.services.watchlist_updates import lock_watchlist_instruments, queue_watchlist_recalculation, set_coverage_status
 from watchlist_app.services.instrument_taxonomy import (
     build_taxonomy_context,
     merge_taxonomy_attributes,
@@ -94,7 +95,6 @@ instrument_repository = SQLAlchemyInstrumentRepository()
 attribute_repository = SQLAlchemyInstrumentAttributeRepository()
 read_model_repository = SQLAlchemyReadModelRepository()
 taxonomy_repository = SQLAlchemyTaxonomyRepository()
-canonical_recalc_service = CanonicalRecalcService()
 MAX_WATCHLIST_ID_ATTEMPTS = 10
 
 
@@ -899,6 +899,7 @@ def add_items_to_watchlist(
             ),
         )
 
+    lock_watchlist_instruments(session, canonical_instrument_ids)
     for shared_instrument in resolved_instruments:
         _ensure_local_instrument_detail(session, shared_instrument)
 
@@ -909,6 +910,9 @@ def add_items_to_watchlist(
         added_by=current_principal().user_id,
     )
     created_instrument_ids = [item.instrument_id for item in created]
+    if payload.coverage_status is not None:
+        for instrument_id in canonical_instrument_ids:
+            set_coverage_status(session, instrument_id=instrument_id, status=payload.coverage_status)
     try:
         _materialize_watchlist_rows(
             session,
@@ -918,25 +922,33 @@ def add_items_to_watchlist(
     except SharedInstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
-    recalculated_instrument_ids: list[str] = []
-    for instrument_id in created_instrument_ids:
-        canonical_recalc_service.execute_recalc(
-            session,
-            instrument_id=instrument_id,
-            job_type="all",
-            trigger_type="watchlist_membership_added",
-            trigger_ref_type="watchlist",
-            trigger_ref_id=watchlist_id,
-        )
-        recalculated_instrument_ids.append(instrument_id)
+    pending_ids = created_instrument_ids
+    for instrument_id in pending_ids:
+        queue_watchlist_recalculation(session, instrument_id=instrument_id, watchlist_id=watchlist_id)
 
     session.commit()
     return {
         "watchlist_id": watchlist_id,
         "accepted_count": len(created),
-        "pending_recalc_instrument_ids": created_instrument_ids,
-        "recalculated_instrument_ids": recalculated_instrument_ids,
+        "pending_recalc_instrument_ids": pending_ids,
     }
+
+
+@router.post("/{watchlist_id}/items/coverage-status")
+def update_items_coverage_status(
+    watchlist_id: str,
+    payload: WatchlistCoverageStatusRequest,
+    session: Session = Depends(get_db_session),
+) -> dict[str, object]:
+    watchlist = _require_watchlist(session, watchlist_id)
+    instrument_ids = list(dict.fromkeys(payload.instrument_ids))
+    members = {item.instrument_id for item in watchlist.items}
+    if any(instrument_id not in members for instrument_id in instrument_ids):
+        raise HTTPException(status_code=422, detail="All selected instruments must belong to this watchlist.")
+    for instrument_id in instrument_ids:
+        set_coverage_status(session, instrument_id=instrument_id, status=payload.coverage_status)
+    session.commit()
+    return {"watchlist_id": watchlist_id, "updated_count": len(instrument_ids), "coverage_status": payload.coverage_status}
 
 
 @router.post("/{watchlist_id}/items/delete")

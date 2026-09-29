@@ -57,8 +57,9 @@ def manage(group: str, action: str) -> None:
     if mac and group == "briefing":
         services = ("briefing-api", "briefing-web")
     if mac and group == "market":
-        services = ("market-sync",)
-    scheduled = lambda service: service.endswith("-data-refresh") or service in GROUPS["market"] or service in {"briefing-daily", "briefing-weekly"}
+        config = Path(os.environ.get("ENV_ROOT", str(Path.home() / ".config/orataba/secrets/investment-studio"))) / "cloud-sync.json"
+        services = ("cloud-sync",) if config.is_file() else ("market-sync",)
+    scheduled = lambda service: service.endswith("-data-refresh") or service in GROUPS["market"] or service in {"cloud-sync", "briefing-daily", "briefing-weekly"}
     if mac:
         domain = f"gui/{os.getuid()}"
         for service in services:

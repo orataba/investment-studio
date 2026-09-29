@@ -570,6 +570,7 @@ class TransactionRecordModel(Base):
     source_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
     fees: Mapped[float] = mapped_column(nullable=False, default=0.0)
     source_fees: Mapped[Decimal | None] = mapped_column(Numeric(28, 8))
+    fee_components_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
     fee_category: Mapped[str] = mapped_column(
         String,
         nullable=False,

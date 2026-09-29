@@ -507,12 +507,15 @@ def _research_records(session: Session, instrument_id: str, *, oldest_first: boo
             yield record, research
 
 
-def _notebooks(session: Session, instrument_id: str, include_history: bool):
+def _notebooks(session: Session, instrument_id: str, include_history: bool, *, source_metadata_only=False):
     from contextlib import closing
     from watchlist_app.services.research_notebook import notebook_current_view
     notebook, history = None, {}
     with closing(_research_records(session, instrument_id)) as records:
         for record, research in records:
+            if source_metadata_only:
+                from watchlist_app.services.research_read_projection import browser_source_view
+                research = {**research, "sources": [browser_source_view(source) for source in research.get("sources", [])]}
             stamp = {"run_id": record.entry_id, "checked_at": research.get("checked_at") if record.context_json.get("recordkeeping_only") else record.context_json.get("cutoff"),
                      "version_id": research.get("version_id", record.entry_id),
                      "created_at": research.get("created_at") or record.completed_at or record.created_at,
@@ -653,7 +656,7 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
     if current_only:
         # The four-zone page gets event/theme summaries separately. Its initial
         # notebook read must not hydrate the historical activity/source corpus.
-        notebook, _ = _notebooks(session, instrument_id, False)
+        notebook, _ = _notebooks(session, instrument_id, False, source_metadata_only=True)
         return serialize_payload({"instrument_id": instrument_id, "name": instrument.instrument_name,
             "instrument_type": instrument.instrument_type, "research_plan": research_plan,
             "frameworks": method_library()["frameworks"], "mandate": mandate,

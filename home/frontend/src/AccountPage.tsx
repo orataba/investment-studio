@@ -4,7 +4,7 @@ import { accountRequest, type Account, type Member, roleName, type TeamRole } fr
 import { appPath } from './appPath'
 import InfoHint from '../../../packages/ui/src/InfoHint'
 import HorizontalTableScroll from '../../../packages/ui/src/HorizontalTableScroll'
-import NoticeToast, { type NoticeToastMessage } from '../../../packages/ui/src/NoticeToast'
+import NoticeToast, { LoadingNotice, type NoticeToastMessage } from '../../../packages/ui/src/NoticeToast'
 import '../../../packages/ui/src/notice-toast.css'
 
 function RoleOptions() {
@@ -56,7 +56,8 @@ export default function AccountPage() {
     <header className="home-masthead"><a href={appPath('/')}><strong>Investment Studio</strong></a><div className="home-actions"><LanguageSelector /><a href={appPath('/')}>{t("Back to workspaces")}</a></div></header>
     <h1>{t("Account and team")}</h1>
     <NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
-    {error ? <p className="account-message" role="alert">{error}</p> : null}
+    <NoticeToast notice={error ? { id: 0, message: error, tone: 'error' } : null} onDismiss={() => setError('')} />
+    <LoadingNotice active={loading || busy} message={t(busy ? 'Saving…' : 'Loading')} />
     {loading ? <div className="account-skeleton" role="status" aria-label={t('Loading')} aria-busy="true"><span /><span /><span /></div> : !account ? <p><a href={appPath('/login')}>{t("Sign in")}</a></p> : <>
       <p><span translate="no">{account.team_name}</span> · {t(roleName[account.team_role])}{account.is_team_owner ? ` · ${t('Team owner')}` : ''}</p>
       {account.local_unrestricted ? <p translate="no">{t('Local access records new activity as {name}. No sign-in is required.', { name: account.display_name })}</p> : null}

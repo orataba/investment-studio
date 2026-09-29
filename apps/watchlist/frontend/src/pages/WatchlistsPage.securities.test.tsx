@@ -9,7 +9,7 @@ import type { SecuritySearchResult, WatchlistDetail } from '../lib/api'
 const mocks = vi.hoisted(() => ({
   getWatchlists: vi.fn(), getWatchlistDetail: vi.fn(), getFieldRegistry: vi.fn(),
   getInstrumentTaxonomyTree: vi.fn(), runScreenerQuery: vi.fn(), searchSharedInstruments: vi.fn(),
-  searchSecurities: vi.fn(), materializeSecurity: vi.fn(), addWatchlistItems: vi.fn(),
+  searchSecurities: vi.fn(), materializeSecurity: vi.fn(), addWatchlistItems: vi.fn(), updateWatchlistCoverageStatus: vi.fn(),
   canWrite: vi.fn(),
 }))
 vi.mock('../lib/api', async (original) => ({ ...(await original<typeof import('../lib/api')>()), ...mocks }))
@@ -70,9 +70,11 @@ async function chooseDirectorySecurity() {
 it('registers only the explicitly chosen directory security, then adds its canonical ID', async () => {
   await chooseDirectorySecurity()
   fireEvent.click(screen.getByRole('button', { name: 'Register and add' }))
-  await waitFor(() => expect(mocks.addWatchlistItems).toHaveBeenCalledWith('focus', ['shv']))
+  await waitFor(() => expect(mocks.addWatchlistItems).toHaveBeenCalledWith('focus', ['shv'], undefined))
   expect(mocks.materializeSecurity).toHaveBeenCalledExactlyOnceWith(catalog)
-  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add instruments' })).toBeNull())
+  await waitFor(() => expect(screen.getByLabelText('Search Instruments')).toHaveProperty('value', ''))
+  expect(screen.getByRole('dialog', { name: 'Add instruments' })).toBeTruthy()
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Search Instruments')))
   expect(mocks.getWatchlists).toHaveBeenCalledTimes(2)
 })
 
@@ -80,7 +82,7 @@ it('retains the registered asset when adding list membership fails, so retry doe
   mocks.addWatchlistItems.mockRejectedValueOnce(new Error('List update failed')).mockResolvedValueOnce({ accepted_count: 1 })
   await chooseDirectorySecurity()
   fireEvent.click(screen.getByRole('button', { name: 'Register and add' }))
-  expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'List update failed')
+  expect((await screen.findByRole('alert')).textContent).toContain('List update failed')
   fireEvent.click(screen.getByRole('button', { name: 'Add To Watchlist' }))
   await waitFor(() => expect(mocks.addWatchlistItems).toHaveBeenCalledTimes(2))
   expect(mocks.materializeSecurity).toHaveBeenCalledTimes(1)
@@ -98,4 +100,25 @@ it('shows the creator in settings and prevents a reader from adding or creating 
   const menu = screen.getByRole('group', { name: 'Watchlist settings menu' })
   expect(within(menu).getByText('Created by Alice')).toBeTruthy()
   expect(within(menu).getByRole('button', { name: 'Copy Watchlist' }).hasAttribute('disabled')).toBe(true)
+})
+
+it('saves the chosen investment status with every addition while keeping it for the next search', async () => {
+  await chooseDirectorySecurity()
+  fireEvent.change(screen.getByLabelText('Investment status'), { target: { value: 'Proposed' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Register and add' }))
+  await waitFor(() => expect(mocks.addWatchlistItems).toHaveBeenCalledWith('focus', ['shv'], 'Proposed'))
+  await waitFor(() => expect(screen.getByLabelText('Search Instruments')).toHaveProperty('value', ''))
+  expect(screen.getByLabelText('Investment status')).toHaveProperty('value', 'Proposed')
+  fireEvent.change(screen.getByLabelText('Search Instruments'), { target: { value: 'another' } })
+  expect(await screen.findByRole('button', { name: /SHV · NASDAQ/ })).toBeTruthy()
+})
+
+it('sets investment status for selected rows in a single batch', async () => {
+  mocks.runScreenerQuery.mockResolvedValue({ rows: [{ instrument_id: 'shv', instrument_name: 'SHV' }], groups: [], total_rows: 1, sparklines: {}, snapshot_metadata: {} })
+  mocks.updateWatchlistCoverageStatus.mockResolvedValue({ updated_count: 1 })
+  showPage()
+  const selected = await screen.findByRole('checkbox', { name: /Select SHV/ })
+  fireEvent.click(selected)
+  fireEvent.click(screen.getByRole('button', { name: 'Set Invested' }))
+  await waitFor(() => expect(mocks.updateWatchlistCoverageStatus).toHaveBeenCalledWith('focus', ['shv'], 'Invested'))
 })

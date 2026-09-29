@@ -94,6 +94,18 @@ def test_finished_run_does_not_accept_a_draft(client, submission):
     assert client.post(f"/api/research/runs/{rid}/sector-draft", json=draft).status_code == 409
 
 
+def test_unknown_theme_id_returns_correctable_validation_error(client, submission):
+    rid, draft = submission
+    draft["reviews"][0]["themes"][0]["theme_id"] = "ai-return"
+    response = client.post(f"/api/research/runs/{rid}/sector-draft", json=draft)
+    assert response.status_code == 422
+    assert "theme_id" in response.json()["detail"]
+    with get_session_factory()() as session:
+        assert "submitted_draft" not in session.get(ResearchEntry, rid).context_json
+    draft["reviews"][0]["themes"][0].pop("theme_id")
+    assert client.post(f"/api/research/runs/{rid}/sector-draft", json=draft).status_code == 200
+
+
 @pytest.mark.parametrize("tool", ["portfolio", "risk_review"])
 def test_instrument_research_does_not_gain_private_portfolio_scope(client, submission, tool):
     rid, _ = submission

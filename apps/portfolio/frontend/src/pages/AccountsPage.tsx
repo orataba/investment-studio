@@ -583,7 +583,7 @@ export default function AccountsPage() {
 
         <NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
         {loading && !workspace ? <AccountDetailLoading /> : null}
-        {error ? <div className="error-state">{error}</div> : null}
+        <NoticeToast notice={error ? { id: 0, tone: 'error', message: error } : null} onDismiss={() => setError(null)} />
 
         {workspace ? (
           <section className="accounts-workbench">

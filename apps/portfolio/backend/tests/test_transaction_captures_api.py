@@ -424,8 +424,8 @@ def test_completed_revision_recovers_a_run_interrupted_before_status_update(clie
 
 
 @pytest.mark.parametrize(("return_code", "expected_error"), [
-    (0, "The agent finished without producing a review revision."),
-    (78, "当前DeepSeek通道未配置可用的图片识别模型，截图分析未执行；请配置支持图片的模型后重试。"),
+    (0, "分析已结束，但没有提交可供复核的结果。请重新分析。"),
+    (78, "截图分析运行环境尚未安装完整，请修复研究运行环境后重试。"),
 ])
 def test_screenshot_analysis_runner_marks_missing_revision_as_failed(
     client,
@@ -447,7 +447,7 @@ def test_screenshot_analysis_runner_marks_missing_revision_as_failed(
     monkeypatch.setattr(
         transaction_capture_runner,
         "_run_harness_process",
-        lambda **_kwargs: (return_code, False),
+        lambda **_kwargs: (return_code, False, None),
     )
 
     transaction_capture_runner.run_transaction_capture_analysis(
@@ -468,6 +468,20 @@ def test_screenshot_analysis_runner_marks_missing_revision_as_failed(
     assert result["analysis_run_completed_at"] is not None
     assert result["analysis_run_error"] == expected_error
     assert result["latest_analysis_revision"] == 0
+
+
+@pytest.mark.parametrize(("stderr", "expected"), [
+    ('dsh: INVALID_REQUEST: 400 {"code":"InvalidParameter","credential":"secret"}', "请求参数"),
+    ('dsh: QUOTA: Insufficient Balance secret', "余额不足"),
+    ('dsh: RATE_LIMIT: provider payload secret', "限流"),
+    ('dsh: NETWORK: fetch failed secret', "网络"),
+    ('provider details secret', "分析进程退出"),
+])
+def test_capture_runner_classifies_errors_without_exposing_provider_output(stderr, expected):
+    from portfolio_app.services.transaction_capture_runner import _harness_failure
+    message = _harness_failure(stderr, 1)
+    assert expected in message
+    assert "secret" not in message and "credential" not in message
 
 
 @pytest.mark.parametrize(
@@ -497,7 +511,7 @@ def test_screenshot_analysis_runner_requires_an_agent_revision(
         batch_id=batch["batch_id"],
     )
 
-    def create_revision(**_kwargs) -> tuple[int, bool]:
+    def create_revision(**_kwargs) -> tuple[int, bool, None]:
         create_transaction_capture_analysis_revision(
             portfolio_id="investment-studio",
             batch_id=batch["batch_id"],
@@ -523,7 +537,7 @@ def test_screenshot_analysis_runner_requires_an_agent_revision(
             preview=None,
             referenced_capture_ids={capture["capture_id"]},
         )
-        return 0, False
+        return 0, False, None
 
     monkeypatch.setattr(
         transaction_capture_runner,

@@ -173,7 +173,8 @@ Idempotency-Key: screenshot-batch-20260821-001
 | `gross_amount` | decimal string | 条件 | 未扣费用和税费的成交/现金事实金额；方向由动作决定，值本身不使用负号 |
 | `counter_amount` | decimal string | 条件 | FX conversion 目标账户实际收到的金额 |
 | `fx_rate` | decimal string | 条件 | `counter_amount / gross_amount` |
-| `fees` | decimal string | 否 | 附着于本交易的费用，省略等于 0 |
+| `fees` | decimal string | 否 | 附着于本交易的费用合计；提供明细时可省略，显式非零值须等于明细合计 |
+| `fee_components` | array | 否 | 分类费用明细，形如 `[{"category":"performance_fee","amount":"100"},{"category":"transaction_cost","amount":"10"}]` |
 | `fee_category` | enum | 否 | 见第 7 节；省略为 `unknown` |
 | `taxes` | decimal string | 否 | 附着于本交易的税费，省略等于 0 |
 | `currency` | enum | 是 | 只允许 `USD`、`HKD`、`CNY`、`EUR`、`GBP`、`CHF`，必须与账户和资产一致 |
@@ -386,6 +387,8 @@ Cash 动作不得发送 `instrument_id`、`derivative_contract_id` 或 `settleme
 - 百分比字段以百分数表示，`70` 表示 70%，不是 0.70。
 
 ## 7. 金额、费用和币种
+
+一笔交易可以附带多项分类费用。`fee_components` 每项包含 `category` 和正数 decimal string `amount`，金额保留八位小数，币种和结算日跟随主交易。合计只进入一次现金与成本计算，不能再把这些明细作为独立扣款重复导入；不同币种或不同结算日应保留各自真实现金事实。CSV/Excel 对应 `fee_components_json`。单一分类仍可用 `fees` + `fee_category`；多分类时各项类别以明细为准，总览类别为 `unknown`。
 
 - 所有输入金额均为非负数，现金方向由 `transaction_action` 决定；不得用负数表达卖出、提款、费用或空头。
 - `gross_amount` 不含本条交易的 `fees` 和 `taxes`，不能把券商显示的净扣款/净到账直接填入 `gross_amount`。

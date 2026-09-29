@@ -144,6 +144,7 @@ TRANSFER_FORBIDDEN_FIELDS = frozenset(
         "fx_rate",
         "fees",
         "fee_category",
+        "fee_components",
         "taxes",
     }
 )
@@ -268,6 +269,7 @@ def parse_transaction_import_command(
                 field
                 for field in TRANSFER_FORBIDDEN_FIELDS | adapter_fields
                 if command_values.get(field) is not None
+                and not (field == "fee_components" and command_values.get(field) == [])
             )
             if unexpected:
                 raise ValueError(
@@ -310,7 +312,7 @@ def parse_transaction_import_command(
             )
 
         if command_values.get("fees") is None:
-            command_values["fees"] = "0"
+            command_values.pop("fees", None)
         if command_values.get("taxes") is None:
             command_values["taxes"] = "0"
         if command_values.get("fee_category") is None:

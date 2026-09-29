@@ -96,7 +96,7 @@ it('loads rows after directory synchronization without waiting for optional clas
   expect(mocks.runScreenerQuery.mock.calls[0][0]).toMatchObject({
     watchlist_id: 'Alpha', view_id: 'Alpha-overview', selected_fields: ['instrument_name', 'currency'],
   })
-  expect(screen.getByRole('status').classList.contains('watchlist-loading-overlay')).toBe(true)
+  expect(screen.getByRole('status').classList.contains('investment-studio-notice-toast-loading')).toBe(true)
   await act(async () => result.resolve(rows('Alpha')))
   expect(screen.getByText('Alpha security')).toBeTruthy()
   expect(screen.queryByRole('status')).toBeNull()
@@ -132,7 +132,7 @@ it('only loads filter choices when opened and cancels the optional request when 
   await waitFor(() => expect(mocks.runScreenerQuery).toHaveBeenCalledTimes(2))
   const optionsSignal = mocks.runScreenerQuery.mock.calls[1][1] as AbortSignal
   expect(screen.getByText('Loading filter options…')).toBeTruthy()
-  expect(document.querySelector('.watchlist-loading-overlay')).toBeNull()
+  expect(document.querySelector('.investment-studio-notice-toast-loading')).toBeNull()
   expect(screen.getByText('Alpha security')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Filter' }))
   expect(optionsSignal.aborted).toBe(true)

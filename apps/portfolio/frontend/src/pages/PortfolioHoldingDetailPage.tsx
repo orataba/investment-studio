@@ -1,3 +1,4 @@
+import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
@@ -1052,7 +1053,7 @@ export default function PortfolioHoldingDetailPage() {
         </header>
 
         {workspaceLoading ? <CalculationStatus /> : null}
-        {workspaceError ? <div className="error-state">{workspaceError}</div> : null}
+        <NoticeToast notice={workspaceError ? { id: 0, tone: 'error', message: workspaceError } : null} onDismiss={() => setWorkspaceError(null)} />
         {relatedDataError ? <div className="error-state">{t(relatedDataError)}</div> : null}
         {!workspaceLoading && !workspaceError && workspace && !selectedRows.length ? (
           <div className="empty-state" role="status">Not held as of selected date.</div>

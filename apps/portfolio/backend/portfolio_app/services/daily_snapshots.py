@@ -68,6 +68,7 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-physical-fcn-delivery-stock-short-selected-lots-cash-purpose-v1"
     "-strict-session-valuation-reinvestment-fifo-option-risk-v1"
     "-initial-purchase-transaction-valuation-v2"
+    "-closed-position-confirmed-proceeds-v1"
     "-period-calculation-boundary-state-v2-fifo-acquisition-order"
     "-fcn-settlement-cashflow-recognition-v1"
     "-incremental-source-prefix-v1"

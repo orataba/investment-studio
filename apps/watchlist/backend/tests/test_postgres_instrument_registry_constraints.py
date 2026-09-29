@@ -839,3 +839,73 @@ def test_postgres_recalc_claim_serializes_job_types_for_one_instrument(
         assert second.recalc_job_id != first_job_id
         assert second.instrument_id == instrument_id
         session.rollback()
+
+
+def test_watchlist_addition_coalesces_successors_and_workers_claim_one_at_a_time(postgres_watchlist_env):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from sqlalchemy import select
+    from watchlist_app.db.models.recalc import RecalcJob
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services.watchlist_updates import jobs, queue_watchlist_recalculation
+    from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key
+
+    iid, factory, ready = postgres_watchlist_env['instrument_id'], get_session_factory(), Barrier(2)
+    with factory() as session:
+        session.add(InstrumentDetail(instrument_id=iid, instrument_type='public_fund',
+            detail_view_type='public_fund', instrument_name='Concurrent list addition', is_active=True, metadata_json={}))
+        job = jobs.create(session, recalc_job_id='first-job', job_type='all', instrument_id=iid,
+            trigger_type='test', trigger_ref_type=None, trigger_ref_id=None, job_status='queued', priority=100,
+            dedupe_key=make_recalc_dedupe_key(job_type='all', instrument_id=iid), payload_json={})
+        jobs.mark_running(session, job)
+        lease = job.lease_token
+        session.commit()
+
+    def enqueue():
+        with factory() as session:
+            ready.wait(timeout=5)
+            queue_watchlist_recalculation(session, instrument_id=iid, watchlist_id='test-list')
+            session.commit()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(lambda _: enqueue(), range(2)))
+    with factory() as session:
+        records = list(session.scalars(select(RecalcJob).where(RecalcJob.instrument_id == iid)))
+        assert sorted(record.job_status for record in records) == ['queued', 'running']
+        assert jobs.claim_next_queued(session) is None
+        assert jobs.mark_completed(session, session.get(RecalcJob, 'first-job'), lease_token=lease)
+        session.commit()
+    with factory() as first, factory() as second:
+        successor = jobs.claim_next_queued(first)
+        assert successor is not None and successor.recalc_job_id != 'first-job'
+        assert jobs.claim_next_queued(second) is None
+        first.commit()
+        assert jobs.claim_next_queued(second) is None
+
+
+def test_watchlist_queue_does_not_wait_for_synchronous_calculation(postgres_watchlist_env):
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services.watchlist_updates import jobs, queue_watchlist_recalculation
+    from sqlalchemy import select
+    from watchlist_app.db.models.recalc import RecalcJob
+
+    iid, factory = postgres_watchlist_env['instrument_id'], get_session_factory()
+    with factory() as session:
+        session.add(InstrumentDetail(instrument_id=iid, instrument_type='public_fund',
+            detail_view_type='public_fund', instrument_name='Long calculation', is_active=True, metadata_json={}))
+        queue_watchlist_recalculation(session, instrument_id=iid, watchlist_id='first-list')
+        session.commit()
+    with factory() as calculating, factory() as adding:
+        # Synchronous execution retains both the calculation advisory lock and
+        # a claimed job row throughout its transaction. Add must not wait.
+        assert jobs.acquire_instrument_lock(calculating, instrument_id=iid, wait=True)
+        pending = calculating.scalar(select(RecalcJob).where(RecalcJob.instrument_id == iid).with_for_update())
+        jobs.mark_running(calculating, pending)
+        adding.execute(text("SET LOCAL lock_timeout = '250ms'"))
+        queue_watchlist_recalculation(adding, instrument_id=iid, watchlist_id='second-list')
+        adding.commit()
+        calculating.commit()
+    with factory() as session:
+        statuses = list(session.scalars(select(RecalcJob.job_status).where(RecalcJob.instrument_id == iid)))
+        assert sorted(statuses) == ['queued', 'running']
+        assert jobs.claim_next_queued(session) is None

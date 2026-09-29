@@ -65,12 +65,23 @@ def test_gap_stops_before_cash_flow_and_only_backfill_restores_15_238_percent(mo
     assert snapshots[-1]['cumulative_twr'] == pytest.approx(1.1 * (2200/2100) - 1)
 
 
-def test_liquidation_day_still_requires_held_security_observation(monkeypatch):
+@pytest.mark.parametrize("quantity", [5, 10])
+@pytest.mark.parametrize("settlement_date", ["2026-08-04", "2026-08-05"])
+def test_disposal_needs_a_quote_only_for_remaining_positions(monkeypatch, quantity, settlement_date):
     source(monkeypatch, {'2026-08-03':100, '2026-08-05':120})
-    facts = funded_facts()[:2] + [transaction(3,'sell','2026-08-04',1100,10,110)]
+    sale = {**transaction(3, 'sell', '2026-08-04', quantity * 110, quantity, 110),
+            'settlement_date': settlement_date, 'position_effective_date': '2026-08-04', 'fees': 7}
+    facts = funded_facts()[:2] + [sale]
     snapshots = performance.build_daily_portfolio_snapshots(PORTFOLIO, ACCOUNTS, facts)
-    assert snapshots[-1]['as_of_date'] == date(2026,8,4)
-    assert snapshots[-1]['nav'] is None
+    if quantity == 5:
+        assert snapshots[-1]['as_of_date'] == date(2026,8,4)
+        assert snapshots[-1]['nav'] is None
+        assert 'strict-stock valuation price' in snapshots[-1]['valuation_blocked_reason']
+    else:
+        assert [point['nav'] for point in snapshots] == [1000, 1093, 1093]
+        assert snapshots[-1]['cumulative_twr'] == pytest.approx(.093)
+        assert snapshots[-1]['total_pnl'] == pytest.approx(93)
+        assert all(point['valuation_coverage_state'] == 'complete' for point in snapshots)
 
 
 def test_confirmed_weekend_and_labor_day_are_not_missing_sessions(monkeypatch):

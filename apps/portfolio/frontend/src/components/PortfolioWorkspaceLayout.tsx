@@ -1,3 +1,4 @@
+import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
 import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
 import WorkspaceTools from '../../../../../packages/ui/src/WorkspaceTools'
 import { type FormEvent, Suspense, lazy, useEffect, useRef, useState } from 'react'
@@ -797,8 +798,8 @@ export default function PortfolioWorkspaceLayout({
               </Link>
             ))}
           </nav>
-          {summaryError ? <div className="inline-notice inline-notice-error">{summaryError}</div> : null}
-          {selectorNotice ? <div className="inline-notice">{selectorNotice}</div> : null}
+          <NoticeToast notice={summaryError ? { id: 0, tone: 'error', message: summaryError } : null} onDismiss={() => setSummaryError(null)} />
+          <NoticeToast notice={selectorNotice ? { id: 0, tone: 'info', message: selectorNotice } : null} onDismiss={() => setSelectorNotice(null)} />
           {controls ? <div className="portfolio-extra-controls">{controls}</div> : null}
         </div>
       </header>

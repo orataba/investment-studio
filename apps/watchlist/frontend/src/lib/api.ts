@@ -1384,17 +1384,24 @@ export function updateWatchlistView(
   })
 }
 
-export function addWatchlistItems(watchlistId: string, instrumentIds: string[]) {
+export type CoverageStatus = 'Watch' | 'Proposed' | 'Invested' | 'Paused' | 'Exited'
+
+export function updateWatchlistCoverageStatus(watchlistId: string, instrumentIds: string[], coverageStatus: CoverageStatus) {
+  return fetchJson<{ updated_count: number }>(`/api/watchlists/${watchlistId}/items/coverage-status`, {
+    method: 'POST', body: JSON.stringify({ instrument_ids: instrumentIds, coverage_status: coverageStatus }),
+  })
+}
+
+export function addWatchlistItems(watchlistId: string, instrumentIds: string[], coverageStatus?: CoverageStatus) {
   return fetchJson<{
     watchlist_id: string
     accepted_count: number
     pending_recalc_instrument_ids: string[]
-    recalculated_instrument_ids: string[]
   }>(
     `/api/watchlists/${watchlistId}/items`,
     {
       method: 'POST',
-      body: JSON.stringify({ instrument_ids: instrumentIds }),
+      body: JSON.stringify({ instrument_ids: instrumentIds, coverage_status: coverageStatus }),
     },
   )
 }

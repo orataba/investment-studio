@@ -3830,7 +3830,7 @@ export default function PortfolioHomePage() {
         {loading && workspace ? (
           <div className="portfolio-detail-meta"><span>As Of Date</span>: {workspace.as_of_date}</div>
         ) : null}
-        {error ? <div className="error-state">{error}</div> : null}
+        <NoticeToast notice={error ? { id: 0, tone: 'error', message: error } : null} onDismiss={() => setError(null)} />
         {holdingsViewStoreError ? (
           <div className="inline-notice inline-notice-error holdings-view-error" role="alert">
             <span>{holdingsViewStoreError}</span>

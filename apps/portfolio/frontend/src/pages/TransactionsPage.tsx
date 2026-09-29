@@ -73,7 +73,8 @@ import {
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
-import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
+import PortfolioCalculationNotice from '../components/PortfolioCalculationNotice'
+import NoticeToast, { LoadingNotice, type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import {
   countActiveTransactionFilters,
@@ -899,6 +900,7 @@ type TransactionFormState = {
   counter_amount: string
   fx_rate: string
   fees: string
+  fee_components: Array<{ category: PortfolioFeeCategory; amount: string }>
   fee_category: PortfolioFeeCategory
   taxes: string
   note: string
@@ -945,6 +947,7 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
     counter_amount: '',
     fx_rate: '',
     fees: '0',
+    fee_components: [{ category: 'transaction_cost', amount: '' }],
     fee_category: 'unknown',
     taxes: '0',
     note: '',
@@ -983,6 +986,9 @@ function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord):
     counter_amount: formatFormNumber(transaction.counter_amount, { zeroAsEmpty: true }),
     fx_rate: formatFormNumber(transaction.fx_rate, { zeroAsEmpty: true }),
     fees: formatFormNumber(transaction.fees),
+    fee_components: transaction.fee_components?.length
+      ? transaction.fee_components.map(item => ({ ...item, amount: String(item.amount) }))
+      : [{ category: transaction.fee_category, amount: transaction.fees ? String(transaction.source_fees ?? transaction.fees) : '' }],
     fee_category: transaction.fee_category,
     taxes: formatFormNumber(transaction.taxes),
     note: transaction.note || '',
@@ -1555,7 +1561,7 @@ export default function TransactionsPage() {
   const shouldShowTaxes = showsTaxField(form.transaction_type, form.lifecycle_event_type)
   const shouldShowFeeCategory =
     form.transaction_type === 'fee' ||
-    (shouldShowFees && Number.isFinite(Number(form.fees)) && Number(form.fees) > 0)
+    shouldShowFees
   const selectedInstrument = instruments.find((instrument) => instrument.instrument_id === form.instrument_id) ?? null
   const selectedDerivativeContract =
     derivativeContracts.find(
@@ -2687,13 +2693,14 @@ export default function TransactionsPage() {
       setForm((current) => ({
         ...current,
         fees: '0',
+        fee_components: [{ category: 'transaction_cost', amount: '' }],
       }))
     }
   }, [form.fees, shouldShowFees])
 
   useEffect(() => {
     if (form.transaction_type === 'dividend_reinvestment' && shouldShowFeeCategory && form.fee_category !== 'performance_fee') {
-      setForm((current) => ({ ...current, fee_category: 'performance_fee' }))
+      setForm((current) => ({ ...current, fee_category: 'performance_fee', fee_components: current.fee_components.map(item => ({ ...item, category: 'performance_fee' })) }))
       return
     }
     if (!shouldShowFeeCategory && form.fee_category !== 'unknown') {
@@ -2733,6 +2740,19 @@ export default function TransactionsPage() {
       }))
     }
   }, [form.acquisition_date, form.transaction_type, selectedAccount?.account_type])
+
+  function updateFeeComponents(components: TransactionFormState['fee_components']) {
+    const positive = components.filter(item => Number(item.amount) > 0)
+    const categories = new Set(positive.map(item => item.category))
+    setForm(current => ({ ...current, fee_components: components,
+      fees: String(positive.reduce((total, item) => total + Number(item.amount), 0)),
+      fee_category: categories.size === 1 ? positive[0].category : 'unknown',
+    }))
+  }
+
+  function updateFeeComponent(index: number, patch: Partial<TransactionFormState['fee_components'][number]>) {
+    updateFeeComponents(form.fee_components.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item))
+  }
 
   async function refreshTransactions(
     activeFilters: PortfolioTransactionFilters,
@@ -3695,7 +3715,8 @@ export default function TransactionsPage() {
           ...(form.allow_stock_short ? { allow_stock_short: true } : {}),
           settlement_cash_account_id: settlementAccount.account_id,
           fees: shouldShowFees && form.fees ? Number(form.fees) : 0,
-          fee_category: shouldShowFeeCategory ? form.fee_category : 'unknown',
+          fee_category: form.transaction_type === 'fee' || (shouldShowFees && Number(form.fees) > 0) ? form.fee_category : 'unknown',
+          fee_components: shouldShowFees ? form.fee_components.filter(item => Number(item.amount) > 0) : [],
           taxes: shouldShowTaxes && form.taxes ? Number(form.taxes) : 0,
           note: form.note.trim() || null,
         }
@@ -3805,7 +3826,8 @@ export default function TransactionsPage() {
       counter_amount: null,
       fx_rate: null,
       fees: shouldShowFees && form.fees ? Number(form.fees) : 0,
-      fee_category: shouldShowFeeCategory ? form.fee_category : 'unknown',
+      fee_category: form.transaction_type === 'fee' || (shouldShowFees && Number(form.fees) > 0) ? form.fee_category : 'unknown',
+      fee_components: shouldShowFees ? form.fee_components.filter(item => Number(item.amount) > 0) : [],
       taxes: shouldShowTaxes && form.taxes ? Number(form.taxes) : 0,
       currency: resolvedTransactionCurrency,
       source_system: form.source_system.trim() || null,
@@ -4656,10 +4678,12 @@ export default function TransactionsPage() {
           </div>
         ) : null}
 
+        <PortfolioCalculationNotice portfolioId={portfolioId} revision={transactionsWorkspace} />
+        <LoadingNotice active={submittingTransaction || importingFile} message={fcnLabel('Saving transaction…', '正在保存交易…')} />
         <NoticeToast notice={notice} onDismiss={() => setNoticeMessage(null)} />
-        {captureError && !captureAssistantOpen ? <div className="error-state">{captureError}</div> : null}
-        {pageError ? <div className="error-state">{pageError}</div> : null}
-        {deleteError ? <div className="error-state">{deleteError}</div> : null}
+        <NoticeToast notice={captureError && !captureAssistantOpen ? { id: 0, tone: 'error', message: captureError } : null} onDismiss={() => setCaptureError(null)} />
+        <NoticeToast notice={pageError ? { id: 0, tone: 'error', message: pageError } : null} onDismiss={() => { setMetadataError(null); setLedgerError(null) }} />
+        <NoticeToast notice={deleteError ? { id: 0, tone: 'error', message: deleteError } : null} onDismiss={() => setDeleteError(null)} />
         {metaLoading || loadingTransactions ? (
           <CalculationStatus />
         ) : null}
@@ -4880,7 +4904,9 @@ export default function TransactionsPage() {
                           <dt>{selectedTransaction.transaction_type === 'dividend_reinvestment' ? fcnLabel('Withheld performance fee', '代扣业绩报酬') : 'Fees / taxes'}</dt>
                           <dd>
                             {formatCurrency(selectedTransaction.fees, selectedTransaction.currency)}{selectedTransaction.transaction_type !== 'dividend_reinvestment' && <> / {formatCurrency(selectedTransaction.taxes, selectedTransaction.currency)}</>}
-                            <br /><span>{formatLabel(selectedTransaction.fee_category)}</span>
+                            <br /><span>{selectedTransaction.fee_components?.length
+                              ? selectedTransaction.fee_components.map(item => `${formatLabel(item.category)} ${formatCurrency(Number(item.amount), selectedTransaction.currency)}`).join(' · ')
+                              : formatLabel(selectedTransaction.fee_category)}</span>
                           </dd>
                         </div>
                         {selectedTransaction.transaction_type === 'dividend_reinvestment' && <>
@@ -6268,7 +6294,7 @@ export default function TransactionsPage() {
                                               ['gross_amount', record.transaction_action === 'dividend_reinvestment' ? 'Net reinvested amount' : 'Gross amount'],
                                               ['fees', record.transaction_action === 'dividend_reinvestment' ? 'Withheld performance fee' : 'Fees'],
                                               ['taxes', 'Taxes'],
-                                            ].map(([fieldName, fieldLabel]) => (
+                                            ].filter(([fieldName]) => fieldName !== 'fees' || !record.fee_components?.length).map(([fieldName, fieldLabel]) => (
                                               <label key={fieldName}>
                                                 <span>{fieldLabel}</span>
                                                 <input
@@ -6288,6 +6314,22 @@ export default function TransactionsPage() {
                                                   )}
                                                 />
                                               </label>
+                                            ))}
+                                            {record.fee_components?.map((component, feeIndex) => (
+                                              <div className="transaction-fee-component" key={`fee-${feeIndex}`}>
+                                                <label><span>Fee category</span><select aria-label={`Record ${recordNumber} fee ${feeIndex + 1} category`} value={component.category}
+                                                  onChange={event => updateTransactionCaptureReviewRecord(recordIndex, current => ({ ...current,
+                                                    fee_components: current.fee_components?.map((item, index) => index === feeIndex ? { ...item, category: event.target.value as PortfolioFeeCategory } : item),
+                                                    fee_category: 'unknown',
+                                                  }))}>
+                                                  {FEE_CATEGORIES.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                                                </select></label>
+                                                <label><span>Fee amount</span><input type="number" min="0" step="any" aria-label={`Record ${recordNumber} fee ${feeIndex + 1} amount`} value={component.amount}
+                                                  onChange={event => updateTransactionCaptureReviewRecord(recordIndex, current => {
+                                                    const components = current.fee_components?.map((item, index) => index === feeIndex ? { ...item, amount: event.target.value } : item) ?? []
+                                                    return { ...current, fee_components: components, fees: components.reduce((total, item) => total + Number(item.amount), 0), fee_category: 'unknown' }
+                                                  })} /></label>
+                                              </div>
                                             ))}
                                             {isFxConversion ? (
                                               <>
@@ -6327,8 +6369,8 @@ export default function TransactionsPage() {
                                                 </label>
                                               </>
                                             ) : null}
-                                            {record.transaction_action === 'fee'
-                                            || Number(record.fees ?? 0) > 0 ? (
+                                            {(!record.fee_components?.length && (record.transaction_action === 'fee'
+                                            || Number(record.fees ?? 0) > 0)) ? (
                                               <label>
                                                 <span>Fee category</span>
                                                 <select
@@ -7514,47 +7556,41 @@ export default function TransactionsPage() {
                 {!isFxConversion && !isTransferTransaction(form.transaction_type) && shouldUsePrice ? amountField : null}
 
                 {shouldShowFees ? (
+                  <fieldset className="transaction-fee-components">
+                    <legend>{fcnLabel('Fees', '费用明细')}</legend>
+                    {form.fee_components.map((item, index) => (
+                      <div className="transaction-fee-component" key={index}>
+                        <label className="transaction-ticket-field">
+                          <span>{fcnLabel('Fee category', '费用类别')}</span>
+                          <select aria-label={`Fee category ${index + 1}`} value={item.category}
+                            onChange={event => updateFeeComponent(index, { category: event.target.value as PortfolioFeeCategory })}>
+                            {FEE_CATEGORIES.filter(option => form.transaction_type !== 'dividend_reinvestment' || option.value === 'performance_fee').map(option => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="transaction-ticket-field">
+                          <span>{fcnLabel('Amount', '金额')}</span>
+                          <input aria-label={`Fee amount ${index + 1}`} type="number" min="0" step="any" value={item.amount}
+                            onChange={event => updateFeeComponent(index, { amount: event.target.value })} />
+                        </label>
+                        <button type="button" className="button button-ghost" aria-label={`Remove fee ${index + 1}`}
+                          onClick={() => updateFeeComponents(form.fee_components.filter((_, itemIndex) => itemIndex !== index))}>×</button>
+                      </div>
+                    ))}
+                    <button type="button" className="button button-ghost" onClick={() => updateFeeComponents([...form.fee_components, {
+                      category: form.transaction_type === 'dividend_reinvestment' ? 'performance_fee' : 'transaction_cost', amount: '',
+                    }])}>{fcnLabel('Add fee', '添加费用')}</button>
+                    <span className="transaction-ticket-hint">{fcnLabel('Total', '合计')} · {resolvedTransactionCurrency ? formatCurrency(Number(form.fees), resolvedTransactionCurrency) : form.fees}</span>
+                  </fieldset>
+                ) : form.transaction_type === 'fee' ? (
                   <label className="transaction-ticket-field">
-                    <span>{form.transaction_type === 'dividend_reinvestment' ? fcnLabel('Withheld performance fee', '代扣业绩报酬') : 'Fee'}</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={form.fees}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          fees: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                ) : (
-                  <div className="transaction-form-spacer" />
-                )}
-
-                {shouldShowFeeCategory ? (
-                  <label className="transaction-ticket-field">
-                    <span>Fee category</span>
-                    <select
-                      value={form.fee_category}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          fee_category: event.target.value as PortfolioFeeCategory,
-                        }))
-                      }
-                    >
-                      {FEE_CATEGORIES.filter(option => form.transaction_type !== 'dividend_reinvestment' || option.value === 'performance_fee').map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
+                    <span>{fcnLabel('Fee category', '费用类别')}</span>
+                    <select value={form.fee_category} onChange={event => setForm(current => ({ ...current, fee_category: event.target.value as PortfolioFeeCategory }))}>
+                      {FEE_CATEGORIES.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
                   </label>
-                ) : (
-                  <div className="transaction-form-spacer" />
-                )}
+                ) : null}
 
                 {shouldShowTaxes ? (
                   <label className="transaction-ticket-field">

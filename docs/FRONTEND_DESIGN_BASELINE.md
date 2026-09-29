@@ -105,6 +105,10 @@
 - Accounts 的 transaction 表必须同时显示 trade date 与 position recognition / settlement date；基金 `buy / sell` 在活动标签中显示为 `Subscription / Redemption`，但不得改写底层交易类型。Ledger 只组合展示实际存在的 cash、pending、quantity、cost delta，长 note 限制在两行并保留到源交易的链接。
 - Taxonomies 不得注册全局 Tab 或裸 Enter mutation。键盘变更只在对应编辑 scope 获得焦点时生效，并使用 `Ctrl/Cmd + Enter` 等带 modifier 的提交组合；浏览器和辅助技术的默认 Tab 导航必须保留。
 
+## System Notices
+
+加载、提交、保存成功、交易已记录、净值更新中和可恢复请求错误统一使用 `NoticeToast` / `LoadingNotice`，在右侧同一容器堆叠，不撑开页面或改变弹窗位置。持续操作直到完成再消失；完成消息自动收起，错误可关闭。骨架可以保留页面结构；字段验证、未完成研究结果和金融数据缺失属于内容状态，保留在相关字段或数据区域。
+
 ## Shared UI Boundary
 
 - `packages/ui` 只承载已经在多个 app 中稳定复用的基础能力：语言、确认弹窗与焦点管理、通知、下载格式菜单、表格导出、Sparkline 以及请求/串行任务工具。

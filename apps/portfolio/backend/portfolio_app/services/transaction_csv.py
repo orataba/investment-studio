@@ -74,6 +74,7 @@ IMPORT_COLUMNS = (
     "fx_rate",
     "fees",
     "fee_category",
+    "fee_components_json",
     "taxes",
     "currency",
     "source_system",
@@ -377,6 +378,9 @@ def parse_transaction_csv(
             if values.get("asset_deliveries_json"):
                 values["asset_deliveries"] = json.loads(str(values["asset_deliveries_json"]))
             values.pop("asset_deliveries_json", None)
+            if values.get("fee_components_json"):
+                values["fee_components"] = json.loads(str(values["fee_components_json"]))
+            values.pop("fee_components_json", None)
             if values.get("settlement_cashflows_json"):
                 values["settlement_cashflows"] = json.loads(str(values["settlement_cashflows_json"]))
             values.pop("settlement_cashflows_json", None)
@@ -661,6 +665,9 @@ def transaction_export_rows(
             if column == "asset_deliveries_json":
                 deliveries = [{key: value for key, value in leg.items() if key != "instrument_ref"} for leg in record.get("asset_deliveries") or []]
                 row[column] = json.dumps(deliveries, ensure_ascii=False, separators=(",", ":")) if deliveries else ""
+                continue
+            if column == "fee_components_json":
+                row[column] = json.dumps(record["fee_components"], ensure_ascii=False, separators=(",", ":")) if record.get("fee_components") else ""
                 continue
             if column == "settlement_cashflows_json":
                 row[column] = json.dumps(record["settlement_cashflows"], ensure_ascii=False, separators=(",", ":")) if record.get("settlement_cashflows") else ""

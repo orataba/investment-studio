@@ -15,7 +15,7 @@ export async function getPortfolioBootstrap(portfolioId: string | null, signal?:
   })
   if (!response.ok) {
     const body = await response.json().catch(() => ({}))
-    throw new Error(typeof body.detail === 'string' ? body.detail : '暂时无法确认账号与组合权限')
+    throw Object.assign(new Error(typeof body.detail === 'string' ? body.detail : '暂时无法确认账号与组合权限'), { status: response.status })
   }
   return response.json()
 }

@@ -76,7 +76,15 @@ def test_copied_migrated_policy_requires_backup_without_rewriting_audit_or_ident
             connection.execute(policies.insert().values(portfolio_id="scalar", revision=1,
                 effective_from=date(2026, 4, 1), settings_json=original, created_by="PM", created_at="original"))
         command.upgrade(config, "20260923_0068")
-        copied = copy_portfolio("scalar")
+        # Exercise today's copy code while preserving the exact 0068 migration
+        # under review. No transaction facts are seeded in this fixture.
+        with engine.begin() as connection:
+            connection.exec_driver_sql("ALTER TABLE portfolio.transaction_record ADD COLUMN fee_components_json JSON")
+        try:
+            copied = copy_portfolio("scalar")
+        finally:
+            with engine.begin() as connection:
+                connection.exec_driver_sql("ALTER TABLE portfolio.transaction_record DROP COLUMN fee_components_json")
         assert copied is not None
         copied_id = copied["portfolio_id"]
 

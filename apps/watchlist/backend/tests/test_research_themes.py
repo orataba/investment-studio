@@ -145,7 +145,7 @@ def test_analyst_cannot_rewrite_user_theme_or_use_foreign_instrument_key(researc
         with pytest.raises(ValueError, match="已固定"):
             save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(
                 theme_key=user_theme["theme_key"], theme_id=user_theme["theme_id"], question="改为研究员的新问题"))
-        with pytest.raises(LookupError, match="主题"):
+        with pytest.raises(ValueError, match="主题"):
             save_analyst_theme(session, "sxv264", AnalystThemeUpdate(
                 theme_key="credit", theme_id=user_theme["theme_id"], question="错误标的下的新问题"))
     assert research_client.get(_themes()).json()["themes"][0]["question"] == user_theme["question"]

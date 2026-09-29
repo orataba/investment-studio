@@ -36,7 +36,34 @@ DRAFT_WRITE = ToolAnnotations(
     open_world_hint=False,
 )
 
-mcp = MCPServer(
+def _decimal_string_schema(value):
+    """Advertise exact decimal strings; retain Decimal validation on tool calls.
+
+    Pydantic's Decimal schema accepts numbers or patterned decimal strings.
+    The model gateway rejects the numeric branch's financial bounds (10**20)
+    before inference. Strings are already a supported, lossless representation.
+    """
+    if isinstance(value, list):
+        return [_decimal_string_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    result = {key: _decimal_string_schema(item) for key, item in value.items()}
+    alternatives = result.get("anyOf", [])
+    if (any(item.get("type") == "number" for item in alternatives)
+            and any(item.get("type") == "string" and item.get("pattern") for item in alternatives)):
+        result["anyOf"] = [item for item in alternatives if item.get("type") != "number"]
+    return result
+
+
+class PortfolioMCPServer(MCPServer):
+    async def list_tools(self):
+        tools = await super().list_tools()
+        for tool in tools:
+            tool.input_schema = _decimal_string_schema(tool.input_schema)
+        return tools
+
+
+mcp = PortfolioMCPServer(
     "Portfolio Screenshot Copilot",
     version="0.1.0",
     instructions=(
@@ -150,12 +177,17 @@ def get_screenshot_analysis_context() -> dict[str, Any]:
     portfolio_id = _bound_portfolio_id()
     batch_id = _bound_batch_id()
     encoded_batch_id = quote(batch_id, safe="")
-    return _api_json(
+    result = _api_json(
         _portfolio_path(
             portfolio_id,
             f"/transaction-capture-batches/{encoded_batch_id}/agent-context",
         )
     )
+    # This response includes the same proposal schemas as the tool catalogue.
+    # Transform schema fields only, never screenshot facts or financial values.
+    if "submission_schema" in result:
+        result["submission_schema"] = _decimal_string_schema(result["submission_schema"])
+    return result
 
 
 @mcp.tool(

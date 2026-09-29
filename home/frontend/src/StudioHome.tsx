@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react'
 import { LanguageSelector, useLanguage } from '../../../packages/ui/src/i18n'
 import { resolveWorkspaceUrl } from '../../../packages/ui/src/navigation'
 import { appPath } from './appPath'
+import NoticeToast, { LoadingNotice } from '../../../packages/ui/src/NoticeToast'
+import '../../../packages/ui/src/notice-toast.css'
 
 export type StudioApp = {
   app_id: string
@@ -66,6 +68,8 @@ export default function StudioHome() {
 
   return (
     <main className="studio-shell home-shell">
+      <NoticeToast notice={error ? { id: 0, message: error, tone: 'error' } : null} onDismiss={() => setError('')} />
+      <LoadingNotice active={apps === null && !error} message={t('Loading')} />
       <header className="home-masthead">
         <a className="home-brand" href={appPath('/')}><strong>Investment Studio</strong></a>
         <div className="home-actions">
@@ -81,7 +85,7 @@ export default function StudioHome() {
         <h1>Choose where to work.</h1>
         <p>Research markets, monitor assets, and manage your portfolios.</p>
       </section>
-      {error ? <p role="alert">{error}</p> : apps === null ? (
+      {error ? null : apps === null ? (
         <div className="home-links-skeleton" role="status" aria-busy="true" aria-label={t('Loading')}>{[0, 1, 2, 3].map(key => <span key={key} />)}</div>
       ) : apps.length === 0 ? (
         <p>No workspaces are configured.</p>

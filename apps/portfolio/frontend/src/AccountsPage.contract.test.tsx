@@ -405,7 +405,7 @@ describe('Accounts rendered page contract', () => {
     const directory = screen.getByRole('navigation', { name: 'Accounts' })
     await user.click(screen.getByRole('button', { name: 'Edit Account' }))
     await user.click(screen.getByRole('button', { name: 'Update Account' }))
-    expect(await screen.findByText('Updated Private Fund Account.')).toHaveClass('investment-studio-notice-toast-success')
+    expect((await screen.findByText('Updated Private Fund Account.')).closest('[role="status"]')).toHaveClass('investment-studio-notice-toast-success')
     expect(screen.getByRole('navigation', { name: 'Accounts' })).toBe(directory)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })

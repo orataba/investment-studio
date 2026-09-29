@@ -177,15 +177,15 @@ describe('independent detail loading', () => {
     expect(apiMocks.getInstrumentPerformance).not.toHaveBeenCalled()
     expect(apiMocks.getInstrumentRisk).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Investment Views' }))
-    expect(screen.getByRole('status').textContent).toContain('Investment views')
+    expect(screen.getAllByRole('status').some(node => node.textContent?.includes('Investment views'))).toBe(true)
     expect(screen.queryByText(/No overall view selected/)).toBeNull()
     expect(screen.queryByText(/No source data is available/)).toBeNull()
     expect(apiMocks.getInstrumentPerformance).not.toHaveBeenCalled()
-    fireEvent.click(screen.getAllByRole('button', { name: 'Performance & Metrics' })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: 'Performance Metrics' })[0])
     await waitFor(() => expect(apiMocks.getInstrumentPerformance).toHaveBeenCalledTimes(1))
     expect(apiMocks.getInstrumentRisk).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByRole('button', { name: 'Investment Research' }))
-    fireEvent.click(screen.getAllByRole('button', { name: 'Performance & Metrics' })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: 'Performance Metrics' })[0])
     expect(apiMocks.getInstrumentPerformance).toHaveBeenCalledTimes(1)
   })
 
@@ -211,7 +211,7 @@ describe('independent detail loading', () => {
     expect(screen.getByText('Fixed Income / Broad Bond')).toBeTruthy()
     expect(screen.getByText('YTD').nextElementSibling?.textContent).toBe('Loading…')
     expect(screen.queryByText('Risk statistics unavailable')).toBeNull()
-    fireEvent.click(screen.getAllByRole('button', { name: 'Performance & Metrics' })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: 'Performance Metrics' })[0])
     expect(screen.getAllByRole('status').some(node => node.textContent?.includes('Risk statistics'))).toBe(true)
     await act(async () => performance.resolve({ ...performanceValue, trailing_returns: [{ window: '1Y', investment_nav: 17 }] }))
     expect(await screen.findByText('17.000%')).toBeTruthy()
@@ -305,7 +305,7 @@ describe('ListedInstrumentDetailPage index view', () => {
       }} watchlistContext={null} />
     </MemoryRouter></LanguageProvider>)
     await screen.findByRole('img', { name: 'Crypto spot price chart' })
-    fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Metrics$/ })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: /^Performance Metrics$/ })[0])
     const table = container.querySelector('.instrument-metrics-table') as HTMLElement
     for (const label of ['Ann. Volatility', 'Sharpe Ratio', 'Sortino Ratio', 'Max DD']) {
       const cells = within(table).getByText(label).closest('tr')!.querySelectorAll('td strong')
@@ -332,7 +332,7 @@ describe('ListedInstrumentDetailPage index view', () => {
       }} watchlistContext={null} />
     </MemoryRouter></LanguageProvider>)
     await screen.findByRole('img', { name: 'Index level chart' })
-    fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Metrics$/ })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: /^Performance Metrics$/ })[0])
     const table = container.querySelector('.instrument-metrics-table') as HTMLElement
     for (const label of ['Ann. Volatility', 'Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio', 'Max DD']) {
       const values = [...within(table).getByText(label).closest('tr')!.querySelectorAll('td strong')]
@@ -462,7 +462,7 @@ describe('ListedInstrumentDetailPage index view', () => {
     fireEvent.click(screen.getByRole('button', { name: /Cumulative Return|累计收益/ }))
     expect(screen.queryByRole('img', { name: 'Cumulative return chart' })).not.toBeNull()
     expect(screen.queryByRole('img', { name: 'Index level chart' })).toBeNull()
-    fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Metrics$|^表现与指标$/ })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: /^Performance Metrics$|^绩效指标$/ })[0])
 
     expect(screen.queryByText('Metrics Matrix')).not.toBeNull()
     expect(screen.queryByText('Monthly Return Matrix')).not.toBeNull()
@@ -491,6 +491,9 @@ describe('ListedInstrumentDetailPage index view', () => {
     }} watchlistContext={null} /></MemoryRouter></LanguageProvider>)
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Technology Select Sector SPDR' })).not.toBeNull())
     await waitFor(() => expect(screen.queryByRole('button', { name: /Investment Views|投资观点/ })).not.toBeNull())
+    expect(screen.queryByRole('region', { name: 'ETF profile and holdings' })).toBeNull()
+    expect(apiMocks.getInstrumentReferenceData).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByText('Fund structure and earnings estimates'))
     expect(await screen.findByRole('region', { name: 'ETF profile and holdings' })).toBeTruthy()
     await screen.findByText('0.08%')
     expect(apiMocks.getInstrumentReferenceData).toHaveBeenCalledWith('xlk')
@@ -498,7 +501,7 @@ describe('ListedInstrumentDetailPage index view', () => {
     fireEvent.click(screen.getByRole('button', { name: /Investment Views|投资观点/ }))
     expect(screen.queryByRole('button', { name: /Add view|新增观点/ })).not.toBeNull()
     expect(screen.queryByText('Current Investment View')).toBeNull()
-    fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Metrics$|^表现与指标$/ })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: /^Performance Metrics$|^绩效指标$/ })[0])
     expect(screen.queryByText('Monthly Return Matrix')).not.toBeNull()
     expect(screen.queryByRole('img', { name: 'Historical drawdown chart' })).not.toBeNull()
     expect(screen.queryByRole('img', { name: 'Cumulative return chart' })).toBeNull()
@@ -531,7 +534,7 @@ describe('ListedInstrumentDetailPage index view', () => {
     expect(screen.getByRole('dialog', { name: '风险提示' })).toBe(riskDrawer)
     fireEvent.click(within(riskDrawer).getByRole('button', { name: '关闭风险提示' }))
     const navigation = container.querySelector('.instrument-detail-tabs') as HTMLElement
-    expect(within(navigation).getAllByRole('button').map((node) => node.textContent)).toEqual(['Overview', 'Investment Research', 'Investment Views', 'Performance & Metrics'])
+    expect(within(navigation).getAllByRole('button').map((node) => node.textContent)).toEqual(['Overview', 'Investment Research', 'Investment Views', 'Performance Metrics'])
     expect(within(navigation).getByRole('button', { name: 'Investment Research' }).classList.contains('instrument-detail-tab-active')).toBe(true)
     fireEvent.click(within(navigation).getByRole('button', { name: 'Investment Views' }))
     await screen.findByRole('button', { name: 'Add view' })

@@ -262,6 +262,8 @@ def test_chat_runner_retains_answer_when_independent_reviewer_declines_publicati
 def test_unexpected_publication_failure_rolls_back_and_finishes_the_run(client, monkeypatch, surface):
     from watchlist_app.services import risk_officer
     context = {"sector_run": surface == "sector", "risk_run": surface == "risk", "retained": "original-input"}
+    if surface == "sector":
+        context["submitted_draft"] = {"reviews": []}
     if surface == "risk":
         context["submitted_risk_review"] = {"summary": "retained draft"}
     with get_session_factory()() as session:
@@ -372,3 +374,52 @@ def test_execution_revalidates_original_issuer_after_preparation_outlasts_first_
         assert "original-session" not in json.dumps(run.context_json) + run.body
     assert {token for token, _ in revoked} == ({"initial-grant"} if issuer_revoked else {"initial-grant", "execution-grant"})
     assert all(principal is issuer for _, principal in revoked)
+
+
+@pytest.mark.parametrize("review_timeout", [False, True])
+def test_sector_review_has_its_own_deadline_over_the_saved_draft(client, monkeypatch, review_timeout):
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="stages", title="阶段研究"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="stages", topic_id="stages", kind="analysis", title="阶段研究",
+            status="queued", context_json={"sector_run": True, "input_snapshot_cutoff": "2026-09-29T00:00:00Z"}))
+        session.commit()
+    monkeypatch.setattr(sector_research, "prepare_run", lambda _: None)
+    calls = []
+    class Process:
+        returncode = 0
+        def __init__(self, review):
+            self.review = review
+        def communicate(self, timeout):
+            assert timeout == 1800
+            if not self.review:
+                with get_session_factory()() as session:
+                    run = session.get(ResearchEntry, "stages")
+                    run.context_json = {**run.context_json, "submitted_draft": {"reviews": []}}
+                    session.commit()
+                return "草稿已提交", ""
+            if review_timeout:
+                raise runner.subprocess.TimeoutExpired("fixture", timeout)
+            return json.dumps({"reviews": []}), ""
+    def launch(*args, **kwargs):
+        env = kwargs["env"]
+        calls.append((env["INVESTMENT_STUDIO_RESEARCH_GENERATION_ONLY"], env["INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW"]))
+        return Process(env["INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW"] == "1")
+    monkeypatch.setattr(runner.subprocess, "Popen", launch)
+    monkeypatch.setattr(runner, "_stop_process_group", lambda process: None)
+    def publish(session, run, result):
+        assert run.context_json["submitted_draft"] == json.loads(result)
+        run.status = "completed"
+    monkeypatch.setattr(sector_research, "apply_result", publish)
+    runner.run_analysis("stages")
+    assert calls == [("1", "0"), ("0", "1")]
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "stages")
+        assert run.context_json["execution"]["stage"] == "review"
+        assert run.context_json["submitted_draft"] == {"reviews": []}
+        if review_timeout:
+            assert run.status == "failed"
+            assert run.context_json["runtime_error"]["stage"] == "review"
+            assert run.context_json["runtime_error"]["retryable"] is True
+        else:
+            assert run.status == "completed"

@@ -403,7 +403,10 @@ def analyst_theme_target(session, instrument_id, update, *, actor=None):
     if len(matches) > 1:
         raise ValueError("关注主题标识重复，请先明确需要更新的主题")
     if update.theme_id:
-        record = theme_record(get_theme(session, instrument_id, update.theme_id, actor=actor))
+        try:
+            record = theme_record(get_theme(session, instrument_id, update.theme_id, actor=actor))
+        except LookupError as error:
+            raise ValueError("找不到本标的的研究主题，请使用已读取档案中的 theme_id；新建主题只填写 theme_key，不填写 theme_id。") from error
         if record["team_id"] != actor["team_id"]:
             raise ValueError("研究主题不属于本轮团队")
         if record.get("theme_key") not in {None, update.theme_key} or (matches and matches[0]["theme_id"] != record["theme_id"]):

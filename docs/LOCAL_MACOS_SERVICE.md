@@ -109,12 +109,11 @@ runner 都会拒绝任一 backend 目录中存在
 
 仅从 loopback 连接和地址访问时，无凭证请求才以当前团队拥有者获得本机全部业务权限，页面显示“本机全权限”，不要求登录或退出。新操作仍记录真实人员，旧署名保留。显式传入的其他账号或短期任务凭证仍按原范围处理；模型不能借本机权限跨出任务或工具范围。后台定时任务继续使用独立服务凭证。云端必须使用账号模式，本机配置不能原样复制到云端。
 
-## 公开数据复制与简报
+## 公开数据与简报
 
-`market.env` 明确 `ROLE=replica`；本地不排入全市场来源采集。使用
-`infra/scripts/install_market_pipeline.py --scheduler launchd --role replica --env-root /absolute/external/config`
-写出每小时与登录后补齐数据的任务，再通过 `launchctl` 加载。资讯源与云数值发行目录必须显式配置。
-Mac 离线后的遗漏按数据包回执补齐；首次运行前应导入规范数值、原始资讯并核对覆盖。
+`market.env` 明确 `ROLE=replica`；本地不排入全市场来源采集。Studio 完整数据使用下文的每周
+云端快照同步，市场数值、原始资讯与业务数据在同一次切换中发布。完整同步启用后，停用旧的
+`market-sync` 小时复制计划。安装器发现外部 `cloud-sync.json` 时自动使用完整同步定义。
 `briefing.env` 设置 `EDITION_ROLE=preview`，正式报告的定时器仅在云端启用。
 PostgreSQL 备份还需要配套公开数据目录，详见 [Market Data Pipeline](MARKET_DATA_PIPELINE.md)。
 
@@ -164,3 +163,59 @@ launchctl kickstart "gui/$UID/com.orataba.investment-studio.market-data-refresh"
 
 
 多账号启用、历史作者认领、组合管理者指派和服务凭证配置见 [多账号体系](MULTI_ACCOUNT_SYSTEM.md)。本机免登录也须先迁移身份库、建立真实拥有者并配置后台服务身份；云端会话和权限独立配置。
+
+## 每周从云端同步
+
+云端是 Studio 业务数据的权威来源。本机每七天接收一次云端快照；两端平时分别运行，
+本机操作不会回传，下次同步会覆盖本机独有的列表、研究和交易。同步前的本机数据库与文件
+保留在外部恢复目录中。Regime 自有模型数据库及运行目录不在覆盖范围内。
+
+`bin/investment-studio cloud-sync --config /private/cloud-sync.json` 的流程为：
+
+1. 云端以 PostgreSQL 一致性快照导出八个 schema，云端服务继续运行。
+2. 后台下载市场文件、研究产物和上传材料，在独立本地数据库恢复；本机页面继续使用原库。
+   市场目录先以 macOS/APFS 写时复制克隆为增量基线，各副本保持独立文件身份，云端已删除的文件也从暂存副本移除。
+3. 核对迁移版本、外键约束、市场文件大小、原文内容散列及研究产物引用。版本与当前代码
+   不一致或缺文件时停止，不发布半份快照。
+4. 最后短暂停止本机 Studio 服务，切换数据库和文件，再恢复原服务集合。存在独立活动写入
+   时不抢占该事务；本次同步失败，等待下一次排程。云端在此期间不停机。
+5. 验证本机免登录全权限和各 API 健康；失败恢复原数据库、文件和服务。成功后记录同步时间，
+   保留最近两次成功同步前的本机数据供恢复；更旧的已成功批次在新快照验收后清理。
+
+人员 ID、历史署名和组合归属随云端数据同步；云端浏览器会话、一次性链接、服务令牌和 AI
+委托不复制。本机保留自己的后台服务凭据和数据读取角色，继续使用显式 `local` 免登录模式。
+云端仍使用真实账号及逐组合权限。复制时正在运行的任务不能继承云端进程；本机将它们明确
+恢复为待重算或中断状态，不冒充已经完成。
+
+配置为仓库外的 `0600` JSON 文件。数据库密码仍来自 `.pgpass`，`admin_url` 指向同一台本机
+PostgreSQL 的维护账户，用于建立临时库与切换库名，不能指向云端。SSH 使用已配置的主机别名。
+示例中的目录必须与本机和云端实际运行配置一致：
+
+```json
+{
+  "ssh_host": "studio-cloud-market",
+  "remote_user": "investment-studio",
+  "remote_port": 55433,
+  "remote_database_user": "investment_studio",
+  "remote_database": "investment_studio",
+  "database_url": "postgresql://investment_studio@127.0.0.1:5432/investment_studio",
+  "admin_url": "postgresql://LOCAL_DATABASE_ADMIN@127.0.0.1:5432/postgres",
+  "state_root": "/absolute/local/state/cloud-sync",
+  "local_identity_url": "http://127.0.0.1:8002/api/auth/session",
+  "health_urls": ["http://127.0.0.1:8000/api/health", "http://127.0.0.1:8001/api/health"],
+  "files": {
+    "market": {"remote": "/var/lib/investment-studio/market-data", "local": "/absolute/local/market-data"},
+    "documents": {"remote": "/home/investment-studio/.local/share/investment-studio/watchlist-documents", "local": "/absolute/local/watchlist-documents"},
+    "research": {"remote": "/home/investment-studio/.local/share/investment-studio/portfolio-research-outputs", "local": "/absolute/local/portfolio-research-outputs"}
+  }
+}
+```
+
+首次手动同步成功后，增加 `--install-schedule` 安装每周日 09:00 的 LaunchAgent；登录、唤醒及每日
+检查只补跑已经超过七天的同步，不重复覆盖。日志和 `last-success.json` 位于配置的 `state_root`；
+每批 `cutover.json` 持久化切换阶段、原库名称与各文件位置，`recovery.json` 记录成功后的恢复入口。
+若进程在切换中断或恢复不完整，下次同步会在下载前停止；先按 `cutover.json` 恢复整套数据库、
+文件和原服务，验收后将阶段标记为 `rolled_back`（恢复原数据）或 `published`（完成新快照），
+再允许后续同步。失败批次不自动清理，排查后人工清理其暂存库及文件。恢复前停止本机写入，将记录的数据库与文件一起恢复，
+再检查服务健康。不要只恢复数据库而遗漏文件。旧的单独公共市场复制计划应停用，避免与完整同步
+重叠；本机的业务服务和独立 Regime 调度继续运行。

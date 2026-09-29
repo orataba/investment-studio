@@ -1,3 +1,4 @@
+import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { usePortfolioAccess } from '../components/PortfolioAccessProvider'
 import { FormEvent, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactElement, type ReactNode } from 'react'
@@ -2524,14 +2525,10 @@ export default function TaxonomiesPage() {
     return (
       <PortfolioWorkspaceLayout activeSection="Taxonomies" busy={loading || refreshing}>
         <div className="taxonomy-page taxonomy-page-table">
-        {notice || workspaceError || actionError || supplementalNotice ? (
-          <div className="page-toast-stack" role="status" aria-live="polite">
-            {notice ? <div className="page-toast page-toast-success">{notice}</div> : null}
-            {workspaceError ? <div className="page-toast page-toast-error">{configurationErrorMessage(workspaceError, zh)}</div> : null}
-            {actionError ? <div className="page-toast page-toast-error">{actionError}</div> : null}
-            {supplementalNotice ? <div className="page-toast">{supplementalNotice}</div> : null}
-          </div>
-        ) : null}
+        <NoticeToast notice={notice ? { id: 0, tone: 'success', message: notice } : null} onDismiss={() => setNotice(null)} />
+        <NoticeToast notice={workspaceError ? { id: 0, tone: 'error', message: configurationErrorMessage(workspaceError, zh) } : null} onDismiss={() => setWorkspaceError(null)} />
+        <NoticeToast notice={actionError ? { id: 0, tone: 'error', message: actionError } : null} onDismiss={() => setActionError(null)} />
+        {supplementalNotice ? <div className="taxonomy-editor-notice">{supplementalNotice}</div> : null}
         {loading ? <CalculationStatus /> : null}
 
       {!loading && !catalog && !workspaceError ? <div className="empty-state">No data.</div> : null}

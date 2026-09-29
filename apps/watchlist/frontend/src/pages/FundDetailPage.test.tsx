@@ -229,7 +229,7 @@ it('keeps the overview free of duplicate charts and separates personal opinions 
   const { container } = show()
   await screen.findByRole('region', { name: '基金总览' })
   const navigation = container.querySelector('.instrument-detail-tabs')!
-  await waitFor(() => expect(within(navigation as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual(['总览', '投资研究', '投资观点', '表现与指标', '基金档案']))
+  await waitFor(() => expect(within(navigation as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual(['总览', '投资研究', '投资观点', '绩效指标', '基金档案']))
   expect(container.querySelector('.instrument-chart-stage')).toBeNull()
   fireEvent.click(within(navigation as HTMLElement).getByRole('button', { name: '投资观点' }))
   expect(await screen.findByRole('region', { name: '投资观点时间线' })).toBeTruthy()

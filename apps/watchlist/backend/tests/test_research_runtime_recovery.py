@@ -296,6 +296,9 @@ def test_generation_recovery_reuses_saved_computations_and_keeps_original_clock(
         return response.json()
     monkeypatch.setattr(mcp, "request", read)
     def launch(*args, **kwargs):
+        if kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW"] == "1":
+            assert kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RESUME_GENERATION"] == "0"
+            return SimpleNamespace(communicate=lambda **kw: ('{"reviews": []}', ""), returncode=0)
         assert kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RESUME_GENERATION"] == "1"
         assert kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW"] == "0"
         response = client.post("/api/research/runs/recovery/read", json={"resource": "context", "section": "computed_metrics"})
@@ -305,6 +308,10 @@ def test_generation_recovery_reuses_saved_computations_and_keeps_original_clock(
         selector = dict(index[0]["read"])
         assert selector.pop("tool") == "read_quant_analysis"
         assert mcp.read_quant_analysis(**selector)["data"] == context["computed_metrics"][0]["data"]
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, "recovery")
+            run.context_json = {**run.context_json, "submitted_draft": {"reviews": []}}
+            session.commit()
         return SimpleNamespace(communicate=lambda **kw: ('{"reviews": []}', ""), returncode=0)
     monkeypatch.setattr(runner.subprocess, "Popen", launch)
     monkeypatch.setattr(runner, "resolve_token", lambda *args: current_principal())

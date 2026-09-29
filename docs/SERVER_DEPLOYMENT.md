@@ -13,6 +13,8 @@ This project runs eight user-systemd services in production:
 
 Five data schedules are installed separately. Each uses an `investment-studio-<name>.service` and `.timer` pair: `market-data-refresh` for nightly settlement; `cn-market-data-refresh`, `hk-market-data-refresh`, and `us-market-data-refresh` for closing prices; `cn-hk-reference-data-refresh` for pre-open Tushare reference acquisition. FMP references are projected by the public collection or arrival pipeline.
 
+Hong Kong and US closing-price timers probe the exchange calendar every hour. With `Restart=no`, their service start limit is disabled: `ExecCondition` probes count as starts even when the market has not closed, so a three-start/three-hour limit can block a valid closing-price run. Jobs configured to restart on failure retain their bounded restart policy.
+
 ## Deployment ownership
 
 The Studio service user/group is `investment-studio`; its current release is

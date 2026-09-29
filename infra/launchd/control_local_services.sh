@@ -28,6 +28,7 @@ services=(
   # Retired job remains stoppable/restorable while upgrading an older install.
   us-reference-data-refresh
   market-sync
+  cloud-sync
 )
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -51,11 +52,11 @@ is_known_service() {
 }
 
 is_scheduled_service() {
-  [[ "$1" == *-data-refresh || "$1" == market-sync ]]
+  [[ "$1" == *-data-refresh || "$1" == market-sync || "$1" == cloud-sync ]]
 }
 
 stop_services() {
-  local service label plist state_dir temporary_state
+  local service label plist state_dir temporary_state failed=0
   state_dir="$(dirname "$STATE_FILE")"
   mkdir -p "$state_dir"
   temporary_state="$(mktemp "$state_dir/.investment-studio-service-state.XXXXXX")"
@@ -65,6 +66,9 @@ stop_services() {
   # one rename ensures callers never mistake a partial preflight result for a
   # complete recovery manifest.
   for service in "${services[@]}"; do
+    if [[ "$service" == cloud-sync && "${INVESTMENT_STUDIO_CONTROL_SKIP_CLOUD_SYNC:-false}" == true ]]; then
+      continue
+    fi
     label="$LABEL_PREFIX.$service"
     plist="$LAUNCH_AGENTS_DIR/$label.plist"
     if ! launchctl print "$domain/$label" >/dev/null 2>&1; then
@@ -82,33 +86,50 @@ stop_services() {
   while IFS= read -r service || [[ -n "$service" ]]; do
     [[ -n "$service" ]] || continue
     label="$LABEL_PREFIX.$service"
-    launchctl bootout "$domain/$label"
+    if ! launchctl bootout "$domain/$label"; then
+      echo "Could not stop $label" >&2
+      failed=1
+    fi
   done < "$STATE_FILE"
+  return "$failed"
 }
 
 start_services() {
-  local service label plist
+  local service label plist failed=0
   [[ -f "$STATE_FILE" ]] || return 0
 
   while IFS= read -r service || [[ -n "$service" ]]; do
     [[ -n "$service" ]] || continue
     if ! is_known_service "$service"; then
       echo "Invalid launchd service in state file: $service" >&2
-      exit 1
+      failed=1
+      continue
     fi
     label="$LABEL_PREFIX.$service"
     plist="$LAUNCH_AGENTS_DIR/$label.plist"
     if [[ ! -f "$plist" ]]; then
       echo "Cannot restart $label: missing plist $plist" >&2
-      exit 1
+      failed=1
+      continue
     fi
     launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
-    launchctl bootstrap "$domain" "$plist"
-    launchctl enable "$domain/$label"
+    if ! launchctl bootstrap "$domain" "$plist"; then
+      echo "Could not restore $label" >&2
+      failed=1
+      continue
+    fi
+    if ! launchctl enable "$domain/$label"; then
+      echo "Could not enable $label" >&2
+      failed=1
+    fi
     if ! is_scheduled_service "$service"; then
-      launchctl kickstart -k "$domain/$label"
+      if ! launchctl kickstart -k "$domain/$label"; then
+        echo "Could not start $label" >&2
+        failed=1
+      fi
     fi
   done < "$STATE_FILE"
+  return "$failed"
 }
 
 case "$ACTION" in

@@ -132,7 +132,13 @@ if [[ "${2:-}" != "risk" ]]; then
     # resumes its independent review, without generating another draft or charge.
     printf '\n' | copilot_review_output
   elif copilot_reply="$("${copilot_command[@]}")"; then
-    printf '%s\n' "$copilot_reply" | copilot_review_output
+    if [[ "${2:-}" == "sector" && "${INVESTMENT_STUDIO_RESEARCH_GENERATION_ONLY:-0}" == "1" ]]; then
+      # The backend gives generation and independent review separate deadlines.
+      # The accepted draft is already durable; this reply is only an acknowledgement.
+      printf '%s\n' "$copilot_reply"
+    else
+      printf '%s\n' "$copilot_reply" | copilot_review_output
+    fi
   else
     copilot_generation_status=$?
     printf '%s\n' "$copilot_reply"

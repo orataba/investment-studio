@@ -346,7 +346,7 @@ export default function PortfoliosPage() {
         </div>
       </header>
 
-      {error ? <div className="panel error-state">{error}</div> : null}
+      <NoticeToast notice={error ? { id: 0, tone: 'error', message: error } : null} onDismiss={() => setError(null)} />
       <NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
 
       <section className="portfolio-entry-list-shell">

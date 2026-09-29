@@ -76,10 +76,20 @@ def test_login_stable_identity_opaque_session_and_revoked_logout(identity):
         stored = db.scalar(select(SessionRecord))
         assert stored.token_hash == token_hash(token)
         assert stored.token_hash != token
+        assert abs((stored.expires_at - stored.created_at).total_seconds() - 30 * 86400) < 1
     assert introspect(client, token).json()["user_id"] == ids["owner"]
     assert client.post("/api/auth/logout").status_code == 204
     assert introspect(client, token).status_code == 401
     assert client.get("/api/auth/check").status_code == 401
+
+
+def test_session_cookie_uses_the_configured_long_lived_expiry(identity):
+    client = TestClient(app, base_url="https://testserver", headers={"Origin": "https://testserver"})
+    response = client.post('/api/auth/login', json={"username": "owner", "password": PASSWORD})
+    assert response.status_code == 200
+    assert 'Max-Age=2592000' in response.headers['set-cookie']
+    assert 'HttpOnly' in response.headers['set-cookie']
+    assert 'Secure' in response.headers['set-cookie']
 
 
 def test_browser_origin_and_forged_identity_are_rejected(identity):

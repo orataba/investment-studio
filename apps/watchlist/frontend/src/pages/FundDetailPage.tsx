@@ -80,7 +80,7 @@ import { buildWatchlistPath, HOME_URL } from '../lib/navigation'
 import { fundDetailTabLabel, fundDetailTabs, resolveFundDetailLocation, type FundPrimaryTab, type FundArchiveSection } from '../lib/instrumentDetailArchitecture'
 import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
-import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
+import NoticeToast, { LoadingNotice, type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import InfoHint from '../../../../../packages/ui/src/InfoHint'
 import {
   beginDetailRequest,
@@ -364,7 +364,7 @@ const TAB_LABELS: Record<DetailTab, LocalizedText> = {
   overview: { en: 'Overview', zh: '总览' },
   'investment-research': { en: 'Investment Research', zh: '投资研究' },
   views: { en: 'Investment Views', zh: '投资观点' },
-  performance: { en: 'Performance & Metrics', zh: '表现与指标' },
+  performance: { en: 'Performance Metrics', zh: '绩效指标' },
   archive: { en: 'Fund Archive', zh: '基金档案' },
 }
 
@@ -2911,6 +2911,7 @@ export default function FundDetailPage({
     setQuoteActionNotice(message ? { id: Date.now(), message, tone: 'success' } : null)
   }
   const [sectionError, setSectionError] = useState<string | null>(null)
+  const [dismissedResourceError, setDismissedResourceError] = useState('')
   const [settingsModalOpen, setSettingsModalOpen] = useState(false)
   const [taxonomyTree, setTaxonomyTree] = useState<InstrumentTaxonomyTreeResponse | null>(null)
   const [taxonomyDraftNodeId, setTaxonomyDraftNodeId] = useState('')
@@ -3168,6 +3169,7 @@ export default function FundDetailPage({
 
   const activeResourceLoading = resourceRequests.some(request => loadingSectionKeys.has(`${detailBundleKey}:${request.key}`))
   const activeResourceErrors = resourceRequests.map(request => sectionLoadErrors[request.key]).filter(Boolean)
+  const resourceErrorKey = `${fundId}:${activeTab}:${sectionRetryToken}:${activeResourceErrors.join(' ')}`
   const sectionReady = resourceRequests.filter(request => request.key !== 'library' && !(activeTab === 'performance' && request.key === 'research')).every(request => resourceReady(request.key))
 
   useEffect(() => {
@@ -5627,11 +5629,7 @@ export default function FundDetailPage({
       {assistant?.instrumentId === fundId && <InstrumentAssistantDrawer instrumentId={fundId} watchlistId={watchlistContext?.watchlistId || detailSearchParams.get('watchlist') || undefined} question={assistant.question} researchReference={assistant.researchReference} onClose={() => setAssistant(null)} />}
       <NoticeToast notice={quoteActionNotice} onDismiss={() => setQuoteActionNotice(null)} />
       <section className="panel instrument-detail-shell">
-        {loadWarning ? (
-          <div className="inline-notice" role="status">
-            {loadWarning}
-          </div>
-        ) : null}
+        <NoticeToast notice={loadWarning ? { id: 0, tone: 'error', message: loadWarning } : null} onDismiss={() => setLoadWarning(null)} />
         <div className="instrument-detail-topbar">
           <div className="instrument-detail-breadcrumbs">
             <a data-workspace-link href={HOME_URL} className="instrument-detail-backlink">
@@ -5712,19 +5710,12 @@ export default function FundDetailPage({
         </div>
 
 
-        {productFrameworkLoadError ? <p role="alert" className="fund-overview-date-note">{language === 'zh-Hans' ? '标的分类暂时无法读取：' : 'Instrument classification unavailable: '}{productFrameworkLoadError}</p> : null}
-        {sectionError ? <div className="inline-notice inline-notice-error">{sectionError}</div> : null}
-        {activeResourceErrors.length ? (
-          <div className="inline-notice inline-notice-error instrument-section-load-error" role="alert">
-            <span>{activeResourceErrors.join(' ')}</span>
-            <button
-              type="button"
-              onClick={() => setSectionRetryToken((current) => current + 1)}
-            >
-              {language === 'zh-Hans' ? '重试' : 'Retry'}
-            </button>
-          </div>
-        ) : null}
+        <NoticeToast notice={productFrameworkLoadError ? { id: 0, tone: 'error', message: productFrameworkLoadError } : null} onDismiss={() => setProductFrameworkLoadError(null)} />
+        <NoticeToast notice={sectionError ? { id: 0, tone: 'error', message: sectionError } : null} onDismiss={() => setSectionError(null)} />
+        <LoadingNotice active={activeResourceLoading} message={language === 'zh-Hans' ? '正在加载标的资料…' : 'Loading instrument data…'} />
+        <NoticeToast notice={activeResourceErrors.length && dismissedResourceError !== resourceErrorKey ? {
+          id: sectionRetryToken, tone: 'error', message: <>{activeResourceErrors.join(' ')} <button type="button" onClick={() => setSectionRetryToken(current => current + 1)}>{language === 'zh-Hans' ? '重试' : 'Retry'}</button></>,
+        } : null} durationMs={0} onDismiss={() => setDismissedResourceError(resourceErrorKey)} />
       </section>
 
       {settingsModalOpen ? (
@@ -5770,11 +5761,6 @@ export default function FundDetailPage({
               </div>
             </div>
             <div className="instrument-settings-body">
-              {sectionError ? (
-                <div className="inline-notice inline-notice-error" role="alert">
-                  {sectionError}
-                </div>
-              ) : null}
               <section className="instrument-settings-section">
                 <div className="instrument-settings-section-header">
                   <div>
@@ -5902,14 +5888,10 @@ export default function FundDetailPage({
           <SectorResearchPanel instrumentId={fundId} variant="summary" onOpenEvents={() => setActiveTab('investment-research')} />
           <div className="fund-overview-section">
             <header><h2>{language === 'zh-Hans' ? '当前总体观点' : 'Current overall view'}</h2><button type="button" onClick={() => setActiveTab('views')}>{language === 'zh-Hans' ? '查看与记录观点' : 'View / record opinions'}</button></header>
-            {!resourceReady('research') ? <p aria-busy={!sectionLoadErrors.research}>{sectionLoadErrors.research ? (language === 'zh-Hans' ? '投资观点暂时无法读取。' : 'Investment views unavailable.') : 'Loading'}</p> : currentOpinion ? <><time>{currentOpinion.noteDate}</time><h3>{currentOpinion.title}</h3><p>{currentOpinion.body}</p></>
+            {!resourceReady('research') ? <p aria-busy={!sectionLoadErrors.research}>{sectionLoadErrors.research ? (language === 'zh-Hans' ? '投资观点暂时无法读取。' : 'Investment views unavailable.') : 'Loading'}</p> : currentOpinion ? <><time>{currentOpinion.noteDate}</time><h3>{currentOpinion.title}</h3><p className="overview-opinion-excerpt">{currentOpinion.body}</p></>
               : <p className="muted">{language === 'zh-Hans' ? '尚未记录投资观点。' : 'No investment view recorded yet.'}</p>}
           </div>
-          <div className="fund-overview-destinations">
-            <button type="button" onClick={() => setActiveTab('investment-research')}><strong>{language === 'zh-Hans' ? '投资研究' : 'Investment research'}</strong><span>{language === 'zh-Hans' ? '查阅整理好的跟踪结论、投资机会与风险。' : 'Read prepared findings, opportunities and risks.'}</span></button>
-            <button type="button" onClick={() => setActiveTab('performance')}><strong>{language === 'zh-Hans' ? '表现与指标' : 'Performance & metrics'}</strong><span>{language === 'zh-Hans' ? '净值、回撤、基准比较与区间指标。' : 'NAV, drawdown, benchmark comparisons and period metrics.'}</span></button>
-            <button type="button" onClick={() => setActiveTab('archive')}><strong>{language === 'zh-Hans' ? '基金档案' : 'Fund archive'}</strong><span>{fundType === 'public_fund' ? (language === 'zh-Hans' ? '持仓风格、管理团队与披露材料。' : 'Holdings, style, management and disclosures.') : (language === 'zh-Hans' ? '策略、流动性、交易条款与基金材料。' : 'Strategy, liquidity, dealing terms and documents.')}</span></button>
-          </div>
+
         </section>
       ) : null}
 

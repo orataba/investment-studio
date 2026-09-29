@@ -2299,6 +2299,7 @@ export type PortfolioTransactionRecord = {
   source_fx_rate: string | null
   fees: number
   source_fees: string | null
+  fee_components?: Array<{ category: PortfolioFeeCategory; amount: number | string }>
   fee_category: PortfolioFeeCategory
   taxes: number
   source_taxes: string | null
@@ -2349,6 +2350,7 @@ export type PortfolioOptionOutcomePayload = {
   settlement_cash_account_id?: string | null
   cash_settlement_amount?: number | null
   fees?: number
+  fee_components?: Array<{ category: PortfolioFeeCategory; amount: number | string }>
   fee_category?: PortfolioFeeCategory
   taxes?: number
   note?: string | null
@@ -2702,7 +2704,7 @@ export type PortfolioTransactionFilters = {
 }
 
 export type PortfolioTransactionCreatePayload = {
-  option_delivery?: { stock_account_id: string; settlement_cash_account_id: string; fees?: number | string; fee_category?: PortfolioFeeCategory; taxes?: number | string; allow_stock_short?: boolean; stock_record_reference?: string | null }
+  option_delivery?: { stock_account_id: string; settlement_cash_account_id: string; fees?: number | string; fee_components?: Array<{ category: PortfolioFeeCategory; amount: number | string }>; fee_category?: PortfolioFeeCategory; taxes?: number | string; allow_stock_short?: boolean; stock_record_reference?: string | null }
   lot_selections?: { opening_transaction_id: string; quantity: number | string }[]
   asset_deliveries?: PortfolioAssetDelivery[]
   settlement_cashflows?: PortfolioSettlementCashflow[]
@@ -2725,6 +2727,7 @@ export type PortfolioTransactionCreatePayload = {
   counter_amount?: number | null
   fx_rate?: number | null
   fees?: number
+  fee_components?: Array<{ category: PortfolioFeeCategory; amount: number | string }>
   fee_category?: PortfolioFeeCategory
   taxes?: number
   currency: string
@@ -2899,6 +2902,7 @@ export type PortfolioTransactionImportCommand = {
   counter_amount?: PortfolioTransactionImportNumeric | null
   fx_rate?: PortfolioTransactionImportNumeric | null
   fees?: PortfolioTransactionImportNumeric | null
+  fee_components?: Array<{ category: PortfolioFeeCategory; amount: number | string }>
   fee_category?: PortfolioFeeCategory | null
   taxes?: PortfolioTransactionImportNumeric | null
   currency: string
@@ -3156,7 +3160,7 @@ function fetchJson<T>(
 ): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase()
   if (init?.signal?.aborted) return Promise.reject(init.signal.reason)
-  const cacheKey = method === 'GET' && !path.endsWith('/access') && !path.endsWith('/session') && !path.endsWith('/access-recovery') ? `${baseUrl}${path}` : null
+  const cacheKey = method === 'GET' && !path.endsWith('/access') && !path.endsWith('/session') && !path.endsWith('/access-recovery') && !path.endsWith('/calculation-status') ? `${baseUrl}${path}` : null
   const now = Date.now()
 
   if (cacheKey) {
@@ -3916,6 +3920,12 @@ export function amendPortfolioDerivativeContract(portfolioId: string, contract: 
   return fetchJson<PortfolioDerivativeContractRecord>(API_BASE_URL, `/api/portfolios/${portfolioId}/derivative-contracts/${encodeURIComponent(contract.derivative_contract_id)}`, {
     method: 'PATCH', body: JSON.stringify({ expected_row_version: contract.row_version ?? 1, terms, reason, reviewed_by: reviewedBy }),
   })
+}
+
+export type PortfolioCalculationState = { portfolio_id: string; status: 'stale' | 'running' | 'current' | 'failed' | 'unavailable'; error_message: string | null; refreshed_to: string | null }
+
+export function getPortfolioCalculationStatus(portfolioId: string, signal?: AbortSignal) {
+  return fetchJson<PortfolioCalculationState>(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/calculation-status`, { signal, cache: 'no-store' })
 }
 
 export function createPortfolioTransaction(

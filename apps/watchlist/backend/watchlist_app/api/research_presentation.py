@@ -16,11 +16,8 @@ def review_status_view(review: dict[str, Any] | None) -> dict[str, Any] | None:
 def _source_view(source: dict[str, Any]) -> dict[str, Any]:
     # SourceList shows provenance/measurements; SavedEvidence retrieves these
     # complete originals through source_id + notebook version_id when opened.
-    result = {key: value for key, value in source.items() if key not in {"text", "body", "snapshot", "company", "data"}}
-    if source.get("source_type") == "computed_metric":
-        from watchlist_app.services.research_metrics import observation_domain
-        result["observation_domain"] = observation_domain(source)
-    return result
+    from watchlist_app.services.research_read_projection import browser_source_view
+    return browser_source_view(source)
 
 
 def _notebook_view(notebook: dict[str, Any] | None) -> dict[str, Any] | None:

@@ -21,7 +21,7 @@ for service in home-api watchlist-api portfolio-api briefing-api home-web watchl
 done
 
 for refresh_service in market-data-refresh cn-market-data-refresh hk-market-data-refresh \
-  us-market-data-refresh cn-hk-reference-data-refresh market-sync; do
+  us-market-data-refresh cn-hk-reference-data-refresh market-sync cloud-sync; do
 refresh_label="$LABEL_PREFIX.$refresh_service"
 refresh_plist="$LAUNCH_AGENTS_DIR/$refresh_label.plist"
 refresh_schedule=unavailable
@@ -34,7 +34,9 @@ with open(sys.argv[1], "rb") as source:
     plist = plistlib.load(source)
 environment = plist.get("EnvironmentVariables", {})
 timezone = environment.get("INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE", "Asia/Shanghai system time")
-if "StartInterval" in plist:
+if "--if-due" in plist.get("ProgramArguments", []):
+    print("Sunday 09:00, daily/login catch-up after seven days")
+elif "StartInterval" in plist:
     print(f"every {plist['StartInterval']} seconds, including login")
 elif environment.get("INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL") == "market" and environment.get("INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE") in {"hk", "us"}:
     print(f"session close + 30 minutes {timezone} (hourly calendar checks)")
@@ -64,7 +66,7 @@ else
   printf '%-20s not installed (schedule=%s)\n' "$refresh_service" "$refresh_schedule"
 fi
 
-if [[ "$refresh_service" == market-sync ]]; then
+if [[ "$refresh_service" == market-sync || "$refresh_service" == cloud-sync ]]; then
   if [[ -f "$refresh_plist" && -x "$PYTHON_BIN" ]]; then
     "$PYTHON_BIN" - "$refresh_plist" <<'PY_SYNC_LOGS'
 import plistlib

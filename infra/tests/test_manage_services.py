@@ -53,7 +53,8 @@ def test_market_and_briefing_stop_writers_but_start_only_schedules(monkeypatch):
             assert f'investment-studio-{name}.timer' in started
 
 
-def test_mac_market_controls_sync_and_does_not_kickstart_a_loaded_schedule(monkeypatch):
+def test_mac_market_controls_sync_and_does_not_kickstart_a_loaded_schedule(monkeypatch, tmp_path):
+    monkeypatch.setenv('ENV_ROOT', str(tmp_path))
     monkeypatch.setattr(module.platform, 'system', lambda: 'Darwin')
     query = Mock(return_value=Mock(returncode=0))
     monkeypatch.setattr(module.subprocess, 'run', query)
@@ -64,6 +65,19 @@ def test_mac_market_controls_sync_and_does_not_kickstart_a_loaded_schedule(monke
     assert query.call_args.args[0][-1].endswith('.market-sync')
     module.manage('market', 'stop')
     assert execute.call_args.args[0][1] == 'bootout'
+
+
+def test_mac_full_cloud_sync_replaces_public_only_schedule(monkeypatch, tmp_path):
+    monkeypatch.setenv('ENV_ROOT', str(tmp_path))
+    (tmp_path / 'cloud-sync.json').write_text('{}')
+    monkeypatch.setattr(module.platform, 'system', lambda: 'Darwin')
+    query = Mock(return_value=Mock(returncode=0))
+    monkeypatch.setattr(module.subprocess, 'run', query)
+    execute = Mock()
+    monkeypatch.setattr(module, 'run', execute)
+    module.manage('market', 'restart')
+    assert query.call_args.args[0][-1].endswith('.cloud-sync')
+    execute.assert_not_called()
 
 
 def test_regime_mac_delegates_its_own_control(monkeypatch):

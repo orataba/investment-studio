@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     auth_cookie_secure: bool = True
     auth_cookie_name: str = "__Secure-yungu_session"
     auth_cookie_domain: str | None = None
-    auth_session_ttl_seconds: int = 24 * 60 * 60
+    auth_session_ttl_seconds: int = 30 * 24 * 60 * 60
 
     model_config = SettingsConfigDict(env_prefix="INVESTMENT_STUDIO_HOME_", extra="ignore")
 
@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_session_ttl(cls, value: object) -> int:
         seconds = int(value)
-        if seconds < 300 or seconds > 7 * 24 * 60 * 60:
-            raise ValueError("auth_session_ttl_seconds must be between 300 and 604800.")
+        if seconds < 300 or seconds > 90 * 24 * 60 * 60:
+            raise ValueError("auth_session_ttl_seconds must be between 300 and 7776000.")
         return seconds
 
     @model_validator(mode="after")

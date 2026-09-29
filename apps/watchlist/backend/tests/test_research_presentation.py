@@ -122,3 +122,28 @@ def test_browser_dossier_omits_duplicate_agent_context_without_mutating_original
     assert dossier_sections(dossier) == agent_before
     assert agent_before["themes"] == original["themes"]
     assert agent_before["review_agenda"] == original["review_agenda"]
+
+
+def test_current_dossier_does_not_inline_nested_computation_inputs(activity_client):
+    with get_session_factory()() as session:
+        run = publish(session, research={"investment_view": {"direction": "保持判断", "source_ids": ["original"]}})
+        context = deepcopy(run.context_json)
+        source = context["reviews"]["xlk"]["research"]["sources"][0]
+        source.update(source_type="computed_metric", sources=[{"text": "完整原文" * 10000}],
+                      input_series=[{"date": "2026-09-01", "value": index} for index in range(3000)],
+                      source_ids=[f"input:{index}" for index in range(3000)],
+                      input_snapshot={"points": list(range(3000))}, data={"current": {"value": 3}})
+        original = deepcopy(source)
+        run.context_json = context
+        session.commit()
+    base = "/api/research/instruments/xlk/dossier"
+    response = activity_client.get(base, params={"current_only": "true"})
+    assert response.status_code == 200
+    notebook = response.json()["notebook"]
+    shown = notebook["sources"][0]
+    assert not {"sources", "source_ids", "input_series", "input_snapshot", "data"}.intersection(shown)
+    assert len(json.dumps(shown)) < len(json.dumps(original)) / 100
+    saved = activity_client.get(base, params={"source_id": "original", "version_id": notebook["version_id"]})
+    assert saved.status_code == 200 and saved.json() == original
+    with get_session_factory()() as session:
+        assert read_dossier(session, "xlk")["notebook"]["sources"][0] == original

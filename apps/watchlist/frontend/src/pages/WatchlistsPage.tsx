@@ -18,6 +18,8 @@ import {
   type WatchlistRecord,
   type WatchlistView,
   addWatchlistItems,
+  updateWatchlistCoverageStatus,
+  type CoverageStatus,
   createWatchlist,
   createWatchlistView,
   deleteWatchlist,
@@ -51,7 +53,7 @@ import ResearchPage from '../components/LazyResearchPage'
 import { setRiskReferenceParams, type ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import WorkspaceTools, { WorkspaceToolIcon } from '../../../../../packages/ui/src/WorkspaceTools'
 import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
-import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
+import NoticeToast, { LoadingNotice, type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import InfoHint from '../../../../../packages/ui/src/InfoHint'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
@@ -846,6 +848,9 @@ export default function WatchlistsPage() {
   const [isMovingItems, setIsMovingItems] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
   const [instrumentSearch, setInstrumentSearch] = useState('')
+  const [addCoverageStatus, setAddCoverageStatus] = useState<CoverageStatus | ''>('')
+  const [updatingCoverage, setUpdatingCoverage] = useState(false)
+  const instrumentSearchRef = useRef<HTMLInputElement>(null)
   const [sharedInstrumentResults, setSharedInstrumentResults] = useState<SharedInstrumentRecord[]>([])
   const [catalogResults, setCatalogResults] = useState<SecuritySearchResult[]>([])
   const [catalogErrors, setCatalogErrors] = useState<string[]>([])
@@ -1201,6 +1206,7 @@ export default function WatchlistsPage() {
 
   useEffect(() => {
     if (modalKind !== 'add') {
+      setIsSearchingInstruments(false)
       return
     }
 
@@ -1224,16 +1230,12 @@ export default function WatchlistsPage() {
             if (current && results.some((item) => item.instrument_id === current)) {
               return current
             }
-            return results[0]?.instrument_id || ''
+            return instrumentSearch.trim() ? results[0]?.instrument_id || '' : ''
           })
         })
         .catch((loadError) => {
           if (!cancelled) {
-            setModalError(
-              loadError instanceof Error
-                ? loadError.message
-                : 'Failed to load registered assets.',
-            )
+            setViewToast({ id: Date.now(), tone: 'error', message: loadError instanceof Error ? loadError.message : 'Failed to load registered assets.' })
             setSharedInstrumentResults([])
             setCatalogResults([])
             setSelectedInstrumentId('')
@@ -1409,16 +1411,19 @@ export default function WatchlistsPage() {
         )
       }
 
-      const addResult = await addWatchlistItems(sourceWatchlistId, [...resolvedInstrumentIds])
-      await refreshWatchlistDetail(undefined, sourceWatchlistId)
-      setReloadToken(Date.now())
-      setModalKind(null)
+      const addResult = await addWatchlistItems(sourceWatchlistId, [...resolvedInstrumentIds], addCoverageStatus || undefined)
       const skippedCount = Math.max(identifierCount - addResult.accepted_count, 0)
       setNotice(
         skippedCount > 0
           ? `Processed ${identifierCount} unique identifiers. Added ${addResult.accepted_count}; ${skippedCount} already existed in this watchlist.`
           : `Processed ${identifierCount} unique identifiers. Added ${addResult.accepted_count} registered assets.`,
       )
+      try {
+        await Promise.all([refreshWatchlistDetail(undefined, sourceWatchlistId), getWatchlists().then(setWatchlists)])
+        setReloadToken(value => value + 1)
+      } catch {
+        setViewToast({ id: Date.now(), tone: 'error', message: zh ? '添加已保存，列表暂时无法刷新。' : 'Additions saved, but the list could not refresh.' })
+      }
     } catch (batchError) {
       setModalError(batchError instanceof Error ? batchError.message : 'Failed to add instruments from file.')
     } finally {
@@ -2256,9 +2261,7 @@ export default function WatchlistsPage() {
     }
   }
   const allVisibleInstrumentIds = rowsAreCurrent
-    ? renderedGroupedRows.flatMap((group) =>
-        group.rows.map((row) => String(row.instrument_id)),
-      )
+    ? searchedRows.map((row) => String(row.instrument_id))
     : []
   const allRowsSelected =
     allVisibleInstrumentIds.length > 0 && allVisibleInstrumentIds.every((instrumentId) => selectedRows.includes(instrumentId))
@@ -2622,6 +2625,7 @@ export default function WatchlistsPage() {
         setWatchlistSearchParams(next)
       }} />}
       <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
+      <LoadingNotice active={isAdding || isBatchAdding || updatingCoverage || isSearchingInstruments} message={isAdding || isBatchAdding ? (zh ? '正在添加标的…' : 'Adding instruments…') : updatingCoverage ? (zh ? '正在更新投资状态…' : 'Updating investment status…') : (zh ? '正在搜索证券…' : 'Searching securities…')} />
       <div className="watchlists-page">
       <div className="watchlists-pagehead">
         <div className="watchlists-topbar">
@@ -3059,6 +3063,21 @@ export default function WatchlistsPage() {
               }}
               onSelect={(format) => void handleDownloadCurrentView(format)}
             />
+            {canWriteTeam && selectedRows.length > 0 && rowsAreCurrent && <>
+              <span className="watchlists-selection-count">{zh ? `已选 ${selectedRows.length} 项` : `${selectedRows.length} selected`}</span>
+              {(['Invested', 'Proposed'] as const).map(status => <button key={status} type="button" className="watchlists-toolbar-button" disabled={updatingCoverage}
+                onClick={async () => {
+                  setUpdatingCoverage(true)
+                  const sourceWatchlistId = watchlistId
+                  try {
+                    const result = await updateWatchlistCoverageStatus(sourceWatchlistId, selectedRows, status)
+                    setNotice(zh ? `已将 ${result.updated_count} 项设为${status === 'Invested' ? '在投' : '拟投'}。` : `Updated ${result.updated_count} instruments to ${status}.`)
+                    if (activeWatchlistIdRef.current === sourceWatchlistId) setReloadToken(value => value + 1)
+                  } catch (reason) {
+                    setViewToast({ id: Date.now(), tone: 'error', message: reason instanceof Error ? reason.message : 'Unable to update investment status.' })
+                  } finally { setUpdatingCoverage(false) }
+                }}>{zh ? (status === 'Invested' ? '设为在投' : '设为拟投') : `Set ${status}`}</button>)}
+            </>}
             {canWriteTeam && selectedRows.length && rowsAreCurrent ? (
               <button
                 type="button"
@@ -3136,7 +3155,7 @@ export default function WatchlistsPage() {
           </div>
         ) : null}
 
-        {error ? <div className="inline-notice inline-notice-error">{error}</div> : null}
+        <NoticeToast notice={error ? { id: 0, message: error, tone: 'error' } : null} onDismiss={() => setError(null)} />
 
         <HorizontalTableScroll className="table-shell" ref={tableShellRef}>
           <table className="terminal-table watchlists-table" style={{ minWidth: `${watchlistTableMinWidth}px` }}>
@@ -3157,7 +3176,7 @@ export default function WatchlistsPage() {
                 <th className="watchlists-select-col">
                   <input
                     type="checkbox"
-                    aria-label="Select all visible instruments"
+                    aria-label={zh ? '选择当前筛选的全部标的' : 'Select all filtered instruments'}
                     checked={allRowsSelected}
                     disabled={!rowsAreCurrent}
                     onChange={(event) =>
@@ -3995,12 +4014,22 @@ export default function WatchlistsPage() {
               <label className="form-field">
                 <span>Search Instruments</span>
                 <input
+                  ref={instrumentSearchRef}
+                  autoFocus
                   className="form-input"
                   value={instrumentSearch}
                   disabled={isAdding || isBatchAdding}
                   onChange={(event) => setInstrumentSearch(event.target.value)}
                   placeholder="Ticker, ISIN, or instrument name"
                 />
+              </label>
+              <label className="form-field">
+                <span>{zh ? '投资状态' : 'Investment status'}</span>
+                <select className="form-input" value={addCoverageStatus} disabled={isAdding || isBatchAdding}
+                  onChange={event => setAddCoverageStatus(event.target.value as CoverageStatus | '')}>
+                  <option value="">{zh ? '保留现有状态' : 'Keep current status'}</option>
+                  {[['Watch', '关注'], ['Proposed', '拟投'], ['Invested', '在投'], ['Paused', '暂停'], ['Exited', '已退出']].map(([value, label]) => <option key={value} value={value}>{zh ? label : value}</option>)}
+                </select>
               </label>
               <p className="watchlists-registry-note">
                 {zh
@@ -4011,26 +4040,7 @@ export default function WatchlistsPage() {
                 {zh ? '证券目录查询不完整；仍可添加下方已找到的标的。' : 'Directory search is incomplete; the results below remain available.'}
                 {catalogErrors.map((warning) => <div key={warning}>{warning}</div>)}
               </div>}
-              {selectedSharedInstrument ? (
-                <div className="watchlists-registry-selected">
-                  <span className="ticker-pill">{primarySharedIdentifier(selectedSharedInstrument)}</span>
-                  <span className="watchlists-registry-name" translate="no">{selectedSharedInstrument.instrument_name}</span>
-                  <span className="watchlists-registry-secondary">
-                    {selectedSharedInstrument.currency} · {instrumentTypeLabel(selectedSharedInstrument.instrument_type)}
-                  </span>
-                </div>
-              ) : null}
-              {selectedCatalogSecurity && <div className="watchlists-registry-selected">
-                <span className="ticker-pill">{selectedCatalogSecurity.symbol}</span>
-                <span className="watchlists-registry-name" translate="no">{selectedCatalogSecurity.name}</span>
-                <span className="watchlists-registry-secondary">
-                  {selectedCatalogSecurity.exchange_label} · {selectedCatalogSecurity.currency_verified && selectedCatalogSecurity.currency ? selectedCatalogSecurity.currency : (zh ? '币种待核实' : 'Currency to be verified')}
-                </span>
-              </div>}
               <div className="watchlists-registry-list">
-                {isSearchingInstruments ? (
-                  <div className="loading-state">{zh ? '正在搜索证券…' : 'Searching securities…'}</div>
-                ) : null}
                 {!isSearchingInstruments
                   ? sharedInstrumentResults.map((instrument) => (
                       <button
@@ -4119,25 +4129,25 @@ export default function WatchlistsPage() {
                       setCatalogResults((items) => items.filter((item) => item !== selectedCatalogSecurity))
                     }
                     const instrumentId = registryInstrument.instrument_id
-                    const addResult = await addWatchlistItems(sourceWatchlistId, [instrumentId])
-                    await refreshWatchlistDetail(undefined, sourceWatchlistId)
-                    setWatchlists(await getWatchlists())
+                    const addResult = await addWatchlistItems(sourceWatchlistId, [instrumentId], addCoverageStatus || undefined)
                     setInstrumentSearch('')
                     setSharedInstrumentResults([])
                     setCatalogResults([])
                     setCatalogErrors([])
                     setSelectedInstrumentId('')
-                    setModalKind(null)
                     if (addResult.accepted_count === 0) {
-                      setNotice(`${primarySharedIdentifier(registryInstrument)} is already in this watchlist.`)
+                      setNotice(zh ? `${primarySharedIdentifier(registryInstrument)} 已在列表中${addCoverageStatus ? '，投资状态已更新' : ''}。` : `${primarySharedIdentifier(registryInstrument)} is already in this watchlist${addCoverageStatus ? '; investment status updated' : ''}.`)
                     } else {
-                      setNotice(`Added ${primarySharedIdentifier(registryInstrument)} to this watchlist.`)
+                      setNotice(zh ? `已添加 ${primarySharedIdentifier(registryInstrument)}。可继续搜索添加。` : `Added ${primarySharedIdentifier(registryInstrument)}. Keep searching to add more.`)
                     }
-                    setReloadToken(Date.now())
+                    void Promise.all([refreshWatchlistDetail(undefined, sourceWatchlistId), getWatchlists().then(setWatchlists)])
+                      .then(() => setReloadToken(value => value + 1))
+                      .catch(() => setViewToast({ id: Date.now(), tone: 'error', message: zh ? '添加已保存，列表暂时无法刷新。请稍后刷新列表。' : 'Addition saved, but the list could not refresh. Refresh the list shortly.' }))
                   } catch (addError) {
-                    setModalError(addError instanceof Error ? addError.message : 'Failed to add instrument.')
+                    setViewToast({ id: Date.now(), tone: 'error', message: addError instanceof Error ? addError.message : 'Failed to add instrument.' })
                   } finally {
                     setIsAdding(false)
+                    window.requestAnimationFrame(() => instrumentSearchRef.current?.focus())
                   }
                 }}
               >

@@ -118,6 +118,8 @@ def test_registered_crypto_has_native_detail_status_and_price_return_series(clie
     })
     assert updated.status_code == 200, updated.text
     assert updated.json()["values"]["coverage_status"] == "Invested"
+    assert updated.json()["recalculated"] is False
+    assert client.post("/api/recalc/instruments/btcusd/execute", json={"job_type": "all"}).status_code == 200
     chart = client.get("/api/instruments/btcusd/chart")
     assert chart.status_code == 200, chart.text
     assert chart.json()["selected_series"]["return_kind"] == "price_return"

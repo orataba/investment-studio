@@ -262,19 +262,21 @@ def upsert_instrument_attribute_values(
         session,
         instrument_id=instrument_id,
     )
-    execution = canonical_recalc_service.execute_recalc(
-        session,
-        instrument_id=instrument_id,
-        job_type="performance",
-        trigger_type="instrument_attribute_update",
-        trigger_ref_type="instrument_attribute_value",
-        trigger_ref_id=payload.source_record_id,
-    )
+    execution = None
+    if set(values) - {"coverage_status"}:
+        execution = canonical_recalc_service.execute_recalc(
+            session,
+            instrument_id=instrument_id,
+            job_type="performance",
+            trigger_type="instrument_attribute_update",
+            trigger_ref_type="instrument_attribute_value",
+            trigger_ref_id=payload.source_record_id,
+        )
     session.commit()
     return current_values | {
         "updated": True,
         "taxonomy": taxonomy_context,
-        "recalculated": True,
+        "recalculated": execution is not None,
         "execution": execution,
     }
 
@@ -381,7 +383,7 @@ def update_instrument_settings(
         )
 
     execution = None
-    if taxonomy_changed or status_changed:
+    if taxonomy_changed:
         execution = canonical_recalc_service.execute_recalc(
             session,
             instrument_id=instrument_id,

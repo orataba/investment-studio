@@ -1446,7 +1446,7 @@ describe('Transactions rendered page contract', () => {
         expect.stringContaining('transaction-file-import-'),
       ),
     )
-    expect(await screen.findByText('Imported 1 transaction facts from clean.xlsx.')).toHaveClass('investment-studio-notice-toast')
+    expect((await screen.findByText('Imported 1 transaction facts from clean.xlsx.')).closest('[role="status"]')).toHaveClass('investment-studio-notice-toast')
   })
 
   it('discards a file preview when the active portfolio changes', async () => {
@@ -2125,7 +2125,7 @@ describe('Transactions rendered page contract', () => {
     expect(apiMocks.createPortfolioTransaction.mock.calls[2][2]).not.toBe(first[2])
   })
 
-  it('preserves selected lots and fee category entered for physical delivery', async () => {
+  it.each([false, true])('preserves selected lots and categorized fees entered for physical delivery (multiple: %s)', async multiple => {
     apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [{ ...optionAccount, cost_basis_method: 'fifo' }, securitiesAccount, cashAccount] })
     apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({ portfolio_id: '3', derivative_contracts: [optionContract] })
     apiMocks.createPortfolioOptionOutcome.mockRejectedValue(new Error('Stop after request inspection'))
@@ -2139,8 +2139,13 @@ describe('Transactions rendered page contract', () => {
     fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Contracts' }), { target: { value: '1' } })
     fireEvent.change(within(dialog).getByLabelText('Exercise / Assignment Date'), { target: { value: '2026-09-15' } })
     fireEvent.change(within(dialog).getByLabelText('Trade Time (optional)'), { target: { value: '16:00' } })
-    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Fee' }), { target: { value: '3' } })
-    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Fee category' }), 'transaction_cost')
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Fee amount 1' }), { target: { value: '3' } })
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Fee category 1' }), 'transaction_cost')
+    if (multiple) {
+      await user.click(within(dialog).getByRole('button', { name: 'Add fee' }))
+      await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Fee category 2' }), 'performance_fee')
+      fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Fee amount 2' }), { target: { value: '2' } })
+    }
     await user.click(within(dialog).getByText('Additional details'))
     await user.click(within(dialog).getByRole('button', { name: '添加指定批次' }))
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Lot 1 opening transaction' }), { target: { value: 'txn-later-lot' } })
@@ -2150,8 +2155,10 @@ describe('Transactions rendered page contract', () => {
     const payload = apiMocks.createPortfolioOptionOutcome.mock.calls[0][1]
     expect(payload.trade_time).toBe('16:00')
     expect({ lot_selections: payload.lot_selections, fee_category: payload.fee_category }).toEqual({
-      lot_selections: [{ opening_transaction_id: 'txn-later-lot', quantity: '1' }], fee_category: 'transaction_cost',
+      lot_selections: [{ opening_transaction_id: 'txn-later-lot', quantity: '1' }], fee_category: multiple ? 'unknown' : 'transaction_cost',
     })
+    expect(payload.fees).toBe(multiple ? 5 : 3)
+    expect(payload.fee_components).toEqual([{ category: 'transaction_cost', amount: '3' }, ...(multiple ? [{ category: 'performance_fee', amount: '2' }] : [])])
   })
 
   it.each([false, true])('exposes missing delivery fields in an AI physical outcome (already physical: %s)', async (initiallyPhysical) => {
@@ -2581,14 +2588,14 @@ describe('Transactions rendered page contract', () => {
     await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'dividend_reinvestment')
     fireEvent.change(within(dialog).getByRole('spinbutton', { name: /^Shares/ }), { target: { value: '60444.48' } })
     fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Net Reinvested Amount' }), { target: { value: '65963.06' } })
-    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Withheld performance fee' }), { target: { value: String(fee) } })
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Fee amount 1' }), { target: { value: String(fee) } })
     const review = within(dialog).getByRole('complementary', { name: 'Transaction review' })
     expect(within(review).getByText('Gross dividend income').parentElement).toHaveTextContent(fee ? '85,429.52' : '65,963.06')
     expect(within(review).getByText('Net reinvested amount / cost').parentElement).toHaveTextContent('65,963.06')
     expect(within(review).getByText('Net Cash Effect').parentElement).toHaveTextContent('0.00')
     expect(within(dialog).queryByRole('spinbutton', { name: 'Tax' })).not.toBeInTheDocument()
     expect(within(dialog).queryByRole('combobox', { name: 'Settlement Cash Account' })).not.toBeInTheDocument()
-    if (fee) expect(within(dialog).getByRole('combobox', { name: 'Fee category' })).toHaveValue('performance_fee')
+    if (fee) expect(within(dialog).getByRole('combobox', { name: 'Fee category 1' })).toHaveValue('performance_fee')
     await user.click(within(dialog).getByRole('button', { name: 'Record Transaction' }))
     await waitFor(() => expect(apiMocks.createPortfolioTransaction).toHaveBeenCalledWith('3', expect.objectContaining({
       transaction_type: 'dividend_reinvestment', quantity: 60444.48, gross_amount: 65963.06,
@@ -2598,7 +2605,7 @@ describe('Transactions rendered page contract', () => {
 
   it('shows the gross dividend and preserves the withheld fee when correcting a reinvestment', async () => {
     const transaction = { ...selectedTransaction, transaction_type: 'dividend_reinvestment', quantity: 60444.48,
-      gross_amount: 65963.06, fees: 19466.46, fee_category: 'performance_fee' as const, net_cash_effect: 0, settlement_cash_account: null }
+      gross_amount: 65963.06, fees: 19466.46, source_fees: '19466.46', fee_category: 'performance_fee' as const, net_cash_effect: 0, settlement_cash_account: null }
     const workspace = await apiMocks.getPortfolioTransactionsWorkspace()
     apiMocks.getPortfolioTransactionsWorkspace.mockResolvedValue({ ...workspace, transactions: [transaction], selected_transaction: transaction })
     apiMocks.updatePortfolioTransaction.mockResolvedValue(transaction)
@@ -2609,7 +2616,7 @@ describe('Transactions rendered page contract', () => {
     expect(within(inspector).getByText('Net reinvested amount / cost').parentElement).toHaveTextContent('65,963.06')
     await user.click(within(inspector).getByRole('button', { name: 'Edit' }))
     const dialog = screen.getByRole('dialog', { name: 'Correct transaction' })
-    expect(within(dialog).getByRole('spinbutton', { name: 'Withheld performance fee' })).toHaveValue(19466.46)
+    expect(within(dialog).getByRole('spinbutton', { name: 'Fee amount 1' })).toHaveValue(19466.46)
     expect(within(dialog).getByRole('spinbutton', { name: 'Net Reinvested Amount' })).toHaveValue(65963.06)
     await user.click(within(dialog).getByRole('button', { name: 'Save Correction' }))
     await waitFor(() => expect(apiMocks.updatePortfolioTransaction).toHaveBeenCalledWith('3', 'txn-1', expect.objectContaining({

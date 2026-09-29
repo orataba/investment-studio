@@ -3,6 +3,7 @@ import { formatLabel } from '../lib/format'
 import { FcnSettlementReview } from './FcnSettlementReview'
 
 type DeliveryFields = Pick<PortfolioTransactionCreatePayload, 'asset_deliveries' | 'settlement_cashflows' | 'option_delivery' | 'lot_selections'> & Partial<Pick<PortfolioTransactionCreatePayload, 'currency' | 'trade_date' | 'position_effective_date' | 'settlement_date' | 'settlement_cash_account_id' | 'derivative_contract_id'>> & { gross_amount?: string | number | null }
+const FEE_CATEGORIES = ['unknown', 'transaction_cost', 'management_fee', 'custody_fee', 'administration_fee', 'performance_fee', 'financing_interest', 'borrow_fee', 'payment_in_lieu', 'other'] as const
 
 export function TransactionDeliveryReview({ record, accounts, instruments = [], contracts = [], portfolioId, canAddAssetDelivery = false, canSettleFcn = false, canSelectLots = false, requireOptionDelivery = false, onChange, onInstrumentRegistered }: {
   record: DeliveryFields
@@ -38,10 +39,21 @@ export function TransactionDeliveryReview({ record, accounts, instruments = [], 
           <option value="">选择账户</option>
           {accounts.filter(account => account.account_category === (field === 'stock_account_id' ? 'security' : 'cash')).map(account => <option key={account.account_id} value={account.account_id}>{account.account_name} · {account.currency}</option>)}
         </select></label>)}
-      {(['fees', 'taxes'] as const).map(field => <label key={field}><span>{field === 'fees' ? '交付费用' : '交付税费'}</span><input value={optionDelivery?.[field] ?? 0} readOnly={!onChange} onChange={event => onChange?.({ option_delivery: { ...optionDelivery!, [field]: event.target.value, ...(field === 'fees' && Number(event.target.value) === 0 ? { fee_category: 'unknown' as const } : {}) } })} /></label>)}
-      <label><span>交付费用分类</span><select disabled={!onChange || !Number(optionDelivery.fees)} value={optionDelivery.fee_category ?? 'unknown'} onChange={event => onChange?.({ option_delivery: { ...optionDelivery!, fee_category: event.target.value as PortfolioFeeCategory } })}>
-        {(['unknown', 'transaction_cost', 'management_fee', 'custody_fee', 'administration_fee', 'performance_fee', 'financing_interest', 'borrow_fee', 'payment_in_lieu', 'other'] as const).map(category => <option key={category} value={category}>{formatLabel(category)}</option>)}
-      </select></label>
+      {(['fees', 'taxes'] as const).filter(field => field !== 'fees' || !optionDelivery.fee_components?.length).map(field => <label key={field}><span>{field === 'fees' ? '交付费用' : '交付税费'}</span><input value={optionDelivery?.[field] ?? 0} readOnly={!onChange} onChange={event => onChange?.({ option_delivery: { ...optionDelivery!, [field]: event.target.value, ...(field === 'fees' && Number(event.target.value) === 0 ? { fee_category: 'unknown' as const } : {}) } })} /></label>)}
+      {optionDelivery.fee_components?.length ? optionDelivery.fee_components.map((component, index) => <div className="transaction-fee-component" key={index}>
+        <label><span>交付费用 {index + 1} 分类</span><select disabled={!onChange} value={component.category} onChange={event => onChange?.({ option_delivery: {
+          ...optionDelivery, fee_category: 'unknown', fees: undefined,
+          fee_components: optionDelivery.fee_components?.map((item, row) => row === index ? { ...item, category: event.target.value as PortfolioFeeCategory } : item),
+        } })}>
+          {FEE_CATEGORIES.map(category => <option key={category} value={category}>{formatLabel(category)}</option>)}
+        </select></label>
+        <label><span>交付费用 {index + 1} 金额</span><input value={component.amount} readOnly={!onChange} onChange={event => onChange?.({ option_delivery: {
+          ...optionDelivery, fee_category: 'unknown', fees: undefined,
+          fee_components: optionDelivery.fee_components?.map((item, row) => row === index ? { ...item, amount: event.target.value } : item),
+        } })} /></label>
+      </div>) : <label><span>交付费用分类</span><select disabled={!onChange} value={optionDelivery.fee_category ?? 'unknown'} onChange={event => onChange?.({ option_delivery: { ...optionDelivery!, fee_category: event.target.value as PortfolioFeeCategory } })}>
+        {FEE_CATEGORIES.map(category => <option key={category} value={category}>{formatLabel(category)}</option>)}
+      </select></label>}
       <label><input type="checkbox" checked={Boolean(optionDelivery.allow_stock_short)} disabled={!onChange} onChange={event => onChange?.({ option_delivery: { ...optionDelivery!, allow_stock_short: event.target.checked } })} />券商已确认交付时形成证券空头</label>
     </div> : null}
     {record.lot_selections?.map((item, index) => onChange ? <div key={index} className="transaction-capture-review-grid">

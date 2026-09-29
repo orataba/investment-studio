@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import { clearPortfolioApiCache } from '../lib/api'
 import { getPortfolioBootstrap, type PortfolioBootstrap } from '../lib/bootstrap'
 
@@ -13,6 +14,7 @@ function authorityKey(value: PortfolioBootstrap) {
 
 /** Fetch session, deployment settings and current portfolio access as one identity-bound snapshot. */
 export default function PortfolioBootstrapProvider({ portfolioId, children }: { portfolioId: string | null; children: ReactNode }) {
+  const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
   const [state, setState] = useState<BootstrapState>({ data: null, error: null, portfolioId })
   useEffect(() => {
     let active = true
@@ -20,6 +22,7 @@ export default function PortfolioBootstrapProvider({ portfolioId, children }: { 
     let confirmed: PortfolioBootstrap | null = null
     let controller: AbortController | null = null
     clearPortfolioApiCache()
+    setNotice(null)
     setState({ data: null, error: null, portfolioId })
     async function check(invalidate = false) {
       const number = ++requestNumber
@@ -40,9 +43,16 @@ export default function PortfolioBootstrapProvider({ portfolioId, children }: { 
         }
         if (confirmed && authorityKey(confirmed) !== authorityKey(result)) clearPortfolioApiCache()
         confirmed = result
+        setNotice(null)
         setState({ data: result, error: null, portfolioId })
       } catch (reason) {
         if (active && number === requestNumber) {
+          const status = (reason as { status?: number } | null)?.status
+          const transient = reason instanceof TypeError || requestController.signal.aborted || (typeof status === 'number' && status >= 500)
+          if (confirmed && transient) {
+            setNotice({ id: Date.now(), message: '账号服务暂时无法连接，已保留当前页面和未保存内容。', tone: 'error' })
+            return
+          }
           confirmed = null
           clearPortfolioApiCache()
           setState({ data: null, portfolioId, error: requestController.signal.aborted
@@ -64,5 +74,5 @@ export default function PortfolioBootstrapProvider({ portfolioId, children }: { 
   }, [portfolioId])
   // The new route must never render with the prior portfolio's authority.
   const value = state.portfolioId === portfolioId ? state : { data: null, error: null, portfolioId }
-  return <BootstrapContext.Provider value={value}>{children}</BootstrapContext.Provider>
+  return <BootstrapContext.Provider value={value}>{children}<NoticeToast notice={notice} onDismiss={() => setNotice(null)} /></BootstrapContext.Provider>
 }

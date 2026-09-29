@@ -17,6 +17,7 @@ import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import RenameWatchlistDialog from '../components/RenameWatchlistDialog'
 import WatchlistCreator from '../components/WatchlistCreator'
 import LoadingOverlay from '../components/LoadingOverlay'
+import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
 function isSystemWatchlist(watchlist: WatchlistRecord) {
@@ -238,8 +239,8 @@ export default function WatchlistEntryPage() {
         </div>
       </header>
 
-      {error ? <div className="panel error-state">{error}</div> : null}
-      {notice ? <div className="inline-notice">{notice}</div> : null}
+      <NoticeToast notice={error ? { id: 0, message: error, tone: 'error' } : null} onDismiss={() => setError(null)} />
+      <NoticeToast notice={notice ? { id: 0, message: notice, tone: 'success' } : null} onDismiss={() => setNotice(null)} />
 
       <section className="watchlist-entry-list-shell">
         <div className="watchlist-entry-grid">

@@ -265,6 +265,8 @@ def test_comparison_uses_available_observations_despite_gaps_and_missing_semanti
 
 def test_risk_breach_updates_once_followup_is_not_recovery_and_recurrence_is_new(client):
     seed(client)
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
     from watchlist_app.db.session import get_session_factory
     from watchlist_app.db.models import InstrumentRiskReadModel, InstrumentSummaryReadModel
     from watchlist_app.services.risk_workbench import refresh_risk_cases
@@ -323,6 +325,8 @@ def test_completed_instrument_notes_leave_due_projection_and_retain_revision(cli
 
 def test_minor_sample_lows_and_low_importance_notes_do_not_raise_attention(client):
     seed(client)
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
     from watchlist_app.db.session import get_session_factory
     from watchlist_app.db.models import InstrumentRiskReadModel, InstrumentSummaryReadModel
     from watchlist_app.services.risk_workbench import refresh_risk_cases

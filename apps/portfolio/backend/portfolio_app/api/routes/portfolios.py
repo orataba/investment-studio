@@ -78,6 +78,21 @@ def current_session(portfolio_id: str | None = None):
             "capabilities": {"research_enabled": get_settings().research_enabled}, "access": access}
 
 
+@router.get("/{portfolio_id}/calculation-status")
+def calculation_status(portfolio_id: str):
+    from portfolio_app.db.models import PortfolioCalculationStateModel
+    from portfolio_app.db.session import get_session_factory
+    require_access(portfolio_id)
+    with get_session_factory()() as session:
+        state = session.get(PortfolioCalculationStateModel, portfolio_id)
+        return {
+            "portfolio_id": portfolio_id,
+            "status": state.daily_snapshot_status if state else "unavailable",
+            "refreshed_to": state.refreshed_to if state else None,
+            "error_message": state.error_message if state else None,
+        }
+
+
 @router.get("")
 def list_portfolio_records() -> list[dict[str, object]]:
     records = list_portfolios(portfolio_ids=visible_ids())

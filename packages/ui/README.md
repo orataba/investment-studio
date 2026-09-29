@@ -22,7 +22,7 @@
 - `ConfirmDialog` / `useModalDialog` / `modalStack`
   跨 app 的确认弹窗、焦点管理和嵌套弹窗栈。
 - `NoticeToast`
-  统一的非阻塞操作结果通知。
+  统一的非阻塞右侧通知，加载、成功、错误和一般状态共用一个堆叠容器；`LoadingNotice` 随操作结束消失，错误可关闭，成功自动收起。通知通过 portal 挂在页面根部，弹窗内调用也不改变布局或被遮挡。字段校验和长期数据覆盖说明仍留在相关字段/数据区域。
 - `InfoHint` / `info-hint.css`
   标题或指标旁的 16px 正圆叹号：悬停、聚焦和点击显示同一份锚定说明，点击可固定，Escape / 外点关闭，不改变页面布局或打开模态窗口。Portfolio、Watchlist、Briefing 共用；Regime 以原生页面实现相同交互。
 - `DownloadFormatMenu` / `tableExport`

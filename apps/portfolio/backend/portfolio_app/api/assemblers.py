@@ -139,6 +139,7 @@ def serialize_transaction(
         fees=float(record.get("fees") or 0.0),
         source_fees=str(record["source_fees"]) if record.get("source_fees") is not None else None,
         fee_category=str(record.get("fee_category") or "unknown"),
+        fee_components=record.get("fee_components") or [],
         taxes=float(record.get("taxes") or 0.0),
         source_taxes=str(record["source_taxes"]) if record.get("source_taxes") is not None else None,
         currency=str(record.get("currency") or ""),

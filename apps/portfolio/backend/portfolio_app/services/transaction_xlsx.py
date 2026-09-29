@@ -151,8 +151,9 @@ FEE_CATEGORY_GUIDANCE = {
 FIELD_GUIDANCE: dict[str, tuple[str, str, str]] = {
     "lot_selections_json": ("指定开仓批次", "可选", "FIFO 卖出、买回或兑付可指定 [{opening_transaction_id, quantity}]，数量之和必须等于本次处置量。文件内可引用 record_reference。留空使用账户成本法。"),
     "record_reference": ("本行引用编号", "可选", "文件内唯一编号，供后续指定批次引用。导出自动保留引用；转仓行代表接收批次。不是券商业务号。"),
-    "option_delivery_json": ("期权原子实物交割", "physical_long / physical_written 必填", "一行同时表达期权结果及实际股票腿；填写 stock_account_id、settlement_cash_account_id、fees、fee_category、taxes，以及券商已形成股票空头时的 allow_stock_short。外层 fees/taxes 为零，费用分类留 unknown；两腿共用本行 trade_time。数量和行权价由合约校验，不要另填独立股票成交。"),
+    "option_delivery_json": ("期权原子实物交割", "physical_long / physical_written 必填", "一行同时表达期权结果及实际股票腿；填写 stock_account_id、settlement_cash_account_id、fees、fee_components、fee_category、taxes，以及券商已形成股票空头时的 allow_stock_short。外层 fees/taxes 为零，费用分类留 unknown；两腿共用本行 trade_time。数量和行权价由合约校验，不要另填独立股票成交。"),
     "asset_deliveries_json": ("FCN 实物交付列表", "实物兑付时必填", "每项包含 account_id、instrument_id、quantity、fair_value（总确认价值）、currency、fx_rate_to_contract。delivery_date 为实际到账；取得费用 taxes/fees 使用该腿币种及 settlement_cash_account_id，fee_settlement_date 为扣款日。quantity_fx_rate（证券币/合约币）仅解释股数。gross_amount 仅填实际尾差；note 填交割依据。"),
+    "fee_components_json": ("分类费用明细", "多项附加费用时填写", 'JSON 数组，例如 [{"category":"performance_fee","amount":"100"},{"category":"transaction_cost","amount":"10"}]。币种及结算日跟随主交易；fees 留空或等于明细合计。'),
     "settlement_cashflows_json": ("FCN 末期票息与合约费用", "可选", "每项含 kind（coupon/fee/tax）、cash_account_id、currency、amount、recognition_date、settlement_date。票息使用合约币；费用可用实际其他币种。不能重复录入已有票息或交付腿已资本化税费。"),
     "derivative_additional_terms_json": (
         "补充合约条款 JSON", "新建衍生品合约时选填",

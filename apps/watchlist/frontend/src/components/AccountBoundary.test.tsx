@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import AccountBoundary, { accountStorageKey } from './AccountBoundary'
 
@@ -36,4 +36,29 @@ it('keeps the latest account when an older identity request finishes after a swi
   expect(screen.queryByText('Alice · 团队协作')).toBeNull()
   expect(screen.getByText('Bob · 团队只读')).toBeTruthy()
   expect(accountStorageKey('views')).toBe('views:bob')
+})
+
+it('keeps the current page and unsaved input during a temporary identity outage, then retries', async () => {
+  const identity = { ok: true, json: async () => ({ user_id: 'alice', display_name: 'Alice', team_id: 'default', team_role: 'admin' }) }
+  const fetch = vi.fn().mockResolvedValueOnce(identity).mockResolvedValueOnce({ ok: false, status: 503 }).mockResolvedValueOnce(identity)
+  vi.stubGlobal('fetch', fetch)
+  render(<AccountBoundary><input aria-label="Draft" defaultValue="" /></AccountBoundary>)
+  const draft = await screen.findByLabelText('Draft')
+  fireEvent.change(draft, { target: { value: 'Unsaved work' } })
+  await act(async () => { window.dispatchEvent(new Event('focus')) })
+  expect(screen.getByLabelText('Draft')).toBe(draft)
+  expect(draft).toHaveProperty('value', 'Unsaved work')
+  fireEvent.click(screen.getByRole('button', { name: '重试' }))
+  await act(async () => {})
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(screen.getByLabelText('Draft')).toBe(draft)
+})
+
+it('clears protected content when the server explicitly revokes the session', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ user_id: 'alice', display_name: 'Alice', team_id: 'default', team_role: 'admin' }) }).mockResolvedValueOnce({ ok: false, status: 401 }))
+  render(<AccountBoundary><p>Protected content</p></AccountBoundary>)
+  await screen.findByText('Protected content')
+  await act(async () => { window.dispatchEvent(new Event('studio:unauthorized')) })
+  expect(screen.queryByText('Protected content')).toBeNull()
+  expect(screen.getByRole('link', { name: '前往登录' })).toBeTruthy()
 })

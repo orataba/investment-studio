@@ -17,6 +17,7 @@ export function changeTransactionCaptureAction(
       gross_amount: 0,
       price: null,
       fees: 0,
+      fee_components: [],
       fee_category: 'unknown',
       taxes: 0,
       settlement_cash_account_id: null,
@@ -24,6 +25,7 @@ export function changeTransactionCaptureAction(
         stock_account_id: '',
         settlement_cash_account_id: record.settlement_cash_account_id ?? '',
         fees: record.fees ?? 0,
+        fee_components: record.fee_components ?? [],
         fee_category: record.fee_category ?? 'unknown',
         taxes: record.taxes ?? 0,
       },
@@ -35,6 +37,7 @@ export function changeTransactionCaptureAction(
     ...(delivery ? {
       settlement_cash_account_id: delivery.settlement_cash_account_id,
       fees: delivery.fees ?? 0,
+      fee_components: delivery.fee_components ?? [],
       fee_category: delivery.fee_category ?? 'unknown',
       taxes: delivery.taxes ?? 0,
     } : {}),

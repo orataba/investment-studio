@@ -17,7 +17,7 @@
 
 迁移 `20260920_0060` 为 PostgreSQL `research_entry` 增加基于留存 `context_json.instrument_ids` 的 GIN 表达式索引。读取先按该次运行的原始标的范围筛选，再解析命中记录的研究字段；不能用后来可变的 `research_topic.instrument_ids` 替代历史范围。索引通过同一不可变数据库函数提取文本数组，由 PostgreSQL 随每次写入维护；它不是第二份研究事实或跨请求缓存。原始 context、来源正文、作者及权限判断保持原样。SQL 工作副本仅为处理 PostgreSQL JSON 中保留的 NUL 转义而转换，选中的原始字段仍精确还原。改变提取函数语义必须通过迁移重建依赖索引；SQLite 使用等价的既有逐行范围谓词。
 
-浏览器 HTTP 投影与完整研究输入分开：`/api/sector-research` 的运行状态使用 `include_events=false` 跳过事件与事件历史读取，只携带当前投资判断及其原始版本，不重复附带整份底稿；`/dossier?current_only=true` 只读取当前底稿、基础档案及研究指导，跳过活动历史、PM 修订、主题时间线和历史来源集合；辅助入口展开后读取材料与完整历史，但不计算页面未使用的研究员议程和主题活动；精确来源／版本请求始终走原始路径。`/dossier` 的来源列表保留身份、时钟、归属与展示用的数值／方法，完整正文、快照、公司资料和计算输入由既有 `source_id`、`version_id` 查询按需读取。指定来源或版本的查询不使用展示投影，仍受相同标的及历史版本权限约束。领域服务、风险输入与 agent 的已绑定证据保持完整；展示优化不改写存储内容、研究结论或来源时点。
+浏览器 HTTP 投影与完整研究输入分开：`/api/sector-research` 的运行状态使用 `include_events=false` 跳过事件与事件历史读取，只携带当前投资判断及其原始版本，不重复附带整份底稿；`/dossier?current_only=true` 只读取当前底稿、基础档案及研究指导，跳过活动历史、PM 修订、主题时间线和历史来源集合；辅助入口展开后读取材料与完整历史，但不计算页面未使用的研究员议程和主题活动；精确来源／版本请求始终走原始路径。`/dossier` 的来源列表保留身份、时钟、归属与展示用的数值／方法，嵌套来源、完整序列、输入版本、正文、快照、公司资料和计算输入不进入首屏来源目录，由既有 `source_id`、`version_id` 查询按需读取。指定来源或版本的查询不使用展示投影，仍受相同标的及历史版本权限约束。领域服务、风险输入与 agent 的已绑定证据保持完整；展示优化不改写存储内容、研究结论或来源时点。
 
 - `/api/research/catalogue`、`/connections` 提供登记标的与外部证据连接状态。
 - `/api/research/topics` 管理持续专题；专题下的 `/entries`、`/files`、`/analysis` 保存材料或发起助手运行。
@@ -282,6 +282,7 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 - `GET /api/watchlists/{watchlist_id}`
 - `GET /api/watchlists/{watchlist_id}/views`
 - `POST /api/watchlists/{watchlist_id}/items`
+- `POST /api/watchlists/{watchlist_id}/items/coverage-status`
 - `POST /api/watchlists/{watchlist_id}/items/delete`
 - `POST /api/watchlists/{watchlist_id}/items/move`
 - `POST /api/watchlists/{watchlist_id}/items/copy`
@@ -289,6 +290,10 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 - `PUT /api/watchlists/{watchlist_id}/views/{view_id}`
 
 创建请求只接受 `name`、`description`；列表摘要、详情以及创建/复制结果均返回创建人字段。复制的创建人为执行复制的成员，源列表的作者不继承。创建、复制、改名和增删成员均要求团队写权限；列表排序和个人显示视图允许只读成员维护。
+
+名单添加请求接受 `instrument_ids` 和可选 `coverage_status`（`Watch / Proposed / Invested / Paused / Exited`）。不传状态或传 `null` 保留原状态；指定状态时，已存在成员也会更新其全局状态。成功返回 `accepted_count` 和 `pending_recalc_instrument_ids`；成员、状态和新成员的持久队列在一个事务中提交，行情计算由现有 worker 完成，接口不再声称已完成重算。已有 queued 全量任务可合并，已有 running 任务必须有一个提交后的后继任务。队列提交失败回滚整个添加，后台计算失败不删除已保存的成员。
+
+批量状态接口接受非空 `instrument_ids` 与 `coverage_status`，先校验全部标的属于该列表再原子更新，返回 `updated_count`。状态属于标的，在所有名单和详情中一致；状态修改不触发全历史行情重算，列表在过滤、排序和分组之前批量覆盖真实属性表的最新状态，详情同样读取当前属性，不会被较早启动的物化任务覆盖回旧值；系统名单不能修改成员，但可通过此接口更新成员状态。成员检查失败不做部分写入；只读权限仍不能调用写接口。
 
 证券添加使用 `GET /api/securities/search`（查询参数 `q`、`limit`）查询数据维护端的市场目录，不触发登记；部分目录不可用时返回 `catalog_errors`。`POST /api/securities/materialize` 只接受 `instrument_type`（equity/etf）、`catalog_provider`（当前 fmp）及 `catalog_symbol`，要求非只读的直接用户身份，禁止研究服务或委托凭证调用。共享数据维护命令负责登记与行情刷新，返回 canonical instrument 供已有 `/items` 接口添加；Watchlist 不另建证券注册实现。登记超时或下游确认失败明确提示可能已登记，可重新搜索确认。
 

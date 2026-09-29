@@ -3,6 +3,7 @@ import { useCanWriteTeam } from '../components/AccountBoundary'
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { Link, useSearchParams } from 'react-router'
 
+import NoticeToast, { LoadingNotice } from '../../../../../packages/ui/src/NoticeToast'
 import InfoHint from '../../../../../packages/ui/src/InfoHint'
 import InvestmentOpinionTimeline, { currentInvestmentOpinion } from '../components/InvestmentOpinionTimeline'
 import SectorResearchPanel from '../components/SectorResearchPanel'
@@ -566,6 +567,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const [settingsLoading, setSettingsLoading] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
+  const [dismissedLoadError, setDismissedLoadError] = useState('')
   const [attributeValues, setAttributeValues] = useState<InstrumentAttributeValuesResponse | null>(null)
   const [taxonomyTree, setTaxonomyTree] = useState<InstrumentTaxonomyTreeResponse | null>(null)
   const [taxonomyDraftNodeId, setTaxonomyDraftNodeId] = useState('')
@@ -963,6 +965,10 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const standardizedError = failedStandardized.length
     ? `Standardized ${failedStandardized.join(' and ')} data is unavailable; affected metrics are withheld.` : null
 
+  const loadErrorMessage = [standardizedError, researchError].filter(Boolean).join(' ')
+  const loadErrorKey = `${instrumentId}:${loadErrorMessage}`
+  const visibleDataLoading = pending.summary || pending.attributes || pending.research || ((tab === 'overview' || tab === 'performance') && (pending.chart || pending.performance || pending.risk || (!usesCanonicalPriceSeries && pending.bars)))
+
   const chartPanel = (
     <section className="panel listed-chart-panel">
       <div className="listed-chart-toolbar">
@@ -1031,6 +1037,9 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     <div className={`instrument-detail-page listed-detail-page${tab === 'investment-research' ? ' research-document-page' : ''}`}>
       {riskInstrumentId === instrumentId && <InstrumentRiskDrawer instrumentId={instrumentId} instrumentName={instrument.instrument_name} watchlistId={watchlistContext?.watchlistId} onClose={() => setRiskInstrumentId(null)} onAskAssistant={(question, researchReference) => setAssistant({ instrumentId, question, researchReference })} />}
       {assistant?.instrumentId === instrumentId && <InstrumentAssistantDrawer instrumentId={instrumentId} watchlistId={watchlistContext?.watchlistId} question={assistant.question} researchReference={assistant.researchReference} onClose={() => setAssistant(null)} />}
+      <LoadingNotice active={visibleDataLoading || settingsLoading || settingsSaving} message={settingsSaving ? (zh ? '正在保存设置…' : 'Saving settings…') : (zh ? '正在加载标的资料…' : 'Loading instrument data…')} />
+      <NoticeToast notice={settingsError ? { id: 0, tone: 'error', message: settingsError } : null} onDismiss={() => setSettingsError(null)} />
+      <NoticeToast notice={loadErrorMessage && dismissedLoadError !== loadErrorKey ? { id: 0, tone: 'error', message: loadErrorMessage } : null} onDismiss={() => setDismissedLoadError(loadErrorKey)} />
       <div className="instrument-detail-topbar">
         <div className="instrument-detail-breadcrumbs">
           <a data-workspace-link href={HOME_URL} className="watchlist-breadcrumb-link">Home</a>
@@ -1109,9 +1118,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
               </div>
             </div>
             <div className="instrument-settings-body">
-              {settingsError ? (
-                <div className="inline-notice inline-notice-error" role="alert">{settingsError}</div>
-              ) : null}
               <section className="instrument-settings-section">
                 <div className="instrument-settings-section-header">
                   <div>
@@ -1165,7 +1171,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
                       ))}
                     </select>
                   </label>
-                  {settingsLoading ? <div className="instrument-settings-loading">Loading</div> : null}
                 </div>
               </section>
             </div>
@@ -1173,9 +1178,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         </div>
       ) : null}
 
-      {standardizedError ? (
-        <div className="listed-source-alert" role="alert">{standardizedError}</div>
-      ) : null}
 
       <div className="instrument-detail-tabs-row">
         <div className="instrument-detail-tabs">
@@ -1183,7 +1185,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             <button type="button" key={item}
               className={`instrument-detail-tab ${tab === item ? 'instrument-detail-tab-active' : ''}`}
               onClick={() => setTab(item)}>
-              {{ overview: zh ? '总览' : 'Overview', 'investment-research': zh ? '投资研究' : 'Investment Research', views: zh ? '投资观点' : 'Investment Views', performance: zh ? '表现与指标' : 'Performance & Metrics' }[item]}
+              {{ overview: zh ? '总览' : 'Overview', 'investment-research': zh ? '投资研究' : 'Investment Research', views: zh ? '投资观点' : 'Investment Views', performance: zh ? '绩效指标' : 'Performance Metrics' }[item]}
             </button>
           ))}
         </div>
@@ -1191,7 +1193,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
 
       {tab === 'overview' ? (
         <div className="listed-tab-stack">
-          {listedInstrumentType === 'etf' && <><EtfProfilePanel key={instrumentId} instrumentId={instrumentId} language={language} /><details className="panel research-estimate-history" onToggle={event => setEstimateHistoryOpen(event.currentTarget.open)}><summary>{zh ? '历史盈利预期快照' : 'Historical earnings estimates'}</summary>{estimateHistoryOpen && <EstimateHistoryPanel instrumentId={instrumentId} language={language} />}</details></>}
+          {listedInstrumentType === 'etf' && <details className="panel research-estimate-history" onToggle={event => setEstimateHistoryOpen(event.currentTarget.open)}><summary>{zh ? '基金结构与盈利预期' : 'Fund structure and earnings estimates'}</summary>{estimateHistoryOpen && <><EtfProfilePanel key={instrumentId} instrumentId={instrumentId} language={language} /><EstimateHistoryPanel instrumentId={instrumentId} language={language} /></>}</details>}
           <section className="listed-metric-grid listed-overview-quote">
             <MetricCard label="YTD" value={returnsPending ? loadingLabel : percentValue(overviewYtd)} tone={signedValueClass(overviewYtd)} />
             <MetricCard label="1 Year" value={returnsPending ? loadingLabel : percentValue(overviewOneYear)} tone={signedValueClass(overviewOneYear)} />
@@ -1201,13 +1203,13 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           <section className="panel listed-overview-brief">
             <div className="listed-overview-brief-row">
               <div><h3>{zh ? '当前总体观点' : 'Current Overall View'}</h3>
-                {pending.research ? sectionLoading(zh ? '投资观点' : 'Investment views') : researchError ? <p role="alert">{researchError}</p> : latestOpinion ? <><time>{formatDate(latestOpinion.noteDate)}</time><p>{latestOpinion.body || latestOpinion.title}</p></> : <p>{zh ? '尚未选定总体观点。可在投资观点中记录判断并设为当前观点。' : 'No overall view selected. Record and select one in Investment Views.'}</p>}
+                {pending.research ? sectionLoading(zh ? '投资观点' : 'Investment views') : researchError ? <p>{zh ? '投资观点暂时无法读取。' : 'Investment views unavailable.'}</p> : latestOpinion ? <><time>{formatDate(latestOpinion.noteDate)}</time><p className="overview-opinion-excerpt">{latestOpinion.body || latestOpinion.title}</p></> : <p>{zh ? '尚未选定总体观点。可在投资观点中记录判断并设为当前观点。' : 'No overall view selected. Record and select one in Investment Views.'}</p>}
               </div>
               <button type="button" onClick={() => setTab('views')}>{zh ? '查看观点' : 'View opinions'} →</button>
             </div>
             <div className="listed-overview-brief-row">
               <div><h3>{zh ? '当前回撤' : 'Current Drawdown'}</h3><p>{pending.risk ? loadingLabel : percentValue(displayRiskStats.currentDrawdown)} <span className="listed-chart-caption">{pending.risk ? '' : riskAsOfNote}</span></p></div>
-              <button type="button" onClick={() => setTab('performance')}>{zh ? '表现与指标' : 'Performance & Metrics'} →</button>
+              <button type="button" onClick={() => setTab('performance')}>{zh ? '绩效指标' : 'Performance Metrics'} →</button>
             </div>
           </section>
           <SectorResearchPanel instrumentId={instrumentId} variant="summary" onOpenEvents={() => setTab('investment-research')} />
@@ -1216,11 +1218,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
 
       {tab === 'views' ? (
         <div className="listed-tab-stack listed-research-tab">
-          {researchError ? (
-            <div className="listed-source-alert" role="alert">
-              Investment research unavailable: {researchError}
-            </div>
-          ) : null}
+          {researchError ? <p className="instrument-placeholder">{zh ? '投资观点暂时无法读取。' : 'Investment views unavailable.'}</p> : null}
           {pending.research ? sectionLoading(zh ? '投资观点' : 'Investment views') : !researchError && <InvestmentOpinionTimeline onAskAssistant={openAssistant} instrumentId={instrumentId} research={research} language={language} onChange={setResearch} />}
         </div>
       ) : null}

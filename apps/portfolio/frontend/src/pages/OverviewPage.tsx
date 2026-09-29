@@ -1,3 +1,4 @@
+import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useParams } from 'react-router'
@@ -1640,8 +1641,8 @@ export default function OverviewPage() {
       busy={workspaceLoading || performanceLoading || benchmarkLoading}
     >
       <section className="portfolio-detail-surface portfolio-overview-surface">
-        {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
-        {performanceError ? <div className="inline-notice inline-notice-error">{performanceError}</div> : null}
+        <NoticeToast notice={workspaceError ? { id: 0, tone: 'error', message: workspaceError } : null} onDismiss={() => setWorkspaceError(null)} />
+        <NoticeToast notice={performanceError ? { id: 0, tone: 'error', message: performanceError } : null} onDismiss={() => setPerformanceError(null)} />
         {workspaceLoading ? <CalculationStatus /> : null}
 
         {!workspaceLoading && !holdingsWorkspace && !workspaceError ? (

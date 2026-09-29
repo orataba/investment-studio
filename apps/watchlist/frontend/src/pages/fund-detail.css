@@ -24,10 +24,6 @@
 .fund-overview-section time { display: block; margin-top: 20px; font-size: 12px; color: var(--muted, #64748b); }
 .fund-overview-section h3 { margin: 8px 0; font-size: 14px; font-weight: 600; }
 .fund-overview-section p { margin: 12px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; font-size: 14px; }
-.fund-overview-destinations { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; margin-top: 24px; }
-.fund-overview-destinations > button { display: grid; align-content: start; gap: 9px; padding: 14px 0; border: 0; border-top: 1px solid var(--line-strong, #cbd5e1); border-radius: 0; background: transparent; text-align: left; }
-.fund-overview-destinations strong { font-size: 14px; font-weight: 600; }
-.fund-overview-destinations span { font-size: 12px; line-height: 1.65; color: var(--muted, #64748b); }
 .fund-archive-layout { display: flex; flex-direction: column; gap: 0; }
 .fund-workspace-heading { padding: 18px 0 24px; }
 .fund-workspace-heading p { margin: 7px 0 0; font-size: 13px; line-height: 1.6; color: var(--muted, #64748b); }
@@ -66,6 +62,5 @@
   .fund-overview-snapshot { gap: 20px; }
   .fund-overview-key-metrics { gap: 12px; }
   .fund-overview-key-metrics strong { font-size: 17px; }
-  .fund-overview-destinations { grid-template-columns: 1fr; gap: 8px; }
   .fund-workspace-heading { align-items: flex-start; flex-direction: column; gap: 14px; }
 }

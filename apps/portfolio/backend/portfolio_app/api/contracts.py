@@ -716,6 +716,33 @@ class FCNSettlementCashflow(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
 
 
+class TransactionFeeComponent(BaseModel):
+    """One attached charge, in the transaction currency and settlement clock."""
+    model_config = ConfigDict(extra="forbid")
+    category: FeeCategory
+    amount: Decimal = Field(gt=0, lt=Decimal("1e20"))
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def normalize_amount_precision(cls, value: object) -> object:
+        return _quantize_numeric_input(value, quantum=AMOUNT_SOURCE_QUANTUM)
+
+
+def _normalize_attached_fee_components(payload) -> None:
+    if payload.fee_components:
+        total = sum((item.amount for item in payload.fee_components), Decimal(0))
+        if total >= Decimal("1e20"):
+            raise ValueError("Attached fee total is too large.")
+        if "fees" in payload.model_fields_set and payload.fees != total:
+            raise ValueError("fees must equal the sum of fee_components.")
+        categories = {item.category for item in payload.fee_components}
+        category = next(iter(categories)) if len(categories) == 1 else "unknown"
+        if payload.fee_category not in ("unknown", category):
+            raise ValueError("fee_category conflicts with fee_components.")
+        payload.fees = total
+        payload.fee_category = category
+
+
 class TransactionRecord(BaseModel):
     transaction_id: str
     transaction_sequence: int = Field(ge=1)
@@ -756,6 +783,7 @@ class TransactionRecord(BaseModel):
     source_fx_rate: str | None = None
     fees: float = 0.0
     source_fees: str | None = None
+    fee_components: list[TransactionFeeComponent] = Field(default_factory=list)
     fee_category: FeeCategory = "unknown"
     taxes: float = 0.0
     source_taxes: str | None = None
@@ -3581,8 +3609,19 @@ class PhysicalOptionDelivery(BaseModel):
     settlement_cash_account_id: str = Field(min_length=1)
     allow_stock_short: bool = False
     fees: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
+    fee_components: list[TransactionFeeComponent] = Field(default_factory=list)
     fee_category: FeeCategory = "unknown"
     taxes: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
+
+    @field_validator("fees", "taxes", mode="before")
+    @classmethod
+    def normalize_amount_precision(cls, value: object) -> object:
+        return _quantize_numeric_input(value, quantum=AMOUNT_SOURCE_QUANTUM)
+
+    @model_validator(mode="after")
+    def normalize_fees(self):
+        _normalize_attached_fee_components(self)
+        return self
 
 
 class TransactionCreateRequest(BaseModel):
@@ -3612,6 +3651,7 @@ class TransactionCreateRequest(BaseModel):
     counter_amount: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e20"))
     fx_rate: Decimal | None = Field(default=None, gt=0, lt=Decimal("1e16"))
     fees: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
+    fee_components: list[TransactionFeeComponent] = Field(default_factory=list)
     fee_category: FeeCategory = "unknown"
     taxes: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
     currency: str = Field(min_length=1, max_length=8)
@@ -3685,6 +3725,9 @@ class TransactionCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_amount_contract(self) -> "TransactionCreateRequest":
+        _normalize_attached_fee_components(self)
+        if self.transaction_type == "dividend_reinvestment" and any(item.category != "performance_fee" for item in self.fee_components):
+            raise ValueError("Dividend reinvestment attached fees must be withheld performance_fee.")
         if self.option_delivery and self.lifecycle_event_type not in {"option_long_exercise", "option_writer_assignment"}:
             raise ValueError("Option delivery details require an exercise or assignment outcome.")
         if self.settlement_cashflows:
@@ -4071,6 +4114,7 @@ class OptionOutcomeCreateRequest(BaseModel):
         lt=Decimal("1e20"),
     )
     fees: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
+    fee_components: list[TransactionFeeComponent] = Field(default_factory=list)
     fee_category: FeeCategory = "unknown"
     taxes: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
     note: str | None = None
@@ -4102,6 +4146,7 @@ class OptionOutcomeCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "OptionOutcomeCreateRequest":
+        _normalize_attached_fee_components(self)
         if self.fee_category != "unknown" and self.fees == 0:
             raise ValueError("fee_category requires a positive attached fee.")
         if self.lot_selections and self.side != "long":
@@ -4248,6 +4293,7 @@ class TransactionImportCommand(BaseModel):
     counter_amount: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e20"))
     fx_rate: Decimal | None = Field(default=None, gt=0, lt=Decimal("1e16"))
     fees: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e20"))
+    fee_components: list[TransactionFeeComponent] = Field(default_factory=list)
     fee_category: FeeCategory | None = None
     taxes: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e20"))
     currency: SupportedCurrency

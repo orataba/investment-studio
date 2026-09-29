@@ -18,8 +18,17 @@ class WatchlistRenameRequest(BaseModel):
     name: str
 
 
+CoverageStatus = Literal["Watch", "Proposed", "Invested", "Paused", "Exited"]
+
+
 class WatchlistItemsCreateRequest(BaseModel):
     instrument_ids: list[str] = Field(default_factory=list, max_length=2000)
+    coverage_status: CoverageStatus | None = None
+
+
+class WatchlistCoverageStatusRequest(BaseModel):
+    instrument_ids: list[str] = Field(min_length=1, max_length=2000)
+    coverage_status: CoverageStatus
 
 
 class WatchlistItemsDeleteRequest(BaseModel):

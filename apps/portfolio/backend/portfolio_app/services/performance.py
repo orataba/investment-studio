@@ -2278,7 +2278,6 @@ def build_daily_portfolio_snapshots(
     pending_settlement_currency_gain_history_complete = True
     previous_position_market_values_local_by_currency: dict[str, float] = {}
     previous_position_market_value_date: date | None = None
-    previous_priced_instrument_ids: set[str] = set()
     cumulative_instrument_currency_gains = 0.0
     instrument_currency_gain_history_complete = True
     previous_contribution_states_by_axis: dict[str, dict[str, dict[str, object]]] = {
@@ -2541,7 +2540,6 @@ def build_daily_portfolio_snapshots(
         priced_position_count = 0
         total_position_count = len(position_buckets)
         position_market_value_base = 0.0
-        current_priced_instrument_ids: set[str] = set()
         missing_market_data: list[str] = []
         open_cost_basis_base = 0.0
         cost_basis_complete = True
@@ -2595,7 +2593,6 @@ def build_daily_portfolio_snapshots(
             price_point = None
             if not event_valued:
                 instrument_id = str(bucket.get("instrument_id") or "")
-                current_priced_instrument_ids.add(instrument_id)
                 detail = valuation_fx.instrument_detail_cache_get(
                     instrument_id,
                     instrument_detail_cache,
@@ -2669,22 +2666,9 @@ def build_daily_portfolio_snapshots(
                 valuation_fx_stale_flag or valuation_fx_stale
             )
 
-        # A position sold today was exposed during this subperiod too.  Its
-        # trading-day close remains required by the daily observation policy.
-        for instrument_id in sorted(previous_priced_instrument_ids - current_priced_instrument_ids):
-            detail = valuation_fx.instrument_detail_cache_get(
-                instrument_id, instrument_detail_cache,
-                instrument_detail_loader=get_registry_instrument_detail,
-            )
-            point = _select_market_point_as_of(
-                detail=detail, role="valuation", as_of_date=as_of_date,
-                lookup=market_point_lookup,
-            ) if isinstance(detail, dict) else None
-            if point is None or bool(point.get("stale")):
-                missing_market_data.append(f"{instrument_id} valuation price")
-            elif _parse_iso_date(point.get("as_of_date")) == as_of_date:
-                fresh_price_count += 1
-        previous_priced_instrument_ids = current_priced_instrument_ids
+        # Fully disposed positions are valued by confirmed sale proceeds (cash or
+        # receivable). An unused closing quote must not block their realized NAV.
+        # Remaining positions above still require the date's official valuation.
 
         derivative_liability_base = 0.0
         derivative_liability_complete = True

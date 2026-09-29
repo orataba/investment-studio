@@ -5683,9 +5683,11 @@ def test_instrument_contribution_and_calculation_capture_attached_buy_charges(cl
     assert "residual_gains" not in calculation_summary
 
 
+@pytest.mark.parametrize("sale_day_quote", [True, False])
 def test_attached_sell_charges_are_not_double_counted_in_performance_pnl(
     client,
     monkeypatch,
+    sale_day_quote,
 ):
     instrument_id = "equity-us-sell-fee-test"
     instrument_detail = _test_instrument_detail(
@@ -5693,7 +5695,7 @@ def test_attached_sell_charges_are_not_double_counted_in_performance_pnl(
         instrument_name="Sell Fee Equity",
         history=[
             ("2026-01-01", "100.00"),
-            ("2026-01-02", "110.00"),
+            *([("2026-01-02", "110.00")] if sale_day_quote else []),
         ],
     )
     monkeypatch.setattr(

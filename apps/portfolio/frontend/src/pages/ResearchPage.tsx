@@ -11,7 +11,7 @@ import ResearchSolutionTree from '../components/ResearchSolutionTree'
 import ResearchSleeveCharts from '../components/ResearchSleeveCharts'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import QualityWarningsNotice from '../components/QualityWarningsNotice'
-import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
+import NoticeToast, { LoadingNotice, type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import {
   beginRequest,
   invalidateRequests,
@@ -932,9 +932,10 @@ export default function ResearchPage() {
       activeSection="Portfolio Optimization"
       busy={loading || runDetailLoading}
     >
+      <LoadingNotice active={actionPending === 'run'} message="投资研究分析中…" />
       <NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
-      {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
-      {actionError && !settingsOpen ? <div className="inline-notice inline-notice-error" role="alert">{actionError}</div> : null}
+      <NoticeToast notice={workspaceError ? { id: 0, tone: 'error', message: workspaceError } : null} onDismiss={() => setWorkspaceError(null)} />
+      <NoticeToast notice={actionError && !settingsOpen ? { id: 0, tone: 'error', message: actionError } : null} onDismiss={() => setActionError(null)} />
       {loading && !workbench ? <CalculationStatus /> : null}
 
       {!loading && !workbench && !workspaceError ? <div className="empty-state">No data.</div> : null}

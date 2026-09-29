@@ -1708,6 +1708,11 @@ function PerformancePage() {
   )
   const [calculationColumnSearch, setCalculationColumnSearch] = useState('')
   const [viewToast, setViewToast] = useState<NoticeToastMessage | null>(null)
+  const [requestNotice, setRequestNotice] = useState<NoticeToastMessage | null>(null)
+  useEffect(() => {
+    const message = [error, calculationError].filter(Boolean).join(' ')
+    setRequestNotice(message ? { id: Date.now(), tone: 'error', message } : null)
+  }, [error, calculationError])
   const [taxonomyCatalog, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
   const [taxonomyCatalogReadyPortfolioId, setTaxonomyCatalogReadyPortfolioId] = useState<string | null>(null)
   const [taxonomyCatalogError, setTaxonomyCatalogError] = useState<string | null>(null)
@@ -2831,6 +2836,7 @@ function PerformancePage() {
 
   return (
     <>
+      <NoticeToast notice={requestNotice} onDismiss={() => setRequestNotice(null)} />
       <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
       <PortfolioWorkspaceLayout
         activeSection="Performance"
@@ -2960,13 +2966,13 @@ function PerformancePage() {
           </div>
         ) : null}
 
-        {error ? <div className="inline-notice inline-notice-error">{error}</div> : null}
+
         {calculationTableViewStoreError ? (
           <div className="inline-notice inline-notice-error" role="alert">
             {calculationTableViewStoreError}
           </div>
         ) : null}
-        {benchmarkError ? <div className="inline-notice inline-notice-error">{benchmarkError}</div> : null}
+        <NoticeToast notice={benchmarkError ? { id: 0, tone: 'error', message: benchmarkError } : null} onDismiss={() => setBenchmarkError(null)} />
         {(loading || waitingForDefaultEndDate) && !workspace ? <CalculationStatus /> : null}
         {loading && workspace ? <CalculationStatus /> : null}
         {!waitingForDefaultEndDate && !loading && !workspace && !error ? (
@@ -3050,7 +3056,7 @@ function PerformancePage() {
                   </div>
                 </div>
               </div>
-              {calculationError ? <div className="inline-notice inline-notice-error">{calculationError}</div> : null}
+
               {calculationGroupsDisplayError ? (
                 <div className="inline-notice inline-notice-error">{calculationGroupsDisplayError}</div>
               ) : null}

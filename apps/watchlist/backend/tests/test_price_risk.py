@@ -61,6 +61,8 @@ def test_missing_or_low_frequency_prices_are_not_treated_as_daily(frequency):
 def seed(client):
     wid = client.post("/api/watchlists", json={"name": "Price risk test"}).json()["watchlist_id"]
     assert client.post(f"/api/watchlists/{wid}/items", json={"instrument_ids": ["sxv264"]}).status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
 
 
 def observe(source, *, fresh=True):

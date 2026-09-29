@@ -118,6 +118,8 @@ def test_release_rebuilds_invalidated_chart_and_custom_rows_from_stored_source(c
     assert client.get("/api/watchlists").status_code == 200
     custom = client.post("/api/watchlists", json={"name": "Keep custom name"}).json()["watchlist_id"]
     assert client.post(f"/api/watchlists/{custom}/items", json={"instrument_ids": ["sxv264"]}).status_code == 200
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
     with get_session_factory()() as session:
         chart = session.get(InstrumentChartReadModel, "sxv264")
         expected = chart.payload_json

@@ -301,17 +301,39 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
         if checkpoint is not None:
             reply, errors, returncode = json.dumps(checkpoint, ensure_ascii=False), "", 0
         else:
-            process = subprocess.Popen(["/bin/bash", str(SCRIPT), run_id, *mode], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
-                env={**os.environ, "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN": current_principal().credential,
+            def launch():
+                return subprocess.Popen(["/bin/bash", str(SCRIPT), run_id, *mode], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+                    env={**os.environ, "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN": current_principal().credential,
+                     "INVESTMENT_STUDIO_RESEARCH_GENERATION_ONLY": "1" if sector_run and not resume_review else "0",
                      "INVESTMENT_STUDIO_RESEARCH_RESUME_GENERATION": "1" if sector_run and prepared and not resume_review else "0",
                      "INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW": "1" if resume_review else "0"})
-            # A portfolio's complete current/prior evidence can require more
-            # reads than one instrument investigation. Keep the same bounded
-            # runtime for both, including all required evidence continuations.
+            process = launch()
+            # Generation and independent review are two actual work stages.
+            # A long generation must not consume the reviewer's entire allowance.
             reply, errors = process.communicate(timeout=1800)
             returncode = process.returncode
+            if sector_run and not resume_review and not returncode:
+                with get_session_factory()() as session:
+                    current = session.get(ResearchEntry, run_id, with_for_update=True)
+                    if current.status != "running":
+                        return
+                    context = dict(current.context_json)
+                    if context.get("submitted_draft"):
+                        current.context_json = {**context, "execution": {
+                            **context.get("execution", {}), "stage": "review",
+                            "review_started_at": datetime.now(UTC).isoformat()}}
+                        session.commit()
+                        resume_review = True
+                if resume_review:
+                    if execution_authorization is not None:
+                        execution_authorization()
+                    process = launch()
+                    reply, errors = process.communicate(timeout=1800)
+                    returncode = process.returncode
+                else:
+                    reply, errors, returncode = "", 'SECTOR_REVIEW_ERROR {"type":"MissingResearchDraft","summary":"研究生成已结束但未提交完整草稿，本轮未发布研究。"}', 1
         if returncode:
-            runtime_error = {"type": "ProcessExit", "summary": "研究运行进程退出，未生成有效结果。", "exit_code": process.returncode}
+            runtime_error = {"type": "ProcessExit", "summary": "研究运行进程退出，未生成有效结果。", "exit_code": returncode}
             for line in (errors or "").splitlines():
                 if not line.startswith("SECTOR_REVIEW_ERROR "):
                     continue
@@ -331,7 +353,7 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
                     break
             provider_error = _provider_failure(errors)
             if provider_error is not None:
-                runtime_error = {**provider_error, "exit_code": process.returncode}
+                runtime_error = {**provider_error, "exit_code": returncode}
                 if provider_error["type"] in {"OutputLimitExceeded", "ProviderContentFilter"}:
                     runtime_error["stage"] = "review" if resume_review else "generation"
             outcome = ("事实核证失败：" if runtime_error["type"] not in {"ProcessExit", "InsufficientBalance", "ModelUnavailable", "MissingResearchDraft", "OutputLimitExceeded", "ProviderContentFilter"} else "") + runtime_error["summary"]
@@ -361,9 +383,9 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
         if run and run.status == "running":
             require_entry_access(session, run)
             if runtime_error:
-                # Generation and independent review share one process deadline.
-                # A first attempt can already have saved its bound draft before
-                # the deadline; recover that review, not a second investigation.
+                # Generation may save its bound draft just before its deadline.
+                # Recover that review without another investigation even when
+                # the generation process did not exit in time to start review.
                 if runtime_error["type"] == "TimeoutExpired" and sector_run:
                     review_ready = bool(run.context_json.get("submitted_draft") and
                                         run.context_json.get("input_snapshot_cutoff"))

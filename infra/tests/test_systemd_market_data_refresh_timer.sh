@@ -100,6 +100,8 @@ grep -Fq -- 'market-data-refresh-summary.json' "$SERVICE_FILE"
 grep -Fq -- '--fail-on-item-failure' "$SERVICE_FILE"
 grep -Fq -- '--require-downstream-success' "$SERVICE_FILE"
 grep -Fq -- '--json' "$SERVICE_FILE"
+grep -Fxq 'StartLimitIntervalSec=3h' "$SERVICE_FILE"
+grep -Fxq 'StartLimitBurst=3' "$SERVICE_FILE"
 grep -Fq 'EnvironmentFile=' "$SERVICE_FILE"
 grep -Fq 'data.env' "$SERVICE_FILE"
 grep -Fq 'market.env' "$SERVICE_FILE"
@@ -135,11 +137,20 @@ for schedule in \
   grep -Fq -- "$market_scope-$channel-data-refresh-summary.json" "$service_file"
   grep -Fxq 'Restart=no' "$service_file"
   if [[ "$channel" == "market" && ( "$market_scope" == "hk" || "$market_scope" == "us" ) ]]; then
+    grep -Fxq 'StartLimitIntervalSec=0' "$service_file"
     grep -Fq "ExecCondition=" "$service_file"
     grep -Fq "market_close_schedule.py --market-scope $market_scope" "$service_file"
   fi
   grep -Fq "enable $unit_name.timer" "$SYSTEMCTL_CALLS"
 done
+
+# An operator who enables automatic restart keeps its bounded retry policy.
+HOME="$TEST_ROOT/home" XDG_CONFIG_HOME="$TEST_ROOT/config" PATH="$MOCK_BIN:$PATH" \
+PROJECT_ROOT="$PROJECT_ROOT" BACKEND_ROOT="$BACKEND_ROOT" \
+PYTHON_BIN="$(command -v python3)" ENV_ROOT="$ENV_ROOT" CHANNEL=market MARKET_SCOPE=hk RESTART_ON_FAILURE=true \
+  "$REPOSITORY_ROOT/infra/systemd/install_market_data_refresh_timer.sh"
+grep -Fxq 'Restart=on-failure' "$TEST_ROOT/config/systemd/user/investment-studio-hk-market-data-refresh.service"
+grep -Fxq 'StartLimitIntervalSec=3h' "$TEST_ROOT/config/systemd/user/investment-studio-hk-market-data-refresh.service"
 
 : > "$SYSTEMCTL_CALLS"
 HOME="$TEST_ROOT/home" XDG_CONFIG_HOME="$TEST_ROOT/config" PATH="$MOCK_BIN:$PATH" \

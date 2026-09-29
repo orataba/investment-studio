@@ -9,6 +9,7 @@ from watchlist_app.repositories.sqlalchemy.field_registry import SQLAlchemyField
 from watchlist_app.repositories.sqlalchemy.watchlists import SQLAlchemyWatchlistRepository
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
 from watchlist_app.services.read_models import execute_watchlist_query
+from watchlist_app.services.watchlist_updates import coverage_status_overrides
 from watchlist_app.services.research_projection import (
     RESEARCH_WATCHLIST_FIELD_KEYS,
     build_research_watchlist_attribute_overrides,
@@ -241,6 +242,8 @@ def run_screener_query(
     attribute_overrides = _merge_attribute_overrides(
         peer_attribute_overrides,
         research_attribute_overrides,
+        coverage_status_overrides(session, [row.instrument_id for row in rows])
+        if "attr.coverage_status" in requested_fields else {},
     )
     response = execute_watchlist_query(
         rows=rows,

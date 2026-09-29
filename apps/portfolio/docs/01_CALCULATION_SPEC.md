@@ -116,6 +116,8 @@
 - Performance、Calculation、Contribution 与 Groups 的主摘要必须保留 `requested_start_date` / `requested_end_date`，并单独返回 `effective_start_date` / `effective_end_date` 与 clamp reason。请求晚于最后可靠估值日时只收缩 effective end，不能改写用户原始请求。
 - 主摘要还必须声明 `start_boundary_kind` 与 `include_start_date_return`：普通期初收盘为 `close_eod / false`，首次或重启入资为 `funded_bod / true`，导入式期初余额为 `imported_opening_eod / false`。下游不得再根据日期或首条收益自行猜测边界语义。
 
+已全部处置的证券在份额生效日以确认的卖出／赎回金额形成现金或应收，其已实现损益由真实成本与处置金额确定。该日日末持仓为零时，不要求该证券已无估值用途的收盘价或净值；部分处置后仍有持仓则仍须有当日有效估值。早于处置日的持仓估值缺口仍会阻断连续收益，不能用后来的处置金额跨越历史缺口。
+
 ### 2.1.1 全球 EOD 规则
 
 全球多资产组合的 daily snapshot 采用以下 canonical 规则：

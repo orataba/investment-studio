@@ -13,7 +13,7 @@
 - `~/.local/share/investment-studio/` 下的 Watchlist 上传文档与 Portfolio 计算产物；
 - 与数据库元数据匹配的公共数据目录（规范 Parquet、raw、文本原文及包回执），具体范围见 [Market Data Pipeline](./MARKET_DATA_PIPELINE.md)。
 
-此 runbook 恢复 Studio 管理的业务与共享数据。Regime 自有模型数据库、runtime 和部署仍由子模块维护；它读取及写入的公共市场资料归 Studio 管理。恢复共享分区前须另外停止或等待 Regime source writer。Mac 和云端的 Portfolio/Watchlist 私有事实独立，不能用公共数据同步或云端 dump 覆盖本机私有账本。
+此 runbook 恢复 Studio 管理的业务与共享数据。Regime 自有模型数据库、runtime 和部署仍由子模块维护；它读取及写入的公共市场资料归 Studio 管理。恢复共享分区前须另外停止或等待 Regime source writer。常驻 Mac 按 [每周云端同步](LOCAL_MACOS_SERVICE.md#每周从云端同步) 接收云端权威业务快照，本机独有修改会被覆盖并保留同步前备份。新机器完整恢复仍需同时恢复引用文件和本机运行配置。
 
 当前完整 dump 包含 `identity`、`instrument_data`、`data_ingestion`、`portfolio`、`watchlist`、`market_data`、`market_text`、`briefing` 八个 schema。迁移前的备份可分别使用旧名 `instrument_registry`、`platform` 代替 `instrument_data`、`data_ingestion` 分区，恢复后会运行原地改名迁移；同一分区的新旧名不能同时存在。缺少整个摄取分区的制品无法恢复抓取游标和原始证据，不是有效恢复制品。
 

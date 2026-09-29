@@ -655,6 +655,7 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "fees": item.fees,
                 "source_fees": _decimal_text(item.source_fees),
                 "fee_category": item.fee_category,
+                "fee_components": deepcopy(item.fee_components_json or []),
                 "taxes": item.taxes,
                 "source_taxes": _decimal_text(item.source_taxes),
                 "currency": item.currency,
@@ -1160,6 +1161,7 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 fees=float(source_fees),
                 source_fees=source_fees,
                 fee_category=str(raw_transaction.get("fee_category") or "unknown"),
+                fee_components_json=deepcopy(raw_transaction.get("fee_components") or []),
                 asset_deliveries_json=deepcopy(raw_transaction.get("asset_deliveries") or []),
                 settlement_cashflows_json=deepcopy(raw_transaction.get("settlement_cashflows") or []),
                 lot_selections_json=deepcopy(raw_transaction.get("lot_selections") or []),
@@ -1618,6 +1620,7 @@ def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object
         "fees": item.fees,
         "source_fees": _decimal_text(item.source_fees),
         "fee_category": item.fee_category,
+        "fee_components": deepcopy(item.fee_components_json or []),
         "taxes": item.taxes,
         "source_taxes": _decimal_text(item.source_taxes),
         "currency": item.currency,
@@ -4352,6 +4355,7 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     fees=float(source_fees),
                     source_fees=source_fees,
                     fee_category=str(copied_transaction.get("fee_category") or "unknown"),
+                    fee_components_json=deepcopy(copied_transaction.get("fee_components") or []),
                     asset_deliveries_json=deepcopy(copied_transaction.get("asset_deliveries") or []),
                     settlement_cashflows_json=deepcopy(copied_transaction.get("settlement_cashflows") or []),
                     lot_selections_json=deepcopy(copied_transaction.get("lot_selections") or []),
@@ -5173,6 +5177,7 @@ def create_transaction(
     idempotency_operation: str = "create",
     asset_deliveries: list[dict[str, object]] | None = None,
     settlement_cashflows: list[dict[str, object]] | None = None,
+    fee_components: list[dict[str, object]] | None = None,
     lot_selections: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     records = create_transactions(
@@ -5203,6 +5208,7 @@ def create_transaction(
                 "fx_rate": fx_rate,
                 "fees": fees,
                 "fee_category": fee_category,
+                "fee_components": deepcopy(fee_components or []),
                 "taxes": taxes,
                 "currency": currency,
                 "transfer_scope": transfer_scope,
@@ -5370,6 +5376,7 @@ def create_transactions(
                 fx_rate=values.get("fx_rate"),
                 fees=values["fees"],
                 fee_category=str(values.get("fee_category") or "unknown"),
+                fee_components=values.get("fee_components") or [],
                 taxes=values["taxes"],
                 currency=str(values["currency"]),
                 transfer_scope=str(values["transfer_scope"]) if values.get("transfer_scope") else None,
@@ -5564,6 +5571,7 @@ def update_transaction(
     expected_row_version: int | None = None,
     asset_deliveries: list[dict[str, object]] | None = None,
     settlement_cashflows: list[dict[str, object]] | None = None,
+    fee_components: list[dict[str, object]] | None = None,
     lot_selections: list[dict[str, object]] | None = None,
 ) -> dict[str, object] | None:
     session_factory = get_session_factory()
@@ -5626,6 +5634,7 @@ def update_transaction(
             fx_rate=fx_rate,
             fees=fees,
             fee_category=fee_category,
+            fee_components=fee_components or [],
             taxes=taxes,
             currency=currency,
             transfer_scope=transfer_scope,
@@ -5811,6 +5820,7 @@ def _apply_transaction_record(
     created_at: str,
     asset_deliveries: list[dict[str, object]] | None = None,
     settlement_cashflows: list[dict[str, object]] | None = None,
+    fee_components: list[dict[str, object]] | None = None,
     lot_selections: list[dict[str, object]] | None = None,
 ) -> None:
     if instrument_id and derivative_contract_id:
@@ -5898,6 +5908,7 @@ def _apply_transaction_record(
     record.source_fees = source_fees
     record.fees = float(source_fees)
     record.fee_category = fee_category or "unknown"
+    record.fee_components_json = deepcopy(fee_components or [])
     record.source_taxes = source_taxes
     record.taxes = float(source_taxes)
     record.currency = currency.upper()

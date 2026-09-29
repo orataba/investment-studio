@@ -1,3 +1,4 @@
+import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useLocation, useParams, useSearchParams } from 'react-router'
@@ -2293,8 +2294,8 @@ export default function RiskPage() {
       busy={workspaceLoading || benchmarkLoading}
     >
       <section className="portfolio-detail-surface risk-page-surface">
-        {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
-        {workspaceSupportError ? <div className="inline-notice inline-notice-error">{workspaceSupportError}</div> : null}
+        <NoticeToast notice={workspaceError ? { id: 0, tone: 'error', message: workspaceError } : null} onDismiss={() => setWorkspaceError(null)} />
+        <NoticeToast notice={workspaceSupportError ? { id: 0, tone: 'error', message: workspaceSupportError } : null} onDismiss={() => setWorkspaceSupportError(null)} />
 
         {workspaceLoading ? (
           <CalculationStatus />
