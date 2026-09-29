@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
+import NoticeToast, { LoadingNotice } from '../../../../../packages/ui/src/NoticeToast'
 import { renameWatchlist, type WatchlistRecord } from '../lib/api'
 
 export default function RenameWatchlistDialog({ watchlist, onSaved, onCancel }: {
@@ -13,6 +14,7 @@ export default function RenameWatchlistDialog({ watchlist, onSaved, onCancel }: 
   const [name, setName] = useState(watchlist.name)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [saveError, setSaveError] = useState('')
   const nameRef = useRef<HTMLInputElement>(null)
   const close = () => { if (!saving) onCancel() }
   const dialogRef = useModalDialog(true, close, nameRef)
@@ -26,14 +28,18 @@ export default function RenameWatchlistDialog({ watchlist, onSaved, onCancel }: 
     if (trimmed === watchlist.name) { onCancel(); return }
     setSaving(true)
     setError('')
+    setSaveError('')
     try {
       onSaved(await renameWatchlist(watchlist.watchlist_id, trimmed))
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : zh ? '重命名失败，请重试。' : 'Failed to rename watchlist. Please try again.')
+      setSaveError(reason instanceof Error ? reason.message : zh ? '重命名失败，请重试。' : 'Failed to rename watchlist. Please try again.')
       setSaving(false)
     }
   }
-  return <div className="watchlists-modal-backdrop" onClick={close}>
+  return <>
+    <NoticeToast notice={saveError ? { id: 0, tone: 'error', message: saveError } : null} onDismiss={() => setSaveError('')} />
+    <LoadingNotice active={saving} message={zh ? '正在保存…' : 'Saving…'} />
+    <div className="watchlists-modal-backdrop" onClick={close}>
     <div ref={dialogRef} className="watchlists-modal watchlists-compact-modal" role="dialog"
       aria-modal="true" aria-labelledby="rename-watchlist-title" tabIndex={-1}
       onClick={(event) => event.stopPropagation()}>
@@ -58,4 +64,5 @@ export default function RenameWatchlistDialog({ watchlist, onSaved, onCancel }: 
       </form>
     </div>
   </div>
+  </>
 }

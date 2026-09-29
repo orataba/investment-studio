@@ -1401,14 +1401,16 @@ export default function WatchlistsPage() {
       })
 
       if (missingIdentifiers.length) {
-        throw new Error(
+        setModalError(
           `These identifiers were not found among registered assets: ${missingIdentifiers.join(', ')}.`,
         )
+        return
       }
       if (unsupportedIdentifiers.length) {
-        throw new Error(
+        setModalError(
           `These identifiers resolve outside Watchlist coverage: ${unsupportedIdentifiers.join(', ')}.`,
         )
+        return
       }
 
       const addResult = await addWatchlistItems(sourceWatchlistId, [...resolvedInstrumentIds], addCoverageStatus || undefined)
@@ -1425,7 +1427,7 @@ export default function WatchlistsPage() {
         setViewToast({ id: Date.now(), tone: 'error', message: zh ? '添加已保存，列表暂时无法刷新。' : 'Additions saved, but the list could not refresh.' })
       }
     } catch (batchError) {
-      setModalError(batchError instanceof Error ? batchError.message : 'Failed to add instruments from file.')
+      setViewToast({ id: Date.now(), tone: 'error', message: batchError instanceof Error ? batchError.message : 'Failed to add instruments from file.' })
     } finally {
       setIsBatchAdding(false)
       event.target.value = ''
@@ -3625,7 +3627,6 @@ export default function WatchlistsPage() {
             </div>
 
             <div className="watchlists-modal-body">
-              {modalError ? <div className="panel error-state" role="alert">{modalError}</div> : null}
               <div className="watchlists-move-summary">
                 {selectedRows.length} selected from {activeWatchlist?.name || 'current watchlist'}.
               </div>
@@ -3689,7 +3690,7 @@ export default function WatchlistsPage() {
                         : `Copied ${result.copied_count} instruments to "${copyTargetWatchlist.name}".`,
                     )
                   } catch (copyError) {
-                    setModalError(copyError instanceof Error ? copyError.message : 'Failed to copy instruments.')
+                    setViewToast({ id: Date.now(), tone: 'error', message: copyError instanceof Error ? copyError.message : 'Failed to copy instruments.' })
                   } finally {
                     setIsCopyingItems(false)
                   }
@@ -3731,7 +3732,6 @@ export default function WatchlistsPage() {
             </div>
 
             <div className="watchlists-modal-body">
-              {modalError ? <div className="panel error-state" role="alert">{modalError}</div> : null}
               <div className="watchlists-move-summary">
                 {selectedRows.length} selected from {activeWatchlist?.name || 'current watchlist'}.
               </div>
@@ -3797,7 +3797,7 @@ export default function WatchlistsPage() {
                         : `Moved ${result.moved_count} instruments to "${moveTargetWatchlist.name}".`,
                     )
                   } catch (moveError) {
-                    setModalError(moveError instanceof Error ? moveError.message : 'Failed to move instruments.')
+                    setViewToast({ id: Date.now(), tone: 'error', message: moveError instanceof Error ? moveError.message : 'Failed to move instruments.' })
                   } finally {
                     setIsMovingItems(false)
                   }
@@ -3836,7 +3836,6 @@ export default function WatchlistsPage() {
             </div>
 
             <div className="watchlists-modal-body">
-              {modalError ? <div className="panel error-state" role="alert">{modalError}</div> : null}
               <label className="form-field">
                 <span>Name</span>
                 <input
@@ -3894,11 +3893,7 @@ export default function WatchlistsPage() {
                     })
                     setNotice(`Watchlist "${created.name}" created.`)
                   } catch (createError) {
-                    setModalError(
-                      createError instanceof Error
-                        ? createError.message
-                        : 'Failed to create watchlist.',
-                    )
+                    setViewToast({ id: Date.now(), tone: 'error', message: createError instanceof Error ? createError.message : 'Failed to create watchlist.' })
                     setIsCreatingWatchlist(false)
                   }
                 }}
@@ -3929,7 +3924,6 @@ export default function WatchlistsPage() {
             </div>
 
             <div className="watchlists-modal-body">
-              {modalError ? <div className="panel error-state" role="alert">{modalError}</div> : null}
               <label className="form-field">
                 <span>View Name</span>
                 <input
@@ -3975,7 +3969,7 @@ export default function WatchlistsPage() {
                     setModalKind(null)
                     setViewToast({ id: Date.now(), message: `View saved as "${created.name}".`, tone: 'success' })
                   } catch (saveError) {
-                    setModalError(saveError instanceof Error ? saveError.message : 'Failed to save view.')
+                    setViewToast({ id: Date.now(), tone: 'error', message: saveError instanceof Error ? saveError.message : 'Failed to save view.' })
                   } finally {
                     setIsSavingView(false)
                   }

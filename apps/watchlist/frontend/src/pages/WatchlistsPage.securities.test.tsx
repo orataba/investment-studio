@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   getWatchlists: vi.fn(), getWatchlistDetail: vi.fn(), getFieldRegistry: vi.fn(),
   getInstrumentTaxonomyTree: vi.fn(), runScreenerQuery: vi.fn(), searchSharedInstruments: vi.fn(),
   searchSecurities: vi.fn(), materializeSecurity: vi.fn(), addWatchlistItems: vi.fn(), updateWatchlistCoverageStatus: vi.fn(),
+  resolveSharedInstrumentsFile: vi.fn(), createWatchlist: vi.fn(),
   canWrite: vi.fn(),
 }))
 vi.mock('../lib/api', async (original) => ({ ...(await original<typeof import('../lib/api')>()), ...mocks }))
@@ -121,4 +122,38 @@ it('sets investment status for selected rows in a single batch', async () => {
   fireEvent.click(selected)
   fireEvent.click(screen.getByRole('button', { name: 'Set Invested' }))
   await waitFor(() => expect(mocks.updateWatchlistCoverageStatus).toHaveBeenCalledWith('focus', ['shv'], 'Invested'))
+})
+
+it('keeps failed list creation editable and reports the service error outside the dialog', async () => {
+  mocks.createWatchlist.mockRejectedValue(new Error('Creation service unavailable'))
+  showPage()
+  fireEvent.click(await screen.findByRole('button', { name: '+ Create Watchlist' }))
+  fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My research' } })
+  const dialog = screen.getByRole('dialog', { name: 'Create watchlist' })
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Create Watchlist' }))
+  const notice = await screen.findByRole('alert')
+  expect(notice.textContent).toContain('Creation service unavailable')
+  expect(notice.closest('#investment-studio-notices')).toBeTruthy()
+  expect(dialog.contains(notice)).toBe(false)
+  expect(screen.getByLabelText('Name')).toHaveProperty('value', 'My research')
+})
+
+it('separates file validation from upload service failures without closing the add dialog', async () => {
+  mocks.resolveSharedInstrumentsFile.mockResolvedValueOnce({ results: [{ identifier: 'MISSING', status: 'not_found', instrument: null }] })
+    .mockRejectedValueOnce(new Error('File service unavailable'))
+  await chooseDirectorySecurity()
+  const dialog = screen.getByRole('dialog', { name: 'Add instruments' })
+  const upload = dialog.querySelector('input[type="file"]')!
+  const file = new File(['MISSING'], 'identifiers.txt', { type: 'text/plain' })
+  fireEvent.change(upload, { target: { files: [file] } })
+  const validation = await within(dialog).findByRole('alert')
+  expect(validation.textContent).toContain('These identifiers were not found')
+  expect(validation.closest('#investment-studio-notices')).toBeNull()
+  expect(mocks.addWatchlistItems).not.toHaveBeenCalled()
+  fireEvent.change(upload, { target: { files: [file] } })
+  const notice = await screen.findByRole('alert')
+  expect(notice.textContent).toContain('File service unavailable')
+  expect(notice.closest('#investment-studio-notices')).toBeTruthy()
+  expect(within(dialog).queryByRole('alert')).toBeNull()
+  expect(screen.getByLabelText('Search Instruments')).toHaveProperty('value', 'SHV')
 })
