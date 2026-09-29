@@ -46,6 +46,16 @@ def test_weekly_schedule_only_checks_due_snapshots_without_activating_during_ins
     assert not execute
 
 
+@pytest.mark.parametrize('previous,now,due', [
+    ('2026-09-29T18:00:00+08:00', '2026-10-04T08:59:59+08:00', False),
+    ('2026-09-29T18:00:00+08:00', '2026-10-04T09:00:00+08:00', True),
+    ('2026-10-04T09:10:00+08:00', '2026-10-10T15:00:00+08:00', False),
+    ('2026-10-04T09:10:00+08:00', '2026-10-12T08:00:00+08:00', True),
+])
+def test_weekly_catch_up_uses_sunday_boundary_instead_of_shifting_after_manual_sync(previous, now, due):
+    assert sync.weekly_sync_due(sync.datetime.fromisoformat(previous), sync.datetime.fromisoformat(now)) is due
+
+
 def test_download_excludes_cloud_runtime_credentials(tmp_path, monkeypatch):
     calls = []
     def ssh(config, command, **kwargs):

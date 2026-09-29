@@ -166,7 +166,7 @@ launchctl kickstart "gui/$UID/com.orataba.investment-studio.market-data-refresh"
 
 ## 每周从云端同步
 
-云端是 Studio 业务数据的权威来源。本机每七天接收一次云端快照；两端平时分别运行，
+云端是 Studio 业务数据的权威来源。本机每周接收一次云端快照；两端平时分别运行，
 本机操作不会回传，下次同步会覆盖本机独有的列表、研究和交易。同步前的本机数据库与文件
 保留在外部恢复目录中。Regime 自有模型数据库及运行目录不在覆盖范围内。
 
@@ -213,7 +213,7 @@ PostgreSQL 的维护账户，用于建立临时库与切换库名，不能指向
 ```
 
 首次手动同步成功后，增加 `--install-schedule` 安装每周日 09:00 的 LaunchAgent；登录、唤醒及每日
-检查只补跑已经超过七天的同步，不重复覆盖。日志和 `last-success.json` 位于配置的 `state_root`；
+检查只补跑本周日 09:00 之后尚未完成的同步，不重复覆盖。首次手动同步不会把每周计划永久推迟到手动执行的星期。日志和 `last-success.json` 位于配置的 `state_root`；
 每批 `cutover.json` 持久化切换阶段、原库名称与各文件位置，作为唯一恢复记录。
 若进程在切换中断或恢复不完整，下次同步会在下载前停止；先按 `cutover.json` 恢复整套数据库、
 文件和原服务，验收后将阶段标记为 `rolled_back`（恢复原数据）或 `published`（完成新快照），

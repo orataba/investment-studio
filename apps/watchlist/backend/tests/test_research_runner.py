@@ -423,3 +423,64 @@ def test_sector_review_has_its_own_deadline_over_the_saved_draft(client, monkeyp
             assert run.context_json["runtime_error"]["retryable"] is True
         else:
             assert run.status == "completed"
+
+@pytest.mark.parametrize("review_authority_revoked", [False, True])
+def test_review_renews_original_issuer_grant_without_reusing_expired_generation_token(client, monkeypatch, review_authority_revoked):
+    from dataclasses import replace
+    from studio_identity import IdentityError, Principal
+    issuer = Principal("pm-one", "PM", "default", credential="original-session")
+    run_id = "review-grant"
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id=run_id, title="阶段授权"))
+        session.flush()
+        session.add(ResearchEntry(entry_id=run_id, topic_id=run_id, kind="analysis", title="阶段授权",
+            status="queued", context_json={"sector_run": True, "input_snapshot_cutoff": "2026-09-29T00:00:00Z"}))
+        session.commit()
+    issued, launched, revoked = [], [], []
+    generation_finished = []
+    def issue(principal, **kwargs):
+        assert principal is issuer
+        assert kwargs == {"audience": "watchlist", "resource_scope": {"kind": "run", "id": run_id}}
+        if generation_finished and review_authority_revoked:
+            raise IdentityError(403, "original issuer revoked before review")
+        token = "review-grant" if generation_finished else "generation-grant"
+        issued.append(token)
+        return token
+    def resolve(token, audience):
+        if generation_finished and token in {"initial-grant", "generation-grant"}:
+            raise IdentityError(401, "expired earlier stage grant")
+        return replace(issuer, credential=token, resource_scope={"kind": "run", "id": run_id})
+    class Process:
+        returncode = 0
+        def __init__(self, review):
+            self.review = review
+        def communicate(self, timeout):
+            assert timeout == 1800
+            if not self.review:
+                with get_session_factory()() as session:
+                    run = session.get(ResearchEntry, run_id)
+                    run.context_json = {**run.context_json, "submitted_draft": {"reviews": []}}
+                    session.commit()
+                generation_finished.append(True)
+                return "草稿已提交", ""
+            return json.dumps({"reviews": []}), ""
+    def launch(*args, **kwargs):
+        token = kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN"]
+        assert token == ("review-grant" if generation_finished else "generation-grant")
+        launched.append(token)
+        return Process(bool(generation_finished))
+    monkeypatch.setattr(sector_research, "prepare_run", lambda _: None)
+    monkeypatch.setattr(sector_research, "apply_result", lambda session, run, result: setattr(run, "status", "completed"))
+    monkeypatch.setattr(runner, "issue_delegation", issue)
+    monkeypatch.setattr(runner, "resolve_token", resolve)
+    monkeypatch.setattr(runner, "revoke_delegation", lambda token, principal: revoked.append(token))
+    monkeypatch.setattr(runner.subprocess, "Popen", launch)
+    runner.run_analysis(run_id, "initial-grant", issuer)
+    assert launched == issued == (["generation-grant"] if review_authority_revoked else ["generation-grant", "review-grant"])
+    assert set(revoked) == {"initial-grant", *issued}
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        assert run.context_json["submitted_draft"] == {"reviews": []}
+        assert run.status == ("failed" if review_authority_revoked else "completed")
+        if review_authority_revoked:
+            assert run.context_json["runtime_error"]["status_code"] == 403

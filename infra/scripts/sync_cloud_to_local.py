@@ -488,6 +488,15 @@ def prune_published_snapshots(config, state, keep=2):
         shutil.rmtree(directory)
 
 
+def weekly_sync_due(previous, now):
+    """Sunday 09:00 in the Mac's local timezone, including missed-run catch-up."""
+    cutoff = (now - timedelta(days=(now.weekday() + 1) % 7)).replace(
+        hour=9, minute=0, second=0, microsecond=0)
+    if cutoff > now:
+        cutoff -= timedelta(days=7)
+    return previous < cutoff
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
@@ -515,7 +524,7 @@ def main(argv=None):
         receipt = state / "last-success.json"
         if args.if_due and receipt.exists():
             previous = datetime.fromisoformat(json.loads(receipt.read_text())["completed_at"])
-            if datetime.now(timezone.utc) - previous < timedelta(days=7):
+            if not weekly_sync_due(previous, datetime.now().astimezone()):
                 return 0
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         directory = state / stamp

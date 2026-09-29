@@ -35,7 +35,7 @@ with open(sys.argv[1], "rb") as source:
 environment = plist.get("EnvironmentVariables", {})
 timezone = environment.get("INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE", "Asia/Shanghai system time")
 if "--if-due" in plist.get("ProgramArguments", []):
-    print("Sunday 09:00, daily/login catch-up after seven days")
+    print("Sunday 09:00, daily/login catch-up for the current week")
 elif "StartInterval" in plist:
     print(f"every {plist['StartInterval']} seconds, including login")
 elif environment.get("INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL") == "market" and environment.get("INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE") in {"hk", "us"}:
