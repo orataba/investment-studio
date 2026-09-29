@@ -76,10 +76,15 @@ def test_file_sync_clones_market_before_exact_cloud_reconciliation(tmp_path, mon
     original = tmp_path / 'active'
     original.mkdir()
     calls = []
-    monkeypatch.setattr(sync, 'run', lambda args, **kwargs: calls.append([str(value) for value in args]))
+    def run(args, **kwargs):
+        calls.append([str(value) for value in args])
+        if str(args[0]) == '/bin/cp':
+            Path(args[-1]).mkdir(parents=True)
+    monkeypatch.setattr(sync, 'run', run)
     sync.copy_files({'ssh_host': 'cloud', 'files': {'market': {
-        'local': str(original), 'remote': '/market'}}}, tmp_path / 'snapshot')
+        'local': str(original), 'remote': '/market'}}}, tmp_path / 'snapshot', '/opt/homebrew/bin/rsync')
     assert calls[0] == ['/bin/cp', '-cpR', str(original), str(tmp_path / 'snapshot/market')]
+    assert calls[1][0] == '/opt/homebrew/bin/rsync'
     assert '--delete' in calls[1] and '--delete-excluded' in calls[1]
     assert '--inplace' not in calls[1]
     assert not any(value.startswith('--link-dest') for value in calls[1])
@@ -149,3 +154,61 @@ def test_retention_only_removes_older_successful_snapshots(tmp_path, monkeypatch
                                    'admin_url': 'postgresql://admin@127.0.0.1/postgres'}, tmp_path)
     assert sorted(path.name for path in tmp_path.iterdir()) == ['002', '003', '004', '005']
     assert dropped == ['DROP DATABASE IF EXISTS "studio_before_001"']
+
+
+@pytest.mark.parametrize('version', [
+    'openrsync: protocol version 29\nrsync version 2.6.9 compatible\n',
+    'rsync  version 2.6.9  protocol version 29\n',
+])
+def test_cloud_sync_rejects_apple_openrsync_and_old_versions(monkeypatch, version):
+    from types import SimpleNamespace
+    monkeypatch.setattr(sync.shutil, 'which', lambda *args, **kwargs: '/usr/bin/rsync')
+    monkeypatch.setattr(sync, 'run', lambda *args, **kwargs: SimpleNamespace(stdout=version))
+    with pytest.raises(ValueError, match="requires rsync 3.*brew install rsync"):
+        sync.rsync_tool()
+
+
+def test_cloud_sync_finds_homebrew_rsync_under_launchd_path(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setenv('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')
+    search = []
+    def which(name, *, path):
+        search.append((name, path))
+        return '/opt/homebrew/bin/rsync'
+    monkeypatch.setattr(sync.shutil, 'which', which)
+    monkeypatch.setattr(sync, 'run', lambda *args, **kwargs: SimpleNamespace(stdout='rsync  version 3.4.3  protocol version 32\n'))
+    assert sync.rsync_tool() == '/opt/homebrew/bin/rsync'
+    assert search == [('rsync', '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin')]
+
+
+def test_incremental_file_sync_reuses_staged_roots_and_rejects_symlink_before_transfer(tmp_path, monkeypatch):
+    stage = tmp_path / 'snapshot'
+    stage.mkdir()
+    config = {'ssh_host': 'cloud', 'files': {name: {'local': str(tmp_path / (name + '-live')),
+        'remote': '/cloud/' + name} for name in ('market', 'documents', 'research', 'evidence')}}
+    for name in config['files']:
+        (stage / name).mkdir()
+        (stage / name / 'prepared').write_text('retained')
+    calls = []
+    monkeypatch.setattr(sync, 'run', lambda args, **kwargs: calls.append(args))
+    sync.sync_files(config, stage, '/opt/homebrew/bin/rsync')
+    assert len(calls) == 4 and all(call[0] == '/opt/homebrew/bin/rsync' for call in calls)
+    assert all((stage / name / 'prepared').read_text() == 'retained' for name in config['files'])
+    (stage / 'evidence/prepared').unlink()
+    (stage / 'evidence').rmdir()
+    (stage / 'evidence').symlink_to(tmp_path)
+    calls.clear()
+    with pytest.raises(ValueError, match='unsafe: evidence'):
+        sync.sync_files(config, stage, '/opt/homebrew/bin/rsync')
+    assert not calls
+
+
+def test_unsupported_rsync_fails_before_database_download_or_file_clone(tmp_path, monkeypatch):
+    config = {'state_root': str(tmp_path)}
+    monkeypatch.setattr(sync, 'load_config', lambda path: config)
+    monkeypatch.setattr(sync, 'rsync_tool', lambda: (_ for _ in ()).throw(ValueError('requires rsync 3')))
+    monkeypatch.setattr(sync, 'remote_snapshot', lambda *args: pytest.fail('must not download'))
+    monkeypatch.setattr(sync, 'copy_files', lambda *args: pytest.fail('must not clone'))
+    with pytest.raises(ValueError, match='requires rsync 3'):
+        sync.main(['--config', '/unused'])
+    assert not list(tmp_path.glob('20*'))

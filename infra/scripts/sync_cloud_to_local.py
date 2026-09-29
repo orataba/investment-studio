@@ -118,7 +118,38 @@ def remote_snapshot(config, directory):
     return dump
 
 
-def copy_files(config, directory):
+def rsync_tool():
+    # launchd has a restricted PATH, so prefer the standard Homebrew locations.
+    # Apple's openrsync is not supported for the large cloned market tree.
+    search_path = os.pathsep.join(("/opt/homebrew/bin", "/usr/local/bin", os.environ.get("PATH", "")))
+    path = shutil.which("rsync", path=search_path)
+    if path is None:
+        raise ValueError("Cloud sync requires rsync 3: install it with 'brew install rsync'")
+    version = run([path, "--version"], capture_output=True, text=True).stdout
+    match = re.match(r"rsync\s+version\s+(\d+)\.", version)
+    if match is None or int(match.group(1)) < 3:
+        raise ValueError(f"Cloud sync requires rsync 3; {path} is unsupported. Install it with 'brew install rsync'")
+    print(f"Using {version.splitlines()[0]} ({path})", flush=True)
+    return path
+
+
+def sync_files(config, directory, rsync_path):
+    """Reconcile existing staged roots, without cloning or changing live roots."""
+    directory = directory.resolve()
+    for name in config["files"]:
+        target = directory / name
+        if target.is_symlink() or not target.is_dir() or target.resolve().parent != directory:
+            raise ValueError(f"Staged file root is missing or unsafe: {name}")
+    for name, item in config["files"].items():
+        args = [rsync_path, "-a", "--delete", "--delete-excluded", "--partial",
+                "--exclude=*.lock", "--exclude=.DS_Store"]
+        args += ["-e", "ssh -oBatchMode=yes -oConnectTimeout=15",
+                 config["ssh_host"] + ":" + shlex.quote(item["remote"].rstrip("/") + "/"), str(directory / name) + "/"]
+        print(f"Downloading {name} files", flush=True)
+        run(args)
+
+
+def copy_files(config, directory, rsync_path):
     for name, item in config["files"].items():
         target = directory / name
         # macOS copy-on-write clones keep independent inodes even for mutable
@@ -127,12 +158,7 @@ def copy_files(config, directory):
             run(["/bin/cp", "-cpR", item["local"], target])
         else:
             target.mkdir()
-        args = ["rsync", "-a", "--delete", "--delete-excluded", "--partial",
-                "--exclude=*.lock", "--exclude=.DS_Store"]
-        args += ["-e", "ssh -oBatchMode=yes -oConnectTimeout=15",
-                 config["ssh_host"] + ":" + shlex.quote(item["remote"].rstrip("/") + "/"), str(target) + "/"]
-        print(f"Downloading {name} files", flush=True)
-        run(args)
+    sync_files(config, directory, rsync_path)
 
 
 def verify_heads(connection):
@@ -526,12 +552,13 @@ def main(argv=None):
             previous = datetime.fromisoformat(json.loads(receipt.read_text())["completed_at"])
             if not weekly_sync_due(previous, datetime.now().astimezone()):
                 return 0
+        rsync_path = rsync_tool()
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         directory = state / stamp
         directory.mkdir()
         stage_name = urlsplit(config["database_url"]).path.strip("/") + "_incoming_" + stamp
         dump = remote_snapshot(config, directory)
-        copy_files(config, directory)
+        copy_files(config, directory, rsync_path)
         restore_stage(config, stage_name, dump, directory)
         publish(config, directory, stage_name)
         receipt.write_text(json.dumps({"completed_at": datetime.now(timezone.utc).isoformat(), "snapshot": str(directory)}, indent=2))

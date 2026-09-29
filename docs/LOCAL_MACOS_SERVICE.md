@@ -170,6 +170,10 @@ launchctl kickstart "gui/$UID/com.orataba.investment-studio.market-data-refresh"
 本机操作不会回传，下次同步会覆盖本机独有的列表、研究和交易。同步前的本机数据库与文件
 保留在外部恢复目录中。Regime 自有模型数据库及运行目录不在覆盖范围内。
 
+文件传输要求 [Homebrew rsync 3](https://formulae.brew.sh/formula/rsync)，先运行 `brew install rsync`。
+同步脚本优先从 `/opt/homebrew/bin`、`/usr/local/bin` 定位程序，再检查版本；不使用 macOS
+自带的旧版 rsync/openrsync。依赖不满足时，在下载数据库或克隆文件前直接报错，不切换传输实现或自动重试。
+
 `bin/investment-studio cloud-sync --config /private/cloud-sync.json` 的流程为：
 
 1. 云端以 PostgreSQL 一致性快照导出八个 schema，云端服务继续运行。
