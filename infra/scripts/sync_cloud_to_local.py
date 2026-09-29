@@ -143,6 +143,8 @@ def sync_files(config, directory, rsync_path):
     for name, item in config["files"].items():
         args = [rsync_path, "-a", "--delete", "--delete-excluded", "--partial",
                 "--exclude=*.lock", "--exclude=.DS_Store"]
+        if name == "market":
+            args.append("--exclude=/numeric/outbox/")
         args += ["-e", "ssh -oBatchMode=yes -oConnectTimeout=15",
                  config["ssh_host"] + ":" + shlex.quote(item["remote"].rstrip("/") + "/"), str(directory / name) + "/"]
         print(f"Downloading {name} files", flush=True)

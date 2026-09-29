@@ -137,6 +137,22 @@ def test_market_preflight_resolves_text_objects_under_text_root_and_checks_conte
         sync.verify_files(Connection(), tmp_path)
 
 
+@pytest.mark.parametrize('path', ['numeric/us_eod_daily/batch/part.parquet',
+                                 'numeric/outbox/unexpected-reference.zip'])
+def test_market_preflight_never_ignores_missing_catalogue_files(tmp_path, path):
+    class Connection:
+        def execute(self, query):
+            return [(path, 4)] if 'market_data.files' in query else []
+
+    target = tmp_path / 'market' / path
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b'data')
+    sync.verify_files(Connection(), tmp_path)
+    target.unlink()
+    with pytest.raises(ValueError, match='Snapshot file is missing'):
+        sync.verify_files(Connection(), tmp_path)
+
+
 def test_retention_only_removes_older_successful_snapshots(tmp_path, monkeypatch):
     dropped = []
     class Admin:
@@ -193,6 +209,9 @@ def test_incremental_file_sync_reuses_staged_roots_and_rejects_symlink_before_tr
     monkeypatch.setattr(sync, 'run', lambda args, **kwargs: calls.append(args))
     sync.sync_files(config, stage, '/opt/homebrew/bin/rsync')
     assert len(calls) == 4 and all(call[0] == '/opt/homebrew/bin/rsync' for call in calls)
+    assert '--exclude=/numeric/outbox/' in calls[0]
+    assert all('--exclude=/numeric/outbox/' not in call for call in calls[1:])
+    assert all('--delete-excluded' in call for call in calls)
     assert all((stage / name / 'prepared').read_text() == 'retained' for name in config['files'])
     (stage / 'evidence/prepared').unlink()
     (stage / 'evidence').rmdir()
