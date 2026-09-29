@@ -12,6 +12,7 @@ import ResearchThemesPanel from './ResearchThemesPanel'
 import ResearchRecentEvents from './ResearchRecentEvents'
 import ResearchReadingAside from './ResearchReadingAside'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
+import InfoHint from '../../../../../packages/ui/src/InfoHint'
 import { addResearchMaterial, getResearchDossier, uploadResearchMaterial, type AskResearchAssistant, type HistoricalResearchCase, type NotebookSource, type ResearchCatalyst, type ResearchDossier, type ResearchMaterial, type ResearchQuestion, type SavedResearchNotebook } from '../lib/researchDossierApi'
 
 const questionStatus = { open: '当时待验证', supported: '当时证据支持', refuted: '当时证据不支持' }
@@ -210,18 +211,32 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
   const askArchive: AskResearchAssistant | undefined = onAskAssistant ? ((question, reference) => onAskAssistant(question, reference || { instrument_id: instrumentId, notebook_version_id: archivedNotebook?.version_id })) : undefined
   const currentVersion = archivedNotebook?.version_id || archivedNotebook?.run_id
   const previousNotebooks = archivedDossier?.notebook_history?.filter((item) => (item.version_id || item.notebook?.version_id || item.run_id) !== currentVersion) || []
-  if (!dossier) return <div className="research-report-loading" aria-busy={!error}>
+  if (!dossier) return <div className={`research-report-loading research-report-loading-${variant}`} aria-busy={!error}>
     {error ? <p role="alert">研究档案暂时无法读取：{error}</p> : <><p role="status" className="sector-research-note">Loading</p><div className="research-loading-title" /><div className="research-loading-line" /><div className="research-loading-line" /><div className="research-loading-line short" /></>}
   </div>
+  if (variant === 'summary') {
+    const view = notebook?.investment_view
+    const brief = notebook?.decision_brief?.needs_review ? undefined : notebook?.decision_brief
+    return <div className="research-dossier-panel research-dossier-summary">
+      {error && <p role="alert">研究档案暂时无法读取：{error}</p>}
+      <p className="research-summary-direction" translate="no">{view ? view.direction || '当前总结尚待补充。' : brief?.recommendation || '研究基线尚未建立，尚不能判断机会与风险。'}</p>
+      {(view?.updated_at || brief?.updated_at) && <p className="sector-research-note">判断更新 <time dateTime={view?.updated_at || brief?.updated_at || undefined}>{dateLabel(view?.updated_at || brief?.updated_at)}</time></p>}
+      {view?.coverage_status === 'limited' && <p className="sector-research-limitation">已保存的研究部分可用，未覆盖部分不能据此判断。</p>}
+      {view?.coverage_status === 'not_established' && <p className="sector-research-limitation">研究基线尚未建立，不能据此作出判断。</p>}
+      {view?.coverage_note && <InfoHint label="研究覆盖说明" detail={view.coverage_note} tone={view.coverage_status === 'limited' ? 'warning' : 'info'} />}
+      {!view && brief && <p className="sector-research-note">沿用历史研究摘要；当前机会与风险尚未形成结构化认识。</p>}
+    </div>
+  }
   return <div className={`research-dossier-panel research-dossier-${variant}`}>
-    {variant === 'full' && <nav className="research-reading-nav" aria-label="研究报告目录">
+    <nav className="research-reading-nav" aria-label="研究报告目录">
       <a href={`#research-summary-${instrumentId}`}><span>01</span> 机会与风险</a><a href={`#research-events-${instrumentId}`}><span>02</span> 重要进展</a><a href={`#research-tracking-${instrumentId}`}><span>03</span> 重点主题</a><a href={`#research-quant-${instrumentId}`}><span>04</span> 量化观察</a>
-    </nav>}
+    </nav>
     {error && <p role="alert">研究档案暂时无法读取：{error}</p>}
     <div id={`research-summary-${instrumentId}`} className="research-report-summary">{notebook?.investment_view || notebook?.decision_brief ? <InvestmentResearchState mode="view" compact instrumentId={instrumentId} notebook={notebook} sources={ids => <SourceList instrumentId={instrumentId} versionId={notebook.version_id} sources={selectedSources(ids)} />} onAskAssistant={ask} /> : <section aria-label="当前机会与风险"><h2>当前机会与风险</h2><p className="research-empty-judgment">研究基线尚未建立，尚不能判断机会与风险。可通过“更新研究”建立初始认识。</p></section>}</div>
-    {variant === 'full' && <>
+      <div className="research-monitoring-grid" aria-label="事件与持续主题">
       <div id={`research-events-${instrumentId}`} className="research-report-events"><ResearchRecentEvents instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={ask} themeNames={themeNames} /></div>
       <section id={`research-tracking-${instrumentId}`} className="research-report-tracking"><ResearchThemesPanel instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={ask} onThemeNamesChange={onThemeNamesChange} /></section>
+      </div>
       <div id={`research-quant-${instrumentId}`}><ResearchQuantObservations instrumentId={instrumentId} notebook={notebook} onAskAssistant={ask} /></div>
       <footer className="research-report-library" aria-label="研究资料与设置"><div className="research-library-links">
       <ResearchReadingAside label="基础档案" title="基础档案">
@@ -282,6 +297,5 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
         </>}
       </div>}
     </div></ResearchReadingAside></div></footer>
-    </>}
   </div>
 }

@@ -209,7 +209,8 @@ def submit_review_receipts(receipts: dict) -> dict:
     for review in checked.reviews:
         for decision in review.decisions:
             if decision.event is not None:
-                validate_event_source_consistency(decision.event, originals, cutoff, review.instrument_id)
+                event_sources = {sid: originals[sid] for sid in state["packet"]["event_source_ids"] if sid in originals}
+                validate_event_source_consistency(decision.event, event_sources, cutoff, review.instrument_id)
     output = Path(os.environ["INVESTMENT_STUDIO_REVIEW_RESULT"])
     temporary = output.with_suffix(".tmp")
     temporary.write_text(json.dumps({"receipts": receipts, "result": result}, ensure_ascii=False))

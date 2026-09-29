@@ -44,6 +44,7 @@ it('preserves the supported company estimate baseline', async () => {
   render(<EstimateHistoryPanel instrumentId="registered-equity-etf" language="en" />)
   expect(await screen.findByText('Constituent estimate history · First baseline')).toBeTruthy()
   expect(screen.getByText('73 constituent company records retained.')).toBeTruthy()
+  expect(screen.getByRole('region', { name: 'Constituent earnings estimates' }).closest('details')).toBeNull()
   expect(screen.getByText(/Current collection/).textContent).toContain('Collection history begins')
   expect(screen.getByText(/Each data collection is retained/)).toBeTruthy()
 })
@@ -70,4 +71,11 @@ it('translates collected estimate limitations while preserving original research
   })
   expect(screen.getByText('Currency is unverified in at least one observation; numerical differences are only leads to verify.')).toBeTruthy()
   expect(screen.getByText(gaps[1], { selector: 'p[translate="no"]' })).toBeTruthy()
+})
+
+it('does not present missing estimate coverage as zero companies', async () => {
+  mocks.evidence.mockResolvedValue({ ...emptyEvidence, supported: true, status: 'no_snapshot' })
+  render(<EstimateHistoryPanel instrumentId="registered-equity-etf" language="en" />)
+  expect(await screen.findByText('Constituent coverage count is unconfirmed.')).toBeTruthy()
+  expect(screen.queryByText('0 constituent company records retained.')).toBeNull()
 })

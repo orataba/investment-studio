@@ -1,10 +1,21 @@
 .instrument-detail-page > .instrument-detail-shell { min-width: 0; }
 .fund-detail-hero .instrument-detail-headline { width: 100%; max-width: none; }
 .fund-detail-title-row { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
-.fund-detail-title-row > h1 { min-width: 0; overflow-wrap: anywhere; }
+.fund-detail-title-row > h1.instrument-detail-title { min-width: 0; overflow-wrap: anywhere; font-size: 28px; line-height: 1.25; }
+.fund-detail-hero.instrument-detail-hero { min-height: 0; padding: 18px 0 16px; }
 .fund-section-loading { position: absolute; right: -12px; top: 50%; width: 10px; transform: translateY(-50%); font-size: 12px; color: var(--muted); }
-.fund-overview { padding: 8px 0 24px; }
-.fund-overview-snapshot { display: grid; grid-template-columns: 170px 170px minmax(0, 1fr); gap: 28px; padding: 22px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
+.fund-overview { padding: 16px 0 24px; }
+.fund-overview-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.fund-overview-heading h2 { margin: 0; font-size: 16px; font-weight: 500; }
+.fund-overview-heading button { font-size: 12px; }
+.fund-overview-judgments { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px; margin-top: 28px; }
+.fund-overview-judgments > * { min-width: 0; }
+.fund-overview-quality { font-size: 12px; line-height: 1.7; color: var(--warning); }
+.fund-overview-reference { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; border-top: 1px solid var(--line); margin-top: 28px; padding-top: 16px; font-size: 13px; }
+.fund-overview-reference p { margin: 0; }
+.fund-overview-reference span { margin-right: 12px; color: var(--muted); font-size: 12px; }
+.fund-overview-reference button { font-size: 12px; flex-shrink: 0; }
+.fund-overview-snapshot { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(0, 3fr); gap: 24px; padding: 22px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
 .fund-overview-nav { display: grid; align-content: start; gap: 6px; }
 .fund-overview-nav > span,
 .fund-overview-key-metrics span,
@@ -16,13 +27,13 @@
 .fund-overview-key-metrics > div { display: flex; flex-direction: column; gap: 9px; }
 .fund-overview-key-metrics strong { font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .fund-overview-date-note { margin: 10px 0 0; line-height: 1.6; }
-.fund-overview-section { padding: 24px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
+.fund-overview-section { padding: 0 0 0 28px; border-left: 1px solid var(--line, #e2e8f0); }
 .fund-overview-section header,
 .fund-workspace-heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 .fund-overview-section h2,
 .fund-workspace-heading h2 { margin: 0; font-size: 16px; font-weight: 600; }
-.fund-overview-section time { display: block; margin-top: 20px; font-size: 12px; color: var(--muted, #64748b); }
-.fund-overview-section h3 { margin: 8px 0; font-size: 14px; font-weight: 600; }
+.fund-overview-section time { display: block; margin-top: 16px; font-size: 12px; color: var(--muted, #64748b); }
+.fund-overview-section h3 { margin: 8px 0; font-size: 14px; font-weight: 500; }
 .fund-overview-section p { margin: 12px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; font-size: 14px; }
 .fund-archive-layout { display: flex; flex-direction: column; gap: 0; }
 .fund-workspace-heading { padding: 18px 0 24px; }
@@ -56,7 +67,10 @@
   .fund-overview-key-metrics { grid-column: 1 / -1; }
   .fund-archive-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-@media (max-width: 600px) {
+@media (max-width: 640px) {
+  .fund-overview-judgments { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .fund-overview-section { padding: 18px 0 0; border-left: 0; border-top: 1px solid var(--line-strong); }
+  .fund-overview-reference { flex-wrap: wrap; }
   .fund-detail-title-row { align-items: flex-start; flex-direction: column; gap: 14px; }
   .fund-detail-title-row > .workspace-context-tools { align-self: flex-end; }
   .fund-overview-snapshot { gap: 20px; }

@@ -1,3 +1,4 @@
+from watchlist_app.services import risk_review_state
 from datetime import UTC, datetime, timedelta
 from threading import Event
 
@@ -169,7 +170,7 @@ def test_registered_catalogue_does_not_schedule_list_risk_but_invested_funds_sti
     monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {"portfolios": []})
     risk_scopes, research_ids = [], []
 
-    def read_scope(session, **scope):
+    def read_scope(session, scope):
         risk_scopes.append(scope)
         return {"instrument_ids": []}
 
@@ -180,7 +181,7 @@ def test_registered_catalogue_does_not_schedule_list_risk_but_invested_funds_sti
             run.status = "completed"
             session.commit()
 
-    monkeypatch.setattr(risk_officer, "read_snapshot", read_scope)
+    monkeypatch.setattr(risk_review_state, "current_scope", read_scope)
     monkeypatch.setattr(research_runner, "run_analysis", analyze)
     service.run_daily_reviews(Event())
     assert research_ids == ["registered-fund"]
@@ -197,7 +198,7 @@ def test_new_proposed_instrument_initializes_on_weekend_once_and_retains_seven_d
     monkeypatch.setattr(service, "datetime", Clock)
     monkeypatch.setattr(shared_instrument_registry, "list_shared_active_instrument_ids", lambda **kwargs: ["new-proposed"])
     monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {"portfolios": []})
-    monkeypatch.setattr(risk_officer, "read_snapshot", lambda session, **scope: {"instrument_ids": []})
+    monkeypatch.setattr(risk_review_state, "current_scope", lambda session, scope: {"instrument_ids": []})
     with get_session_factory()() as session:
         _registered(session, "new-proposed", "equity", "XNAS", "XNAS")
         session.flush()
@@ -241,7 +242,7 @@ def test_pending_research_referrals_reach_officer_outside_market_hours_without_d
     in_watchlist = "watchlist" in aggregate
     monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {
         "portfolios": [{"portfolio_id": "held"}] if in_portfolio else []})
-    monkeypatch.setattr(risk_officer, "read_snapshot", lambda session, **scope: {"instrument_ids": ["referral"]
+    monkeypatch.setattr(risk_review_state, "current_scope", lambda session, scope: {"instrument_ids": ["referral"]
         if scope.get("portfolio_id") == "held" or scope.get("watchlist_id") == "named-list" else []})
     with get_session_factory()() as session:
         _registered(session, "referral", "equity", "XNAS", "XNAS")
@@ -270,7 +271,7 @@ def test_first_published_research_referral_is_processed_in_same_worker_pass(clie
     from watchlist_app.services import research_runner, research_workbench, risk_officer
     monkeypatch.setattr(shared_instrument_registry, "list_shared_active_instrument_ids", lambda **kwargs: ["first-referral"])
     monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {"portfolios": []})
-    monkeypatch.setattr(risk_officer, "read_snapshot", lambda session, **scope: {"instrument_ids": []})
+    monkeypatch.setattr(risk_review_state, "current_scope", lambda session, scope: {"instrument_ids": []})
     with get_session_factory()() as session:
         _registered(session, "first-referral", "equity", "XNAS", "XNAS")
         session.commit()

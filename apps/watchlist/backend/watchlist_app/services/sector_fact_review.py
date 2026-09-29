@@ -507,6 +507,8 @@ def _tool_receipts(context):
 def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
     ids = {review["instrument_id"] for review in reviewed}
     available = research_sources(context, run_id)
+    from watchlist_app.services.sector_research import event_evidence_sources
+    event_sources = event_evidence_sources(context, run_id, notebook_evidence=available)
     from watchlist_app.services.market_evidence import retained_sources
     # Actual reads in this run are evidence for receipt claims too. Historical
     # hydrated archives and all-company estimates are not automatically in scope.
@@ -658,6 +660,8 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
             "This is the recorded research request and review scope, not factual evidence or an investment conclusion. Verify the proposed response against the retained originals; do not cite the request as a source."}
            if context.get("question") else {}),
         "draft_reviews": reviewed,
+        "event_source_ids": sorted(sources.keys() & event_sources.keys()),
+        "event_source_note": "Only these retained originals, comparable estimates and computed evidence may be cited in event source_ids. Other packet sources remain available for notebook context; reading them does not make them event evidence.",
         **snapshot_indexes,
         "snapshot_read_note": "instrument_inputs/sector_inputs index canonical originals in sources. A snapshot_scope=overview source supplies only the shown excerpt; omitted tables are not reviewed evidence. Explicitly cited full snapshots remain complete. Use the supplied source_id for supported facts; do not infer valuation or a causal market narrative from price/risk alone.",
         "prior_events": [{**{key: value for key, value in row.items() if key not in {"history", "evidence", "sources"}},

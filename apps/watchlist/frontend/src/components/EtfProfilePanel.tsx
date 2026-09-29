@@ -31,9 +31,11 @@ export default function EtfProfilePanel({ instrumentId, language }: { instrument
   const zh = language === 'zh-Hans'
   const [snapshot, setSnapshot] = useState<{ instrumentId: string; value: InstrumentReferenceData } | null>(null)
   const [error, setError] = useState('')
+  const [expanded, setExpanded] = useState<'description' | 'holdings' | null>(null)
   useEffect(() => {
     let active = true
     setError('')
+    setExpanded(null)
     void getInstrumentReferenceData(instrumentId).then((value) => {
       if (active) setSnapshot({ instrumentId, value })
     }).catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : 'ETF资料读取失败') })
@@ -64,18 +66,23 @@ export default function EtfProfilePanel({ instrumentId, language }: { instrument
       : !reference ? <p className="listed-etf-source">{zh ? '加载中' : 'Loading'}</p> : <>
         {facts.length > 0 ? <dl className="listed-etf-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl> : <p className="listed-etf-source">{zh ? '尚未取得基金概况，不能据此推断基金结构。' : 'Fund profile has not been collected.'}</p>}
         <p className="listed-etf-source">{reference.provider.toUpperCase()} · {zh ? '资料采集' : 'Collected'} {sourceDate(reference.fetched_at, zh)}{info.updatedAt ? ` · ${zh ? '来源更新' : 'Source updated'} ${sourceDate(info.updatedAt, zh)}` : ''}</p>
-        {Object.keys(reference.section_errors).length > 0 && <details className="listed-etf-details"><summary>{zh ? '资料覆盖限制' : 'Reference coverage limits'}</summary><ul>{Object.values(reference.section_errors).map((message) => <li key={message}>{message}</li>)}</ul></details>}
-        {(info.description || info.benchmark || info.isin) && <details className="listed-etf-details"><summary>{zh ? '基金说明' : 'Fund description'}</summary>
-          {info.isin ? <p>ISIN · {text(info.isin)}</p> : null}{info.description ? <p>{text(info.description)}</p> : null}{info.benchmark ? <p>{zh ? '跟踪基准' : 'Benchmark'} · {text(info.benchmark)}</p> : null}
-        </details>}
-        <details className="listed-etf-details"><summary>{zh ? '持仓与分布' : 'Holdings and exposures'}{holdings.length > 0 ? ` · ${zh ? '已保存' : 'Saved'} ${holdings.length} ${zh ? '行' : 'rows'}` : ''}</summary>
+        {Object.keys(reference.section_errors).length > 0 && <div className="listed-reference-limit" role="status"><strong>{zh ? '资料覆盖限制' : 'Reference coverage limits'}</strong><ul>{Object.values(reference.section_errors).map((message) => <li key={message}>{message}</li>)}</ul></div>}
+        {fmp && count !== null && holdings.length < count && <p className="listed-reference-limit" role="status">{zh ? `当前仅保存部分明细（${holdings.length} 行），基金资料披露 ${count} 项持仓。` : `Only part of the holdings is saved (${holdings.length} rows); the fund reports ${count} holdings.`}</p>}
+        {!holdings.length && <p className="listed-reference-limit">{zh ? '尚未取得可展示的持仓明细。' : 'No holdings have been collected.'}</p>}
+        <div className="listed-reference-actions">
+          {(holdings.length > 0 || sectorWeights.length > 0 || countryWeights.length > 0) && <button type="button" aria-expanded={expanded === 'holdings'} onClick={() => setExpanded(expanded === 'holdings' ? null : 'holdings')}>{zh ? '持仓与分布' : 'Holdings and exposures'}{holdings.length > 0 ? ` · ${zh ? '已保存' : 'Saved'} ${holdings.length} ${zh ? '行' : 'rows'}` : ''}</button>}
+          {Boolean(info.description || info.isin) && <button type="button" aria-expanded={expanded === 'description'} onClick={() => setExpanded(expanded === 'description' ? null : 'description')}>{zh ? '基金说明' : 'Fund description'}</button>}
+        </div>
+        {expanded === 'description' && <div className="listed-etf-details">
+          {info.isin ? <p>ISIN · {text(info.isin)}</p> : null}{info.description ? <p>{text(info.description)}</p> : null}
+        </div>}
+        {expanded === 'holdings' && <div className="listed-etf-details">
           <p className="listed-etf-source">{zh ? '持仓是来源披露的快照；资料采集或更新时间不等于持仓报告期。明细行数与披露持仓数口径可能不同。' : 'Holdings are disclosed snapshots. Collection and source-update times are not reporting periods; saved rows and reported holding counts may differ.'}</p>
-          {fmp && count !== null && holdings.length < count && <p className="listed-etf-source">{zh ? `当前仅保存部分明细（${holdings.length} 行），基金资料披露 ${count} 项持仓。` : `Only part of the holdings is saved (${holdings.length} rows); the fund reports ${count} holdings.`}</p>}
           {holdings.length ? <HorizontalTableScroll className="table-shell listed-etf-holdings"><table className="listed-data-table"><thead><tr><th>{zh ? '标的' : 'Holding'}</th><th>{zh ? '名称' : 'Name'}</th><th>{fmp ? zh ? '权重' : 'Weight' : zh ? '占股票市值比' : 'Share of equity holdings'}</th><th>{zh ? '报告期' : 'Reporting period'}</th><th>{fmp ? zh ? '来源更新' : 'Source updated' : zh ? '披露日期' : 'Publication date'}</th></tr></thead><tbody>{holdings.map((holding, index) => <tr key={`${holding.asset || holding.symbol}:${index}`}>
             <td>{text(fmp ? holding.asset : holding.symbol) || '—'}</td><td>{text(holding.name) || '—'}</td><td>{percentage(fmp ? holding.weightPercentage : holding.stk_mkv_ratio)}</td><td>{sourceDate(holding.end_date, zh)}</td><td>{sourceDate(fmp ? holding.updatedAt : holding.ann_date, zh)}</td>
           </tr>)}</tbody></table></HorizontalTableScroll> : <p className="listed-etf-source">{zh ? '尚未取得可展示的持仓明细。' : 'No holdings have been collected.'}</p>}
           {(sectorWeights.length > 0 || countryWeights.length > 0) && <div className="listed-etf-exposures">{[{ title: zh ? '行业分布' : 'Sector exposure', data: sectorWeights, key: 'sector' }, { title: zh ? '国家 / 地区分布' : 'Country exposure', data: countryWeights, key: 'country' }].filter((group) => group.data.length > 0).map((group) => <section key={group.key}><h4>{group.title}</h4><dl>{group.data.map((item, index) => <div key={`${item[group.key]}:${index}`}><dt>{text(item[group.key])}</dt><dd>{percentage(item.weightPercentage)}</dd></div>)}</dl></section>)}</div>}
-        </details>
+        </div>}
       </>}
   </section>
 }

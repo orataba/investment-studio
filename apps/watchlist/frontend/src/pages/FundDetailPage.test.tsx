@@ -225,6 +225,21 @@ it('resets instrument drawers when switching funds', async () => {
   expect(screen.queryByRole('dialog')).toBeNull()
 })
 
+
+it.each(['public_fund', 'private_fund'] as const)('keeps %s NAV gaps visible beside the overview metrics without loading the archive', async (type) => {
+  const nav = await api.nav()
+  api.nav.mockResolvedValue({ ...nav, calculation_frequency_profile: { ...nav.calculation_frequency_profile, gap_count: 2 } })
+  const { container } = show('/instruments/fund-1', type)
+  const overview = await screen.findByRole('region', { name: '基金总览' })
+  expect(await within(overview).findByText('净值历史存在缺口，路径风险指标暂不可用。')).toBeTruthy()
+  expect(within(overview).getByText('当前回撤').parentElement?.textContent).toBe('当前回撤—')
+  expect(within(overview).getByRole('region', { name: '当前总体观点' })).toBeTruthy()
+  expect(container.querySelector('.fund-overview-judgments')?.contains(screen.getByTestId('fund-research-tracking'))).toBe(true)
+  expect(api.library).not.toHaveBeenCalled()
+  expect(api.reference).not.toHaveBeenCalled()
+  expect(screen.getByRole('button', { name: '查看基金档案 →' })).toBeTruthy()
+})
+
 it('keeps the overview free of duplicate charts and separates personal opinions from prepared research tracking', async () => {
   const { container } = show()
   await screen.findByRole('region', { name: '基金总览' })
