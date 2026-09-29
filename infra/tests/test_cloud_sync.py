@@ -1,9 +1,11 @@
 import importlib.util
+import gzip
 import hashlib
 import json
 from pathlib import Path
 import plistlib
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -56,20 +58,106 @@ def test_weekly_catch_up_uses_sunday_boundary_instead_of_shifting_after_manual_s
     assert sync.weekly_sync_due(sync.datetime.fromisoformat(previous), sync.datetime.fromisoformat(now)) is due
 
 
-def test_download_excludes_cloud_runtime_credentials(tmp_path, monkeypatch):
+@pytest.fixture
+def snapshot_transfer(tmp_path, monkeypatch):
     calls = []
+    archive = gzip.compress(b'complete-cloud-database', mtime=0)
+    digest = hashlib.sha256(archive).hexdigest()
+    control = {'archive': archive, 'checksum': digest, 'failure': None}
     def ssh(config, command, **kwargs):
-        calls.append(command)
-        kwargs["stdout"].write(b"PGDMP-test")
+        calls.append(('ssh', command))
+        if 'sha256sum' in command:
+            if control['failure'] == 'dump':
+                raise RuntimeError('remote dump failed')
+            return SimpleNamespace(stdout=control['checksum'] + '  /remote/cloud.pgdump.gz\n')
+        return SimpleNamespace(stdout='')
+    def run(args, **kwargs):
+        calls.append(('run', [str(value) for value in args]))
+        if args[0] == '/bin/cp':
+            sync.shutil.copyfile(args[-2], args[-1])
+        if args[0] == '/test/rsync':
+            destination = Path(args[-1])
+            control['basis'] = destination.read_bytes() if destination.exists() else None
+            if control['failure'] == 'transfer':
+                raise RuntimeError('transfer failed')
+            destination.write_bytes(control['archive'])
     monkeypatch.setattr(sync, "ssh", ssh)
-    monkeypatch.setattr(sync, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sync, "run", run)
     monkeypatch.setattr(sync, "postgres_tool", lambda name: name)
-    sync.remote_snapshot({"remote_user": "studio", "remote_port": 55433,
-                          "remote_database_user": "studio", "remote_database": "studio"}, tmp_path)
-    assert all("--exclude-table-data=identity." + table in calls[0] for table in sync.PRIVATE_CREDENTIAL_TABLES)
-    assert "--schema=portfolio" in calls[0]
-    assert "--schema=watchlist" in calls[0]
-    assert "--schema=identity" in calls[0]
+    config = {"remote_user": "studio", "remote_port": 55433, 'ssh_host': 'cloud',
+              "remote_database_user": "studio", "remote_database": "studio"}
+    return config, calls, control
+
+
+def test_download_preserves_complete_snapshot_and_excludes_runtime_credentials(tmp_path, snapshot_transfer):
+    config, calls, control = snapshot_transfer
+    dump = sync.remote_snapshot(config, tmp_path, '/test/rsync')
+    command = next(command for kind, command in calls if kind == 'ssh' and 'sha256sum' in command)
+    assert all("--exclude-table-data=identity." + table in command for table in sync.PRIVATE_CREDENTIAL_TABLES)
+    assert all('--schema=' + name in command for name in sync.SCHEMAS)
+    assert '--exclude-table-data=portfolio.' not in command
+    assert '--compress=0' in command and 'gzip -n --rsyncable -1' in command
+    assert command.index('gzip -n --rsyncable -1 </dev/null >/dev/null') < command.index('pg_dump')
+    assert 'set -euo pipefail' in command and '.partial' in command and 'mv --' in command
+    assert control['basis'] is None
+    assert dump.read_bytes() == b'complete-cloud-database'
+    assert (tmp_path / 'cloud.pgdump.gz.sha256').read_text().strip() == control['checksum']
+    transfer = next(command for kind, command in calls if kind == 'run' and command[0] == '/test/rsync')
+    assert '--no-whole-file' in transfer and '--stats' in transfer
+    assert any(kind == 'ssh' and 'rmdir --' in command for kind, command in calls)
+
+
+@pytest.mark.parametrize('existing_stage', [False, True])
+def test_snapshot_basis_is_replaced_by_verified_cloud_bytes(tmp_path, snapshot_transfer, existing_stage):
+    config, calls, control = snapshot_transfer
+    previous = tmp_path / 'previous'
+    previous.mkdir()
+    previous_archive = previous / 'cloud.pgdump.gz'
+    previous_archive.write_bytes(b'previous-cloud-basis')
+    (tmp_path / 'last-success.json').write_text(json.dumps({'snapshot': str(previous)}))
+    current = tmp_path / 'current'
+    current.mkdir()
+    if existing_stage:
+        (current / 'cloud.pgdump.gz').write_bytes(b'operator-local-basis')
+    sync.remote_snapshot(config, current, '/test/rsync')
+    assert control['basis'] == (b'operator-local-basis' if existing_stage else b'previous-cloud-basis')
+    assert previous_archive.read_bytes() == b'previous-cloud-basis'
+    assert (current / 'cloud.pgdump.gz').read_bytes() == control['archive']
+    assert (current / 'cloud.pgdump').read_bytes() == b'complete-cloud-database'
+
+
+@pytest.mark.parametrize('existing_stage', [False, True])
+def test_snapshot_rejects_symlinked_archive_or_basis_before_remote_changes(tmp_path, snapshot_transfer, existing_stage):
+    config, calls, control = snapshot_transfer
+    original = tmp_path / 'original'
+    original.write_bytes(b'keep')
+    current = tmp_path / 'current'
+    current.mkdir()
+    if existing_stage:
+        (current / 'cloud.pgdump.gz').symlink_to(original)
+    else:
+        previous = tmp_path / 'previous'
+        previous.mkdir()
+        (previous / 'cloud.pgdump.gz').symlink_to(original)
+        (tmp_path / 'last-success.json').write_text(json.dumps({'snapshot': str(previous)}))
+    with pytest.raises(ValueError, match='symlink'):
+        sync.remote_snapshot(config, current, '/test/rsync')
+    assert not calls
+    assert original.read_bytes() == b'keep'
+
+
+@pytest.mark.parametrize('failure', ['dump', 'transfer', 'checksum'])
+def test_snapshot_failure_cleans_remote_stage_and_never_expands_unverified_data(tmp_path, snapshot_transfer, failure):
+    config, calls, control = snapshot_transfer
+    if failure == 'checksum':
+        control['checksum'] = '0' * 64
+    else:
+        control['failure'] = failure
+    with pytest.raises((RuntimeError, ValueError)):
+        sync.remote_snapshot(config, tmp_path, '/test/rsync')
+    assert not (tmp_path / 'cloud.pgdump').exists()
+    assert not (tmp_path / 'cloud.pgdump.gz.sha256').exists()
+    assert calls[-1][0] == 'ssh' and 'rmdir --' in calls[-1][1]
 
 
 def test_file_sync_clones_market_before_exact_cloud_reconciliation(tmp_path, monkeypatch):

@@ -173,10 +173,15 @@ launchctl kickstart "gui/$UID/com.orataba.investment-studio.market-data-refresh"
 文件传输要求 [Homebrew rsync 3](https://formulae.brew.sh/formula/rsync)，先运行 `brew install rsync`。
 同步脚本优先从 `/opt/homebrew/bin`、`/usr/local/bin` 定位程序，再检查版本；不使用 macOS
 自带的旧版 rsync/openrsync。依赖不满足时，在下载数据库或克隆文件前直接报错，不切换传输实现或自动重试。
+云端还须提供支持 `--rsyncable` 的 GNU gzip；开始数据库导出前检查该能力。本机使用 Python 解压，无须另装 gzip。
 
 `bin/investment-studio cloud-sync --config /private/cloud-sync.json` 的流程为：
 
-1. 云端以 PostgreSQL 一致性快照导出八个 schema，云端服务继续运行。
+1. 云端以 PostgreSQL 一致性快照导出八个 schema，云端服务继续运行。custom dump 关闭内层压缩，
+   流式送入 `gzip -n --rsyncable -1`；云端只保存压缩包，管道成功后才原子发布为不可变临时文件。
+   本机用最近成功同步的 `cloud.pgdump.gz` 独立克隆作增量基线，rsync 复用相同数据块；
+   没有旧压缩包时完整传输。旧包仅帮助减少传输字节，本次云端包的 SHA-256 校验通过后才解压与恢复。
+   云端临时包在传输成功或失败后清理，本机保留已校验的压缩包及散列供后续同步使用。
 2. 后台下载市场文件、研究产物、上传材料和保留的私募确认函，在独立本地数据库恢复；本机页面继续使用原库。
    市场目录先以 macOS/APFS 写时复制克隆为增量基线，各副本保持独立文件身份，云端已删除的文件也从暂存副本移除。
    完整保留数值 Parquet 历史、`numeric/raw` 原始响应和文本原件；仅排除 `numeric/outbox/`，

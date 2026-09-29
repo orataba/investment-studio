@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Publish a checked cloud snapshot locally, retaining the previous database/files.
 
-The cloud is read only throughout. Downloads and restore run beside the local
-services; only the final database/file switch needs a local maintenance window.
+Cloud business data stays read only; its temporary compressed export is removed.
+Downloads and restore run beside local services; only the final database/file
+switch needs a local maintenance window.
 """
 from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
 import fcntl
+import gzip
 import hashlib
 import json
 import os
@@ -22,6 +24,7 @@ import sys
 import time
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import urlopen
+from uuid import uuid4
 
 import psycopg
 from psycopg import sql
@@ -99,18 +102,57 @@ def ssh(config, command, **kwargs):
     return run(["ssh", "-oBatchMode=yes", "-oConnectTimeout=15", config["ssh_host"], command], **kwargs)
 
 
-def remote_snapshot(config, directory):
-    """pg_dump holds a single MVCC snapshot without stopping cloud writers."""
+def remote_snapshot(config, directory, rsync_path):
+    """Transfer a complete MVCC snapshot, reusing old bytes only as a basis."""
     dump = directory / "cloud.pgdump"
-    command = ["runuser", "-u", config["remote_user"], "--", "pg_dump",
-               "--format=custom", "--no-owner", "--no-acl", "--host=127.0.0.1",
+    archive = directory / "cloud.pgdump.gz"
+    if archive.is_symlink():
+        raise ValueError("Snapshot archive must not be a symlink")
+    receipt = directory.parent / "last-success.json"
+    if not archive.exists() and receipt.exists():
+        previous = Path(json.loads(receipt.read_text())["snapshot"])
+        basis = previous / archive.name
+        if basis.is_symlink():
+            raise ValueError("Snapshot basis must not be a symlink")
+        if basis.is_file():
+            run(["/bin/cp", "-c", basis, archive])
+
+    owner = ["runuser", "-u", config["remote_user"], "--"]
+    remote = "/tmp/investment-studio-cloud-sync-" + uuid4().hex
+    remote_archive = remote + "/cloud.pgdump.gz"
+    command = ["pg_dump", "--format=custom", "--compress=0", "--no-owner", "--no-acl", "--host=127.0.0.1",
                f"--port={int(config['remote_port'])}", f"--username={config['remote_database_user']}",
                f"--dbname={config['remote_database']}"]
     command += [f"--schema={name}" for name in SCHEMAS]
     command += [f"--exclude-table-data=identity.{name}" for name in PRIVATE_CREDENTIAL_TABLES]
-    print("Downloading a consistent cloud database snapshot", flush=True)
-    with dump.open("wb") as output:
-        ssh(config, shlex.join(command), stdout=output)
+    ssh(config, shlex.join(owner + ["mkdir", "-m", "700", remote]))
+    try:
+        print("Preparing a consistent compressed cloud database snapshot", flush=True)
+        script = ("set -euo pipefail; umask 077; gzip -n --rsyncable -1 </dev/null >/dev/null; " + shlex.join(command)
+                  + " | gzip -n --rsyncable -1 > " + shlex.quote(remote_archive + ".partial")
+                  + "; mv -- " + shlex.quote(remote_archive + ".partial") + " " + shlex.quote(remote_archive)
+                  + "; sha256sum -- " + shlex.quote(remote_archive))
+        result = ssh(config, shlex.join(owner + ["bash", "-c", script]), stdout=subprocess.PIPE, text=True)
+        parts = result.stdout.split()
+        expected = parts[0] if parts else ""
+        if not re.fullmatch(r"[0-9a-f]{64}", expected):
+            raise ValueError("Cloud snapshot checksum is invalid")
+        print("Downloading the cloud snapshot with block reuse", flush=True)
+        run([rsync_path, "-a", "--no-whole-file", "--partial", "--stats",
+             "-e", "ssh -oBatchMode=yes -oConnectTimeout=15",
+             config["ssh_host"] + ":" + shlex.quote(remote_archive), archive])
+        with archive.open("rb") as stream:
+            actual = hashlib.file_digest(stream, "sha256").hexdigest()
+        if actual != expected:
+            raise ValueError("Downloaded cloud snapshot failed its SHA-256 check")
+        (directory / "cloud.pgdump.gz.sha256").write_text(expected + "\n")
+    finally:
+        cleanup = ("rm -f -- " + shlex.quote(remote_archive + ".partial") + " " + shlex.quote(remote_archive)
+                   + "; rmdir -- " + shlex.quote(remote))
+        ssh(config, shlex.join(owner + ["bash", "-e", "-c", cleanup]))
+    print("Expanding the verified cloud snapshot locally", flush=True)
+    with gzip.open(archive, "rb") as source, dump.open("wb") as output:
+        shutil.copyfileobj(source, output, length=1024 * 1024)
     run([postgres_tool("pg_restore"), "--list", dump], stdout=subprocess.DEVNULL)
     with dump.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -559,7 +601,7 @@ def main(argv=None):
         directory = state / stamp
         directory.mkdir()
         stage_name = urlsplit(config["database_url"]).path.strip("/") + "_incoming_" + stamp
-        dump = remote_snapshot(config, directory)
+        dump = remote_snapshot(config, directory, rsync_path)
         copy_files(config, directory, rsync_path)
         restore_stage(config, stage_name, dump, directory)
         publish(config, directory, stage_name)
