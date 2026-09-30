@@ -19,6 +19,22 @@ from .test_postgres_instrument_registry_constraints import BACKEND_ROOT, postgre
 pytestmark = pytest.mark.postgresql_integration
 
 
+def query_plan(session, statement, *, analyze=False):
+    compiled = statement.compile(dialect=session.get_bind().dialect,
+        compile_kwargs={"render_postcompile": True})
+    parameters = {key: compiled._bind_processors.get(key, lambda value: value)(value)
+                  for key, value in compiled.params.items()}
+    return session.connection().exec_driver_sql(
+        "EXPLAIN (" + ("ANALYZE, " if analyze else "") + "FORMAT JSON) " + str(compiled),
+        parameters).scalar()[0]["Plan"]
+
+
+def plan_nodes(value):
+    yield value
+    for child in value.get("Plans", []):
+        yield from plan_nodes(child)
+
+
 def test_monitoring_scope_streams_only_matching_history_and_preserves_originals(postgres_watchlist_env):
     from datetime import UTC, datetime, timedelta
     from watchlist_app.db.models.workbench import ResearchTopic
@@ -96,6 +112,105 @@ def test_streamed_current_states_and_notebook_keep_exact_sources_and_private_his
         assert notebook["sources"][0]["text"] == "exact\x00source"
         assert history == []
         assert not session.identity_map
+
+
+@pytest.mark.parametrize("for_risk", [False, True])
+def test_current_status_sorts_candidates_before_parsing_historical_json(postgres_watchlist_env, for_risk):
+    from datetime import UTC, datetime, timedelta
+    from watchlist_app.db.models.workbench import ResearchTopic
+    from watchlist_app.services.sector_research import review_states
+
+    iid = postgres_watchlist_env["instrument_id"]
+    stamp = datetime(2026, 9, 30, tzinfo=UTC)
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="ordered-history", title="History", visibility="team"))
+        session.flush()
+        for index in range(12):
+            session.add(ResearchEntry(entry_id=f"ordered-{index:02}", topic_id="ordered-history",
+                kind="analysis", title="History", status="completed", created_at=stamp + timedelta(seconds=index),
+                context_json={"research_run": True, "instrument_ids": [iid], "cutoff": stamp.isoformat(),
+                    "original": "Retained historical input " * 20000,
+                    "reviews": {iid: {"status": "completed", "research": {
+                        "investment_view": {"direction": str(index)}, "questions": [], "forecasts": []}}}}))
+        session.commit()
+
+    statements = []
+    def capture(state):
+        if state.is_select and "run_context" in str(state.statement):
+            statements.append(state.statement)
+    with get_session_factory()() as session:
+        event.listen(session, "do_orm_execute", capture)
+        result = review_states(session, instrument_ids=[iid], for_risk=for_risk)
+        event.remove(session, "do_orm_execute", capture)
+        assert result["latest"][iid]["run_id"] == "ordered-11"
+        assert result["last_completed"][iid]["current_summary"] == "11"
+        # A one-row cursor fetch must not parse all twelve older input snapshots
+        # first. EXPLAIN ANALYZE counts actual JSON function invocations, rather
+        # than asserting a wall-clock threshold on the test machine.
+        # Check the actual unbounded cursor query, too: adding LIMIT alone must
+        # not be what moves the sort below JSON parsing in this regression.
+        cursor_plan = query_plan(session, statements[-1])
+        sorts = [node for node in plan_nodes(cursor_plan) if node["Node Type"] in {"Sort", "Incremental Sort"}]
+        assert sorts
+        assert all(not any(child.get("Alias") == "run_context" for child in plan_nodes(sort)) for sort in sorts), cursor_plan
+        plan = query_plan(session, statements[-1].limit(1), analyze=True)
+        projections = [node for node in plan_nodes(plan) if node.get("Alias") == "run_context"]
+        assert len(projections) == 1
+        assert projections[0]["Actual Loops"] == 1, plan
+
+
+@pytest.mark.parametrize("for_risk", [False, True])
+def test_current_status_skips_failed_history_after_latest_checks(postgres_watchlist_env, for_risk):
+    from datetime import UTC, datetime
+    from watchlist_app.db.models.workbench import ResearchTopic
+    from watchlist_app.services.sector_research import review_states
+
+    iid = postgres_watchlist_env["instrument_id"]
+    peer = iid + "-peer"
+    stamp = datetime(2026, 9, 30, tzinfo=UTC)
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="tied-history", title="History", visibility="team"))
+        session.flush()
+        # Equal timestamps exercise the entry-ID boundary. The latest run spans
+        # both requested instruments; a recordkeeping correction supplies only
+        # one current notebook, and a quiet check supplies neither notebook.
+        fixtures = [
+            ("z-active", "running", True, False, {}),
+            ("y-correction", "completed", False, True, {iid: {"status": "completed", "research": {
+                "investment_view": {"direction": "corrected\x00source"}}}}),
+            ("x-quiet", "completed", True, False, {key: {"status": "limited", "change_kind": "none"} for key in (iid, peer)}),
+            *[(f"w-failed-{index}", "failed", True, False, {}) for index in range(6)],
+            ("v-published", "draft", False, False, {key: {"status": "completed", "research": {
+                "investment_view": {"direction": "older view"}}} for key in (iid, peer)}),
+        ]
+        for key, status, sector, recordkeeping, reviews in fixtures:
+            session.add(ResearchEntry(entry_id=key, topic_id="tied-history", title="History", kind="analysis",
+                status=status, created_at=stamp, completed_at=None if status == "running" else stamp,
+                context_json={"sector_run": sector, "research_run": True, "recordkeeping_only": recordkeeping,
+                    "instrument_ids": [iid, peer], "cutoff": stamp.isoformat(), "reviews": reviews,
+                    "retained_input": "Unneeded old failure " * 10000 if status == "failed" else ""}))
+        session.commit()
+
+    statements = []
+    with get_session_factory()() as session:
+        def capture(state):
+            if state.is_select and "ordered_runs" in str(state.statement):
+                statements.append(state.statement)
+        event.listen(session, "do_orm_execute", capture)
+        result = review_states(session, instrument_ids=[iid, peer], for_risk=for_risk)
+        event.remove(session, "do_orm_execute", capture)
+        assert len(statements) == 2
+        for key, direction in ((iid, "corrected\x00source"), (peer, "older view")):
+            assert result["latest"][key]["run_id"] == "z-active"
+            assert result["latest"][key]["status"] == "running"
+            assert result["last_completed"][key]["run_id"] == "x-quiet"
+            assert result["last_completed"][key]["status"] == "limited"
+            assert result["last_completed"][key]["research"] is None
+            assert result["latest"][key]["current_summary"] == direction
+        plan = query_plan(session, statements[1], analyze=True)
+        projections = [node for node in plan_nodes(plan) if node.get("Alias") == "run_context"]
+        assert len(projections) == 1
+        assert projections[0]["Actual Loops"] == 3, plan
 
 
 @pytest.mark.parametrize("postgres_watchlist_env", ["20260920_0059"], indirect=True)
