@@ -114,6 +114,72 @@ def test_streamed_current_states_and_notebook_keep_exact_sources_and_private_his
         assert not session.identity_map
 
 
+@pytest.mark.parametrize("oldest_first", [False, True])
+def test_notebook_read_sorts_metadata_before_opening_originals(postgres_watchlist_env, oldest_first):
+    from contextlib import closing
+    from datetime import UTC, datetime, timedelta
+    from watchlist_app.db.models.workbench import ResearchTopic
+    from watchlist_app.services.research_dossier import _notebooks, _research_records
+
+    iid = postgres_watchlist_env["instrument_id"]
+    stamp = datetime(2026, 9, 30, tzinfo=UTC)
+    original_check = (stamp - timedelta(days=1)).isoformat()
+    notebooks = {}
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="notebook-history", title="History", visibility="team"))
+        session.flush()
+        for index in range(10):
+            key = f"notebook-{index:02}"
+            notebook = notebooks[key] = {"version_id": key, "checked_at": original_check,
+                "investment_view": {"direction": f"exact\x00view {index}"},
+                "sources": [{"source_id": key, "text": f"exact\x00original {index}"}]}
+            # Equal clocks exercise the entry-ID ordering in both directions.
+            session.add(ResearchEntry(entry_id=key, topic_id="notebook-history", kind="analysis", title=key,
+                status="completed", created_at=stamp, completed_at=stamp,
+                context_json={"research_run": True, "instrument_ids": [iid], "cutoff": stamp.isoformat(),
+                    "recordkeeping_only": index == 9,
+                    "original": "Unneeded retained input " * 10000,
+                    "reviews": {iid: {"status": "completed", "research": notebook}}}))
+        session.commit()
+
+    statements, cursors = [], []
+    def capture(state):
+        if state.is_select and "research" in state.statement.selected_columns:
+            statements.append(state.statement)
+    with get_session_factory()() as session:
+        event.listen(session, "do_orm_execute", capture)
+        def capture_cursor(_connection, cursor, *_args):
+            if getattr(cursor, "name", None):
+                cursors.append(cursor)
+        event.listen(session.connection(), "after_cursor_execute", capture_cursor)
+        with closing(_research_records(session, iid, oldest_first=oldest_first)) as records:
+            record, notebook = next(records)
+        expected = "notebook-00" if oldest_first else "notebook-09"
+        assert record.entry_id == expected and notebook == notebooks[expected]
+        assert cursors and all(cursor.closed for cursor in cursors)
+        assert len(statements) == 1
+        statement = statements[0]
+        # Check the actual unbounded cursor plan. LIMIT must not be the reason
+        # the optimizer moves sorting below the JSON scan.
+        plan = query_plan(session, statement)
+        sorts = [node for node in plan_nodes(plan) if node["Node Type"] in {"Sort", "Incremental Sort"}]
+        assert sorts
+        assert all(not any(child.get("Alias") == "run_context" for child in plan_nodes(sort)) for sort in sorts), plan
+        first_row = query_plan(session, statement.limit(1), analyze=True)
+        projections = [node for node in plan_nodes(first_row) if node.get("Alias") == "run_context"]
+        assert len(projections) == 1 and projections[0]["Actual Loops"] == 1, first_row
+        rows = list(_research_records(session, iid, oldest_first=oldest_first))
+        assert [(row.entry_id, value) for row, value in rows] == [
+            (key, notebooks[key]) for key in sorted(notebooks, reverse=not oldest_first)]
+        current, history = _notebooks(session, iid, include_history=True)
+        assert current["run_id"] == "notebook-09"
+        assert current["checked_at"] == original_check  # Correction is not a new research check.
+        assert current["investment_view"]["direction"] == "exact\x00view 9"
+        assert current["sources"][0]["text"] == "exact\x00original 9"
+        assert [row["version_id"] for row in history] == sorted(notebooks, reverse=True)
+        assert not session.identity_map
+
+
 @pytest.mark.parametrize("for_risk", [False, True])
 def test_current_status_sorts_candidates_before_parsing_historical_json(postgres_watchlist_env, for_risk):
     from datetime import UTC, datetime, timedelta
