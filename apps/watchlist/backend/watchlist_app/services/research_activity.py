@@ -405,9 +405,10 @@ def judgment_review_receipt(update, receipts):
     return receipts.get(update["update_id"]) or receipts.get(original, {})
 
 
-def resolve_research_update(session, instrument_id, update_id, *, actor=None):
-    result = next((row for row in research_activity(session, instrument_id, actor=actor)["updates"]
-                   if row["update_id"] == update_id), None)
+def resolve_research_update(session, instrument_id, update_id, *, actor=None, activity=None):
+    activity = activity if activity is not None else research_activity(session, instrument_id, actor=actor)
+    result = next((row for row in activity["updates"]
+                   if activity["instrument_id"] == instrument_id and row["update_id"] == update_id), None)
     if result is None:
         raise ValueError("找不到当前标的已发布的研究更新")
     return result

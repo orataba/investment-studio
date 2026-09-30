@@ -48,7 +48,8 @@ def test_prior_judgment_reference_preserves_cutoff_and_kind_checks(research_clie
     run, themes = bound_run()
     original = {'kind': 'forecast', 'run_id': 'prior-run', 'recorded_at': '2026-09-26T00:00:00+00:00',
                 'reference': {'theme_id': 'old-theme'}}
-    monkeypatch.setattr(research_activity, 'resolve_research_update', lambda *args: original)
+    monkeypatch.setattr(research_activity, 'research_activity', lambda *args: {
+        'instrument_id': 'fund-us-agg', 'updates': [{'update_id': 'research:prior', **original}]})
     if field == 'reflection':
         submission = review(reflection={'status': 'reviewed', 'reviewed_update_ids': ['research:prior']})
     else:
@@ -66,6 +67,38 @@ def test_prior_judgment_reference_preserves_cutoff_and_kind_checks(research_clie
         original['run_id'], original['kind'] = 'prior-run', 'theme'
         with pytest.raises(ValueError, match='不是事前判断'):
             sector_research._validate_research_links(session, run, submission, themes)
+
+
+def test_multiple_references_share_one_authorized_history_only_within_validation(research_client, monkeypatch):
+    run, themes = bound_run()
+    originals = [{'update_id': f'research:{key}', 'kind': 'forecast', 'run_id': 'prior-run',
+        'recorded_at': '2026-09-26T00:00:00+00:00', 'body': f'原始\x00依据 {key}',
+        'reference': {'instrument_id': 'fund-us-agg', 'theme_id': 'old-theme'}} for key in ('first', 'second')]
+    activity = {'instrument_id': 'fund-us-agg', 'updates': originals}
+    before = deepcopy(activity)
+    reads = []
+    def read_activity(session, instrument_id):
+        reads.append(instrument_id)
+        return deepcopy(activity)
+    monkeypatch.setattr(research_activity, 'research_activity', read_activity)
+    submission = review(research={'forecast_reviews': [{'key': 'review', 'theme_id': 'current-theme',
+        'related_research_update_id': 'research:first', 'outcome': '对照原判断'}],
+        'lessons': [{'key': 'lesson', 'theme_id': 'current-theme',
+            'related_research_update_id': 'research:second', 'lesson': '保留原适用条件'}]},
+        reflection={'status': 'reviewed', 'reviewed_update_ids': ['research:first', 'research:second']})
+    with get_session_factory()() as session:
+        sector_research._validate_research_links(session, run, submission, themes)
+        assert reads == ['fund-us-agg']
+        assert activity == before
+        assert research_activity.resolve_research_update(session, 'fund-us-agg', 'research:first', activity=activity) == originals[0]
+        with pytest.raises(ValueError, match='当前标的'):
+            research_activity.resolve_research_update(session, 'sxv264', 'research:first', activity=activity)
+        # A new validation reads again and still checks every reference's PIT
+        # clock, even if an earlier reference in the same proposal is valid.
+        originals[1]['recorded_at'] = '2026-09-27T06:00:00+00:00'
+        with pytest.raises(ValueError, match='本轮开始前'):
+            sector_research._validate_research_links(session, run, submission, themes)
+        assert reads == ['fund-us-agg', 'fund-us-agg']
 
 
 @pytest.mark.parametrize('field,item', [

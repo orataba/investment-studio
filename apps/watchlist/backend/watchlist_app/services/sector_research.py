@@ -121,7 +121,8 @@ def _risk_reviews_projection(reviews, instrument_ids):
 
 
 def review_states(session, *, instrument_ids=None, for_risk=False):
-    """Build current and last-published states from one authorized history read."""
+    """Build current and last-published states from one authorized history scope."""
+    from sqlalchemy import tuple_
     from studio_identity import current_principal
     from watchlist_app.services.research_access import (
         instrument_run_scope, research_context_projection, iter_research_projection_rows, topic_portfolio_ids_by_topic,
@@ -132,27 +133,12 @@ def review_states(session, *, instrument_ids=None, for_risk=False):
         return {"latest": latest, "last_completed": completed}
     principal = current_principal()
     team_id = principal.team_id
-    # Status consumers need the published result, not every retained financial table,
-    # original text and model transcript from every historical run.
-    relation, values = research_context_projection(session, {
-        "instrument_ids": JSON, "reviews": JSON, "cutoff": String,
-        "sector_run": Boolean, "research_run": Boolean, "recordkeeping_only": Boolean,
-    })
-    if for_risk and session.get_bind().dialect.name == "postgresql":
-        values["reviews"] = _risk_reviews_projection(values["reviews"], requested_ids)
-    query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.status,
-        case((ResearchEntry.status == "failed", ResearchEntry.body), else_="").label("body"),
-        *(value.label(name) for name, value in values.items()),
-    ).select_from(ResearchEntry)
-    if relation is not None:
-        query = query.join(relation, true())
     scope_filters = [ResearchEntry.kind == "analysis",
         True if principal.local_unrestricted else ResearchEntry.team_id == team_id]
     if requested_ids is not None:
         # Failed/queued checks may not yet contain a review. The saved run scope,
         # rather than the result or today's topic membership, determines inclusion.
         scope_filters.append(instrument_run_scope(session, sorted(requested_ids)))
-    query = query.where(*scope_filters, or_(values["sector_run"].is_(True), values["research_run"].is_(True)))
     # Authorize using IDs before fetching any notebooks. A status lookup used to
     # decode every historical review (and NUL-bearing original) into one list.
     topics = session.execute(select(ResearchTopic.topic_id, ResearchTopic.portfolio_id)
@@ -163,11 +149,53 @@ def review_states(session, *, instrument_ids=None, for_risk=False):
     # excluding portfolio-bound history from team-level research states.
     portfolio_scopes = topic_portfolio_ids_by_topic(session, topics)
     allowed_topics = {topic_id for topic_id, portfolios in portfolio_scopes.items() if not portfolios}
-    runs = iter_research_projection_rows(session, query.where(ResearchEntry.topic_id.in_(allowed_topics))
-        .order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc(),
-                  ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc()),
-        {name: (name,) for name in values})
-    with closing(runs):
+    # Sort cheap row metadata before opening retained JSON. OFFSET 0 keeps this
+    # ordered candidate relation from being flattened into the lateral scan:
+    # otherwise PostgreSQL parses every historical context before its Sort,
+    # even when the server cursor stops after finding the current result.
+    def ordered_rows(published_before=None):
+        stamp = func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at)
+        filters = [*scope_filters, ResearchEntry.topic_id.in_(allowed_topics)]
+        if published_before is not None:
+            filters.extend((ResearchEntry.status.in_(["completed", "draft"]),
+                tuple_(stamp, ResearchEntry.created_at, ResearchEntry.entry_id) < published_before))
+        candidates = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.status,
+            case((ResearchEntry.status == "failed", ResearchEntry.body), else_="").label("body"),
+            ResearchEntry.context_json, ResearchEntry.created_at, stamp.label("history_at"),
+        ).where(*filters).order_by(stamp.desc(), ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc()
+        ).offset(0).subquery("ordered_runs")
+        relation, values = research_context_projection(session, {
+            "instrument_ids": JSON, "reviews": JSON, "cutoff": String,
+            "sector_run": Boolean, "research_run": Boolean, "recordkeeping_only": Boolean,
+        }, json_column=candidates.c.context_json)
+        if for_risk and session.get_bind().dialect.name == "postgresql":
+            values["reviews"] = _risk_reviews_projection(values["reviews"], requested_ids)
+        query = select(candidates.c.entry_id, candidates.c.topic_id, candidates.c.status, candidates.c.body,
+            candidates.c.history_at, candidates.c.created_at,
+            *(value.label(name) for name, value in values.items())).select_from(candidates)
+        if relation is not None:
+            query = query.join(relation, true())
+        query = query.where(or_(values["sector_run"].is_(True), values["research_run"].is_(True))).order_by(
+            candidates.c.history_at.desc(), candidates.c.created_at.desc(), candidates.c.entry_id.desc())
+        return iter_research_projection_rows(session, query,
+            {name: (name,) for name in values}, json_column=candidates.c.context_json)
+
+    def current_rows():
+        with closing(ordered_rows()) as rows:
+            for row in rows:
+                yield row
+                if requested_ids is not None and requested_ids <= latest.keys():
+                    boundary = (row.history_at, row.created_at, row.entry_id)
+                    break
+            else:
+                return
+        # Once every requested latest check is known, older failed/running
+        # attempts cannot supply a completed check or current notebook. Keep
+        # this second scan strictly below the consumed tuple, including ties.
+        with closing(ordered_rows(boundary)) as rows:
+            yield from rows
+
+    with closing(current_rows()) as runs:
         for run in runs:
             context = run._mapping
             if not (context.get("sector_run") or context.get("research_run")):
@@ -916,7 +944,7 @@ def _previously_recorded_progress(case, item, sources):
 
 
 def _theme_scope(session, run, review):
-    from watchlist_app.services.research_themes import analyst_theme_target, analyst_theme_values
+    from watchlist_app.services.research_themes import analyst_theme_target, analyst_theme_values, theme_index
     from watchlist_app.services.research_identity import research_identity
     team_id = research_identity()["team_id"]
     dossier = next((d for d in run.context_json.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
@@ -924,9 +952,10 @@ def _theme_scope(session, run, review):
     keys = [item.theme_key for item in review.themes]
     if len(keys) != len(set(keys)):
         raise ValueError("同一关注主题在本轮重复出现")
+    current_themes = theme_index(session, review.instrument_id) if review.themes else []
     normalized = lambda value: " ".join(value.split()).casefold()
     for update in review.themes:
-        previous = analyst_theme_target(session, review.instrument_id, update)
+        previous = analyst_theme_target(session, review.instrument_id, update, themes=current_themes)
         if previous and previous["theme_id"] not in themes:
             raise ValueError("研究主题在本轮未读取，请基于最新研究档案更新")
         if previous and previous.get("pinned") and run.context_json.get("sector_run") and previous["status"] != "active":
@@ -948,9 +977,10 @@ def _theme_scope(session, run, review):
     return themes
 
 
-def _validate_update_reference(session, run, instrument_id, update_id, *, judgment=False, field="related_research_update_id"):
+def _validate_update_reference(session, run, instrument_id, update_id, *, judgment=False,
+                               field="related_research_update_id", activity=None):
     from watchlist_app.services.research_activity import resolve_research_update
-    value = resolve_research_update(session, instrument_id, update_id)
+    value = resolve_research_update(session, instrument_id, update_id, activity=activity)
     if not value:
         raise ValueError("找不到当前标的此前已发布的研究判断记录")
     if judgment and value.get("kind") == "theme":
@@ -973,6 +1003,17 @@ def _validate_research_links(session, run, review, themes):
     notes = {item["note_id"]: item for item in dossier.get("pm_views", [])}
     event_keys = {item.event_key for item in review.events} | {item.signal.removeprefix("sector:") for item in
         session.scalars(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id, RiskCase.signal.like("sector:%")))}
+    activity = None
+
+    def validate_reference(update_id, *, field):
+        nonlocal activity
+        if activity is None:
+            from watchlist_app.services.research_activity import research_activity
+            # One authorized, instrument-bound history per validation, not one
+            # full notebook/theme reconstruction for every cited judgment.
+            activity = research_activity(session, review.instrument_id)
+        return _validate_update_reference(session, run, review.instrument_id, update_id,
+                                          judgment=True, field=field, activity=activity)
 
     def check_theme(theme_id, *, field, retained_reference=False):
         if theme_id and theme_id not in themes:
@@ -1013,8 +1054,7 @@ def _validate_research_links(session, run, review, themes):
                 if row.get("event_key") and row["event_key"] not in event_keys:
                     raise ValueError("研究判断关联的事件不属于当前标的")
                 if row.get("related_research_update_id"):
-                    original = _validate_update_reference(session, run, review.instrument_id, row["related_research_update_id"],
-                                                          judgment=True, field=f"{location}.related_research_update_id")
+                    original = validate_reference(row["related_research_update_id"], field=f"{location}.related_research_update_id")
                     check_theme(original["reference"].get("theme_id"),
                                 field=f"{location}.related_research_update_id={row['related_research_update_id']}", retained_reference=True)
                 if field in {"forecast_reviews", "lessons"} and row.get("forecast_key") and (
@@ -1054,8 +1094,7 @@ def _validate_research_links(session, run, review, themes):
             check_theme(theme_id, field=f"events[event_key={item.event_key}].theme_ids", retained_reference=canonical in prior_theme_ids)
     if review.reflection is not None:
         for update_id in review.reflection.reviewed_update_ids:
-            original = _validate_update_reference(session, run, review.instrument_id, update_id, judgment=True,
-                                                  field="reviews[].reflection.reviewed_update_ids")
+            original = validate_reference(update_id, field="reviews[].reflection.reviewed_update_ids")
             check_theme(original["reference"].get("theme_id"),
                         field=f"reflection.reviewed_update_ids={update_id}", retained_reference=True)
 

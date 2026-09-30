@@ -456,39 +456,48 @@ def _research_records(session: Session, instrument_id: str, *, oldest_first: boo
     from watchlist_app.services.research_access import instrument_run_scope, research_context_projection, iter_research_projection_rows, topic_portfolio_ids_by_topic
     principal = current_principal()
     team_id = principal.team_id
-    relation, context = research_context_projection(session, {"instrument_ids": JSON, "sector_run": Boolean,
-        "research_run": Boolean, "cutoff": String, "recordkeeping_only": Boolean,
-        "citation_correction": JSON, "organization_revision": JSON, "reviews": JSON})
-    review = context["reviews"][instrument_id]
-    query = select(ResearchEntry.entry_id, ResearchEntry.team_id, ResearchEntry.topic_id,
-        ResearchEntry.status, ResearchEntry.created_at, ResearchEntry.completed_at,
-        ResearchTopic.portfolio_id,
-        context["sector_run"].label("sector_run"), context["research_run"].label("research_run"),
-        context["cutoff"].label("cutoff"), context["recordkeeping_only"].label("recordkeeping_only"),
-        context["citation_correction"].label("citation_correction"), context["organization_revision"].label("organization_revision"),
-        review["status"].as_string().label("review_status"), review["research"].label("research"),
-    ).select_from(ResearchEntry).join(ResearchTopic)
-    if relation is not None:
-        query = query.join(relation, true())
     scope_filters = (
         ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["completed", "draft"]),
         True if principal.local_unrestricted else ResearchEntry.team_id == team_id,
         True if principal.local_unrestricted else ResearchTopic.team_id == team_id,
         instrument_run_scope(session, instrument_id),
     )
-    query = query.where(*scope_filters, review["research"].as_string().is_not(None))
-    # Candidate IDs need the indexed scope, not another parse of every notebook.
-    # The actual payload query below retains its publication/result predicates.
+    # Authorize candidate topics before opening their retained notebooks.
     topics = session.execute(select(ResearchEntry.topic_id, ResearchTopic.portfolio_id)
         .select_from(ResearchEntry).join(ResearchTopic).where(*scope_filters).distinct()).all()
     portfolios = topic_portfolio_ids_by_topic(session, topics)
     stamp = func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at)
-    records = iter_research_projection_rows(session, query.where(ResearchEntry.topic_id.in_(
-        [topic_id for topic_id, ids in portfolios.items() if not ids]))
+    # Keep sorting below the lateral JSON scan so a current/version reader can
+    # stop without parsing every older original. OFFSET 0 preserves the ordered
+    # candidate relation instead of letting PostgreSQL flatten it into the scan.
+    candidates = select(ResearchEntry.entry_id, ResearchEntry.team_id, ResearchEntry.topic_id,
+        ResearchEntry.status, ResearchEntry.created_at, ResearchEntry.completed_at,
+        ResearchTopic.portfolio_id, ResearchEntry.context_json, stamp.label("history_at"),
+    ).select_from(ResearchEntry).join(ResearchTopic).where(*scope_filters,
+        ResearchEntry.topic_id.in_([topic_id for topic_id, ids in portfolios.items() if not ids])
+    ).order_by(*(column.asc() if oldest_first else column.desc() for column in
+        (stamp, ResearchEntry.created_at, ResearchEntry.entry_id))).offset(0).subquery("ordered_notebook_runs")
+    relation, context = research_context_projection(session, {"instrument_ids": JSON, "sector_run": Boolean,
+        "research_run": Boolean, "cutoff": String, "recordkeeping_only": Boolean,
+        "citation_correction": JSON, "organization_revision": JSON, "reviews": JSON},
+        json_column=candidates.c.context_json)
+    review = context["reviews"][instrument_id]
+    query = select(candidates.c.entry_id, candidates.c.team_id, candidates.c.topic_id,
+        candidates.c.status, candidates.c.created_at, candidates.c.completed_at,
+        candidates.c.portfolio_id,
+        context["sector_run"].label("sector_run"), context["research_run"].label("research_run"),
+        context["cutoff"].label("cutoff"), context["recordkeeping_only"].label("recordkeeping_only"),
+        context["citation_correction"].label("citation_correction"), context["organization_revision"].label("organization_revision"),
+        review["status"].as_string().label("review_status"), review["research"].label("research"),
+    ).select_from(candidates)
+    if relation is not None:
+        query = query.join(relation, true())
+    records = iter_research_projection_rows(session, query.where(review["research"].as_string().is_not(None))
         .order_by(*(column.asc() if oldest_first else column.desc() for column in
-            (stamp, ResearchEntry.created_at, ResearchEntry.entry_id))),
+            (candidates.c.history_at, candidates.c.created_at, candidates.c.entry_id))),
         {**{name: (name,) for name in ("sector_run", "research_run", "cutoff", "recordkeeping_only", "citation_correction", "organization_revision")},
-         "review_status": ("reviews", instrument_id, "status"), "research": ("reviews", instrument_id, "research")})
+         "review_status": ("reviews", instrument_id, "status"), "research": ("reviews", instrument_id, "research")},
+        json_column=candidates.c.context_json)
     with closing(records):
         for row in records:
             research = row.research

@@ -394,19 +394,19 @@ def save_theme(session, instrument_id, payload, *, theme_id=None, actor=None, pr
     return theme_record(entry)
 
 
-def analyst_theme_target(session, instrument_id, update, *, actor=None):
+def analyst_theme_target(session, instrument_id, update, *, actor=None, themes=None):
     """Resolve stable keys inside one instrument/team; never infer a cross-scope match."""
     actor = actor or research_identity()
-    themes = [item for item in theme_index(session, instrument_id, actor=actor)
-              if item["team_id"] == actor["team_id"]]
-    matches = [item for item in themes if item.get("theme_key") == update.theme_key]
+    themes = themes if themes is not None else theme_index(session, instrument_id, actor=actor)
+    matches = [item for item in themes if item["team_id"] == actor["team_id"]
+               and item["instrument_id"] == instrument_id and item.get("theme_key") == update.theme_key]
     if len(matches) > 1:
         raise ValueError("关注主题标识重复，请先明确需要更新的主题")
     if update.theme_id:
-        try:
-            record = theme_record(get_theme(session, instrument_id, update.theme_id, actor=actor))
-        except LookupError as error:
-            raise ValueError("找不到本标的的研究主题，请使用已读取档案中的 theme_id；新建主题只填写 theme_key，不填写 theme_id。") from error
+        record = next((item for item in themes if item["theme_id"] == update.theme_id
+                       and item["instrument_id"] == instrument_id), None)
+        if record is None:
+            raise ValueError("找不到本标的的研究主题，请使用已读取档案中的 theme_id；新建主题只填写 theme_key，不填写 theme_id。")
         if record["team_id"] != actor["team_id"]:
             raise ValueError("研究主题不属于本轮团队")
         if record.get("theme_key") not in {None, update.theme_key} or (matches and matches[0]["theme_id"] != record["theme_id"]):
