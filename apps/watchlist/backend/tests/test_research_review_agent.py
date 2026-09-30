@@ -11,7 +11,8 @@ from watchlist_app.services import sector_fact_review as review
 
 
 def _bound(monkeypatch, tmp_path, packet):
-    packet = {"cutoff": "2026-09-26T00:00:00+00:00", **packet}
+    packet = {"cutoff": "2026-09-26T00:00:00+00:00",
+              "event_source_ids": [source["source_id"] for source in packet["sources"]], **packet}
     state = {"packet": packet, "response_schema": review._review_schema(packet["draft_reviews"], packet["sources"])}
     for key, filename in (("PACKET", "packet.json"), ("RESULT", "result.json"), ("READS", "reads.jsonl")):
         monkeypatch.setenv("INVESTMENT_STUDIO_REVIEW_" + key, str(tmp_path / filename))
@@ -392,3 +393,35 @@ def test_unknown_review_startup_exit_keeps_only_allowlisted_diagnostic_signals(m
     assert not failure.value.retryable
     assert "SECRET" not in json.dumps([safe, captures])
     assert "private source" not in json.dumps([safe, captures])
+
+
+def test_review_event_cannot_add_notebook_snapshot_and_can_repair_before_acceptance(monkeypatch, tmp_path):
+    from watchlist_app.services.sector_research import event_evidence_sources
+    original = {"source_id": "original", "source_type": "public_source", "instrument_id": "asset",
+        "text": "The retained dated original reports the development.", "published_at": "2026-09-25"}
+    event = {"event_key": "disclosure", "action": "new", "direction": "uncertain", "title": "Disclosure",
+        "body": "The original reports a development.", "confidence": "confirmed", "information_type": "fact",
+        "recording_type": "new", "source_ids": ["original"], "published_at": "2026-09-25"}
+    context = {"cutoff": "2026-09-26T00:00:00+00:00", "market_text_sources": [original],
+        "instrument_inputs": [{"instrument_id": "asset", "name": "Asset", "price": 100}]}
+    proposed = {"instrument_id": "asset", "events": [event], "research": {"source_ids": ["instrument:bound:asset"]}}
+    packet = review._evidence_packet(context, [proposed], "bound")
+    assert packet['event_source_ids'] == sorted(event_evidence_sources(context, 'bound')) == ['original']
+    assert 'instrument:bound:asset' in {source['source_id'] for source in packet['sources']}
+    _bound(monkeypatch, tmp_path, packet)
+    _complete_read(review_mcp.read_review_context, section="draft_reviews")
+    _complete_read(review_mcp.read_review_context, section="acquisition")
+    for source in packet['sources']:
+        _complete_read(review_mcp.read_review_source, source_id=source['source_id'])
+    correction = {"event_key": "disclosure", "decision": "correct", "reason": "Add supporting snapshot",
+        "patch": {"source_ids": ["original", "instrument:bound:asset"]}}
+    receipts = {"reviews": [{"instrument_id": "asset", "summary": {"decision": "accept"},
+        "change_kind": {"decision": "accept"}, "coverage": {"decision": "accept"}, "decisions": [correction],
+        "themes": [], "research": {"decision": "accept"}, "reflection": None}]}
+    with pytest.raises(ValueError, match='disclosure source_ids'):
+        review_mcp.submit_review_receipts(receipts)
+    assert not (tmp_path / 'result.json').exists()
+    correction['patch']['source_ids'] = ['original']
+    assert review_mcp.submit_review_receipts(receipts)['accepted']
+    published = json.loads((tmp_path / 'result.json').read_text())['result']['reviews'][0]
+    assert published['research']['source_ids'] == ['instrument:bound:asset']

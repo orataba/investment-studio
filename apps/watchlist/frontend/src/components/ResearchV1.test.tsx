@@ -54,6 +54,16 @@ it.each(['limited', 'not_established', undefined] as const)('does not interpret 
   expect(screen.getAllByText(/尚未建立|不足/).length).toBeGreaterThan(0)
 })
 
+it('shows decision conditions beside the current judgment without opening evidence', () => {
+  render(<InvestmentResearchState instrumentId="stock" compact notebook={notebook(view({ invalidation: '订单连续下修时重新评估。', next_check: '核对季度现金回款。' }))} sources={() => null} />)
+  const conditions = screen.getByLabelText('判断条件与下一验证')
+  expect(within(conditions).getByText('改判条件')).toBeTruthy()
+  expect(within(conditions).getByText('订单连续下修时重新评估。')).toBeTruthy()
+  expect(within(conditions).getByText('核对季度现金回款。')).toBeTruthy()
+  expect(conditions.closest('details')).toBeNull()
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
+
 it.each([undefined, null])('keeps old string assessments readable with %s structured arrays', arrays => {
   render(<InvestmentResearchState instrumentId="stock" compact notebook={notebook(view({ risk: '旧版流动性风险', attractiveness: '旧版需求机会', opportunities: arrays, risks: arrays }))} sources={() => null} />)
   expect(screen.getByText('旧版流动性风险')).toBeTruthy()

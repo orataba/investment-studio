@@ -538,7 +538,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const isCrypto = listedInstrumentType === 'crypto'
   const usesCanonicalPriceSeries = isIndex || isCrypto
   const tabs = listedDetailTabs(listedInstrumentType)
-  const [estimateHistoryOpen, setEstimateHistoryOpen] = useState(false)
   const requestedTab = searchParams.get('tab')
   const tab: ListedDetailTab = requestedTab === 'risk' ? 'performance'
     : requestedTab === 'analyst' || requestedTab === 'events' ? 'investment-research'
@@ -1192,28 +1191,33 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       </div>
 
       {tab === 'overview' ? (
-        <div className="listed-tab-stack">
-          {listedInstrumentType === 'etf' && <details className="panel research-estimate-history" onToggle={event => setEstimateHistoryOpen(event.currentTarget.open)}><summary>{zh ? '基金结构与盈利预期' : 'Fund structure and earnings estimates'}</summary>{estimateHistoryOpen && <><EtfProfilePanel key={instrumentId} instrumentId={instrumentId} language={language} /><EstimateHistoryPanel instrumentId={instrumentId} language={language} /></>}</details>}
-          <section className="listed-metric-grid listed-overview-quote">
-            <MetricCard label="YTD" value={returnsPending ? loadingLabel : percentValue(overviewYtd)} tone={signedValueClass(overviewYtd)} />
-            <MetricCard label="1 Year" value={returnsPending ? loadingLabel : percentValue(overviewOneYear)} tone={signedValueClass(overviewOneYear)} />
-            <MetricCard label={usesCanonicalPriceSeries ? '1 Month' : 'Volume'} value={(usesCanonicalPriceSeries ? pending.performance : pending.bars) ? loadingLabel : usesCanonicalPriceSeries ? percentValue(displayReturns.oneMonth) : compactValue(latestPriceBar?.volume ?? null, 2)} />
-          </section>
-          {usesCanonicalPriceSeries ? indexChartPanel : chartPanel}
-          <section className="panel listed-overview-brief">
-            <div className="listed-overview-brief-row">
-              <div><h3>{zh ? '当前总体观点' : 'Current Overall View'}</h3>
-                {pending.research ? sectionLoading(zh ? '投资观点' : 'Investment views') : researchError ? <p>{zh ? '投资观点暂时无法读取。' : 'Investment views unavailable.'}</p> : latestOpinion ? <><time>{formatDate(latestOpinion.noteDate)}</time><p className="overview-opinion-excerpt">{latestOpinion.body || latestOpinion.title}</p></> : <p>{zh ? '尚未选定总体观点。可在投资观点中记录判断并设为当前观点。' : 'No overall view selected. Record and select one in Investment Views.'}</p>}
-              </div>
-              <button type="button" onClick={() => setTab('views')}>{zh ? '查看观点' : 'View opinions'} →</button>
+        <section className="listed-overview" aria-label={zh ? '标的总览' : 'Instrument overview'}>
+          <div className="listed-overview-main">
+            <div className="listed-overview-market">
+              <header className="listed-overview-section-heading"><h2>{zh ? '行情与绩效' : 'Market & performance'}</h2><button type="button" onClick={() => setTab('performance')}>{zh ? '全部绩效指标' : 'All performance metrics'} →</button></header>
+              <section className="listed-metric-grid listed-overview-quote" aria-label={zh ? '绩效速览' : 'Performance snapshot'}>
+                <MetricCard label="YTD" value={returnsPending ? loadingLabel : percentValue(overviewYtd)} tone={signedValueClass(overviewYtd)} />
+                <MetricCard label="1 Year" value={returnsPending ? loadingLabel : percentValue(overviewOneYear)} tone={signedValueClass(overviewOneYear)} />
+                <MetricCard label={zh ? '当前回撤' : 'Current Drawdown'} value={pending.risk ? loadingLabel : percentValue(displayRiskStats.currentDrawdown)} tone={signedValueClass(displayRiskStats.currentDrawdown)} note={pending.risk ? undefined : riskAsOfNote} />
+                <MetricCard label={usesCanonicalPriceSeries ? '1 Month' : zh ? '成交量' : 'Volume'} value={(usesCanonicalPriceSeries ? pending.performance : pending.bars) ? loadingLabel : usesCanonicalPriceSeries ? percentValue(displayReturns.oneMonth) : compactValue(latestPriceBar?.volume ?? null, 2)} />
+              </section>
+              {standardizedError && <p className="listed-overview-quality" role="status">{zh ? '部分绩效或风险数据无法读取，相应指标暂不展示。' : standardizedError}</p>}
+              {summary?.freshness.staleness_reason && <p className="listed-overview-quality" role="status">{summary.freshness.staleness_reason}</p>}
+              {usesCanonicalPriceSeries ? indexChartPanel : chartPanel}
             </div>
-            <div className="listed-overview-brief-row">
-              <div><h3>{zh ? '当前回撤' : 'Current Drawdown'}</h3><p>{pending.risk ? loadingLabel : percentValue(displayRiskStats.currentDrawdown)} <span className="listed-chart-caption">{pending.risk ? '' : riskAsOfNote}</span></p></div>
-              <button type="button" onClick={() => setTab('performance')}>{zh ? '绩效指标' : 'Performance Metrics'} →</button>
-            </div>
-          </section>
-          <SectorResearchPanel instrumentId={instrumentId} variant="summary" onOpenEvents={() => setTab('investment-research')} />
-        </div>
+            <aside className="listed-overview-judgments" aria-label={zh ? '研究与投资判断' : 'Research & investment judgment'}>
+              <SectorResearchPanel instrumentId={instrumentId} variant="summary" onOpenEvents={() => setTab('investment-research')} />
+              <section className="listed-overview-opinion" aria-label={zh ? '当前总体观点' : 'Current Overall View'}>
+                <header className="listed-overview-section-heading"><h2>{zh ? '当前总体观点' : 'Current Overall View'}</h2><button type="button" onClick={() => setTab('views')}>{zh ? '查看观点' : 'View opinions'} →</button></header>
+                {pending.research ? sectionLoading(zh ? '投资观点' : 'Investment views') : researchError ? <p>{zh ? '投资观点暂时无法读取。' : 'Investment views unavailable.'}</p> : latestOpinion ? <><time>{formatDate(latestOpinion.noteDate)}</time>{latestOpinion.title && <h3>{latestOpinion.title}</h3>}<p className="overview-opinion-excerpt">{latestOpinion.body || latestOpinion.title}</p></> : <p className="muted">{zh ? '尚未选定总体观点。' : 'No overall view selected.'}</p>}
+              </section>
+            </aside>
+          </div>
+          {listedInstrumentType === 'etf' && <div className="listed-overview-reference" aria-label={zh ? '基金结构与盈利预期' : 'Fund structure and earnings estimates'}>
+            <EtfProfilePanel key={instrumentId} instrumentId={instrumentId} language={language} />
+            <EstimateHistoryPanel key={instrumentId} instrumentId={instrumentId} language={language} />
+          </div>}
+        </section>
       ) : null}
 
       {tab === 'views' ? (

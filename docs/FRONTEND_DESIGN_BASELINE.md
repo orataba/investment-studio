@@ -75,7 +75,8 @@
 
 ## Tabs And Content Rhythm
 
-- Portfolio workspace tabs 和 Watchlist fund detail tabs 可以有不同 header，但 tabs 以下的间距、section title、图表和 facts 结构应保持同一语言。
+- Portfolio workspace tabs 和 Watchlist fund detail tabs 可以有不同 header，但 tabs 以下的间距、section title、图表和 facts 结构应保持同一语言。Watchlist 同一标的各页签使用一致的标题、报价与工具布局，切到投资研究不另换更窄的页头或居中外框。
+- Watchlist 投资研究不重复页签名称作为大标题；状态与操作组成紧凑工具行，正文按判断、近期进展、持续主题和量化依据组织。通过内容分栏与信息层级利用桌面宽度，长段正文保持可读行长；窄屏单列。总览摘要不重复完整研究报告，必要资产结构与数据缺口直接可见，不以堆叠折叠框代替布局。
 - Portfolio tabs 下方由 `PortfolioWorkspaceLayout` 统一承载内容边界：页签下留 12px，绘制 2px 顶部分隔线，线下留 14px 再开始首组标题、筛选或图表；子页不重复绘制同一条顶线。后续独立 section 保留自身细分层级，避免筛选按钮贴线或切换页签时顶部间距变化。
 - Portfolio 是更重的独立 app，因此顶部 portfolio selector / portfolio headline 可以比 fund detail 更强，但不要把这种层级扩散到 tabs 以下。
 - Portfolio Holdings 的 instrument detail 固定分成 `Overview / Transactions / Position Lots`：Overview 承载行情与当前仓位摘要，Transactions 承载已确认交易事实，Position Lots 承载开放成本批次；matched exits 属于所选 lot 的上下文，不再作为与 lot 平级的顶层 tab。

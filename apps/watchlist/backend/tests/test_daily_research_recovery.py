@@ -1,4 +1,5 @@
 """Durable automatic retry discovery must not become a new research dispatch."""
+from watchlist_app.services import risk_review_state
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from threading import Event
@@ -57,7 +58,7 @@ def test_worker_recovers_cross_day_weekend_original_once_without_new_generation(
         assert service.daily_review_groups(session, now=NOW) == []
         assert service.automatic_recovery_runs(session) == {IID: RID}
     monkeypatch.setattr(research_workbench, 'portfolio_options', lambda: {'portfolios': []})
-    monkeypatch.setattr(risk_officer, 'read_snapshot', lambda session, **scope: {'instrument_ids': []})
+    monkeypatch.setattr(risk_review_state, 'current_scope', lambda session, scope: {'instrument_ids': []})
     calls = []
     def analyze(run_id):
         calls.append(run_id)
@@ -169,10 +170,10 @@ def test_worker_never_falls_back_to_new_run_when_discovered_retry_changes(saved_
     monkeypatch.setattr(service, 'automatic_recovery_runs', discover)
     monkeypatch.setattr(service, 'daily_review_groups', lambda session: [[IID]])
     monkeypatch.setattr(research_workbench, 'portfolio_options', lambda: {'portfolios': []})
-    monkeypatch.setattr(risk_officer, 'read_snapshot', lambda session, **scope: {'instrument_ids': []})
+    monkeypatch.setattr(risk_review_state, 'current_scope', lambda session, scope: {'instrument_ids': []})
     monkeypatch.setattr(runner, 'run_analysis', lambda *args: pytest.fail('Stale retry must not dispatch any run'))
     service.run_daily_reviews(Event())
-    assert calls == [{IID: RID}, {}]
+    assert calls[0] == {IID: RID} and all(value == {} for value in calls[1:])
     with get_session_factory()() as session:
         assert session.get(ResearchEntry, RID).status == 'failed'
         assert session.scalar(select(func.count()).select_from(ResearchEntry).where(ResearchEntry.kind == 'analysis')) == 1
@@ -194,7 +195,7 @@ def test_retry_invalidated_by_active_research_keeps_dependent_risk_scope_pending
     monkeypatch.setattr(service, 'automatic_recovery_runs', discover)
     monkeypatch.setattr(service, 'daily_review_groups', lambda session: [[IID]])
     monkeypatch.setattr(research_workbench, 'portfolio_options', lambda: {'portfolios': [{'portfolio_id': 'held'}]})
-    monkeypatch.setattr(risk_officer, 'read_snapshot', lambda session, **scope: {'instrument_ids': [IID]})
+    monkeypatch.setattr(risk_review_state, 'current_scope', lambda session, scope: {'instrument_ids': [IID]})
     monkeypatch.setattr(risk_officer, 'begin_run', lambda *args, **kw: pytest.fail('Competing active researcher must block dependent risk'))
     monkeypatch.setattr(runner, 'run_analysis', lambda *args: pytest.fail('No duplicate research dispatch'))
     service.run_daily_reviews(Event())
@@ -238,7 +239,7 @@ def test_ordinary_due_worker_does_not_revive_failure_superseded_by_compiled_user
     monkeypatch.setattr(research_dossier, 'read_dossier', lambda session, iid: {'instrument_id': iid})
     monkeypatch.setattr(research_triggers, 'research_trigger', lambda *args, **kw: None)
     monkeypatch.setattr(research_workbench, 'portfolio_options', lambda: {'portfolios': []})
-    monkeypatch.setattr(risk_officer, 'read_snapshot', lambda session, **scope: {'instrument_ids': []})
+    monkeypatch.setattr(risk_review_state, 'current_scope', lambda session, scope: {'instrument_ids': []})
     monkeypatch.setattr(runner, 'run_analysis', lambda *args: pytest.fail('Superseded original must not run via the ordinary daily branch'))
     service.run_daily_reviews(Event())
     with get_session_factory()() as session:
@@ -255,7 +256,7 @@ def test_user_queued_run_is_not_dispatched_or_failed_by_daily_service(saved_retr
         session.commit()
     monkeypatch.setattr(service, '_research_due', lambda market, now: True)
     monkeypatch.setattr(research_workbench, 'portfolio_options', lambda: {'portfolios': [{'portfolio_id': 'held'}]})
-    monkeypatch.setattr(risk_officer, 'read_snapshot', lambda session, **scope: {'instrument_ids': [IID]})
+    monkeypatch.setattr(risk_review_state, 'current_scope', lambda session, scope: {'instrument_ids': [IID]})
     monkeypatch.setattr(risk_officer, 'begin_run', lambda *args, **kw: pytest.fail('User research is still pending'))
     monkeypatch.setattr(runner, 'run_analysis', lambda *args: pytest.fail('Worker must not authorize or fail a user task'))
     service.run_daily_reviews(Event())
@@ -280,7 +281,7 @@ def test_unsupported_market_retry_does_not_block_other_recoverable_instruments(s
     monkeypatch.setattr(shared_instrument_registry, 'list_shared_active_instrument_ids', lambda **kw: [IID, other])
     monkeypatch.setattr(service, '_research_market', lambda session, iid: None if iid == IID else 'cn')
     monkeypatch.setattr(research_workbench, 'portfolio_options', lambda: {'portfolios': []})
-    monkeypatch.setattr(risk_officer, 'read_snapshot', lambda session, **scope: {'instrument_ids': []})
+    monkeypatch.setattr(risk_review_state, 'current_scope', lambda session, scope: {'instrument_ids': []})
     calls = []
     monkeypatch.setattr(runner, 'run_analysis', calls.append)
     with get_session_factory()() as session:
@@ -304,9 +305,44 @@ def test_user_queued_risk_is_not_dispatched_or_failed_by_daily_service(saved_ret
     monkeypatch.setattr(service, 'daily_review_groups', lambda session: [[IID]])
     monkeypatch.setattr(service, 'begin_run', lambda session, ids, **kw: (session.get(ResearchEntry, RID), False))
     monkeypatch.setattr(research_workbench, 'portfolio_options', lambda: {'portfolios': [{'portfolio_id': 'held'}]})
-    monkeypatch.setattr(risk_officer, 'read_snapshot', lambda session, **scope: {'instrument_ids': [IID]})
+    monkeypatch.setattr(risk_review_state, 'current_scope', lambda session, scope: {'instrument_ids': [IID]})
     monkeypatch.setattr(risk_officer, 'begin_run', lambda session, **kw: (session.get(ResearchEntry, 'user-risk'), False))
     monkeypatch.setattr(runner, 'run_analysis', lambda *args: pytest.fail('Daily service must leave a user risk task untouched'))
     service.run_daily_reviews(Event())
     with get_session_factory()() as session:
         assert session.get(ResearchEntry, 'user-risk').status == 'queued'
+
+
+def test_next_market_day_creates_service_run_without_adopting_old_user_failure(saved_retry, monkeypatch):
+    from watchlist_app.services import research_workbench
+    class Monday(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 28, 1, tzinfo=UTC)
+    monkeypatch.setattr(service, 'datetime', Monday)
+    monkeypatch.setattr(runner, 'datetime', Monday)
+    monkeypatch.setattr(research_workbench, 'portfolio_options', lambda: {'portfolios': []})
+    monkeypatch.setattr(risk_review_state, 'current_scope', lambda session, scope: {'instrument_ids': []})
+    with get_session_factory()() as session:
+        original = session.get(ResearchEntry, RID)
+        original.context_json = {**original.context_json, 'research_actor': Principal('pm', 'PM', 'default').to_dict()}
+        original_context = deepcopy(original.context_json)
+        session.commit()
+        assert service.automatic_recovery_runs(session) == {}
+    calls = []
+    def analyze(run_id):
+        assert run_id != RID
+        calls.append(run_id)
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, run_id)
+            assert run.context_json['research_actor']['kind'] == 'service'
+            assert 'submitted_draft' not in run.context_json
+            run.status = 'completed'
+            session.commit()
+    monkeypatch.setattr(runner, 'run_analysis', analyze)
+    service.run_daily_reviews(Event())
+    service.run_daily_reviews(Event())
+    assert len(calls) == 1
+    with get_session_factory()() as session:
+        original = session.get(ResearchEntry, RID)
+        assert original.status == 'failed' and original.context_json == original_context

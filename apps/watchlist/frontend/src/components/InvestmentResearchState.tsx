@@ -159,16 +159,22 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
         {brief.conditions.length > 0 && <div className="research-decision-triggers"><h4>建议成立的条件</h4><ul>{brief.conditions.map((condition, index) => <li key={index} translate="no">{condition}</li>)}</ul></div>}
       </div>}
       {view && (compact ? <>
-        <p className="research-current-direction" translate="no">{view.direction || '当前总结尚待补充。'}</p>
-        {view.coverage_status === 'limited' && <p className="sector-research-limitation">本次研究部分可用，未覆盖部分不能据此判断。</p>}
+        <div className="research-judgment-layout">
+          <div className="research-judgment-lead">
+            <p className="research-current-direction" translate="no">{view.direction || '当前总结尚待补充。'}</p>
+            {view.coverage_status === 'limited' && <p className="sector-research-limitation">已保存的研究部分可用，未覆盖部分不能据此判断。</p>}
+          </div>
+          {(view.invalidation || view.next_check) && <dl className="research-judgment-conditions" aria-label="判断条件与下一验证">
+            {view.invalidation && <div><dt>改判条件</dt><dd translate="no">{view.invalidation}</dd></div>}
+            {view.next_check && <div><dt>下一验证</dt><dd translate="no">{view.next_check}</dd></div>}
+          </dl>}
+        </div>
         <div className="research-insight-grid"><InsightList title="机会" items={view.opportunities} legacy={view.attractiveness} {...{ view, instrumentId, sources }} /><InsightList title="风险" items={view.risks} legacy={view.risk} {...{ view, instrumentId, sources }} /></div>
       </> : <ViewBody view={view} sources={sources} />)}
       {!view && compact && brief && <><p className="research-current-direction" translate="no">{brief.recommendation}</p><p className="sector-research-note">沿用历史研究摘要；当前机会与风险尚未形成结构化认识。</p></>}
       <div className="research-judgment-tools">
       <ResearchReadingAside label="判断依据与适用范围">
         {compact && notebook.key_drivers.length > 0 && <><h4>主要理由</h4><ul>{notebook.key_drivers.map((text, index) => <li key={index} translate="no">{text}</li>)}</ul></>}
-        {compact && view?.invalidation && <p><strong>改判条件</strong> <span translate="no">{view.invalidation}</span></p>}
-        {compact && view?.next_check && <p><strong>下一验证</strong> <span translate="no">{view.next_check}</span></p>}
         {view?.horizon && <p><strong>适用期限</strong> <span translate="no">{view.horizon}</span></p>}
         {view?.conviction && <p><strong>判断把握程度</strong> <span translate="no">{view.conviction}</span></p>}
         {notebook.publication && <section className="research-publication-byline"><h4>编制说明</h4><p><span translate="no">{notebook.publication.display_name}</span> 编制 · 研究截至 <time dateTime={notebook.publication.research_as_of}>{notebook.publication.research_as_of}</time>{notebook.publication.baseline && ' · 首次研究基线'}</p><p translate="no">{notebook.publication.verification_note}</p>{!notebook.publication.independent_model_review && <p>作者核对来源；未经独立模型核证。</p>}</section>}

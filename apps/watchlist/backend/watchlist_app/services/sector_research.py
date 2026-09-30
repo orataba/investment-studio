@@ -1,5 +1,5 @@
 """Source-bound event reviews and daily sector checks in the existing workbench."""
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import closing
 from datetime import UTC, date, datetime, timedelta
 import logging
@@ -1112,6 +1112,25 @@ def _review_research_plan(session, context, review):
     return bound.get("research_plan") or plan_for_mandate(mandate["registration"], mandate)
 
 
+def event_evidence_sources(context, run_id, *, notebook_evidence=None):
+    """The exact retained catalogue admissible for event citations.
+
+    The broader notebook also contains instrument snapshots, PM materials and
+    historical judgments. They remain useful research context but cannot be
+    added to an event's citations merely because the reviewer read them.
+    """
+    sources = {s["source_id"]: s for evidence in context.get("web_evidence", []) for s in evidence.get("sources", [])}
+    for iid, companies in context.get("sector_company_data", {}).items():
+        for symbol, company in companies.items():
+            sources[f"fmp:{run_id}:{iid}:{symbol}"] = {"source_id": f"fmp:{run_id}:{iid}:{symbol}",
+                "title": f"FMP · {symbol} 公司资料与分析师预期", "time_status": "background", "company": company}
+    sources.update(retained_estimate_sources(context))
+    if notebook_evidence is None:
+        notebook_evidence = research_sources(context, run_id)
+    sources.update({sid: source for sid, source in notebook_evidence.items() if source.get("source_type") in {"public_source", "computed_metric"}})
+    return sources
+
+
 def validate_result(session, run, parsed: ReviewResult):
     """Check the full draft against retained evidence without publishing research or events."""
     context = run.context_json
@@ -1127,14 +1146,8 @@ def validate_result(session, run, parsed: ReviewResult):
         raise ValueError("研究更新重复或超出本轮绑定的标的范围")
     if context.get("sector_run") and set(requested) != scope:
         raise ValueError("事件检查结果未覆盖本轮全部标的")
-    sources = {s["source_id"]: s for evidence in context.get("web_evidence", []) for s in evidence.get("sources", [])}
-    for iid, companies in context.get("sector_company_data", {}).items():
-        for symbol, company in companies.items():
-            sources[f"fmp:{run.entry_id}:{iid}:{symbol}"] = {"source_id": f"fmp:{run.entry_id}:{iid}:{symbol}",
-                "title": f"FMP · {symbol} 公司资料与分析师预期", "time_status": "background", "company": company}
-    sources.update(retained_estimate_sources(context))
     notebook_evidence = research_sources(context, run.entry_id)
-    sources.update({sid: source for sid, source in notebook_evidence.items() if source.get("source_type") in {"public_source", "computed_metric"}})
+    sources = event_evidence_sources(context, run.entry_id, notebook_evidence=notebook_evidence)
     cutoff = datetime.fromisoformat(context["cutoff"])
     seen = set()
     # Validate the full reply before changing any persistent event.
@@ -1596,114 +1609,150 @@ def _run_daily_reviews(stop):
     from studio_identity import current_principal
     from watchlist_app.services.research_runner import run_analysis, same_research_initiator
     from watchlist_app.services.research_workbench import portfolio_options
-    from watchlist_app.services.risk_officer import begin_run as begin_risk_run, read_snapshot as read_risk_snapshot
-    with get_session_factory()() as session:
-        recoveries = automatic_recovery_runs(session)
-        groups = daily_review_groups(session)
-        groups = [[iid] for iid in recoveries] + [ids for ids in groups if ids[0] not in recoveries]
-        pending_referrals = _pending_research_risk_ids(session)
-        if not groups and not pending_referrals:
-            return
-        research_dates = _research_dates(session, sorted({iid for ids in groups for iid in ids} | pending_referrals), datetime.now(UTC))
-        referral_states = latest_reviews(session, instrument_ids=pending_referrals)
-        busy_referrals = {iid for iid in pending_referrals if (referral_states.get(iid) or {}).get("status") in {"queued", "running"}}
-        watchlist_scopes = [{"watchlist_id": iid} for iid in session.scalars(select(Watchlist.watchlist_id)
-            .where(Watchlist.watchlist_id != "all-instruments"))]
-    risk_scopes = [{"portfolio_id": p["portfolio_id"]} for p in portfolio_options().get("portfolios", [])] + watchlist_scopes
+    from watchlist_app.services.risk_officer import begin_run as begin_risk_run
+    from watchlist_app.services.risk_review_state import current_scope as read_risk_scope
 
-    def review_group(ids):
+    def review_group(ids, recovery_id):
         from studio_identity import principal_context, service_principal
         with principal_context(service_principal("watchlist")):
-            return review_group_authenticated(ids)
+            return review_group_authenticated(ids, recovery_id)
 
-    def review_group_authenticated(ids):
+    def review_group_authenticated(ids, recovery_id):
         if stop.is_set():
-            return False
+            return "blocked"
         try:
             with get_session_factory()() as session:
-                recovery_id = recoveries.get(ids[0])
                 run, created = begin_run(session, ids, scheduled=True, **(
                     {"recovery_run_id": recovery_id} if recovery_id else {}))
                 if run is None or (recovery_id and not created):
                     # Discovery became stale (possibly another active researcher).
                     # Do not dispatch it or declare its dependent risk scope ready.
-                    return False
+                    return "blocked"
                 run_id, status = run.entry_id, run.status
                 if not created and status == "queued" and not same_research_initiator(run.context_json, current_principal()):
-                    return False
+                    return "busy"
             if created or (status == "queued" and not recovery_id):
                 run_analysis(run_id)
                 with get_session_factory()() as session:
                     status = session.get(ResearchEntry, run_id).status
-            return status not in {"queued", "running"}
+            return "busy" if status in {"queued", "running"} else "ready"
         except Exception:
             logging.getLogger(__name__).exception("Daily research failed for %s", ids)
-            return False
+            return "blocked"
 
-    remaining = list(groups)
-    pending_ids = set(busy_referrals)
-    covered_ids = set()
+    def assess_risk(scope, dates):
+        try:
+            with get_session_factory()() as session:
+                run, created = begin_risk_run(session, **scope, scheduled_dates=dates)
+                run_id, status = run.entry_id, run.status
+                if not created and status == "queued" and not same_research_initiator(run.context_json, current_principal()):
+                    return
+            if created or status == "queued":
+                run_analysis(run_id)
+        except Exception:
+            logging.getLogger(__name__).exception("Daily risk assessment failed for %s", scope)
+
+    # These sets bound one worker pass, not durable eligibility. begin_run still
+    # owns cross-process exclusion, market-day deduplication and retry authority.
+    # A completed/no-op candidate cannot repeatedly occupy the first free slot.
+    considered = set()
+    assessed = set()
+    blocked_ids = set()
+    research_dates = {}
+    risk_scopes = None
     from watchlist_app.core.settings import get_settings
-    with ThreadPoolExecutor(max_workers=get_settings().research_worker_concurrency, thread_name_prefix="daily-research") as pool:
-        for scope in risk_scopes:
-            if stop.is_set():
-                return
-            try:
-                with get_session_factory()() as session:
-                    member_ids = set(read_risk_snapshot(session, **scope)["instrument_ids"])
-                # Portfolio reviews are private and cannot adjudicate shared
-                # research cases; only a named watchlist can cover their referral.
-                if scope.get("watchlist_id"):
-                    covered_ids.update(member_ids)
-                scope_dates = {iid: day for iid, day in research_dates.items() if iid in member_ids}
-                if not scope_dates:
-                    continue
-                # Finish this scope's members before the officer reads their reports.
-                selected = [ids for ids in remaining if member_ids.intersection(ids)]
-                for ids, finished in zip(selected, pool.map(review_group, selected)):
-                    remaining.remove(ids)
-                    if not finished:
-                        pending_ids.update(ids)
+    capacity = get_settings().research_worker_concurrency
+    with ThreadPoolExecutor(max_workers=capacity, thread_name_prefix="daily-research") as pool:
+        active = {}
+        while not stop.is_set():
+            with get_session_factory()() as session:
+                recoveries = automatic_recovery_runs(session)
+                groups = daily_review_groups(session)
+                groups = [[iid] for iid in recoveries] + [ids for ids in groups if ids[0] not in recoveries]
+                referrals = _pending_research_risk_ids(session)
+                dates = _research_dates(session, sorted({iid for ids in groups for iid in ids} | referrals), datetime.now(UTC))
+                research_dates.update(dates)
+                active_ids = {iid for ids in active.values() for iid in ids}
+                candidates = []
+                for ids in groups:
+                    recovery_id = recoveries.get(ids[0])
+                    key = (tuple(ids), tuple(dates.get(iid) for iid in ids), recovery_id)
+                    if key not in considered and not active_ids.intersection(ids):
+                        candidates.append((ids, recovery_id, key))
+                if not research_dates and not active:
+                    return
+                if risk_scopes is None:
+                    watchlist_scopes = [{"watchlist_id": iid} for iid in session.scalars(select(Watchlist.watchlist_id)
+                        .where(Watchlist.watchlist_id != "all-instruments"))]
+            if risk_scopes is None:
+                risk_scopes = [{"portfolio_id": p["portfolio_id"]} for p in portfolio_options().get("portfolios", [])] + watchlist_scopes
+            # Never queue a frozen batch behind long jobs: fill actual free slots
+            # only, then reread the market clocks and persisted ordering as soon
+            # as any job finishes. Newly due instruments join this same pass.
+            for ids, recovery_id, key in candidates[:capacity - len(active)]:
                 if stop.is_set():
                     return
-                if pending_ids.intersection(member_ids):
-                    continue
-                with get_session_factory()() as session:
-                    run, created = begin_risk_run(session, **scope, scheduled_dates=scope_dates)
-                    run_id, status = run.entry_id, run.status
-                    if not created and status == "queued" and not same_research_initiator(run.context_json, current_principal()):
-                        continue
-                if created or status == "queued":
-                    run_analysis(run_id)
-            except Exception:
-                logging.getLogger(__name__).exception("Daily risk assessment failed for %s", scope)
-        for ids, finished in zip(remaining, pool.map(review_group, remaining)):
-            if not finished:
-                pending_ids.update(ids)
-        if stop.is_set():
-            return
-        with get_session_factory()() as session:
-            # Read after publication so a first investigation can immediately
-            # hand a new referral to the officer. The all-instruments catalogue
-            # intentionally has no aggregate risk job; isolated members still
-            # need their own officer rather than remaining pending forever.
-            uncovered = _pending_research_risk_ids(session) - covered_ids - pending_ids
-            states = latest_reviews(session, instrument_ids=uncovered)
-            uncovered = {iid for iid in uncovered if (states.get(iid) or {}).get("status") not in {"queued", "running"}}
-        for iid in sorted(uncovered):
+                considered.add(key)
+                if recovery_id:
+                    # A stale/rejected exact recovery cannot fall through to a
+                    # new ordinary run for this same market day in this pass.
+                    considered.add((key[0], key[1], None))
+                active[pool.submit(review_group, ids, recovery_id)] = ids
+            if active:
+                done, _ = wait(active, timeout=60 if len(active) < capacity else None, return_when=FIRST_COMPLETED)
+                for future in done:
+                    ids = active.pop(future)
+                    outcome = future.result()
+                    if outcome == "blocked":
+                        blocked_ids.update(ids)
+                    elif outcome == "ready":
+                        blocked_ids.difference_update(ids)
+                continue
             if stop.is_set():
                 return
-            try:
-                with get_session_factory()() as session:
-                    dates = _research_dates(session, [iid], datetime.now(UTC))
-                    run, created = begin_risk_run(session, instrument_id=iid, scheduled_dates=dates)
-                    run_id, status = run.entry_id, run.status
-                    if not created and status == "queued" and not same_research_initiator(run.context_json, current_principal()):
+            # All currently due members have been considered and no automatic
+            # investigation remains in flight. A foreign/user run still blocks
+            # its dependent risk scope. Do one officer job, then recheck due work
+            # rather than letting a long series of risk jobs delay new markets.
+            covered_ids = set()
+            next_risk = None
+            for scope in risk_scopes:
+                try:
+                    with get_session_factory()() as session:
+                        member_ids = set(read_risk_scope(session, scope)["instrument_ids"])
+                        states = latest_reviews(session, instrument_ids=member_ids)
+                    if scope.get("watchlist_id"):
+                        covered_ids.update(member_ids)
+                    scope_dates = {iid: day for iid, day in research_dates.items() if iid in member_ids}
+                    key = (tuple(scope.items()), tuple(sorted(scope_dates.items())))
+                    if not scope_dates or key in assessed:
                         continue
-                if created or status == "queued":
-                    run_analysis(run_id)
-            except Exception:
-                logging.getLogger(__name__).exception("Research risk referral failed for %s", iid)
+                    if blocked_ids.intersection(member_ids) or any(
+                            (states.get(iid) or {}).get("status") in {"queued", "running"} for iid in member_ids):
+                        continue
+                    if next_risk is None:
+                        next_risk = (scope, scope_dates)
+                        assessed.add(key)
+                except Exception:
+                    logging.getLogger(__name__).exception("Daily risk scope could not be read for %s", scope)
+            if next_risk is None:
+                with get_session_factory()() as session:
+                    # Include referrals created by this pass's publications.
+                    uncovered = _pending_research_risk_ids(session) - covered_ids - blocked_ids
+                    states = latest_reviews(session, instrument_ids=uncovered)
+                    uncovered = {iid for iid in uncovered if (states.get(iid) or {}).get("status") not in {"queued", "running"}}
+                    dates = _research_dates(session, sorted(uncovered), datetime.now(UTC))
+                for iid in sorted(uncovered):
+                    scope, scope_dates = {"instrument_id": iid}, {iid: dates[iid]}
+                    key = (tuple(scope.items()), tuple(sorted(scope_dates.items())))
+                    if key not in assessed:
+                        assessed.add(key)
+                        next_risk = (scope, scope_dates)
+                        break
+            if next_risk is None:
+                return
+            if not stop.is_set():
+                assess_risk(*next_risk)
 
 
 def start_sector_worker():

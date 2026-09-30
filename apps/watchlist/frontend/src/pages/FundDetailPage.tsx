@@ -5864,6 +5864,7 @@ export default function FundDetailPage({
 
       {activeTab === 'overview' ? (
         <section className="fund-overview" aria-label={language === 'zh-Hans' ? '基金总览' : 'Fund overview'}>
+          <header className="fund-overview-heading"><h2>{language === 'zh-Hans' ? '净值与绩效' : 'NAV & performance'}</h2><button type="button" onClick={() => setActiveTab('performance')}>{language === 'zh-Hans' ? '全部绩效指标' : 'All performance metrics'} →</button></header>
           <div className="fund-overview-snapshot" aria-busy={!resourceReady('navSeries') && !sectionLoadErrors.navSeries}>
             <div className="fund-overview-nav">
               <span>{localize(language, QUOTE_BASIS_LABELS.nav)}</span>
@@ -5885,13 +5886,21 @@ export default function FundDetailPage({
           </div>
           {resourceReady('navSeries') ? <p className="fund-overview-date-note">{language === 'zh-Hans' ? '可用历史' : 'Available history'} {formatDate(calculationBasisSeries[0]?.date)} — {formatDate(performanceReferenceEndDate)} · {calculationFrequencyStatus}</p> : !sectionLoadErrors.navSeries ? <p className="fund-overview-date-note">Loading</p> : null}
           {summary.freshness.staleness_reason && <p className="fund-overview-date-note" role="status">{summary.freshness.staleness_reason}</p>}
+          {resourceReady('navSeries') && (navSeries.calculation_frequency_profile.gap_count > 0 || hasUnconfirmedReturnSegmentBreak) ? <p className="fund-overview-quality" role="status">{hasUnconfirmedReturnSegmentBreak
+            ? (language === 'zh-Hans' ? '存在尚未确认的基金事件，完整收益历史与风险指标暂不可用。' : 'An unconfirmed fund event prevents complete return history and path risk metrics.')
+            : (language === 'zh-Hans' ? '净值历史存在缺口，路径风险指标暂不可用。' : 'NAV history has gaps; path risk metrics are unavailable.')}</p> : null}
+          <div className="fund-overview-judgments">
           <SectorResearchPanel instrumentId={fundId} variant="summary" onOpenEvents={() => setActiveTab('investment-research')} />
-          <div className="fund-overview-section">
+          <section className="fund-overview-section" aria-label={language === 'zh-Hans' ? '当前总体观点' : 'Current overall view'}>
             <header><h2>{language === 'zh-Hans' ? '当前总体观点' : 'Current overall view'}</h2><button type="button" onClick={() => setActiveTab('views')}>{language === 'zh-Hans' ? '查看与记录观点' : 'View / record opinions'}</button></header>
             {!resourceReady('research') ? <p aria-busy={!sectionLoadErrors.research}>{sectionLoadErrors.research ? (language === 'zh-Hans' ? '投资观点暂时无法读取。' : 'Investment views unavailable.') : 'Loading'}</p> : currentOpinion ? <><time>{currentOpinion.noteDate}</time><h3>{currentOpinion.title}</h3><p className="overview-opinion-excerpt">{currentOpinion.body}</p></>
               : <p className="muted">{language === 'zh-Hans' ? '尚未记录投资观点。' : 'No investment view recorded yet.'}</p>}
+          </section>
           </div>
-
+          <footer className="fund-overview-reference">
+            {summary.management_firm_name ? <p><span>{language === 'zh-Hans' ? '基金管理人' : 'Fund manager'}</span>{summary.management_firm_name}</p> : <p>{language === 'zh-Hans' ? '基金资料' : 'Fund reference'}</p>}
+            <button type="button" onClick={() => setActiveTab('archive')}>{language === 'zh-Hans' ? '查看基金档案' : 'View fund archive'} →</button>
+          </footer>
         </section>
       ) : null}
 

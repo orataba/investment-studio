@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import SectorResearchPanel, { type SectorEventRecord } from './SectorResearchPanel'
 import InstrumentRiskPanel from './InstrumentRiskPanel'
+import { announceResearchPublication } from '../lib/researchUpdates'
 const request = vi.hoisted(() => vi.fn())
 vi.mock('../lib/api', () => ({ fetchJson: request }))
 vi.mock('./ResearchDossierPanel', () => ({ default: (props: { instrumentId: string; variant: string; readingMode: boolean }) => <div data-testid="canonical-dossier" data-variant={props.variant} data-reading={String(props.readingMode)}>已保存的同源研究 · {props.instrumentId}</div> }))
@@ -19,7 +20,9 @@ it('uses sector responses only for status while reading the canonical dossier', 
   render(<SectorResearchPanel instrumentId="xlk-us" />)
   await load()
   expect(screen.getByTestId('canonical-dossier').textContent).toContain('xlk-us')
-  expect(screen.getByRole('heading', { name: '投资研究' })).toBeTruthy()
+  expect(screen.getByRole('region', { name: '投资研究' })).toBeTruthy()
+  expect(screen.queryByRole('heading', { name: '投资研究' })).toBeNull()
+  expect(screen.getByLabelText('研究更新状态').closest('header')).toBeTruthy()
   expect(screen.queryByText(review('completed').summary)).toBeNull()
   expect(screen.queryByText(event().title)).toBeNull()
   expect(request.mock.calls.some(([path]) => path.includes('/context'))).toBe(false)
@@ -37,7 +40,12 @@ it.each(['failed', 'running'])('keeps saved research readable when the latest up
   render(<SectorResearchPanel instrumentId="xlk-us" />)
   await load()
   expect(screen.getByTestId('canonical-dossier')).toBeTruthy()
-  if (status === 'failed') expect(screen.getByText(`本轮未完成原因：${review(status).summary}`).closest('details')).toBeNull()
+  if (status === 'failed') {
+    const attempt = screen.getByRole('status')
+    expect(within(attempt).getByText(review(status).summary)).toBeTruthy()
+    expect(attempt.querySelector('time')?.dateTime).toBe(review(status).checked_at)
+    expect(attempt.closest('details')).toBeNull()
+  }
   else expect(screen.getByRole('button', { name: '研究更新中…' }).hasAttribute('disabled')).toBe(true)
 })
 
@@ -60,6 +68,7 @@ it('uses the same dossier in the overview summary and the complete research repo
   const { rerender } = render(<SectorResearchPanel instrumentId="xlk-us" variant="summary" onOpenEvents={open} />)
   await load()
   expect(screen.getByTestId('canonical-dossier').getAttribute('data-variant')).toBe('summary')
+  expect(screen.queryByText(/^研究运行记录/)).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: '阅读完整研究' }))
   expect(open).toHaveBeenCalledOnce()
   rerender(<SectorResearchPanel instrumentId="xlk-us" />)
@@ -93,6 +102,54 @@ it('starts only the selected instrument and stops polling after completion', asy
   const calls = request.mock.calls.length
   await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
   expect(request.mock.calls.length).toBe(calls)
+})
+
+it('keeps polling after thirty minutes until review finishes and cancels on unmount', async () => {
+  request.mockResolvedValue(payload('running'))
+  const { unmount } = render(<SectorResearchPanel instrumentId="xlk-us" />)
+  await load()
+  await act(async () => { await vi.advanceTimersByTimeAsync(31 * 60 * 1000) })
+  expect(screen.getByRole('button', { name: '研究更新中…' }).hasAttribute('disabled')).toBe(true)
+  const calls = request.mock.calls.length
+  expect(calls).toBeGreaterThan(360)
+  unmount()
+  await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+  expect(request.mock.calls.length).toBe(calls)
+})
+
+it('clears the acknowledged submission so a later completed run is not mistaken for pending', async () => {
+  let runId = 'saved'
+  request.mockImplementation(async (_path: string, init?: RequestInit) => {
+    if (init?.method === 'POST') { runId = 'submitted'; return { run_id: runId, status: 'queued' } }
+    const data = payload()
+    return { ...data, sectors: [{ ...data.sectors[0], latest_review: { ...review('completed'), run_id: runId } }] }
+  })
+  render(<SectorResearchPanel instrumentId="xlk-us" />)
+  await load()
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '更新研究' })) })
+  runId = 'later-completed-run'
+  await act(async () => { announceResearchPublication(['xlk-us']) })
+  expect(screen.getByRole('button', { name: '更新研究' }).hasAttribute('disabled')).toBe(false)
+  const calls = request.mock.calls.length
+  await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+  expect(request.mock.calls.length).toBe(calls)
+})
+
+it('dates the failed attempt separately from the valid result while a new run is queued', async () => {
+  const previous = { ...review('limited'), run_id: 'saved', checked_at: '2026-09-04T08:00:00+08:00', view_updated_at: '2026-09-03T08:00:00+08:00' }
+  const data = payload('failed')
+  request.mockImplementation(async (_path: string, init?: RequestInit) => init?.method === 'POST'
+    ? { run_id: 'next-run', status: 'queued' }
+    : { ...data, sectors: [{ ...data.sectors[0], last_completed_review: previous }] })
+  render(<SectorResearchPanel instrumentId="xlk-us" />)
+  await load()
+  expect(screen.getByLabelText('研究更新状态').textContent).toContain('最近有效检查')
+  const dates = [...screen.getByLabelText('研究更新状态').querySelectorAll('time')].map(node => node.dateTime)
+  expect(dates).toEqual([previous.checked_at, previous.view_updated_at])
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '更新研究' })) })
+  expect(screen.getByRole('status').textContent).toContain('上次更新未完成')
+  expect(screen.getByRole('status').textContent).not.toContain('本轮')
+  expect(screen.getByRole('status').querySelector('time')?.dateTime).toBe(review('failed').checked_at)
 })
 
 it('shows reflection only for a completed check, without making it a conclusion', async () => {
