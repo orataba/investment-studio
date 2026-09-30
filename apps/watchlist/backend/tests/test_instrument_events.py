@@ -283,25 +283,37 @@ def test_daily_research_dispatches_selected_oldest_first_and_does_not_retry_fail
     assert len(calls) == 6 and sorted(calls[3:]) == [["event-equity"], ["event-index"], ["xlk"]]
 
 
-def test_daily_risk_receives_member_research_before_unwatched_backlog(client, monkeypatch):
+def test_daily_risk_waits_for_member_research_without_overriding_fair_instrument_order(client, monkeypatch):
     from threading import Event
+    from watchlist_app.core.settings import get_settings
     from watchlist_app.services import risk_officer
     from watchlist_app.db.models import Watchlist
     seed_instruments(client, monkeypatch)
+    monkeypatch.setattr(get_settings(), "research_worker_concurrency", 1)
     with get_session_factory()() as session:
         session.add(Watchlist(watchlist_id="held", name="重点列表", owner_type="team", owner_id="investment-team"))
+        session.flush()
+        session.add(WatchlistItem(watchlist_id="held", instrument_id="event-index", added_at=datetime.now(UTC)))
         session.commit()
     monkeypatch.setattr(service, "daily_review_groups", lambda session: [["event-equity"], ["event-index"]])
     monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {"portfolios": []})
-    monkeypatch.setattr(risk_officer, "read_snapshot", lambda session, **scope: {"instrument_ids": ["event-index"]})
+    monkeypatch.setattr(risk_officer, "read_snapshot", lambda *args, **kwargs:
+        pytest.fail("Scheduling reads the member directory, not the full risk evidence corpus"))
     calls = []
     def analyze(run_id):
         with get_session_factory()() as session:
             run = session.get(ResearchEntry, run_id)
-            calls.append("risk" if run.context_json.get("risk_run") else run.context_json["instrument_ids"][0])
+            if run.context_json.get("risk_run"):
+                assert run.context_json["risk_scope"] == {"watchlist_id": "held"}
+                assert set(run.context_json["research_dates"]) == {"event-index"}
+                member = session.scalar(select(ResearchEntry).where(
+                    ResearchEntry.topic_id == "instrument-events:event-index", ResearchEntry.kind == "analysis"))
+                assert member is not None and member.status == "completed"
+                calls.append("risk")
+            else:
+                calls.append(run.context_json["instrument_ids"][0])
             run.status = "completed"
             session.commit()
     monkeypatch.setattr(research_runner, "run_analysis", analyze)
     service.run_daily_reviews(Event())
-    assert calls[0] == "event-index" and calls[-1] == "event-equity"
-    assert set(calls[1:-1]) == {"risk"}
+    assert calls == ["event-equity", "event-index", "risk"]
