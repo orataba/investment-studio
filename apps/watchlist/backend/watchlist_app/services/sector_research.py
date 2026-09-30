@@ -944,7 +944,7 @@ def _previously_recorded_progress(case, item, sources):
 
 
 def _theme_scope(session, run, review):
-    from watchlist_app.services.research_themes import analyst_theme_target, analyst_theme_values
+    from watchlist_app.services.research_themes import analyst_theme_target, analyst_theme_values, theme_index
     from watchlist_app.services.research_identity import research_identity
     team_id = research_identity()["team_id"]
     dossier = next((d for d in run.context_json.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
@@ -952,9 +952,10 @@ def _theme_scope(session, run, review):
     keys = [item.theme_key for item in review.themes]
     if len(keys) != len(set(keys)):
         raise ValueError("同一关注主题在本轮重复出现")
+    current_themes = theme_index(session, review.instrument_id) if review.themes else []
     normalized = lambda value: " ".join(value.split()).casefold()
     for update in review.themes:
-        previous = analyst_theme_target(session, review.instrument_id, update)
+        previous = analyst_theme_target(session, review.instrument_id, update, themes=current_themes)
         if previous and previous["theme_id"] not in themes:
             raise ValueError("研究主题在本轮未读取，请基于最新研究档案更新")
         if previous and previous.get("pinned") and run.context_json.get("sector_run") and previous["status"] != "active":
@@ -976,9 +977,10 @@ def _theme_scope(session, run, review):
     return themes
 
 
-def _validate_update_reference(session, run, instrument_id, update_id, *, judgment=False, field="related_research_update_id"):
+def _validate_update_reference(session, run, instrument_id, update_id, *, judgment=False,
+                               field="related_research_update_id", activity=None):
     from watchlist_app.services.research_activity import resolve_research_update
-    value = resolve_research_update(session, instrument_id, update_id)
+    value = resolve_research_update(session, instrument_id, update_id, activity=activity)
     if not value:
         raise ValueError("找不到当前标的此前已发布的研究判断记录")
     if judgment and value.get("kind") == "theme":
@@ -1001,6 +1003,17 @@ def _validate_research_links(session, run, review, themes):
     notes = {item["note_id"]: item for item in dossier.get("pm_views", [])}
     event_keys = {item.event_key for item in review.events} | {item.signal.removeprefix("sector:") for item in
         session.scalars(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id, RiskCase.signal.like("sector:%")))}
+    activity = None
+
+    def validate_reference(update_id, *, field):
+        nonlocal activity
+        if activity is None:
+            from watchlist_app.services.research_activity import research_activity
+            # One authorized, instrument-bound history per validation, not one
+            # full notebook/theme reconstruction for every cited judgment.
+            activity = research_activity(session, review.instrument_id)
+        return _validate_update_reference(session, run, review.instrument_id, update_id,
+                                          judgment=True, field=field, activity=activity)
 
     def check_theme(theme_id, *, field, retained_reference=False):
         if theme_id and theme_id not in themes:
@@ -1041,8 +1054,7 @@ def _validate_research_links(session, run, review, themes):
                 if row.get("event_key") and row["event_key"] not in event_keys:
                     raise ValueError("研究判断关联的事件不属于当前标的")
                 if row.get("related_research_update_id"):
-                    original = _validate_update_reference(session, run, review.instrument_id, row["related_research_update_id"],
-                                                          judgment=True, field=f"{location}.related_research_update_id")
+                    original = validate_reference(row["related_research_update_id"], field=f"{location}.related_research_update_id")
                     check_theme(original["reference"].get("theme_id"),
                                 field=f"{location}.related_research_update_id={row['related_research_update_id']}", retained_reference=True)
                 if field in {"forecast_reviews", "lessons"} and row.get("forecast_key") and (
@@ -1082,8 +1094,7 @@ def _validate_research_links(session, run, review, themes):
             check_theme(theme_id, field=f"events[event_key={item.event_key}].theme_ids", retained_reference=canonical in prior_theme_ids)
     if review.reflection is not None:
         for update_id in review.reflection.reviewed_update_ids:
-            original = _validate_update_reference(session, run, review.instrument_id, update_id, judgment=True,
-                                                  field="reviews[].reflection.reviewed_update_ids")
+            original = validate_reference(update_id, field="reviews[].reflection.reviewed_update_ids")
             check_theme(original["reference"].get("theme_id"),
                         field=f"reflection.reviewed_update_ids={update_id}", retained_reference=True)
 

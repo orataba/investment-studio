@@ -73,6 +73,43 @@ def test_theme_lifecycle_retains_versions_without_repeating_unchanged_updates(re
     assert client.get(_themes()).json()["themes"][0]["theme_id"] == theme["theme_id"]
 
 
+def test_submission_resolves_theme_batch_once_and_reloads_next_validation(research_client, monkeypatch):
+    from types import SimpleNamespace
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services import research_themes, sector_research
+
+    first, second = _theme(research_client), _theme(research_client)
+    foreign = _theme(research_client, iid='sxv264')
+    with get_session_factory()() as session:
+        originals = research_themes.theme_index(session, 'fund-us-agg')
+        run = SimpleNamespace(context_json={'sector_run': True, 'research_dossiers': [
+            {'instrument_id': 'fund-us-agg', 'themes': originals}]})
+        updates = [{'theme_id': item['theme_id'], 'theme_key': item['theme_key']} for item in (first, second)]
+        review = sector_research.SectorReview.model_validate({'instrument_id': 'fund-us-agg', 'themes': updates})
+        read_index, reads = research_themes.theme_index, []
+        def tracked(session, instrument_id, **kwargs):
+            reads.append(instrument_id)
+            return read_index(session, instrument_id, **kwargs)
+        monkeypatch.setattr(research_themes, 'theme_index', tracked)
+        resolved = sector_research._theme_scope(session, run, review)
+        assert reads == ['fund-us-agg']
+        for item in originals:
+            assert resolved[item['theme_id']] == {**item, '_closing_in_run': False}
+        bad = research_themes.AnalystThemeUpdate(theme_id=foreign['theme_id'], theme_key=foreign['theme_key'])
+        with pytest.raises(ValueError, match='本标的'):
+            research_themes.analyst_theme_target(session, 'fund-us-agg', bad, themes=originals)
+    # A later PM decision must not be masked by the preceding validation's
+    # snapshot. The unchanged run input still cannot authorize a pinned edit.
+    assert research_client.patch(f"{_themes()}/{first['theme_id']}", json={'pinned': True}).status_code == 200
+    changed = sector_research.SectorReview.model_validate({'instrument_id': 'fund-us-agg', 'themes': [
+        {**updates[0], 'title': '未经投资经理同意的新核心问题'}, updates[1]]})
+    reads.clear()
+    with get_session_factory()() as session:
+        with pytest.raises(ValueError, match='已固定'):
+            sector_research._theme_scope(session, run, changed)
+        assert reads == ['fund-us-agg']
+
+
 def test_analyst_theme_stable_key_closure_and_user_takeover(research_client):
     from watchlist_app.db.session import get_session_factory
     from watchlist_app.services.research_themes import AnalystThemeUpdate, save_analyst_theme, theme_index
