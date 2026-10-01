@@ -4865,6 +4865,7 @@ class TransactionCaptureBatchRecord(BaseModel):
     analysis_run_started_at: str | None = None
     analysis_run_completed_at: str | None = None
     analysis_run_error: str | None = None
+    analysis_timeout_seconds: int = Field(gt=0)
     captures: list[TransactionCaptureRecord]
     latest_analysis: TransactionCaptureAnalysisRevision | None = None
     ledger_status: Literal[

@@ -148,7 +148,9 @@ def test_deleting_portfolio_removes_its_screenshot_evidence(client) -> None:
     assert deleted.json() == {"portfolio_id": portfolio_id, "deleted": True}
 
 
-def test_multiple_screenshots_form_one_reusable_agent_batch(client) -> None:
+def test_multiple_screenshots_form_one_reusable_agent_batch(client, monkeypatch) -> None:
+    from portfolio_app.core.settings import get_settings
+    monkeypatch.setattr(get_settings(), "copilot_analysis_timeout_seconds", 720)
     first = _upload_capture(client)
     second = _upload_capture(
         client,
@@ -160,6 +162,7 @@ def test_multiple_screenshots_form_one_reusable_agent_batch(client) -> None:
     assert batch["status"] == "ready"
     assert batch["capture_count"] == 2
     assert batch["latest_analysis_revision"] == 0
+    assert batch["analysis_timeout_seconds"] == 720
     assert [capture["capture_id"] for capture in batch["captures"]] == [
         first["capture_id"],
         second["capture_id"],
@@ -172,6 +175,7 @@ def test_multiple_screenshots_form_one_reusable_agent_batch(client) -> None:
         "/api/portfolios/investment-studio/transaction-capture-batches"
     )
     assert listing.status_code == 200, listing.text
+    assert listing.json()["batches"][0]["analysis_timeout_seconds"] == 720
     assert [item["batch_id"] for item in listing.json()["batches"]] == [
         batch["batch_id"]
     ]

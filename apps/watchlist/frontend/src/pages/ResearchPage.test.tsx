@@ -233,7 +233,7 @@ it('uses the existing Portfolio entry query as the page context while retaining 
     <ResearchPage />
   </MemoryRouter>)
   expect(await screen.findByText('重点标的：基金 A')).toBeTruthy()
-  expect(screen.getByText('组合 p-1 · DeepSeek')).toBeTruthy()
+  expect(screen.getByText('p-1', { selector: 'small span' }).closest('small')?.textContent).toBe('组合 p-1 · DeepSeek')
   expect(screen.getByRole('link', { name: '返回组合' }).getAttribute('href')).toContain('/portfolios/p-1/risk')
   fireEvent.click(screen.getByRole('button', { name: '发送' }))
   await waitFor(() => expect(mocks.write).toHaveBeenCalledWith('/research/topics/chat-1/analysis', {
@@ -332,7 +332,7 @@ it('keeps Portfolio assistant history and association inside the originating por
     return defaultRead(path)
   })
   render(<MemoryRouter initialEntries={['/assistant?portfolio=p-1']}><ResearchPage /></MemoryRouter>)
-  await screen.findByText('组合一 · DeepSeek')
+  expect((await screen.findByText('组合一', { selector: 'small span' })).closest('small')?.textContent).toBe('组合一 · DeepSeek')
   expect((screen.getByRole('combobox', { name: '关联组合' }) as HTMLSelectElement).disabled).toBe(true)
   fireEvent.click(screen.getByRole('button', { name: '历史对话' }))
   const history = screen.getByRole('navigation', { name: '历史对话' })
@@ -388,6 +388,34 @@ it('restores an unfinished scoped conversation on reopen without submitting anot
   view.unmount()
   render(<MemoryRouter initialEntries={['/watchlists/3?assistant=1']}><ResearchPage watchlistId="3" /></MemoryRouter>)
   await screen.findByText('reply-1')
+  expect(mocks.write).not.toHaveBeenCalled()
+})
+
+it.each(['portfolio=p-1', 'instruments=fund-a'])('localizes all assistant entry controls with only the shared language catalogue: %s', async (scope) => {
+  window.history.replaceState(null, '', '/?lang=en')
+  const defaultRead = mocks.read.getMockImplementation()!
+  mocks.read.mockImplementation(async (path: string) => path === '/research/topics' ? [] : defaultRead(path))
+  render(<LanguageProvider><LanguageSelector /><MemoryRouter initialEntries={[`/assistant?${scope}`]}><ResearchPage /></MemoryRouter></LanguageProvider>)
+  expect(await screen.findByText('Private conversation')).toBeTruthy()
+  const question = screen.getByRole('textbox', { name: 'Ask the research assistant' }) as HTMLTextAreaElement
+  expect(question.placeholder).toBe('Enter your question or continue the discussion…')
+  const info = screen.getByRole('button', { name: /^Conversation information: Private conversation/ })
+  expect(info.getAttribute('aria-label')).not.toMatch(/[\u4e00-\u9fff]/)
+  fireEvent.focus(info)
+  if (scope.startsWith('portfolio')) {
+    expect(screen.getByText("Research the current portfolio's holdings and risks")).toBeTruthy()
+    expect(screen.getByText(/^Use current portfolio holdings and existing research/)).toBeTruthy()
+    expect(screen.getByText(/^For example: Which holdings warrant a risk review/)).toBeTruthy()
+  } else {
+    expect(screen.getByText(/^The assistant and Research tracking use the same instrument dossiers/)).toBeTruthy()
+    expect(screen.getByText(/^You can ask to create a research theme/)).toBeTruthy()
+  }
+  // Editable content may happen to equal a known UI label; it stays authored text.
+  fireEvent.change(question, { target: { value: '个人对话' } })
+  fireEvent.change(screen.getByRole('combobox', { name: 'Language' }), { target: { value: 'zh-Hans' } })
+  await waitFor(() => expect(screen.getByRole('textbox', { name: '向研究助手提问' })).toBe(question))
+  expect(question.value).toBe('个人对话')
+  expect(question.placeholder).toBe('输入你的问题，或继续追问…')
   expect(mocks.write).not.toHaveBeenCalled()
 })
 

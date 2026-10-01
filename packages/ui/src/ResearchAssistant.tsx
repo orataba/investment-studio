@@ -412,6 +412,7 @@ export default function ResearchAssistant({
     assets.map((asset) => [asset.instrument_id, asset.name]),
   )
   const entries = [...(detail?.entries || [])].reverse()
+  const portfolioName = connections?.portfolios.find((portfolio) => portfolio.portfolio_id === pagePortfolioId)?.portfolio_name
   const content = (
     <div
       className={`research-workbench assistant-workbench ${onClose ? 'assistant-drawer' : 'assistant-page'}`}
@@ -423,7 +424,7 @@ export default function ResearchAssistant({
     >
       <header className="assistant-heading">
         <div>
-          <small>{pagePortfolioId ? connections?.portfolios.find((portfolio) => portfolio.portfolio_id === pagePortfolioId)?.portfolio_name || `组合 ${pagePortfolioId}` : instrumentId ? names[instrumentId] || instrumentId : '关注列表'} · DeepSeek</small>
+          <small>{pagePortfolioId ? <>{!portfolioName && <><span>组合</span>{' '}</>}<span translate="no">{portfolioName || pagePortfolioId}</span></> : instrumentId ? <span translate="no">{names[instrumentId] || instrumentId}</span> : '关注列表'} · DeepSeek</small>
           <div className="assistant-title"><h1>研究助手</h1><span>个人对话</span><InfoHint label="对话说明" detail={[
             `个人对话 · 仅自己可见${pagePortfolioId ? ' · 资料继续受组合权限保护' : ' · 明确保存的观点与主题归团队共享'}`,
             '已保存的答复反映当时查阅的资料，并非实时更新。',
@@ -467,7 +468,7 @@ export default function ResearchAssistant({
           >
             <option value="">暂不关联</option>
             {connections?.portfolios.map((p) => (
-              <option key={p.portfolio_id} value={p.portfolio_id}>
+              <option key={p.portfolio_id} value={p.portfolio_id} translate="no">
                 {p.portfolio_name}
               </option>
             ))}
@@ -618,7 +619,7 @@ export default function ResearchAssistant({
               >
                 <option value="">选择标的</option>
                 {assets.map((asset) => (
-                  <option key={asset.instrument_id} value={asset.instrument_id}>
+                  <option key={asset.instrument_id} value={asset.instrument_id} translate="no">
                     {asset.name}
                   </option>
                 ))}

@@ -912,13 +912,13 @@ function isKnownRenderedTextTranslation(
   )
 }
 
-function shouldIgnoreElement(element: Element | null) {
+function shouldIgnoreElement(element: Element | null, attributes = false) {
   if (!element) {
     return false
   }
   return Boolean(
     element.closest(
-      'script, style, code, pre, textarea, [contenteditable="true"], [translate="no"], [data-investment-studio-i18n-ignore="true"]',
+      `script, style, code, pre, ${attributes ? '' : 'textarea, '}[contenteditable="true"], [translate="no"], [data-investment-studio-i18n-ignore="true"]`,
     ),
   )
 }
@@ -958,7 +958,7 @@ function translateElementAttributes(
     const nextHref = withLanguage(element.getAttribute('href') || '/', language)
     if (element.getAttribute('href') !== nextHref) element.setAttribute('href', nextHref)
   }
-  if (shouldIgnoreElement(element)) {
+  if (shouldIgnoreElement(element, true)) {
     return
   }
 
