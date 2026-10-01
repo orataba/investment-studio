@@ -108,6 +108,14 @@ export default function BenchmarkSearchBox({
     <div
       className={['overview-benchmark-search', className].filter(Boolean).join(' ') || undefined}
       ref={rootRef}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' && focused) {
+          event.preventDefault()
+          event.stopPropagation()
+          inputRef.current?.focus()
+          setFocused(false)
+        }
+      }}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false)
       }}
@@ -117,6 +125,8 @@ export default function BenchmarkSearchBox({
           ref={inputRef}
           type="search"
           aria-label="Compare benchmark"
+          aria-expanded={focused}
+          aria-autocomplete="list"
           placeholder={placeholder}
           value={inputValue}
           onFocus={() => setFocused(true)}

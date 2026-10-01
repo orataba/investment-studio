@@ -1091,6 +1091,7 @@ def test_watchlist_options_and_queries_do_not_depend_on_list_members(
     payload = detail.json()
     assert payload["item_count"] == 0
     assert payload["instrument_types"] == []
+    assert payload["instrument_ids"] == []
     assert [item["code"] for item in payload["available_group_bys"]] == [
         "none",
         "taxonomy",
@@ -1117,6 +1118,7 @@ def test_watchlist_options_and_queries_do_not_depend_on_list_members(
         )
         assert added.status_code == 200
         populated = client.get(f"/api/watchlists/{watchlist_id}").json()
+        assert instrument_id in populated["instrument_ids"]
         assert populated["available_group_bys"] == payload["available_group_bys"]
         assert populated["default_filters_summary"] == payload["default_filters_summary"]
 

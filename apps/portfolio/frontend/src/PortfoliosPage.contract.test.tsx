@@ -1,5 +1,5 @@
 import { LanguageProvider } from '../../../../packages/ui/src/i18n'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -68,14 +68,20 @@ describe('Portfolios rendered page contract', () => {
     )
 
     await screen.findByText('No portfolios')
-    await user.click(screen.getByRole('button', { name: '+ Create Portfolio' }))
+    const createButton = screen.getByRole('button', { name: 'Create Portfolio' })
+    await user.click(createButton)
+    await waitFor(() => expect(screen.getByLabelText('Portfolio Name')).toHaveFocus())
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(createButton).toHaveFocus())
+    expect(apiMocks.createPortfolio).not.toHaveBeenCalled()
+    await user.keyboard('{Enter}')
 
     const dialog = screen.getByRole('dialog', { name: 'Create Portfolio' })
     await user.type(screen.getByLabelText('Portfolio Name'), 'New Portfolio')
     await user.selectOptions(screen.getByLabelText('Base Currency'), 'USD')
     await user.clear(screen.getByLabelText(/Inception Date/))
     await user.type(screen.getByLabelText(/Inception Date/), '2026-08-01')
-    await user.click(screen.getByRole('button', { name: 'Create Portfolio' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Create Portfolio' }))
 
     expect(dialog).toHaveTextContent('Opening balances, if any, must use this date.')
     await waitFor(() => {

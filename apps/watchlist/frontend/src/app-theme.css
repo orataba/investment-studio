@@ -66,6 +66,8 @@
   letter-spacing: -0.02em;
 }
 
+.watchlist-entry-create-action { margin-left: auto; order: 2; }
+
 .watchlist-entry-hero-meta {
   padding: 0;
   border-radius: 0;
@@ -131,10 +133,6 @@
   transform: none;
 }
 
-.watchlist-entry-create-card {
-  padding: 15px 0 0;
-  border: 0;
-}
 
 .watchlist-create-link {
   min-height: 32px;
@@ -310,8 +308,13 @@
 
 .watchlists-modal-header,
 .watchlists-modal-actions {
-  background: var(--band);
+  background: #fff;
 }
+.watchlists-modal-header .section-heading,
+.watchlists-compact-modal .panel-title { font-size: 20px; line-height: 1.4; font-weight: 500; }
+.watchlists-registry-help { font-size: 12px; color: var(--muted); }
+.watchlists-registry-help summary { cursor: pointer; }
+.watchlists-registry-row:disabled { opacity: 1; color: var(--muted); background: var(--band); cursor: default; }
 
 .instrument-detail-hero {
   min-height: 118px;
@@ -666,3 +669,15 @@
 
 .studio-account-bar { display: flex; justify-content: flex-end; gap: 16px; padding: 8px 24px; font-size: 12px; color: #60706b; border-bottom: 1px solid #e3e8e5; }
 .studio-account-message { padding: 48px; }
+
+@media (max-width: 1100px) {
+  .instrument-chart-header .instrument-quote-facts-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); height: auto; }
+  .instrument-chart-header .instrument-quote-fact { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 12px; align-content: start; }
+  .instrument-chart-header .instrument-quote-fact strong { font-size: 20px; text-align: left; white-space: nowrap; }
+  .instrument-chart-header .instrument-quote-fact em { text-align: left; }
+}
+@media (max-width: 600px) {
+  .instrument-performance-section-header { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .instrument-chart-header .instrument-quote-facts-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .watchlist-entry-hero-meta { flex-basis: 100%; order: 3; }
+}

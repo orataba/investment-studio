@@ -434,6 +434,18 @@ describe('Research rendered page contract', () => {
     expect(screen.getByText('Historical result — not current or execution-ready.')).toBeInTheDocument()
   })
 
+  it('offers taxonomy setup instead of an impossible run in an empty optimization workspace', async () => {
+    apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
+      settings: { ...workbenchFixture.settings, planning_taxonomy_id: null, planning_taxonomy_name: null },
+      planning_taxonomy_options: [], selected_run: null, runs: [],
+    })
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    expect(await screen.findByRole('link', { name: 'Review taxonomies and targets' })).toHaveAttribute('href', '/portfolios/3/taxonomies')
+    expect(screen.getByRole('button', { name: 'Run Optimization' })).toBeDisabled()
+    expect(screen.queryByText('Run to generate the latest solved result.')).not.toBeInTheDocument()
+    expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
+  })
+
   it('requires a taxonomy choice when multiple classifications exist and none is saved', async () => {
     apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
       settings: { ...workbenchFixture.settings, planning_taxonomy_id: null, planning_taxonomy_name: null },

@@ -79,6 +79,11 @@ describe('DOM translation context', () => {
     expect(new URL(window.location.href).searchParams.get('lang')).toBe('en')
   })
 
+  it('renders a Chinese-source close action as a readable English action', async () => {
+    render(<LanguageProvider><button type="button">关闭</button></LanguageProvider>)
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Close$/ })).toBeTruthy())
+  })
+
   it('distinguishes a close-dialog action from a market close label', async () => {
     render(
       <LanguageProvider>

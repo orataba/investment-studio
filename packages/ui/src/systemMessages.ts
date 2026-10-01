@@ -1,5 +1,11 @@
 // System UI copy only. User content must be marked translate="no".
 export const systemMessages: Record<string, string> = {
+  "No matching columns.": "没有匹配的列。",
+  "Clear search": "清除搜索",
+  "Financing interest": "融资利息",
+  "Stock borrow fee": "融券费用",
+  "Payment in lieu of dividends": "空头股息补偿",
+
   "Private conversation": "个人对话",
   "Conversation information": "对话说明",
   "Only visible to you": "仅自己可见",

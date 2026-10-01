@@ -1,5 +1,6 @@
 import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
 import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
+import WorkspaceSwitcher from '../../../../../packages/ui/src/WorkspaceSwitcher'
 import WorkspaceTools from '../../../../../packages/ui/src/WorkspaceTools'
 import { type FormEvent, Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
@@ -468,9 +469,7 @@ export default function PortfolioWorkspaceLayout({
                 Home
               </a>
               <span className="workspace-breadcrumb-separator">/</span>
-              <Link to="/portfolios" className="workspace-breadcrumb-link">
-                Portfolio
-              </Link>
+              <WorkspaceSwitcher current="portfolio" />
               <span className="workspace-breadcrumb-separator">/</span>
               <Link to={portfolioHomePath} className="workspace-breadcrumb-link" translate="no">
                 {portfolioName}
@@ -492,6 +491,13 @@ export default function PortfolioWorkspaceLayout({
                 <>As of {activeSummary?.as_of_date || '—'}</>
               )}
             </div>
+          </div>
+          <div className="portfolio-compact-selector">
+            <label htmlFor="portfolio-compact-choice">{language === 'zh-Hans' ? '组合' : 'Portfolio'}</label>
+            <select id="portfolio-compact-choice" value={resolvedPortfolioId} onChange={(event) => navigate(buildPortfolioSectionPath(event.target.value, '/overview'))}>
+              {selectorPortfolios.map((portfolio) => <option key={portfolio.portfolio_id} value={portfolio.portfolio_id} translate="no">{portfolio.portfolio_name}</option>)}
+            </select>
+            <Link to="/portfolios">{language === 'zh-Hans' ? '全部组合' : 'All portfolios'}</Link>
           </div>
           <div className="portfolio-selector-row">
             <Link className="workspace-selector-chip workspace-selector-chip-inactive workspace-selector-chip-home" to="/portfolios">
@@ -676,7 +682,7 @@ export default function PortfolioWorkspaceLayout({
                     <div className="portfolio-settings-grid">
                       <label className="portfolio-settings-field-wide">
                         <span>{language === 'zh-Hans' ? '组合名称' : 'Portfolio Name'}</span>
-                        <input autoFocus required maxLength={200} value={settingsName} disabled={riskSettingsSaving}
+                        <input required maxLength={200} value={settingsName} disabled={riskSettingsSaving}
                           onChange={(event) => setSettingsName(event.target.value)} />
                       </label>
                       <label className="portfolio-settings-field-wide">

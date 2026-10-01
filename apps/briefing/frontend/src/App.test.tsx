@@ -81,7 +81,7 @@ it('does not select a newly submitted daily edition after moving to industry res
   expect(fetch.mock.calls.some(([url]) => url.endsWith('/report-v1'))).toBe(false)
 })
 
-it('loads the report index once while selecting the default edition and switching editions', async () => {
+it('loads the report index once while selecting the latest readable edition and switching versions', async () => {
   const previous = { ...detail, report_id: 'report-previous', version: 2, title: '上一版日报' }
   const fetch = vi.fn(async (url: string) => ({ ok: true, json: async () => {
     if (url.endsWith('/status')) return { harness_available: false, can_generate: false, can_read_sources: true }
@@ -92,8 +92,8 @@ it('loads the report index once while selecting the default edition and switchin
   page(<App />)
   await screen.findByRole('heading', { name: '央行继续观察就业' })
   expect(fetch.mock.calls.filter(([url]) => url.includes('/reports?'))).toHaveLength(1)
-  fireEvent.click(screen.getByRole('button', { name: /2026-09-07.*版本 2/ }))
-  await waitFor(() => expect(fetch.mock.calls.some(([url]) => url.endsWith('/report-previous'))).toBe(true))
+  fireEvent.click(screen.getByRole('button', { name: /2026-09-07.*版本 1/ }))
+  await waitFor(() => expect(fetch.mock.calls.some(([url]) => url.endsWith('/report-v1'))).toBe(true))
   expect(fetch.mock.calls.filter(([url]) => url.includes('/reports?'))).toHaveLength(1)
   await act(async () => {
     window.history.replaceState(null, '', '/?lang=zh-Hans&type=daily&report=report-v1')
@@ -110,7 +110,7 @@ it('shows tags, dated market moves and direct original links without opening sou
   expect(screen.getByText('2026-09-04')).toBeTruthy()
   expect(screen.getAllByText('+2.50%')).toHaveLength(2)
   expect(screen.getByText('货币政策')).toBeTruthy()
-  const original = screen.getByRole('link', { name: '央行 ↗' })
+  const original = screen.getByRole('link', { name: '央行声明' })
   expect(original.getAttribute('href')).toBe('https://example.com/statement')
   expect(original.getAttribute('target')).toBe('_blank')
   expect(source).not.toHaveBeenCalled()
@@ -184,7 +184,7 @@ it('omits unused data panels when a quiet edition has no selected numerical evid
   expect(screen.getByRole('heading', { name: '央行继续观察就业' })).toBeTruthy()
 })
 
-it.each(['daily', 'weekly'] as const)('renders important %s releases with source links and empty missing expectations', reportType => {
+it.each(['daily', 'weekly'] as const)('renders important %s releases with source links and explicit missing expectations', reportType => {
   const report = structuredClone(detail)
   report.report_type = reportType
   report.report!.sections.push({ kind: 'macro_data_calendar', title: '重要宏观发布', rows: [
@@ -195,9 +195,9 @@ it.each(['daily', 'weekly'] as const)('renders important %s releases with source
   expect(screen.getByRole('heading', { name: reportType === 'daily' ? '本期重要宏观发布' : '本周重要宏观发布' })).toBeTruthy()
   const row = screen.getByText('政策利率决定').closest('tr')!
   const cells = within(row).getAllByRole('cell')
-  expect(cells[4].textContent).toBe('')
-  expect(cells[5].textContent).toBe('')
-  expect(within(row).getByRole('link', { name: '央行 ↗' }).getAttribute('href')).toBe('https://example.com/statement')
+  expect(cells[4].textContent).toBe('—')
+  expect(cells[5].textContent).toBe('—')
+  expect(within(row).getByRole('link', { name: '央行声明' }).getAttribute('href')).toBe('https://example.com/statement')
   expect(screen.getByText('51.0')).toBeTruthy()
   expect(screen.getByText('50.8')).toBeTruthy()
 })
@@ -222,7 +222,7 @@ it('keeps a completed edition readable when the latest version failed and shows 
   fireEvent.click(screen.getByText('查看留存原文'))
   expect(screen.getByText('查看留存原文').closest('details')?.open).toBe(true)
   expect(screen.getByText('2026-09-06')).toBeTruthy()
-  expect(screen.getByRole('link', { name: '打开原始链接 ↗' }).getAttribute('href')).toBe('https://example.com/statement')
+  expect(screen.getByRole('link', { name: '打开原始链接' }).getAttribute('href')).toBe('https://example.com/statement')
   fireEvent.click(screen.getByRole('button', { name: '关闭来源' }))
   fireEvent.click(screen.getByRole('button', { name: /2026-09-07.*版本 2/ }))
   await screen.findByText('缺少原文')
@@ -239,8 +239,7 @@ it('supports the English interface while keeping the report in Chinese', async (
   fireEvent.click(screen.getByRole('button', { name: /Generation unavailable:/ }))
   expect(screen.getByText('Report generation is not configured. Completed editions remain available.')).toBeTruthy()
   const navigation = screen.getByRole('navigation', { name: 'Workspace navigation' })
-  expect(navigation.textContent).toBe('Home/Market Briefing')
-  expect(navigation.querySelector('[aria-current="page"]')?.textContent).toBe('Market Briefing')
+  expect((within(navigation).getByRole('combobox', { name: 'Switch workspace' }) as HTMLSelectElement).value).toBe('briefing')
   expect(screen.getByRole('link', { name: 'Home' }).getAttribute('href')).toContain(':5172/?lang=en')
   expect(document.title).toBe('Market Briefing · Investment Studio')
 })
@@ -276,7 +275,7 @@ it('keeps weekly selection, report identity and language in the address and rest
   window.history.replaceState(null, '', weeklyAddress)
   fireEvent.popState(window)
   await screen.findByRole('heading', { name: 'Weekly research briefing | 2026-09-07' })
-  expect(screen.getByRole('navigation', { name: 'Workspace navigation' }).textContent).toBe('Home/Market Briefing')
+  expect((screen.getByRole('combobox', { name: 'Switch workspace' }) as HTMLSelectElement).value).toBe('briefing')
 })
 
 it('shows a discovery quota failure separately from missing collection records', async () => {
@@ -299,7 +298,7 @@ it('keeps anonymous published editions readable without production or retained-i
   expect(screen.queryByRole('button', { name: '生成本期' })).toBeNull()
   expect(screen.queryByRole('button', { name: '留存版本' })).toBeNull()
   expect(screen.queryByText('报告生成环境尚未配置。已完成报告仍可阅读。')).toBeNull()
-  expect(screen.getByRole('link', { name: '央行 ↗' }).getAttribute('href')).toBe('https://example.com/statement')
+  expect(screen.getAllByRole('link', { name: '央行声明' })[0].getAttribute('href')).toBe('https://example.com/statement')
 })
 
 
@@ -315,6 +314,7 @@ it('keeps market explanations in the shared floating hint and visibly marks miss
 })
 
 it('keeps the edition frame while switching without showing an empty state or stale report', async () => {
+  window.history.replaceState(null, '', '/?lang=zh-Hans&type=daily&report=report-v1')
   const next = { ...detail, report_id: 'report-v2', version: 2, report_date: '2026-09-08' }
   let resolveNext!: (value: ReportDetail) => void
   const nextResponse = new Promise<ReportDetail>(resolve => { resolveNext = resolve })
@@ -416,7 +416,8 @@ it('keeps source loading and errors inside the source sidebar without altering t
   expect(within(drawer).getByRole('status').textContent).toBe('加载中')
   expect(drawer.getAttribute('aria-busy')).toBe('true')
   await act(async () => failSource(new Error('留存来源暂时无法读取。')))
-  expect(within(drawer).getByRole('alert').textContent).toBe('留存来源暂时无法读取。')
+  expect(within(drawer).getByRole('alert').textContent).toContain('留存来源暂时无法读取。')
+  expect(within(drawer).getByRole('button', { name: '重试' })).toBeTruthy()
   expect(drawer.getAttribute('aria-busy')).toBe('false')
   expect(container.querySelector('.edition-content [role="alert"]')).toBeNull()
   expect(screen.getByRole('heading', { name: '央行继续观察就业' })).toBeTruthy()
@@ -488,7 +489,8 @@ it('keeps source failures and effective price dates visible before opening cover
   expect(summary.textContent).toContain('来源覆盖有缺口：2/2 个渠道')
   expect(summary.textContent).toContain('X channel · Semafor')
   expect(summary.textContent).toContain('2026-09-04')
-  expect(summary.textContent).toContain('生成完成只表示报告流程完成')
+  expect(summary.querySelector('details')?.open).toBe(false)
+  expect(screen.getByRole('button', { name: /报告语言与状态:/ })).toBeTruthy()
   expect(summary.closest('details')).toBeNull()
   expect(screen.getByText('生成完成')).toBeTruthy()
 })
@@ -510,4 +512,119 @@ it('retries dependency failures on the same report and rechecks source permissio
   expect(window.location.search).toContain('report=report-v1')
   expect(fetch.mock.calls.filter(([url]) => url.endsWith('/status'))).toHaveLength(2)
   expect(screen.queryByRole('alert')).toBeNull()
+})
+
+it('keeps the loaded edition during repeated source jumps and same-report history navigation', async () => {
+  const fetcher = vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { harness_available: false, can_generate: false, can_read_sources: true }
+    : url.includes('/reports?') ? { rows: [detail], total: 1 } : detail }))
+  vi.stubGlobal('fetch', fetcher)
+  vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+  const { container } = page(<App />)
+  const heading = await screen.findByRole('heading', { name: '央行继续观察就业' })
+  const originalAddress = window.location.href
+  for (let attempt = 0; attempt < 3; attempt++) {
+    fireEvent.click(screen.getByRole('link', { name: '查看来源与缺口' }))
+    expect((container.querySelector('#source-coverage') as HTMLDetailsElement).open).toBe(true)
+    expect(document.activeElement).toBe(container.querySelector('#source-coverage summary'))
+    // Browsers emit popstate for same-document history traversals, too.
+    fireEvent.popState(window)
+    expect(screen.getByRole('heading', { name: '央行继续观察就业' })).toBe(heading)
+    expect(container.querySelector('.edition-skeleton')).toBeNull()
+  }
+  window.history.replaceState({ readingScrollY: 220 }, '', originalAddress)
+  fireEvent.popState(window)
+  expect(window.scrollTo).toHaveBeenCalledWith({ top: 220 })
+  window.history.replaceState(null, '', `${originalAddress}#source-coverage`)
+  fireEvent.popState(window)
+  expect(screen.getByRole('heading', { name: '央行继续观察就业' })).toBe(heading)
+  expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/reports/report-v1'))).toHaveLength(1)
+})
+
+it('opens and focuses a directly linked source section after its edition loads', async () => {
+  window.history.replaceState(null, '', '/?lang=zh-Hans&report=report-v1#source-coverage')
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { harness_available: false, can_generate: false, can_read_sources: false }
+    : url.includes('/reports?') ? { rows: [detail], total: 1 } : detail })))
+  const { container } = page(<App />)
+  await screen.findByRole('heading', { name: '央行继续观察就业' })
+  expect((container.querySelector('#source-coverage') as HTMLDetailsElement).open).toBe(true)
+  expect(document.activeElement).toBe(container.querySelector('#source-coverage summary'))
+})
+
+it('groups versions by date, keeps failed attempts and offers the same-day readable edition', async () => {
+  const older = { ...detail, report_id: 'older-v1', report_date: '2026-09-06' }
+  const failed = { ...detail, report_id: 'failed-v2', version: 2, status: 'failed', error: 'No draft', report: null }
+  window.history.replaceState(null, '', '/?lang=en&report=failed-v2')
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { harness_available: false, can_generate: false, can_read_sources: false }
+    : url.includes('/reports?') ? { rows: [failed, detail, older], total: 3 }
+    : url.endsWith('/failed-v2') ? failed : detail })))
+  const { container } = page(<App />)
+  await screen.findByText('No draft')
+  expect(container.querySelectorAll('.edition')).toHaveLength(2)
+  expect(container.querySelectorAll('.edition-history button')).toHaveLength(2)
+  expect(container.querySelector('.coverage-summary')?.textContent).not.toContain('Completed')
+  fireEvent.click(screen.getByRole('button', { name: 'Read available edition · 2026-09-07 · v1' }))
+  await screen.findByRole('heading', { name: '央行继续观察就业' })
+  expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Daily research briefing | 2026-09-07' }))
+})
+
+it('keeps both prices while moving through starting and ending evidence, then returns to the summary', async () => {
+  const fetcher = vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { harness_available: false, can_generate: false, can_read_sources: true }
+    : url.includes('/sources/') ? { source_id: url.endsWith('close1') ? 'numeric:close1' : 'numeric:close2', source_type: 'numeric', symbol: 'SPY', date: url.endsWith('close1') ? '2026-09-03' : '2026-09-04', close: url.endsWith('close1') ? 100 : 102.5 }
+    : url.includes('/reports?') ? { rows: [detail], total: 1 } : detail }))
+  vi.stubGlobal('fetch', fetcher)
+  page(<App />)
+  const entry = await screen.findByRole('button', { name: '标普500 ETF' })
+  entry.focus(); fireEvent.click(entry)
+  const drawer = screen.getByRole('dialog')
+  const comparison = within(drawer).getByRole('region', { name: '价格比较' })
+  expect(comparison.textContent).toContain('2026-09-03 · 100 → 2026-09-04 · 102.5')
+  fireEvent.click(within(drawer).getByRole('button', { name: '期初来源' }))
+  await within(drawer).findByText('收盘价')
+  expect(document.activeElement).toBe(within(drawer).getByRole('heading', { name: 'SPY' }))
+  expect(within(drawer).getByRole('region', { name: '价格比较' })).toBe(comparison)
+  fireEvent.click(within(drawer).getByRole('button', { name: '期末来源' }))
+  await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.endsWith('numeric%3Aclose2'))).toBe(true))
+  await within(drawer).findByText('102.5')
+  fireEvent.click(within(drawer).getByRole('button', { name: '价格摘要' }))
+  expect(within(drawer).getByText('起始收盘价')).toBeTruthy()
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await waitFor(() => expect(document.activeElement).toBe(entry))
+})
+
+it('uses human-readable cutoff controls, validates empty custom times and cancels without posting', async () => {
+  const fetcher = vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { harness_available: true, can_generate: true, can_read_sources: false }
+    : { rows: [], total: 0 } }))
+  vi.stubGlobal('fetch', fetcher)
+  page(<App />)
+  const trigger = await screen.findByRole('button', { name: '生成本期' })
+  fireEvent.click(trigger)
+  fireEvent.click(screen.getByRole('radio', { name: '自定义日期与时间' }))
+  fireEvent.click(screen.getByRole('button', { name: '开始生成' }))
+  expect(screen.getByRole('alert').textContent).toContain('有效的日期与时间')
+  fireEvent.change(screen.getByLabelText('日期与时间'), { target: { value: '2026-10-02T08:30' } })
+  expect(screen.getByText('2026-10-02 08:30')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: '取消' }))
+  expect(document.activeElement).toBe(trigger)
+  expect(fetcher.mock.calls.every(([url]) => !url.endsWith('/reports'))).toBe(true)
+})
+
+it('sends the chosen cutoff as the same instant and creates no request until explicit submission', async () => {
+  const fetcher = vi.fn(async (url: string, options?: RequestInit) => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { harness_available: true, can_generate: true, can_read_sources: false }
+    : options?.method === 'POST' ? detail : url.includes('/reports?') ? { rows: [], total: 0 } : detail }))
+  vi.stubGlobal('fetch', fetcher)
+  page(<App />)
+  fireEvent.click(await screen.findByRole('button', { name: '生成本期' }))
+  fireEvent.click(screen.getByRole('radio', { name: '自定义日期与时间' }))
+  fireEvent.change(screen.getByLabelText('日期与时间'), { target: { value: '2026-10-02T08:30' } })
+  expect(fetcher.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false)
+  fireEvent.click(screen.getByRole('button', { name: '开始生成' }))
+  await waitFor(() => expect(fetcher.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(true))
+  const body = fetcher.mock.calls.find(([, options]) => options?.method === 'POST')![1]?.body
+  expect(JSON.parse(String(body))).toEqual({ report_type: 'daily', cutoff: '2026-10-02T00:30:00.000Z' })
 })

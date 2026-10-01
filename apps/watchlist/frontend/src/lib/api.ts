@@ -130,6 +130,7 @@ export type GroupByOption = {
 }
 
 export type WatchlistDetail = WatchlistRecord & {
+  instrument_ids?: string[]
   instrument_types: string[]
   views: WatchlistView[]
   available_group_bys: GroupByOption[]

@@ -31,7 +31,7 @@ export default function WorkspaceTools({ settings, risk, assistant }: { settings
       const content = <><WorkspaceToolIcon kind={kind} /><span>{labels[kind]}</span>{Boolean(action.count) && <span aria-hidden="true">({action.count})</span>}</>
       return action.href && !action.disabled
         ? <a key={kind} href={action.href} data-workspace-link aria-label={label} title={label} onClick={action.onClick}>{content}</a>
-        : <button key={kind} type="button" aria-label={label} title={label} onClick={action.onClick} disabled={action.disabled}>{content}</button>
+        : <button key={kind} type="button" aria-label={label} title={label} onClick={event => { event.currentTarget.focus(); action.onClick?.() }} disabled={action.disabled}>{content}</button>
     })}
   </div>
 }

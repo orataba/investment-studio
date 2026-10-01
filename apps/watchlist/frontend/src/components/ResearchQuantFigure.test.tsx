@@ -173,3 +173,22 @@ it('keeps unavailable comparison rows and their sample gap visible without drawi
   expect(screen.getByText('没有足够的共同实际观察日。')).toBeTruthy()
   expect(screen.queryByRole('img')).toBeNull()
 })
+
+it('presents six readable metrics while retaining every original field and exact value in evidence', () => {
+  const saved = source()
+  saved.data!.metrics = { common_observations: 273, full_n_returns: 272, full_beta_ols: 0.237987654,
+    full_correlation: 0.456789012, recent_correlation: 0.678901234, full_up_capture: 0.321098765,
+    full_down_capture: 0.198765432, sample_start: '2025-08-01', sample_end: '2026-09-30', internal_unknown_field: 13.7654321 }
+  const { container } = render(<ResearchQuantFigure source={saved} />)
+  expect(container.querySelectorAll('.research-quant-metrics dd')).toHaveLength(6)
+  expect(container.textContent).toContain('全样本 · Beta（OLS）')
+  expect(container.textContent).toContain('2025-08-01')
+  expect(container.textContent).not.toContain('internal_unknown_field')
+  expect(container.textContent).not.toContain('full_beta_ols')
+  fireEvent.click(screen.getByRole('button', { name: '查看全部指标和计算依据' }))
+  const dialog = screen.getByRole('dialog')
+  expect(dialog.textContent).toContain('internal_unknown_field')
+  expect(dialog.textContent).toContain('13.7654321')
+  expect(dialog.textContent).toContain('0.237987654')
+  expect(dialog.querySelectorAll('tbody tr')).toHaveLength(10)
+})

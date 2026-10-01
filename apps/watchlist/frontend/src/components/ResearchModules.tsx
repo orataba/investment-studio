@@ -31,7 +31,7 @@ export function fundamentalSectionTitle(plan?: ResearchPlan) {
 }
 
 // Only saved numeric results choose the figure; prose cannot supply chart values or markup.
-export function EvidenceFigure({ source }: { source: SavedResearchSource }) {
+export function EvidenceFigure({ source, hideSummary = false }: { source: SavedResearchSource; hideSummary?: boolean }) {
   const quantitative = quantAnalysis(source.data?.analysis_kind) || isVolatilityFigure(source)
   const fixedObservations = source.data?.analysis_kind === 'watchlist_observations'
   const snapshot = source.snapshot
@@ -47,7 +47,7 @@ export function EvidenceFigure({ source }: { source: SavedResearchSource }) {
     || observedRows.length !== rows.length || !source.data?.sample_start || !source.data?.sample_end || (source.data?.observations ?? 0) < 2)
   return <figure className="research-evidence-figure">
     <figcaption>{source.title || '留存数值依据'}</figcaption>
-    {quantitative && <ResearchQuantFigure source={source} captioned />}
+    {quantitative && <ResearchQuantFigure source={source} captioned hideSummary={hideSummary} />}
     {comparison && <p className="sector-research-note">共同样本 {source.data?.sample_start || '未取得'} 至 {source.data?.sample_end || '未取得'} · 实际观察数 {source.data?.observations ?? '未取得'}{source.data?.currency && ` · ${source.data.currency}`}</p>}
     {comparison && (source.data?.available === false || !observedRows.length) && <p className="sector-research-note">本次计算未取得可用结果。</p>}
     {rows.length > 0 && <div className="research-return-chart" role="img" aria-label="共同样本区间收益对比">
@@ -74,7 +74,7 @@ export function EvidenceFigure({ source }: { source: SavedResearchSource }) {
   </figure>
 }
 
-export function SavedFigure({ instrumentId, notebookVersionId, themeVersionId, eventVersionId, source, themeId, onAskAssistant }: { instrumentId: string; notebookVersionId?: string; themeVersionId?: string; eventVersionId?: string; source: NotebookSource; themeId?: string; onAskAssistant?: AskResearchAssistant }) {
+export function SavedFigure({ instrumentId, notebookVersionId, themeVersionId, eventVersionId, source, themeId, onAskAssistant, hideSummary }: { hideSummary?: boolean; instrumentId: string; notebookVersionId?: string; themeVersionId?: string; eventVersionId?: string; source: NotebookSource; themeId?: string; onAskAssistant?: AskResearchAssistant }) {
   const [saved, setSaved] = useState<SavedResearchSource | null>(null)
   const [error, setError] = useState('')
   const [writing, setWriting] = useState(false)
@@ -93,7 +93,7 @@ export function SavedFigure({ instrumentId, notebookVersionId, themeVersionId, e
   }, [instrumentId, versionId, source.source_id])
   const reference = { instrument_id: instrumentId, ...versionReference, theme_id: themeId, source_ids: [source.source_id] }
   const background = `图表：${source.title || '研究图表'}\n资料截至：${source.as_of || saved?.as_of || '未标注'}${saved?.data?.summary ? `\n${saved.data.summary}` : ''}`
-  return error ? <p role="alert">数值依据暂时无法读取：{error}</p> : saved ? <div className="research-saved-figure"><EvidenceFigure source={saved} />
+  return error ? <p role="alert">数值依据暂时无法读取：{error}</p> : saved ? <div className="research-saved-figure"><EvidenceFigure source={saved} hideSummary={hideSummary} />
     {(onAskAssistant || canWrite) && <details className="research-figure-tools"><summary>讨论与记录</summary><div className="research-theme-actions">
       {onAskAssistant && <button type="button" onClick={() => onAskAssistant(`请分析这份已留存的数值证据。\n${background}\n读取精确来源与计算口径，检查数据、假设、反例及对当前判断的意义；不要用当前新数据替换当时的图表。`, reference)}>讨论这张图表</button>}
       {canWrite && <><button type="button" onClick={() => setWriting(value => !value)}>基于图表记录观点</button>{!themeId && <button type="button" onClick={() => setCreatingTheme(value => !value)}>基于数据建立主题</button>}</>}

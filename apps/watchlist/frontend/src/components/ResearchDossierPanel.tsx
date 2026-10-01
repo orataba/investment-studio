@@ -219,8 +219,8 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
     const brief = notebook?.decision_brief?.needs_review ? undefined : notebook?.decision_brief
     return <div className="research-dossier-panel research-dossier-summary">
       {error && <p role="alert">研究档案暂时无法读取：{error}</p>}
-      <p className="research-summary-direction" translate="no">{view ? view.direction || '当前总结尚待补充。' : brief?.recommendation || '研究基线尚未建立，尚不能判断机会与风险。'}</p>
-      {(view?.updated_at || brief?.updated_at) && <p className="sector-research-note">判断更新 <time dateTime={view?.updated_at || brief?.updated_at || undefined}>{dateLabel(view?.updated_at || brief?.updated_at)}</time></p>}
+      <p className="research-summary-direction" translate={view?.direction || brief?.recommendation ? "no" : undefined}>{view ? view.direction || '当前总结尚待补充。' : brief?.recommendation || '研究基线尚未建立，尚不能判断机会与风险。'}</p>
+      {(view?.updated_at || brief?.updated_at) && <p className="sector-research-note">判断更新 <time title={view?.updated_at || brief?.updated_at || undefined} dateTime={view?.updated_at || brief?.updated_at || undefined}>{dateLabel(view?.updated_at || brief?.updated_at)}</time></p>}
       {view?.coverage_status === 'limited' && <p className="sector-research-limitation">已保存的研究部分可用，未覆盖部分不能据此判断。</p>}
       {view?.coverage_status === 'not_established' && <p className="sector-research-limitation">研究基线尚未建立，不能据此作出判断。</p>}
       {view?.coverage_note && <InfoHint label="研究覆盖说明" detail={view.coverage_note} tone={view.coverage_status === 'limited' ? 'warning' : 'info'} />}

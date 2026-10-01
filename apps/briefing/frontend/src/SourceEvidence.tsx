@@ -1,12 +1,13 @@
 import InfoHint from '../../../../packages/ui/src/InfoHint'
 import { useLanguage } from '../../../../packages/ui/src/i18n'
 import type { Source } from './types'
+import { EvidenceTime, ExternalLinkIcon } from './reading'
 
 export const safeUrl = (value?: string) => {
   try { const url = new URL(value || ''); return ['https:', 'http:'].includes(url.protocol) ? url.href : undefined } catch { return undefined }
 }
 
-export function SourceEvidence({ source, onClose, onSource, canReadSources = true }: { source: Source; onClose: () => void; onSource: (sourceId: string) => void; canReadSources?: boolean }) {
+export function SourceEvidence({ source, onClose, onSource, canReadSources = true, showHeading = true, showSourceLinks = true, timezone = 'Asia/Shanghai' }: { source: Source; onClose: () => void; onSource: (sourceId: string) => void; canReadSources?: boolean; showHeading?: boolean; showSourceLinks?: boolean; timezone?: string }) {
   const { language } = useLanguage()
   const copy = (zh: string, en: string) => language === 'zh-Hans' ? zh : en
   const display = (value: unknown) => typeof value === 'number' ? value.toLocaleString(language === 'zh-Hans' ? 'zh-CN' : 'en-GB', { maximumFractionDigits: 8 }) : typeof value === 'string' && value ? value : '—'
@@ -61,12 +62,12 @@ export function SourceEvidence({ source, onClose, onSource, canReadSources = tru
   ].filter((value): value is string => Boolean(value)) : []
 
   return <>
-    <div className="source-panel-title"><div className="source-heading-text"><h2 translate="no">{display(source.title || source.label || source.symbol || copy('保留来源', 'Retained source'))}</h2>{priceBasis.length > 0 && <InfoHint label={copy('价格口径', 'Price basis')} detail={priceBasis} tone={(market ? basis(source.return_basis) : basis(source.ohlc_adjustment)) ? 'info' : 'warning'} />}{source.content_completeness === 'source_excerpt' && <InfoHint tone="warning" label={copy('来源完整性', 'Source completeness')} detail={copy('来源提供的节选，未包含完整正文。', 'Source excerpt; the full article is not included.')} />}</div><button onClick={onClose} aria-label={copy('关闭来源', 'Close source')}>×</button></div>
+    <div className={showHeading ? "source-panel-title" : "source-basis"}><div className="source-heading-text"><h2 translate="no" hidden={!showHeading}>{display(source.title || source.label || source.symbol || copy('保留来源', 'Retained source'))}</h2>{priceBasis.length > 0 && <InfoHint label={copy('价格口径', 'Price basis')} detail={priceBasis} tone={(market ? basis(source.return_basis) : basis(source.ohlc_adjustment)) ? 'info' : 'warning'} />}{source.content_completeness === 'source_excerpt' && <InfoHint tone="warning" label={copy('来源完整性', 'Source completeness')} detail={copy('来源提供的节选，未包含完整正文。', 'Source excerpt; the full article is not included.')} />}</div>{showHeading && <button onClick={onClose} aria-label={copy('关闭来源', 'Close source')}>{copy('关闭', 'Close')}</button>}</div>
     {providerName && <p>{copy('来源', 'Source')} · <span translate="no">{providerName}</span></p>}
-    {originalUrl && <a href={originalUrl} target="_blank" rel="noreferrer">{copy('打开原始链接', 'Open original link')} ↗</a>}
+    {originalUrl && <a href={originalUrl} target="_blank" rel="noreferrer">{copy('打开原始链接', 'Open original link')} <ExternalLinkIcon /></a>}
     {fields.length > 0 && <dl className="source-dates">{fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd translate="no">{display(value)}</dd></div>)}</dl>}
-    {canReadSources && sourceIds.length > 0 && <div className="source-links">{sourceIds.map((id, index) => <button key={`${id}-${index}`} onClick={() => onSource(id)}>{market ? index === 0 ? copy('查看起始价格来源', 'View starting price source') : copy('查看截至价格来源', 'View ending price source') : copy('查看原始数值来源', 'View original value source')}</button>)}</div>}
-    {clocks.length > 0 && <dl className="source-dates">{clocks.map(([label, value]) => <div key={label}><dt>{label}</dt><dd translate="no">{display(value)}</dd></div>)}</dl>}
+    {showSourceLinks && canReadSources && sourceIds.length > 0 && <div className="source-links">{sourceIds.map((id, index) => <button key={`${id}-${index}`} onClick={() => onSource(id)}>{market ? index === 0 ? copy('查看起始价格来源', 'View starting price source') : copy('查看截至价格来源', 'View ending price source') : copy('查看原始数值来源', 'View original value source')}</button>)}</div>}
+    {clocks.length > 0 && <><p className="time-basis">{copy('时间显示', 'Times shown in')} · {timezone}</p><dl className="source-dates">{clocks.map(([label, value]) => <div key={label}><dt>{label}</dt><dd translate="no"><EvidenceTime value={typeof value === 'string' ? value : undefined} timezone={timezone} /></dd></div>)}</dl></>}
     {source.withdrawn === true && <p className="error" role="alert">{copy('这份来源已撤回；这里保留报告使用的版本。', 'This source was withdrawn; the version used by the report is retained here.')}</p>}
     {source.content_text ? <details className="retained-original"><summary>{copy('查看留存原文', 'Read retained text')}</summary><div className="original-text" translate="no">{source.content_text}</div></details> : !market && !macro && !numeric && <p className="muted">{copy('这份来源没有可读取的正文。', 'No readable text is available for this source.')}</p>}
   </>

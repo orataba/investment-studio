@@ -233,7 +233,6 @@ const baseMessages: LanguageMessages = {
     'Add Quote': '添加报价',
     'Import NAV': '导入净值',
     Refresh: '刷新',
-    'Close Action': '关闭',
     'Close Detail': '关闭详情',
     Operations: '操作',
     'Add Asset': '添加资产',
@@ -679,7 +678,7 @@ const elementAttributeOriginals = new WeakMap<Element, Map<string, string>>()
 
 function mergeMessages(messages?: LanguageMessages): LanguageMessages {
   const chinese = { ...systemMessages, ...baseMessages['zh-Hans'], ...messages?.['zh-Hans'] }
-  const english = Object.fromEntries(Object.entries(chinese).map(([en, zh]) => [zh, en]))
+  const english = { ...Object.fromEntries(Object.entries(chinese).map(([en, zh]) => [zh, en])), '关闭': 'Close' }
   return supportedLanguages.reduce<LanguageMessages>((merged, language) => {
     const dictionary = language.value === 'en' ? { ...english, ...messages?.en } : chinese
     merged[language.value] = { ...Object.fromEntries(Object.entries(dictionary).map(([key, value]) => [key.toLowerCase(), value])), ...dictionary }
@@ -894,7 +893,7 @@ function contextualDomText(node: Text, original: string) {
   }
   const leading = original.match(/^\s*/)?.[0] || ''
   const trailing = original.match(/\s*$/)?.[0] || ''
-  return `${leading}Close Action${trailing}`
+  return `${leading}关闭${trailing}`
 }
 
 function isKnownRenderedTextTranslation(

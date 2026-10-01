@@ -18,6 +18,7 @@ import { formatCurrency, formatPercent, formatSignedCurrency } from '../lib/form
 import { buildPortfolioSectionPath, HOME_URL } from '../lib/navigation'
 import { usePortfolioSession } from '../components/PortfolioSessionProvider'
 import PortfolioMembersSettings from '../components/PortfolioMembersSettings'
+import WorkspaceSwitcher from '../../../../../packages/ui/src/WorkspaceSwitcher'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
@@ -77,12 +78,14 @@ export default function PortfoliosPage() {
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
+  const createNameRef = useRef<HTMLInputElement | null>(null)
+  const settingsNameRef = useRef<HTMLInputElement | null>(null)
   const settingsDialogRef = useModalDialog(Boolean(settingsPortfolio), () => {
     if (!settingsSaving) setSettingsPortfolio(null)
-  })
+  }, settingsNameRef)
   const createDialogRef = useModalDialog(createOpen, () => {
     if (!creating) setCreateOpen(false)
-  })
+  }, createNameRef)
 
   useEffect(() => {
     let cancelled = false
@@ -335,14 +338,20 @@ export default function PortfoliosPage() {
             Home
           </a>
           <span className="workspace-breadcrumb-separator">/</span>
-          <span className="workspace-breadcrumb-current">Portfolio</span>
+          <WorkspaceSwitcher current="portfolio" />
           <LanguageSelector />
         </div>
         <div className="portfolio-entry-hero">
           <h1 className="portfolio-entry-title">{text('My Portfolios', '我可访问的组合')}</h1>
-          {currentSession && <span className="portfolio-access-label">{currentSession.display_name}</span>}
-          <span className="portfolio-entry-nav">{totalNavLabel}</span>
-          {totalChangeLabel ? <span className={totalChangeClassName}>{totalChangeLabel}</span> : null}
+          <button type="button" className="button-primary portfolio-entry-create-button" disabled={!currentSession?.can_create} onClick={(event) => { event.currentTarget.focus(); openCreatePortfolio() }}>
+            {text('Create Portfolio', '新建组合')}
+          </button>
+        </div>
+        <div className="portfolio-entry-context">
+          {currentSession && <span className="portfolio-access-label" translate="no">{currentSession.display_name}</span>}
+          <span>{text(`${resolvedPortfolios.length} portfolios`, `${resolvedPortfolios.length} 个组合`)}</span>
+          <span className={aggregateAvailable ? 'portfolio-entry-nav' : 'portfolio-detail-meta'}>{totalNavLabel}</span>
+          {totalChangeLabel ? <span className={aggregateAvailable ? totalChangeClassName : 'portfolio-detail-meta'}>{totalChangeLabel}</span> : null}
         </div>
       </header>
 
@@ -463,16 +472,6 @@ export default function PortfoliosPage() {
             </Link>
           </article>
         ))}
-        <div className="portfolio-entry-create-card">
-          <button
-            type="button"
-            className="workspace-create-link"
-            disabled={!currentSession?.can_create}
-            onClick={openCreatePortfolio}
-          >
-            + Create Portfolio
-          </button>
-        </div>
       </section>
       {settingsPortfolio ? (
         <div className="portfolio-settings-modal-backdrop">
@@ -504,7 +503,7 @@ export default function PortfoliosPage() {
               <div className="portfolio-settings-grid">
                 <label htmlFor="portfolio-settings-name">
                   <span>{text('Portfolio Name', '组合名称')}</span>
-                  <input id="portfolio-settings-name" autoFocus required maxLength={200} value={settingsName}
+                  <input id="portfolio-settings-name" ref={settingsNameRef} required maxLength={200} value={settingsName}
                     disabled={settingsSaving} onChange={(event) => setSettingsName(event.target.value)} />
                 </label>
                 <label htmlFor="portfolio-base-currency">
@@ -585,7 +584,7 @@ export default function PortfoliosPage() {
                   <span>Portfolio Name</span>
                   <input
                     id="create-portfolio-name"
-                    autoFocus
+                    ref={createNameRef}
                     required
                     maxLength={200}
                     value={createName}

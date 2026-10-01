@@ -9,7 +9,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import CalculationStatus from '../components/CalculationStatus'
 import HoldingsSectionTables, {
@@ -31,7 +31,7 @@ import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import { SerialTaskQueue } from '../../../../../packages/ui/src/serialTaskQueue'
-import { useLanguage } from '../../../../../packages/ui/src/i18n'
+import { matchesSystemLabel, useLanguage } from '../../../../../packages/ui/src/i18n'
 import {
   formatCurrency,
   formatLabel,
@@ -462,62 +462,6 @@ const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
   price_chart_6m: 132,
   price_chart_1y: 132,
   coverage: 132,
-}
-
-const COMPACT_HOLDINGS_COLUMN_MIN_WIDTHS: Partial<Record<HoldingsColumnKey, number>> = {
-  instrument: 180,
-  ticker: 92,
-  instrument_type: 96,
-  taxonomy_top: 112,
-  taxonomy_leaf: 124,
-  currency: 76,
-  holding_date: 104,
-  quantity: 96,
-  cost_method: 104,
-  avg_cost_book: 104,
-  last_price: 92,
-  quote_date: 104,
-  quote_basis: 104,
-  quote_provider: 104,
-  quote_status: 104,
-  current_fx_rate: 104,
-  market_value: 108,
-  market_value_base: 116,
-  cost_basis: 108,
-  cost_basis_base: 116,
-  cost_basis_historical_base: 128,
-  cost_basis_fx_rate: 112,
-  net_invested: 116,
-  break_even_price: 112,
-  weight: 84,
-  accounts: 84,
-  open_lots: 88,
-  unrealized_price_pnl: 124,
-  unrealized_price_pnl_base: 132,
-  unrealized_fx_pnl_base: 124,
-  unrealized_pnl_base: 132,
-  unrealized_return: 112,
-  unrealized_return_base: 120,
-  instrument_return_1w: 92,
-  instrument_return_1m: 92,
-  instrument_return_3m: 92,
-  instrument_return_6m: 92,
-  instrument_return_mtd: 92,
-  instrument_return_ytd: 92,
-  instrument_return_1y: 92,
-  instrument_current_drawdown: 100,
-  instrument_max_drawdown: 100,
-  instrument_holding_max_drawdown: 112,
-  instrument_volatility_1m: 92,
-  instrument_volatility_3m: 92,
-  instrument_volatility_6m: 92,
-  instrument_volatility_1y: 92,
-  forward_risk_share: 104,
-  price_chart_1m: 104,
-  price_chart_3m: 104,
-  price_chart_6m: 104,
-  price_chart_1y: 104,
-  coverage: 104,
 }
 
 const DEFAULT_HOLDINGS_VIEW_STATE: HoldingsViewState = {
@@ -1597,43 +1541,6 @@ function clampHoldingsColumnWidth(value: number) {
   return Math.min(Math.max(value, HOLDINGS_COLUMN_MIN_WIDTH), HOLDINGS_COLUMN_MAX_WIDTH)
 }
 
-function compactTableColumnWidths<T extends string>(
-  columns: T[],
-  getRequestedWidth: (column: T) => number,
-  getMinimumWidth: (column: T) => number,
-  availableWidth: number,
-) {
-  const specs = columns.map((column) => {
-    const minWidth = getMinimumWidth(column)
-    const requestedWidth = Math.max(getRequestedWidth(column), minWidth)
-    return { column, minWidth, requestedWidth }
-  })
-  const requestedWidth = specs.reduce((total, spec) => total + spec.requestedWidth, 0)
-  const minimumWidth = specs.reduce((total, spec) => total + spec.minWidth, 0)
-  const targetWidth =
-    availableWidth > 0 && requestedWidth > availableWidth
-      ? Math.max(minimumWidth, availableWidth)
-      : requestedWidth
-  const widths = {} as Record<T, number>
-
-  if (targetWidth >= requestedWidth || requestedWidth <= minimumWidth) {
-    specs.forEach((spec) => {
-      widths[spec.column] = Math.round(spec.requestedWidth)
-    })
-  } else {
-    const flexibleWidth = requestedWidth - minimumWidth
-    specs.forEach((spec) => {
-      const share = (spec.requestedWidth - spec.minWidth) / flexibleWidth
-      widths[spec.column] = Math.round(spec.minWidth + (targetWidth - minimumWidth) * share)
-    })
-  }
-
-  return {
-    widths,
-    totalWidth: columns.reduce((total, column) => total + widths[column], 0),
-  }
-}
-
 function normalizeHoldingsColumnWidths(value: unknown) {
   const widths: Partial<Record<HoldingsColumnKey, number>> = {}
   if (!value || typeof value !== 'object') {
@@ -2009,7 +1916,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => (
       <div
         className="holding-name-stack"
-        title={`${instrumentTrendCoverageLabel(row)}. ${instrumentTrendReasonLabel(row)}`}
+        title={`${holdingName(row)} · ${instrumentTrendCoverageLabel(row)}. ${instrumentTrendReasonLabel(row)}`}
       >
         <span className="portfolio-tree-label" data-tree-level="item" translate="no">{holdingName(row)}</span>
       </div>
@@ -2678,7 +2585,6 @@ export default function PortfolioHomePage() {
   const pendingHoldingsColumnResize = useRef<{ column: HoldingsColumnKey; width: number } | null>(null)
   const holdingsTablePan = useHorizontalTablePan()
   const holdingsTableShellRef = holdingsTablePan.ref
-  const [holdingsTableShellWidth, setHoldingsTableShellWidth] = useState(0)
   const requestedAsOfDate = searchParams.get('as_of_date') ?? ''
 
   useEffect(() => {
@@ -2782,18 +2688,14 @@ export default function PortfolioHomePage() {
         : HOLDINGS_COLUMN_DEFINITIONS[column]),
     [holdingsColumns, workspace?.base_currency],
   )
-  const compactHoldingsColumns = useMemo(
-    () =>
-      compactTableColumnWidths(
-        visibleColumns.map((column) => column.key),
-        (column) => holdingsColumnWidths[column] ?? DEFAULT_HOLDINGS_COLUMN_WIDTHS[column],
-        (column) => COMPACT_HOLDINGS_COLUMN_MIN_WIDTHS[column] ?? HOLDINGS_COLUMN_MIN_WIDTH,
-        holdingsTableShellWidth,
-      ),
-    [holdingsColumnWidths, holdingsTableShellWidth, visibleColumns],
+  // Column preferences are minimum widths; intrinsic cell content may widen a column.
+  // Never squeeze complete financial values to fit the viewport.
+  const displayHoldingsColumnWidths = Object.fromEntries(visibleColumns.map((column) => [
+    column.key, holdingsColumnWidths[column.key] ?? DEFAULT_HOLDINGS_COLUMN_WIDTHS[column.key],
+  ])) as Record<HoldingsColumnKey, number>
+  const displayHoldingsTableMinWidth = visibleColumns.reduce(
+    (total, column) => total + displayHoldingsColumnWidths[column.key], 0,
   )
-  const displayHoldingsColumnWidths = compactHoldingsColumns.widths
-  const displayHoldingsTableMinWidth = compactHoldingsColumns.totalWidth
   const filteredHoldingsColumns = useMemo(() => {
     const searchQuery = holdingsColumnSearch.trim().toLocaleLowerCase()
     const selectedGroup =
@@ -2807,30 +2709,11 @@ export default function PortfolioHomePage() {
             return true
           }
           const definition = HOLDINGS_COLUMN_DEFINITIONS[column]
-          return `${definition.label} ${column} ${group.label}`.toLocaleLowerCase().includes(searchQuery)
+          return matchesSystemLabel(definition.label, searchQuery) || matchesSystemLabel(group.label, searchQuery) || column.includes(searchQuery)
         })
         .map((column) => ({ column, groupLabel: group.label })),
     )
   }, [holdingsColumnCategory, holdingsColumnSearch])
-
-  useEffect(() => {
-    const element = holdingsTableShellRef.current
-    if (!element) {
-      return undefined
-    }
-
-    const updateWidth = () => setHoldingsTableShellWidth(Math.floor(element.clientWidth))
-    updateWidth()
-
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateWidth)
-      return () => window.removeEventListener('resize', updateWidth)
-    }
-
-    const observer = new ResizeObserver(updateWidth)
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [workspace !== null])
 
   const securityRows = useMemo(
     () => (workspace?.rows ?? []).filter((row) => row.holding_category === 'securities'),
@@ -3460,6 +3343,7 @@ export default function PortfolioHomePage() {
                 <button
                   type="button"
                   className="holding-instrument-link"
+                  title={holdingName(row)}
                   onClick={() => handleSelectInstrument(selectionInstrumentId)}
                 >
                   {column.render(row, columnContext)}
@@ -3857,7 +3741,8 @@ export default function PortfolioHomePage() {
           <>
             {!workspace.rows.length ? (
               <div className="empty-state" role="status">
-                No holdings as of {workspace.as_of_date}.
+                <p>{zh ? `${workspace.as_of_date} 没有持仓。可切换持仓日期，或查看交易记录。` : `No holdings as of ${workspace.as_of_date}. Choose another date or review the transaction records.`}</p>
+                <Link to={`/portfolios/${portfolioId}/transactions`}>{zh ? '查看或录入交易' : 'Review or record transactions'}</Link>
               </div>
             ) : null}
             {sortedSecurityRows.length ? (
@@ -3906,6 +3791,8 @@ export default function PortfolioHomePage() {
                   </div>
                 </div>
                 <div
+                  aria-label="Security holdings scroll area"
+                  tabIndex={0}
                   className={`table-shell holdings-table-shell ${holdingsTablePan.isPanning ? 'is-panning' : ''}`}
                   ref={holdingsTableShellRef}
                   {...holdingsTablePan.handlers}
@@ -3913,13 +3800,13 @@ export default function PortfolioHomePage() {
                   <table
                     className="holdings-table holdings-main-table"
                     aria-label="Security holdings"
-                    style={{ minWidth: `${displayHoldingsTableMinWidth}px` }}
+                    style={{ minWidth: `var(--holdings-table-min-width, ${displayHoldingsTableMinWidth}px)` }}
                   >
                     <colgroup>
                       {visibleColumns.map((column) => (
                         <col
                           key={column.key}
-                          style={{ width: `${displayHoldingsColumnWidths[column.key]}px` }}
+                          style={{ width: column.key === 'instrument' ? `var(--holdings-identity-width, ${displayHoldingsColumnWidths[column.key]}px)` : `${displayHoldingsColumnWidths[column.key]}px` }}
                         />
                       ))}
                     </colgroup>
@@ -3947,7 +3834,7 @@ export default function PortfolioHomePage() {
                                   : 'none'
                               }
                               draggable={column.key !== LOCKED_HOLDINGS_COLUMN}
-                              style={{ width: `${width}px` }}
+                              style={{ width: column.key === 'instrument' ? `var(--holdings-identity-width, ${width}px)` : `${width}px` }}
                               onDragStart={(event) => handleHoldingsColumnDragStart(event, column.key)}
                               onDragOver={(event) => handleHoldingsColumnDragOver(event, column.key)}
                               onDragLeave={() => setHoldingsColumnDropTarget(null)}
@@ -4024,7 +3911,7 @@ export default function PortfolioHomePage() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="portfolio-table-config-header">
-              <div className="panel-title">Columns</div>
+              <div className="panel-title">Manage Columns</div>
               <button type="button" onClick={() => setHoldingsColumnsOpen(false)}>
                 Close
               </button>
@@ -4034,6 +3921,7 @@ export default function PortfolioHomePage() {
               <input
                 className="portfolio-table-config-search-input"
                 placeholder="Search columns"
+                aria-label="Search columns"
                 value={holdingsColumnSearch}
                 onChange={(event) => setHoldingsColumnSearch(event.target.value)}
               />
@@ -4072,16 +3960,14 @@ export default function PortfolioHomePage() {
                         <div>
                           <div className="portfolio-table-config-field-label">{HOLDINGS_COLUMN_DEFINITIONS[column].label}</div>
                           <div className="portfolio-table-config-field-meta">
-                            {column}
-                            {holdingsColumnSearch.trim() ? ` · ${groupLabel}` : ''}
-                            {locked ? ' · required' : ''}
+                            {locked ? (zh ? '必选' : 'Required') : holdingsColumnSearch.trim() ? groupLabel : ''}
                           </div>
                         </div>
                       </label>
                     )
                   })
                 ) : (
-                  <div className="portfolio-table-config-field-empty">No columns.</div>
+                  <div className="portfolio-table-config-field-empty">No matching columns. <button type="button" onClick={() => setHoldingsColumnSearch('')}>Clear search</button></div>
                 )}
               </div>
 

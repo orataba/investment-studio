@@ -14,12 +14,13 @@ export default function ResearchQuantObservations({ instrumentId, notebook, onAs
       {observation.summary && <p translate="no">{observation.summary}</p>}
       {(observation.coverage !== 'supported' || observation.gaps.length > 0) && <div className="sector-research-limitation">
         {observation.coverage !== 'supported' && <span>{observation.coverage === 'partial' ? '量化数据部分可用。' : '量化证据不足。'}</span>}
-        {observation.gaps.length > 0 && <ResearchReadingAside label="查看数据缺口"><ul className="research-dossier-list">{observation.gaps.map((gap, index) => <li key={index} translate="no">{gap}</li>)}</ul></ResearchReadingAside>}
+        {observation.gaps.length > 0 && <p translate="no">{observation.gaps[0]}</p>}
+        {observation.gaps.length > 1 && <ResearchReadingAside label="查看数据缺口"><ul className="research-dossier-list">{observation.gaps.map((gap, index) => <li key={index} translate="no">{gap}</li>)}</ul></ResearchReadingAside>}
       </div>}
       {!sources.length && <p className="sector-research-note">尚未留存可展示的数值结果；不能据此推断风险较低。</p>}
-      <div className="research-quant-grid">{(all ? sources : sources.slice(0, 5)).map(source => <SavedFigure key={`${notebook?.version_id}:${source.source_id}`} instrumentId={instrumentId} notebookVersionId={notebook?.version_id} source={source} onAskAssistant={onAskAssistant} />)}</div>
+      <div className="research-quant-grid">{(all ? sources : sources.slice(0, 5)).map(source => <SavedFigure hideSummary={Boolean(observation.summary)} key={`${notebook?.version_id}:${source.source_id}`} instrumentId={instrumentId} notebookVersionId={notebook?.version_id} source={source} onAskAssistant={onAskAssistant} />)}</div>
       {sources.length > 5 && <button type="button" className="research-support-link" aria-expanded={all} onClick={() => setAll(value => !value)}>{all ? '收起更多观察' : `查看其余 ${sources.length - 5} 份观察`}</button>}
-      <ResearchReadingAside label="量化解释与依据"><p className="sector-research-note">判断更新 {dateLabel(observation.updated_at)} · 最近检查 {dateLabel(observation.checked_at)}</p><p className="research-dossier-text" translate="no">{observation.analysis}</p>{observation.next_check && <p translate="no">下一观察：{observation.next_check}</p>}<SourceList instrumentId={instrumentId} versionId={notebook?.version_id} sources={(notebook?.sources || []).filter(source => observation.source_ids.includes(source.source_id))} /></ResearchReadingAside>
+      <ResearchReadingAside label="量化解释与依据"><p className="sector-research-note">判断更新 {dateLabel(observation.updated_at)} · 最近检查 {dateLabel(observation.checked_at)}</p><p className="research-dossier-text" translate="no">{observation.analysis}</p>{observation.next_check && <p><span>下一观察：</span><span translate="no">{observation.next_check}</span></p>}<SourceList instrumentId={instrumentId} versionId={notebook?.version_id} sources={(notebook?.sources || []).filter(source => observation.source_ids.includes(source.source_id))} /></ResearchReadingAside>
     </> : <p className="sector-research-note">尚未建立量化观察；缺少数据不代表没有异常或风险。</p>}
   </section>
 }

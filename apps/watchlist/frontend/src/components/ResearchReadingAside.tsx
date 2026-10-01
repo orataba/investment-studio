@@ -9,7 +9,7 @@ export default function ResearchReadingAside({ label, title = label, children, o
   const changeOpen = (value: boolean) => { setOpen(value); onOpenChange?.(value) }
   const ref = useModalDialog(open, () => changeOpen(false))
   return <>
-    <button type="button" className="research-support-link" onClick={() => changeOpen(true)}>{label}</button>
+    <button type="button" className="research-support-link" onClick={event => { event.currentTarget.focus(); changeOpen(true) }}>{label}</button>
     {open && createPortal(<div className="research-aside-backdrop" onClick={event => { if (event.target === event.currentTarget) changeOpen(false) }}>
       <div className="research-reading-aside" ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
         <header><h2 id={titleId}>{title}</h2><button type="button" aria-label={`关闭${title}`} onClick={() => changeOpen(false)}>关闭</button></header>

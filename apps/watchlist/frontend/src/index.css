@@ -917,11 +917,6 @@ th {
   opacity: 0.56;
 }
 
-.watchlist-entry-create-card {
-  padding: 18px 0;
-  border-top: 1px solid #cbd5e1;
-  background: transparent;
-}
 
 @media (max-width: 960px) {
   .watchlist-entry-card {
@@ -4750,11 +4745,16 @@ td:last-child {
 .instrument-metrics-table {
   width: 100%;
   min-width: 1260px;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   table-layout: fixed;
 }
 
 .instrument-metrics-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8fafc;
   padding: 9px 10px 8px 0;
   border-bottom: 1px solid #111827;
   text-align: right;
@@ -4777,7 +4777,14 @@ td:last-child {
 .instrument-metrics-table td:first-child {
   width: 180px;
   text-align: left;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: #fff;
+  box-shadow: 1px 0 0 var(--line);
 }
+
+.instrument-metrics-table th:first-child { z-index: 3; background: #f8fafc; }
 
 .instrument-metrics-table th:not(:first-child),
 .instrument-metrics-table td:not(:first-child) {
@@ -7444,10 +7451,6 @@ button:disabled {
   font-size: 12px;
 }
 
-.watchlist-entry-create-card {
-  padding: 16px 0;
-  border-top: 1px solid var(--line);
-}
 
 .table-shell,
 .nav-history-table-shell {
@@ -8289,4 +8292,7 @@ input[type='checkbox'] {
 .watchlist-instrument-identifier { color: var(--muted-text, #64748b); font-size: 11px; }
 .watchlists-view-save-status, .watchlists-aggregation-note { margin: 8px 0; color: var(--muted-text, #64748b); font-size: 12px; line-height: 1.5; }
 
-.instrument-metric-dates { display: block; max-width: 140px; white-space: normal; font-size: 10px; font-weight: 400; line-height: 1.45; color: #64748b; }
+.instrument-metric-dates { display: block; white-space: normal; font-size: 12px; font-weight: 400; line-height: 1.5; color: #64748b; letter-spacing: 0; }
+.instrument-metric-dates time { display: block; white-space: nowrap; }
+.instrument-metric-dates > span { display: none; }
+.instrument-performance-table-shell { max-height: min(70vh, 640px); overflow: auto; }

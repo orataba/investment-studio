@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render as renderTestingLibrary, screen, waitFor } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router'
 import PortfolioInstrumentRisk from './PortfolioInstrumentRisk'
@@ -10,6 +10,7 @@ import {
   holdingsWorkspaceFixture,
   instrumentFixture,
 } from '../test/portfolioFixtures'
+const render = (element: React.ReactElement) => renderTestingLibrary(element, { wrapper: ({ children }) => <LanguageProvider enableDomTranslation={false}>{children}</LanguageProvider> })
 const request = vi.hoisted(() => vi.fn())
 const getHoldingsWorkspace = vi.hoisted(() => vi.fn())
 const permissions = vi.hoisted(() => ({ can_write_team_research: true, can_read: true }))
@@ -106,6 +107,9 @@ it('limits risk attention to actual holdings and writes follow-up to the shared 
     /></MemoryRouter>,
   )
   await screen.findByText(record.title)
+  expect(screen.getByRole('region', { name: 'Holding risk watch' })).toBeInTheDocument()
+  expect(screen.getByText('Current portfolio holdings')).toBeInTheDocument()
+  expect(screen.queryByText('当前组合持仓')).not.toBeInTheDocument()
   expect(request).toHaveBeenCalledWith(`/risk?instrument_ids=${id}&summary=true`, undefined)
   expect(screen.getByTestId('officer-scope').textContent).toBe('portfolio_id=3')
   fireEvent.click(screen.getByText('跟进与证据'))

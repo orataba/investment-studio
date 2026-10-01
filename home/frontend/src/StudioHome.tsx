@@ -28,7 +28,7 @@ export function StudioLinks({ apps }: { apps: StudioApp[] }) {
             <strong>{t(app.name)}</strong>
             <span>{t(app.description)}</span>
           </span>
-          <span className="home-link-arrow" aria-hidden="true">↗</span>
+          <svg className="home-link-arrow" aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 18 18 6M6 6h12v12" /></svg>
         </a>
       ))}
     </nav>

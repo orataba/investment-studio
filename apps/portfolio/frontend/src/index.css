@@ -827,12 +827,6 @@ button:disabled {
   color: #9ca3af;
 }
 
-.portfolio-entry-create-card {
-  padding: 16px 0;
-  border-top: 1px solid var(--portfolio-line);
-  background: transparent;
-}
-
 .portfolio-headline {
   display: flex;
   align-items: baseline;
@@ -2456,25 +2450,6 @@ input[type='checkbox'] {
   text-align: center;
 }
 
-.risk-matrix-row-label {
-  display: block;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.risk-matrix-column-label {
-  display: -webkit-box;
-  max-height: 4.2em;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  overflow-wrap: anywhere;
-  text-align: center;
-  white-space: normal;
-}
-
 .risk-heatmap-cell {
   font-weight: 400;
   color: var(--portfolio-ink);
@@ -3213,24 +3188,27 @@ input[type='checkbox'] {
 }
 
 .holdings-main-table {
-  table-layout: fixed;
+  table-layout: auto;
   background: #ffffff;
 }
 
 .holdings-main-table th,
 .holdings-main-table td {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .holdings-main-table thead th {
-  position: relative;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--portfolio-table-header-background);
 }
 
 .holdings-main-table thead th:first-child {
   position: sticky;
   left: 0;
-  z-index: 3;
+  z-index: 4;
   background: var(--portfolio-table-header-background);
   box-shadow: 1px 0 0 var(--portfolio-line);
 }
@@ -3412,12 +3390,12 @@ input[type='checkbox'] {
   width: 100%;
   min-width: 100%;
   background: #ffffff;
-  table-layout: fixed;
+  table-layout: auto;
 }
 
 .holdings-section-table th,
 .holdings-section-table td {
-  max-width: 320px;
+  white-space: nowrap;
 }
 
 .holdings-section-table thead th:first-child {

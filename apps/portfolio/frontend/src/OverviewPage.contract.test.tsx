@@ -691,6 +691,12 @@ describe('Overview rendered page contract', () => {
     )
 
     const benchmarkSearch = await screen.findByRole('searchbox', { name: 'Compare benchmark' })
+    await user.click(benchmarkSearch)
+    expect(benchmarkSearch).toHaveAttribute('aria-expanded', 'true')
+    await user.keyboard('{Escape}')
+    expect(benchmarkSearch).toHaveAttribute('aria-expanded', 'false')
+    expect(benchmarkSearch).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: 'Show benchmark choices' }))
     await user.type(benchmarkSearch, 'Market')
     const benchmarkOption = await screen.findByRole('button', { name: /Market Benchmark/ })
     await user.tab()

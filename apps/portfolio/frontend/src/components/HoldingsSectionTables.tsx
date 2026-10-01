@@ -542,6 +542,8 @@ function FixedHoldingsTable({
   )
   return (
     <div
+      tabIndex={0}
+      aria-label={`${ariaLabel} scroll area`}
       className={`table-shell holdings-section-table-shell ${tablePan.isPanning ? 'is-panning' : ''}`}
       ref={tablePan.ref}
       {...tablePan.handlers}
@@ -549,14 +551,14 @@ function FixedHoldingsTable({
       <table
         className="holdings-table holdings-section-table"
         aria-label={ariaLabel}
-        style={{ minWidth: Math.max(minimumWidth, contentWidth) }}
+        style={{ minWidth: `var(--holdings-table-min-width, ${Math.max(minimumWidth, contentWidth)}px)` }}
       >
         <colgroup>
           {columns.map((column) => (
             <col
               key={column.key}
               data-column-key={column.key}
-              style={{ width: HOLDINGS_SECTION_COLUMN_WIDTHS[column.key] ?? 140 }}
+              style={{ width: column === columns[0] ? `var(--holdings-identity-width, ${HOLDINGS_SECTION_COLUMN_WIDTHS[column.key] ?? 140}px)` : HOLDINGS_SECTION_COLUMN_WIDTHS[column.key] ?? 140 }}
             />
           ))}
         </colgroup>
@@ -602,6 +604,7 @@ function FixedHoldingsTable({
                     <button
                       type="button"
                       className="holding-instrument-link"
+                      title={row.derivative_contract?.contract_name ?? row.instrument_core?.instrument_name ?? row.line_id}
                       onClick={() => onSelectHolding(row)}
                     >
                       {column.render(row)}

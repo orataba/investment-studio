@@ -3,6 +3,8 @@ import type { LanguageMessages } from '../../../packages/ui/src/i18n'
 // Account and identity copy belongs to Home; user names and team names remain
 // original content and never enter the translation dictionary.
 export const homeMessages: LanguageMessages = { 'zh-Hans': {
+  'Account sections': '账号设置栏目',
+  'Security': '安全',
   'Saved.': '已保存。',
   'Password': '密码',
   'Chosen during activation': '激活时自行设置',

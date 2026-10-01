@@ -819,6 +819,7 @@ def get_watchlist(
     return {
         **summary,
         "instrument_types": sorted(active_instrument_types),
+        "instrument_ids": [item.instrument_id for item in record.items],
         "views": [present_watchlist_view(item) for item in views],
         "available_group_bys": present_group_by_options(fields),
         "default_filters_summary": present_default_filter_summary(fields),

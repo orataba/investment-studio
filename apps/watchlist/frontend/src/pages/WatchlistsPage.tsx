@@ -1,3 +1,4 @@
+import WorkspaceSwitcher from '../../../../../packages/ui/src/WorkspaceSwitcher'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import React, { lazy, startTransition, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useCanWriteTeam } from '../components/AccountBoundary'
@@ -939,7 +940,9 @@ export default function WatchlistsPage() {
     }
   }
 
-  const modalDialogRef = useModalDialog(Boolean(modalKind), closeActiveModal)
+  const modalDialogRef = useModalDialog(Boolean(modalKind), closeActiveModal, modalKind === 'add' ? instrumentSearchRef : undefined)
+  const currentMemberIds = new Set(watchlistDetailOwnerId === watchlistId ? watchlistDetail?.instrument_ids || [] : [])
+  const selectedAlreadyMember = currentMemberIds.has(selectedInstrumentId || selectedCatalogSecurity?.existing_instrument_id || '')
   const activeInstrumentTypes = useMemo(() => {
     const all = watchlistDetail?.instrument_types || EMPTY_INSTRUMENT_TYPES
     const selected = workingFilters.instrument_type
@@ -1276,7 +1279,7 @@ export default function WatchlistsPage() {
             if (current && results.some((item) => item.instrument_id === current)) {
               return current
             }
-            return instrumentSearch.trim() ? results[0]?.instrument_id || '' : ''
+            return instrumentSearch.trim() ? results.find(item => !currentMemberIds.has(item.instrument_id))?.instrument_id || '' : ''
           })
         })
         .catch((loadError) => {
@@ -2622,7 +2625,8 @@ export default function WatchlistsPage() {
   }, [])
 
 
-  function openColumns() {
+  function openColumns(event?: React.MouseEvent<HTMLButtonElement>) {
+    event?.currentTarget.focus()
     setColumnDraft(ensureRequiredColumns(visibleColumns))
     setModalError(null)
     setModalKind('columns')
@@ -2708,8 +2712,10 @@ export default function WatchlistsPage() {
               Home
             </a>
             <span className="watchlist-breadcrumb-separator">/</span>
+            <WorkspaceSwitcher current="watchlist" />
+            <span className="watchlist-breadcrumb-separator">/</span>
             <Link to="/watchlists" className="watchlist-breadcrumb-link">
-              Watchlist
+              {language === 'zh-Hans' ? '自选表' : 'Lists'}
             </Link>
             <span className="watchlist-breadcrumb-separator">/</span>
             <span translate={activeWatchlist && activeWatchlist.owner_type !== 'system' ? 'no' : undefined} className="watchlist-breadcrumb-current">{activeWatchlist?.name || 'Watchlists'}</span>
@@ -2817,7 +2823,8 @@ export default function WatchlistsPage() {
             type="button"
             className="watchlist-create-link"
             disabled={!canWriteTeam}
-            onClick={() => {
+            onClick={(event) => {
+              event.currentTarget.focus()
               resetCreateWatchlistForm()
               setModalKind('create-watchlist')
               setNotice(null)
@@ -2850,7 +2857,8 @@ export default function WatchlistsPage() {
                 type="button"
                 className="watchlists-toolbar-button"
                 disabled={!canWriteTeam || !detailIsCurrent}
-                onClick={() => {
+                onClick={(event) => {
+                  event.currentTarget.focus()
                   setInstrumentSearch('')
                   setSharedInstrumentResults([])
                   setSelectedInstrumentId('')
@@ -3526,7 +3534,7 @@ export default function WatchlistsPage() {
                       <button type="button" onClick={() => { setWorkingFilters({}); setWatchlistSearch('') }}>{zh ? '清除搜索和筛选' : 'Clear search and filters'}</button>
                     </> : <>
                       <p>{zh ? '此列表尚未添加标的。' : 'This watchlist has no instruments yet.'}</p>
-                      {canWriteTeam && !activeWatchlistIsSystem && <button type="button" onClick={() => { setModalError(null); setInstrumentSearch(''); setModalKind('add') }}>{zh ? '添加标的' : 'Add instruments'}</button>}
+                      {canWriteTeam && !activeWatchlistIsSystem && <button type="button" onClick={(event) => { event.currentTarget.focus(); setModalError(null); setInstrumentSearch(''); setModalKind('add') }}>{zh ? '添加标的' : 'Add instruments'}</button>}
                     </>}
                   </td>
                 </tr>
@@ -3589,12 +3597,11 @@ export default function WatchlistsPage() {
           >
             <div className="watchlists-modal-header">
               <div>
-                <div className="panel-title">Columns</div>
-                <div className="section-heading">Manage Columns</div>
+                <div className="section-heading">{zh ? '管理列' : 'Manage columns'}</div>
                 <div className="watchlists-columns-help">
                   {zh
-                    ? '所有列表共用这些字段，勾选只影响当前视图。标的名称固定显示；详细分析可打开标的查看。'
-                    : 'All watchlists share these fields; selections apply to this view. Name is always shown. Open an instrument for detailed analysis.'}
+                    ? '仅应用于当前视图。标的名称为必选列。'
+                    : 'Applies to this view. Instrument name is required.'}
                 </div>
               </div>
               <button type="button" onClick={closeActiveModal}>
@@ -3605,7 +3612,8 @@ export default function WatchlistsPage() {
             <div className="watchlists-modal-search">
               <input
                 className="form-input"
-                placeholder="Search columns"
+                aria-label={zh ? '搜索列' : 'Search columns'}
+                placeholder={zh ? '搜索列' : 'Search columns'}
                 value={fieldSearch}
                 onChange={(event) => setFieldSearch(event.target.value)}
               />
@@ -3645,7 +3653,7 @@ export default function WatchlistsPage() {
                 )
               })}
               {!filteredFieldRegistry.length && <p className="watchlists-columns-help">
-                {zh ? '没有匹配的字段。' : 'No matching fields.'}
+                {zh ? '没有匹配的字段。' : 'No matching fields.'} <button type="button" onClick={() => setFieldSearch('')}>{zh ? '清除搜索' : 'Clear search'}</button>
               </p>}
             </div>
 
@@ -4080,7 +4088,6 @@ export default function WatchlistsPage() {
           >
             <div className="watchlists-modal-header">
               <div>
-                <div className="panel-title">Add</div>
                 <div className="section-heading">{zh ? '搜索并添加证券' : 'Find and add securities'}</div>
               </div>
               <button type="button" disabled={isAdding || isBatchAdding} onClick={closeActiveModal}>
@@ -4094,7 +4101,6 @@ export default function WatchlistsPage() {
                 <span>Search Instruments</span>
                 <input
                   ref={instrumentSearchRef}
-                  autoFocus
                   className="form-input"
                   value={instrumentSearch}
                   disabled={isAdding || isBatchAdding}
@@ -4110,14 +4116,8 @@ export default function WatchlistsPage() {
                   {[['Watch', '关注'], ['Proposed', '拟投'], ['Invested', '在投'], ['Paused', '暂停'], ['Exited', '已退出']].map(([value, label]) => <option key={value} value={value}>{zh ? label : value}</option>)}
                 </select>
               </label>
-              <p className="watchlists-registry-note">
-                {zh
-                  ? '搜索已登记标的或市场证券目录。未登记的股票和 ETF 会在点击添加后登记并拉取行情。'
-                  : 'Search registered assets and the securities directory. New stocks and ETFs are registered and their prices refreshed when you add them.'}
-              </p>
-              <p className="watchlists-registry-note">{zh
-                ? '成员关系仅属于当前列表；投资状态、研究和风险记录按标的共享，其他列表及相关组合会使用同一份状态。“保留现有状态”只是不改投资状态，添加成员仍会更新列表指标，既有研究与风险调度继续按其范围运行。'
-                : 'Membership belongs to this list. Investment status, research and risk records are shared by instrument across lists and related portfolios. Keep current status leaves investment status unchanged; adding members still refreshes list metrics, and existing research and risk schedules continue within their scopes.'}</p>
+              <p className="watchlists-registry-note">{zh ? '所选投资状态会同步到其他列表与相关组合。已有成员请在列表中单独修改状态。' : 'Investment status is shared across lists and related portfolios. Change existing members’ status from the list.'}</p>
+              <details className="watchlists-registry-help"><summary>{zh ? '登记与更新说明' : 'Registration and updates'}</summary><p className="watchlists-registry-note">{zh ? '搜索不会登记资产。添加未登记的股票或 ETF 时会登记并刷新行情；新增成员会更新列表指标，既有研究与风险调度按其范围继续运行。' : 'Search does not register assets. Adding a new stock or ETF registers it and refreshes prices. New members refresh list metrics; existing research and risk schedules continue within their scopes.'}</p></details>
               {catalogErrors.length > 0 && <div className="watchlists-registry-warning" role="status">
                 {zh ? '证券目录查询不完整；仍可添加下方已找到的标的。' : 'Directory search is incomplete; the results below remain available.'}
                 {catalogErrors.map((warning) => <div key={warning}>{warning}</div>)}
@@ -4128,7 +4128,7 @@ export default function WatchlistsPage() {
                       <button
                         type="button"
                         key={instrument.instrument_id}
-                        disabled={isAdding || isBatchAdding}
+                        disabled={isAdding || isBatchAdding || currentMemberIds.has(instrument.instrument_id)}
                         className={`watchlists-registry-row ${
                           selectedInstrumentId === instrument.instrument_id ? 'watchlists-registry-row-active' : ''
                         }`}
@@ -4140,7 +4140,7 @@ export default function WatchlistsPage() {
                         </div>
                         <div className="watchlists-registry-meta">
                           <span>{instrumentTypeLabel(instrument.instrument_type)}</span>
-                          <span>{instrument.coverage_state || 'registered'}</span>
+                          <span>{currentMemberIds.has(instrument.instrument_id) ? (zh ? '已在此自选表' : 'Already in this watchlist') : (zh ? '已登记' : 'Registered')}</span>
                         </div>
                       </button>
                     ))
@@ -4149,7 +4149,7 @@ export default function WatchlistsPage() {
                   <button
                     type="button"
                     key={`${security.instrument_type}:${security.catalog_symbol}`}
-                    disabled={isAdding || isBatchAdding}
+                    disabled={isAdding || isBatchAdding || currentMemberIds.has(security.existing_instrument_id || '')}
                     className={`watchlists-registry-row ${selectedCatalogSecurity === security ? 'watchlists-registry-row-active' : ''}`}
                     onClick={() => { setSelectedInstrumentId(''); setSelectedCatalogSecurity(security) }}
                   >
@@ -4159,7 +4159,7 @@ export default function WatchlistsPage() {
                     </div>
                     <div className="watchlists-registry-meta">
                       <span>{instrumentTypeLabel(security.instrument_type)} · {security.currency_verified && security.currency ? security.currency : (zh ? '币种待核实' : 'Currency to be verified')}</span>
-                      <span>{security.existing_instrument_id ? (zh ? '已登记' : 'Registered') : (zh ? '市场目录 · 添加时登记' : 'Directory · Register on add')}</span>
+                      <span>{currentMemberIds.has(security.existing_instrument_id || '') ? (zh ? '已在此自选表' : 'Already in this watchlist') : security.existing_instrument_id ? (zh ? '已登记' : 'Registered') : (zh ? '市场目录 · 添加时登记' : 'Directory · Register on add')}</span>
                     </div>
                   </button>
                 ))}
@@ -4192,10 +4192,10 @@ export default function WatchlistsPage() {
               <button
                 type="button"
                 className="button-primary"
-                disabled={isAdding || isBatchAdding || isSearchingInstruments || !detailIsCurrent || (!selectedInstrumentId && !selectedCatalogSecurity)}
+                disabled={isAdding || isBatchAdding || isSearchingInstruments || !detailIsCurrent || selectedAlreadyMember || (!selectedInstrumentId && !selectedCatalogSecurity)}
                 onClick={async () => {
                   const sourceWatchlistId = detailIsCurrent ? watchlistDetailOwnerId : ''
-                  if (!sourceWatchlistId || (!selectedSharedInstrument && !selectedCatalogSecurity)) {
+                  if (!sourceWatchlistId || selectedAlreadyMember || (!selectedSharedInstrument && !selectedCatalogSecurity)) {
                     return
                   }
                   setIsAdding(true)
@@ -4212,6 +4212,7 @@ export default function WatchlistsPage() {
                     }
                     const instrumentId = registryInstrument.instrument_id
                     const addResult = await addWatchlistItems(sourceWatchlistId, [instrumentId], addCoverageStatus || undefined)
+                    setWatchlistDetail(current => current?.watchlist_id === sourceWatchlistId ? { ...current, instrument_ids: [...new Set([...(current.instrument_ids || []), instrumentId])] } : current)
                     setInstrumentSearch('')
                     setSharedInstrumentResults([])
                     setCatalogResults([])

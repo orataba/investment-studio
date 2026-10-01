@@ -13,6 +13,8 @@
   给 `home / portfolio / watchlist` 提供同一套语言切换控件。
 - `systemMessages.ts` / `matchesSystemLabel`
   系统字段、选项、提示的中英文文案，以及支持两种语言的字段搜索。基金、股票、组合名称与用户笔记等内容用 `translate="no"` 保留原文；下拉选项只翻译显示文字，不修改保存值。
+- `WorkspaceSwitcher` / `workspace-switcher.css`
+  四个工作区的紧凑原生选择器，复用地址和语言合同；选择进入目标入口，浏览器返回保留原 URL。
 - `navigation.ts`
   统一首页及各工作区的本地端口、局域网主机和部署域名解析，跨工作区链接携带当前语言。Regime 独立运行，在其静态页面中实现同样的导航和语言约定。
 - `language.css`

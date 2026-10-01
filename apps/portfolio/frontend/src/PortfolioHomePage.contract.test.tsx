@@ -760,7 +760,8 @@ describe('Holdings rendered page contract', () => {
     )
     await waitForHoldings()
 
-    expect(screen.getByText('No holdings as of 2026-07-15.')).toHaveAttribute('role', 'status')
+    expect(screen.getByText(/^No holdings as of 2026-07-15/).closest('[role="status"]')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Review or record transactions' })).toHaveAttribute('href', '/portfolios/3/transactions')
     expect(screen.queryByRole('region', { name: 'Securities' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'FCN' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Options' })).not.toBeInTheDocument()
@@ -1568,7 +1569,7 @@ describe('Holdings rendered page contract', () => {
     expect(securitySubtotal.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
   })
 
-  it('keeps trend-basis diagnostics on Security hover rather than visible derivative-style annotations', async () => {
+  it('keeps the full Security name and trend-basis diagnostics on hover without visible diagnostic annotations', async () => {
     renderHoldings(
       holdingsWorkspaceFixture({
         rows: [
@@ -1591,7 +1592,7 @@ describe('Holdings rendered page contract', () => {
     const securityName = screen.getByRole('cell', { name: 'Alpha Fund' })
     expect(securityName.querySelector('.holding-name-stack')).toHaveAttribute(
       'title',
-      'Trend: Close · Partial · 40 observations. Using Close because it provides more complete history than the preferred basis.',
+      'Alpha Fund · Trend: Close · Partial · 40 observations. Using Close because it provides more complete history than the preferred basis.',
     )
     expect(screen.queryByText('Trend: Close · Partial · 40 observations')).not.toBeInTheDocument()
   })

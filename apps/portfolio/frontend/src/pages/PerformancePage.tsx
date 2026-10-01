@@ -1,3 +1,4 @@
+import { matchesSystemLabel } from '../../../../../packages/ui/src/i18n'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useParams, useSearchParams } from 'react-router'
@@ -1890,8 +1891,8 @@ function PerformancePage() {
           }
           return (
             column.toLowerCase().includes(search) ||
-            CALCULATION_COLUMN_LABELS[column].toLowerCase().includes(search) ||
-            group.label.toLowerCase().includes(search)
+            matchesSystemLabel(CALCULATION_COLUMN_LABELS[column], search) ||
+            matchesSystemLabel(group.label, search)
           )
         })
         .map((column) => ({ column, groupLabel: group.label })),
@@ -3075,7 +3076,7 @@ function PerformancePage() {
                 </div>
               ) : null}
               {calculationLoading || calculationGroupsPending ? <CalculationStatus /> : null}
-              <HorizontalTableScroll className="table-shell">
+              <HorizontalTableScroll className="table-shell performance-calculation-scroll" aria-label="Performance calculation scroll area">
                 <table className="transactions-table performance-calculation-table">
                   <thead>
                     <tr>
@@ -3092,6 +3093,7 @@ function PerformancePage() {
                           }
                         >
                           {renderCalculationSortHeader(column)}
+                          {column === 'line' ? <span className="performance-table-context"><span><time dateTime={reportStartDate}>{reportStartDate}</time> → <time dateTime={reportEndDate}>{reportEndDate}</time></span><span>{baseCurrency} · {calculationTableMode === 'risk_attribution' ? 'Risk attribution' : 'Period calculation'}</span></span> : null}
                         </th>
                       ))}
                     </tr>
@@ -3131,7 +3133,7 @@ function PerformancePage() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="portfolio-table-config-header">
-              <div className="panel-title">Columns</div>
+              <div className="panel-title">Manage Columns</div>
               <button type="button" onClick={() => setCalculationColumnsOpen(false)}>
                 Close
               </button>
@@ -3162,6 +3164,7 @@ function PerformancePage() {
               <input
                 className="portfolio-table-config-search-input"
                 placeholder="Search columns"
+                aria-label="Search columns"
                 value={calculationColumnSearch}
                 onChange={(event) => setCalculationColumnSearch(event.target.value)}
               />
@@ -3199,13 +3202,13 @@ function PerformancePage() {
                         />
                         <div>
                           <div className="portfolio-table-config-field-label">{CALCULATION_COLUMN_LABELS[column]}</div>
-                          {locked ? <div className="portfolio-table-config-field-meta">required</div> : null}
+                          {locked ? <div className="portfolio-table-config-field-meta">Required</div> : null}
                         </div>
                       </label>
                     )
                   })
                 ) : (
-                  <div className="portfolio-table-config-field-empty">No columns.</div>
+                  <div className="portfolio-table-config-field-empty">No matching columns. <button type="button" onClick={() => setCalculationColumnSearch('')}>Clear search</button></div>
                 )}
               </div>
             </div>

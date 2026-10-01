@@ -1,0 +1,14 @@
+select.studio-workspace-switcher {
+  flex: 0 1 auto;
+  width: 142px;
+  max-width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 3px 6px;
+  border: 1px solid var(--studio-line-strong, #cbd5e1);
+  border-radius: 0;
+  background: #fff;
+  color: var(--studio-ink, #111827);
+  font: inherit;
+  font-size: 12px;
+}

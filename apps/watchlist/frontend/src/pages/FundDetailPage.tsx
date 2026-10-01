@@ -1,3 +1,4 @@
+import WorkspaceSwitcher from '../../../../../packages/ui/src/WorkspaceSwitcher'
 import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
 import FreshnessNote from '../components/FreshnessNote'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
@@ -5257,6 +5258,7 @@ export default function FundDetailPage({
               aria-label={ariaLabel}
               placeholder="Compare benchmark..."
               value={benchmarkInputValue}
+              onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setBenchmarkSearchFocused(false) } }}
               onFocus={() => setBenchmarkSearchFocused(true)}
               onBlur={() => window.setTimeout(() => setBenchmarkSearchFocused(false), 140)}
               onChange={(event) => {
@@ -5559,7 +5561,7 @@ export default function FundDetailPage({
     ) : null
 
   const riskSettingsMenu = (
-    <div className="instrument-chart-menu instrument-chart-settings-menu instrument-risk-settings-menu" ref={riskSettingsMenuRef}>
+    <div className="instrument-chart-menu instrument-chart-settings-menu instrument-risk-settings-menu" ref={riskSettingsMenuRef} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setRiskSettingsOpen(false); riskSettingsMenuRef.current?.querySelector<HTMLButtonElement>('button')?.focus() } }}>
       <button
         type="button"
         className={
@@ -5650,8 +5652,10 @@ export default function FundDetailPage({
               Home
             </a>
             <span className="instrument-detail-breadcrumb-separator">/</span>
+            <WorkspaceSwitcher current="watchlist" />
+            <span className="instrument-detail-breadcrumb-separator">/</span>
             <Link to="/watchlists" className="instrument-detail-backlink">
-              Watchlist
+              {language === 'zh-Hans' ? '自选表' : 'Lists'}
             </Link>
             {watchlistContext?.watchlistId ? (
               <>
@@ -5846,7 +5850,7 @@ export default function FundDetailPage({
                         >
                           <option value="">
                             {selector.disabled
-                              ? localize(language, SYSTEM_LABELS.selectParentFirst)
+                              ? selector.parentNodeId ? (language === 'zh-Hans' ? '无下一级分类' : 'No further classification') : localize(language, SYSTEM_LABELS.selectParentFirst)
                               : selector.parentNodeId
                                 ? localize(language, SYSTEM_LABELS.stopHere)
                                 : localize(language, SYSTEM_LABELS.unclassified)}
@@ -6755,7 +6759,7 @@ export default function FundDetailPage({
                     <tr>
                       <th>Metric</th>
                       {performancePeriodSnapshots.map((period) => (
-                        <th key={period.key}>{period.label}<small className="instrument-metric-dates">{period.effectiveDates ? `${period.effectiveDates.anchor} → ${period.effectiveDates.end}` : language === 'zh-Hans' ? '区间覆盖不足' : 'Insufficient coverage'}</small></th>
+                        <th key={period.key}>{period.label}<small className="instrument-metric-dates">{period.effectiveDates ? <><time dateTime={period.effectiveDates.anchor}>{period.effectiveDates.anchor}</time><span aria-hidden="true"> → </span><time dateTime={period.effectiveDates.end}>{period.effectiveDates.end}</time></> : language === 'zh-Hans' ? '区间覆盖不足' : 'Insufficient coverage'}</small></th>
                       ))}
                     </tr>
                   </thead>

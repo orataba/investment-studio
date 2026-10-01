@@ -107,7 +107,7 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
   const title = variant === 'summary' ? '投资研究摘要' : variant === 'status' ? '每日研究更新' : '投资研究'
   const status = <div className="research-report-status" aria-label="研究更新状态">
     {data && (busy || !sectors.some(sector => sector.latest_review?.status === 'failed')) && <span className="research-status-current">{statusSummary}</span>}
-    {completed?.checked_at && <span>最近有效检查 <time dateTime={completed.checked_at}>{time(completed.checked_at)}</time></span>}
+    {completed?.checked_at && <span>最近有效检查 <time title={completed.checked_at} dateTime={completed.checked_at}>{time(completed.checked_at)}</time></span>}
     {variant !== 'summary' && completed?.view_updated_at && <span>判断更新 <time dateTime={completed.view_updated_at}>{time(completed.view_updated_at)}</time></span>}
   </div>
   return <section className={`sector-research-panel sector-research-${variant}${variant === 'timeline' ? ' investment-research-reading' : ''}`} aria-label={title}>

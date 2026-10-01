@@ -1,3 +1,4 @@
+import WorkspaceSwitcher from '../../../../../packages/ui/src/WorkspaceSwitcher'
 import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
 import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useCanWriteTeam } from '../components/AccountBoundary'
@@ -229,11 +230,28 @@ export default function WatchlistEntryPage() {
             Home
           </a>
           <span className="watchlist-breadcrumb-separator">/</span>
-          <span className="watchlist-breadcrumb-current">Watchlist</span>
+          <WorkspaceSwitcher current="watchlist" />
           <LanguageSelector />
         </div>
         <div className="watchlist-entry-hero">
           <h1 className="watchlist-entry-title">All Watchlists</h1>
+        <div className="watchlist-entry-create-action">
+          <button
+            type="button"
+            className="watchlist-create-link"
+            disabled={!canWriteTeam}
+            onClick={(event) => {
+              event.currentTarget.focus()
+              resetCreateWatchlistForm()
+              setCreateError(null)
+              setCreateModalOpen(true)
+              setError(null)
+              setNotice(null)
+            }}
+          >
+            + Create Watchlist
+          </button>
+        </div>
           {!loading ? <span className="watchlist-entry-hero-meta">
             {error
                 ? 'Watchlist totals unavailable'
@@ -390,22 +408,7 @@ export default function WatchlistEntryPage() {
             )
           })}
         </div>
-        <div className="watchlist-entry-create-card">
-          <button
-            type="button"
-            className="watchlist-create-link"
-            disabled={!canWriteTeam}
-            onClick={() => {
-              resetCreateWatchlistForm()
-              setCreateError(null)
-              setCreateModalOpen(true)
-              setError(null)
-              setNotice(null)
-            }}
-          >
-            + Create Watchlist
-          </button>
-        </div>
+
       </section>
 
       {createModalOpen ? (

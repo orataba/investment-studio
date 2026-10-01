@@ -1436,13 +1436,21 @@ function RiskSettingsMenu<TSettings extends RiskWindowSettingsState>({
   }, [settingsOpen])
 
   return (
-    <div className="portfolio-nav-chart-menu risk-settings-menu" ref={settingsMenuRef}>
+    <div className="portfolio-nav-chart-menu risk-settings-menu" ref={settingsMenuRef} onKeyDown={(event) => {
+      if (event.key === 'Escape' && settingsOpen) {
+        event.preventDefault()
+        event.stopPropagation()
+        setSettingsOpen(false)
+        settingsMenuRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+      }
+    }}>
       <button
         type="button"
         className={
           settingsOpen ? 'portfolio-nav-settings-trigger portfolio-nav-settings-trigger-active' : 'portfolio-nav-settings-trigger'
         }
         aria-label={`${label} settings`}
+        aria-expanded={settingsOpen}
         onClick={() => setSettingsOpen((current) => !current)}
       >
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1568,6 +1576,7 @@ export default function RiskPage() {
   const rollingError = rollingBasis === 'realized' ? realizedError : null
   const [rollingSettings, setRollingSettings] = useState<RollingRiskSettingsState>(() => loadRiskPageSettings().rolling)
   const [matrixSettings, setMatrixSettings] = useState<RiskWindowSettingsState>(() => loadRiskPageSettings().matrix)
+  const [activeMatrixKey, setActiveMatrixKey] = useState<string | null>(null)
   const [matrixScopeNodeId, setMatrixScopeNodeId] = useState(MATRIX_SCOPE_CURRENT_HOLDINGS)
   const [matrixAsOfDate, setMatrixAsOfDate] = useState('')
 
@@ -2200,11 +2209,28 @@ export default function RiskPage() {
     if (!matrix.groups.length) {
       return <div className="price-chart-empty">{emptyLabel}</div>
     }
-    const labelWidth = Math.min(280, Math.max(160, Math.max(...matrix.groups.map((group) => group.label.length)) * 9))
-    const matrixMinWidth = labelWidth + matrix.groups.length * 72
+    const identities = new Map(matrix.groups.map((group, index) => {
+      const core = holdingsWorkspace?.rows.find((row) => row.instrument_core?.instrument_id === group.key)?.instrument_core
+        ?? fullUniverseCatalog?.instrument_universe.find((record) => record.instrument_id === group.key)?.instrument_ref
+      const code = core?.identifiers.find((identifier) => identifier.is_primary)?.identifier_value
+      return [group.key, code || (group.label.length <= 10 ? group.label : `#${index + 1}`)]
+    }))
+    for (const label of new Set(identities.values())) {
+      if (matrix.groups.filter((group) => identities.get(group.key) === label).length > 1) {
+        matrix.groups.forEach((group, index) => {
+          if (identities.get(group.key) === label) identities.set(group.key, `${label} #${index + 1}`)
+        })
+      }
+    }
+    const selectedIdentity = matrix.groups.find((group) => group.key === activeMatrixKey)
+    const matrixMinWidth = 180 + matrix.groups.length * 100
 
     return (
-      <HorizontalTableScroll className="risk-matrix-scroll risk-covariance-scroll">
+      <div>
+      <p className="risk-matrix-identity-detail" aria-live="polite">{selectedIdentity
+        ? `${identities.get(selectedIdentity.key)} · ${selectedIdentity.label}`
+        : (zh ? '选择或聚焦行列标题查看完整名称。' : 'Select or focus a row or column label to read its full name.')}</p>
+      <HorizontalTableScroll className="risk-matrix-scroll risk-covariance-scroll" aria-label={zh ? '相关矩阵' : 'Correlation matrix'}>
         <table className="risk-heatmap-table risk-covariance-table" style={{ minWidth: `${matrixMinWidth}px` }}>
           <colgroup>
             <col className="risk-matrix-label-col" />
@@ -2217,7 +2243,7 @@ export default function RiskPage() {
               <th className="risk-matrix-corner">Group</th>
               {matrix.groups.map((group) => (
                 <th className="risk-matrix-column-header" key={group.key} title={`${group.label}; weight ${formatPercent(group.weight)}`}>
-                  <span className="risk-matrix-column-label">{group.label}</span>
+                  <button type="button" className="risk-matrix-identity" translate="no" aria-label={group.label} onFocus={() => setActiveMatrixKey(group.key)} onClick={() => setActiveMatrixKey(group.key)}>{identities.get(group.key)}</button>
                 </th>
               ))}
             </tr>
@@ -2226,7 +2252,7 @@ export default function RiskPage() {
             {matrix.groups.map((rowGroup, rowIndex) => (
               <tr key={rowGroup.key}>
                 <th className="risk-matrix-row-header" title={`${rowGroup.label}; ${rowGroup.observationCount} return observations`}>
-                  <span className="risk-matrix-row-label">{rowGroup.label}</span>
+                  <button type="button" className="risk-matrix-identity" translate="no" aria-label={rowGroup.label} onFocus={() => setActiveMatrixKey(rowGroup.key)} onClick={() => setActiveMatrixKey(rowGroup.key)}>{identities.get(rowGroup.key)}</button>
                 </th>
                 {matrix.groups.map((columnGroup, columnIndex) => {
                   const cell = matrix.cells[rowIndex]?.[columnIndex]
@@ -2246,6 +2272,8 @@ export default function RiskPage() {
           </tbody>
         </table>
       </HorizontalTableScroll>
+      <details className="risk-matrix-legend"><summary>{zh ? '全部对象名称' : 'All matrix names'}</summary><ul>{matrix.groups.map((group) => <li key={group.key} translate="no">{identities.get(group.key)} · <span>{group.label}</span></li>)}</ul></details>
+      </div>
     )
   }
 

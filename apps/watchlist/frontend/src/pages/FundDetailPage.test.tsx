@@ -151,14 +151,15 @@ it('refreshes published fund opinions across research and investment-view tabs',
   expect(api.summary).toHaveBeenCalledTimes(1)
 })
 
-it('places the three instrument tools beside the fund title and keeps only breadcrumbs and language in the topbar', async () => {
+it('places the three instrument tools beside the fund title and keeps workspace switching and breadcrumbs in the topbar', async () => {
   const { container } = show()
   const title = await screen.findByRole('heading', { level: 1, name: '测试基金 TEST' })
   const tools = within(title.parentElement!).getByRole('group', { name: '当前对象工具' })
   expect(within(tools).getAllByRole('button').map((button) => button.textContent)).toEqual(['设置', '风险提示', '研究助手'])
   const topbar = container.querySelector('.instrument-detail-topbar') as HTMLElement
-  expect(within(topbar).getByRole('link', { name: 'Watchlist' })).toBeTruthy()
-  expect(within(topbar).getByRole('combobox')).toBeTruthy()
+  expect(within(topbar).getByRole('link', { name: '自选表' })).toBeTruthy()
+  expect(within(topbar).getByRole('combobox', { name: '切换工作区' })).toBeTruthy()
+  expect(within(topbar).getByRole('combobox', { name: '语言' })).toBeTruthy()
   expect(within(topbar).queryAllByRole('button')).toHaveLength(0)
   fireEvent.click(within(tools).getByRole('button', { name: '标的设置' }))
   expect(await screen.findByRole('dialog', { name: '设置' })).toBeTruthy()

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import RiskPanel from '../../../../../packages/ui/src/InstrumentRiskPanel'
 import type { ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import {
@@ -25,6 +26,7 @@ export default function PortfolioInstrumentRisk({
   workspace: HoldingsWorkspaceResponse
   onAskAssistant: (instrumentId: string, question: string, reference?: ResearchAssistantReference) => void
 }) {
+  const zh = useLanguage().language === 'zh-Hans'
   const access = usePortfolioAccess()
   const session = usePortfolioSession()
   const [coverage, setCoverage] = useState<string[] | null>(null)
@@ -56,28 +58,27 @@ export default function PortfolioInstrumentRisk({
   )
   const uncovered = coverage ? ids.filter((id) => !coverage.includes(id)) : []
   return (
-    <section className="portfolio-section-block" aria-label="持仓风险关注">
+    <section className="portfolio-section-block" aria-label={zh ? '持仓风险关注' : 'Holding risk watch'}>
       <RiskPanel
         canWrite={Boolean(session?.can_write_team_research)}
         canRun={Boolean(access?.can_read)}
         portfolioId={portfolioId}
         request={request}
         query={query}
-        heading="持仓风险关注"
+        heading={zh ? '持仓风险关注' : 'Holding risk watch'}
         instrumentHref={(id) =>
           buildWatchlistInstrumentDetailUrl(id, { tab: 'investment-research', risk: '1' })
         }
         onAskAssistant={onAskAssistant}
-        scopeLabel="当前组合持仓"
+        scopeLabel={zh ? '当前组合持仓' : 'Current portfolio holdings'}
         scopeNote={
           <>
             <span>
-              持仓日期 {workspace.as_of_date} · 关联 {ids.length}{' '}
-              个标的，风险事项使用最新数据。
+              {zh ? `持仓日期 ${workspace.as_of_date} · 关联 ${ids.length} 个标的，风险事项使用最新数据。` : `Holdings as of ${workspace.as_of_date} · ${ids.length} instruments. Risk alerts use the latest available data.`}
             </span>
             {uncovered.length > 0 && (
               <p>
-                尚未覆盖：
+                {zh ? '尚未覆盖：' : 'Not covered: '}
                 {uncovered
                   .map(
                     (id) =>
@@ -85,8 +86,8 @@ export default function PortfolioInstrumentRisk({
                         (row) => row.instrument_core?.instrument_id === id,
                       )?.instrument_core?.instrument_name || id,
                   )
-                  .join('、')}
-                。
+                  .join(zh ? '、' : ', ')}
+                {zh ? '。' : '.'}
               </p>
             )}
           </>
@@ -102,11 +103,11 @@ export default function PortfolioInstrumentRisk({
               : null
           return (
             <span>
-              当前权重（证券市值 / 组合净值）{' '}
+              {zh ? '当前权重（证券市值 / 组合净值）' : 'Current weight (security value / portfolio NAV)'}{' '}
               {value != null && workspace.totals.nav
                 ? percent((value / workspace.totals.nav) * 100)
-                : '不可计算'}{' '}
-              · 权重不代表风险贡献
+                : (zh ? '不可计算' : 'Unavailable')}{' '}
+              · {zh ? '权重不代表风险贡献' : 'Weight is not risk contribution'}
             </span>
           )
         }}

@@ -1,7 +1,7 @@
 import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { useParams } from 'react-router'
+import { Link, useParams } from 'react-router'
 
 import BenchmarkSearchBox, {
   benchmarkInstrumentLabel,
@@ -1650,7 +1650,13 @@ export default function OverviewPage() {
           <div className="empty-state">No data.</div>
         ) : null}
 
-        {!workspaceLoading && holdingsWorkspace ? (
+        {!workspaceLoading && holdingsWorkspace && !holdingsWorkspace.rows.length ? (
+          <div className="empty-state" role="status">
+            <p>{zh ? `${holdingsWorkspace.as_of_date} 没有持仓。交易记录决定可展示的持仓与绩效。` : `No holdings as of ${holdingsWorkspace.as_of_date}. Transaction records determine the available holdings and performance.`}</p>
+            <Link to={`/portfolios/${portfolioId}/transactions`}>{zh ? '查看或录入交易' : 'Review or record transactions'}</Link>
+          </div>
+        ) : null}
+        {!workspaceLoading && holdingsWorkspace && (holdingsWorkspace.rows.length > 0 || Boolean(performanceWorkspace?.daily_series.some((point) => point.ending_nav != null && point.ending_nav !== 0))) ? (
           <>
             <ConcentrationAlerts portfolioId={portfolioId} asOfDate={holdingsWorkspace.as_of_date} />
             <div className="performance-block-grid">
@@ -1939,7 +1945,7 @@ export default function OverviewPage() {
               onClick={(event) => event.stopPropagation()}
             >
               <div className="overview-columns-modal-header">
-                <div className="panel-title">Data Columns</div>
+                <div className="panel-title">Manage Columns</div>
                 <button type="button" onClick={() => setTopHoldingColumnsOpen(false)}>
                   Close
                 </button>

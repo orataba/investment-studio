@@ -15,8 +15,8 @@
 }
 
 .portfolio-toolbar-band {
-  gap: 11px;
-  padding: 0 0 12px;
+  gap: 8px;
+  padding: 0 0 8px;
 }
 
 .workspace-breadcrumbs {
@@ -149,8 +149,8 @@
 
 .portfolio-header-row,
 .portfolio-entry-hero {
-  min-height: 92px;
-  padding: 19px 0 17px;
+  min-height: 74px;
+  padding: 12px 0;
   border: 0;
   border-top: 2px solid var(--portfolio-ink);
   border-bottom: 1px solid var(--portfolio-line-strong);
@@ -283,10 +283,18 @@
   transform: none;
 }
 
-.portfolio-entry-create-card {
-  padding: 15px 0 0;
-  border: 0;
+.portfolio-entry-context {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  color: var(--portfolio-muted);
+  font-size: 13px;
+  padding-bottom: 8px;
 }
+
+.portfolio-entry-create-button { margin-left: auto; flex-shrink: 0; }
+.portfolio-compact-selector { display: none; }
 
 .performance-block-grid,
 .performance-section-stack,
@@ -320,12 +328,12 @@
   overflow: visible;
 }
 
-.risk-page-surface > .portfolio-section-block:first-of-type,
+.risk-page-content > .portfolio-section-block:first-child,
 .performance-section-stack > .portfolio-section-block:first-child {
   border-top: 0;
 }
 
-.risk-page-surface > .portfolio-section-block:first-of-type > .portfolio-detail-toolbar,
+.risk-page-content > .portfolio-section-block:first-child > .portfolio-detail-toolbar,
 .taxonomy-strip-section:first-of-type .taxonomy-topbar {
   padding-top: 0;
 }
@@ -853,3 +861,130 @@
 .portfolio-members-settings table { width: 100%; margin: 16px 0; text-align: left; }
 .portfolio-members-settings th, .portfolio-members-settings td { padding: 8px 4px; }
 .portfolio-access-label { color: #68758a; font-size: 12px; }
+
+/* Wide financial tables retain both identity and comparison context. */
+.holdings-table-shell,
+.holdings-section-table-shell,
+.performance-calculation-scroll {
+  max-height: min(65vh, 640px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.holdings-main-table .numeric-cell,
+.holdings-section-table .numeric-cell {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+}
+.holdings-main-table .portfolio-table-th-label,
+.holdings-main-table .portfolio-table-th-label > span:first-child {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+.holdings-main-table .holding-instrument-link { max-width: 280px; }
+.holdings-section-table thead th,
+.performance-calculation-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--portfolio-table-header-background);
+}
+.holdings-section-table thead th:first-child,
+.performance-calculation-table thead th:first-child { z-index: 4; }
+.performance-table-context {
+  display: grid;
+  gap: 2px;
+  padding-top: 5px;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 400;
+  color: var(--portfolio-muted);
+  white-space: nowrap;
+}
+.risk-matrix-identity-detail { margin: 0 0 8px; min-height: 20px; font-size: 13px; }
+.risk-matrix-identity { border: 0; padding: 0; background: transparent; font: inherit; color: var(--portfolio-accent); white-space: nowrap; }
+.risk-matrix-legend { margin: 12px 0; font-size: 13px; }
+.risk-matrix-legend summary { cursor: pointer; color: var(--portfolio-accent); }
+.risk-matrix-legend li { margin-top: 6px; }
+.risk-covariance-table .risk-matrix-value-col,
+.risk-covariance-table th.risk-matrix-column-header,
+.risk-covariance-table td.risk-heatmap-cell { width: 100px; min-width: 100px; max-width: none; }
+.risk-covariance-table .risk-matrix-label-col,
+.risk-covariance-table th.risk-matrix-corner,
+.risk-covariance-table th.risk-matrix-row-header { width: 180px; min-width: 180px; max-width: none; }
+.risk-covariance-table th.risk-matrix-column-header { height: auto; padding: 10px 8px; }
+.research-run-unavailable { margin: 8px 0; color: var(--portfolio-muted); font-size: 13px; }
+@media (max-width: 900px) {
+  .portfolio-selector-row { display: none; }
+  .portfolio-compact-selector { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .portfolio-compact-selector label { color: var(--portfolio-muted); font-size: 13px; }
+  .portfolio-compact-selector select { flex: 1; min-width: 0; max-width: 360px; height: 30px; }
+  .portfolio-compact-selector a { flex-shrink: 0; font-size: 13px; }
+  .portfolio-header-row { min-height: 0; padding: 10px 0; gap: 8px; }
+  .portfolio-topbar .workspace-breadcrumbs > a:not(:first-child),
+  .portfolio-topbar .workspace-breadcrumbs > .workspace-breadcrumb-separator:not(:nth-child(2)),
+  .portfolio-topbar .workspace-breadcrumb-current { display: none; }
+  .workspace-app-heading { display: flex; justify-content: flex-end; }
+  .workspace-app-title { display: none; }
+  .portfolio-header-actions { width: auto; margin-left: auto; }
+  .portfolio-name { font-size: 26px; }
+  .portfolio-headline { gap: 8px 12px; }
+  .portfolio-nav-value, .portfolio-change-value, .portfolio-change-positive, .portfolio-change-negative { font-size: 15px; }
+  .portfolio-subhead-row { gap: 8px; }
+  .portfolio-entry-hero { padding: 12px 0; }
+  .portfolio-entry-title { font-size: 26px; }
+}
+
+@media (max-width: 600px) {
+  /* Leave room beside the fixed identity for a complete monetary value. */
+  .holdings-main-table,
+  .holdings-section-table {
+    --holdings-identity-width: 180px;
+    --holdings-table-min-width: 0px;
+    width: max-content;
+  }
+  .holdings-main-table tr > :first-child,
+  .holdings-section-table tr > :first-child {
+    width: 180px;
+    max-width: 180px;
+    box-sizing: border-box;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .holdings-main-table .holding-instrument-link,
+  .holdings-section-table tr > :first-child .holding-instrument-link {
+    width: 156px;
+    max-width: 156px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 600px) {
+  .performance-calculation-table {
+    min-width: 0;
+    width: max-content;
+  }
+  .performance-calculation-table tr > :first-child {
+    box-sizing: border-box;
+    width: 200px;
+    min-width: 200px;
+    max-width: 200px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .performance-calculation-table tr > :first-child .portfolio-tree-label,
+  .performance-calculation-table .performance-table-context {
+    display: block;
+    width: 176px;
+    max-width: 176px;
+    white-space: normal;
+  }
+  .performance-calculation-table .performance-table-context > span { display: block; }
+  .performance-calculation-table .performance-table-context time { display: inline-block; white-space: nowrap; }
+}

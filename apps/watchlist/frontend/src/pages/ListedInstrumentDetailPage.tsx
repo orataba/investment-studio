@@ -1,3 +1,4 @@
+import WorkspaceSwitcher from '../../../../../packages/ui/src/WorkspaceSwitcher'
 import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
 import FreshnessNote from '../components/FreshnessNote'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
@@ -1046,7 +1047,9 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         <div className="instrument-detail-breadcrumbs">
           <a data-workspace-link href={HOME_URL} className="watchlist-breadcrumb-link">Home</a>
           <span className="watchlist-breadcrumb-separator">/</span>
-          <Link to="/watchlists" className="watchlist-breadcrumb-link">Watchlist</Link>
+            <WorkspaceSwitcher current="watchlist" />
+            <span className="watchlist-breadcrumb-separator">/</span>
+          <Link to="/watchlists" className="watchlist-breadcrumb-link">{language === 'zh-Hans' ? '自选表' : 'Lists'}</Link>
           {watchlistContext ? (
             <>
               <span className="watchlist-breadcrumb-separator">/</span>

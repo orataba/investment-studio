@@ -1778,7 +1778,7 @@ export default function TaxonomiesPage() {
       if (state.kind === 'taxonomy') setSelectedNodeId(null)
       if (state.kind === 'entity' && !selectedEntityIds.has(state.entityId)) setSelectedEntityIds(new Set([state.entityId]))
       setContextMenuState({ ...state, x: rect.left, y: rect.bottom })
-    }}>{zh ? '操作' : 'Actions'}</button>
+    }} title={`${zh ? '操作' : 'Actions'}: ${label}`}><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="13" cy="8" r="1.2" fill="currentColor"/></svg></button>
   }
 
   function handleNodeContextMenu(event: ReactMouseEvent, node: PortfolioTaxonomyNodeRecord) {
@@ -2671,7 +2671,7 @@ export default function TaxonomiesPage() {
               <div className="taxonomy-form-grid taxonomy-node-name-grid">
                 <label>
                   <span>Name</span>
-                  <input value={taxonomyRenameName} onChange={(event) => setTaxonomyRenameName(event.target.value)} required autoFocus />
+                  <input value={taxonomyRenameName} onChange={(event) => setTaxonomyRenameName(event.target.value)} required />
                 </label>
               </div>
               <div className="transaction-form-footer">

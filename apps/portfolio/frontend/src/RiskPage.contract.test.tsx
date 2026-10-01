@@ -349,6 +349,17 @@ describe('Risk rendered page contract', () => {
     apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
   })
 
+  it('closes rolling settings with Escape and restores the trigger', async () => {
+    const user = userEvent.setup()
+    renderPortfolioPage(<RiskPage />, '/portfolios/3/risk', '/portfolios/:portfolioId/risk')
+    const trigger = await screen.findByRole('button', { name: 'Rolling risk settings' })
+    await user.click(trigger)
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    await user.keyboard('{Tab}{Escape}')
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    expect(trigger).toHaveFocus()
+  })
+
   it('shows the existing concentration projection at the linked date without changing the current risk workspace', async () => {
     apiMocks.getConcentration.mockImplementation(async (_portfolioId: string, date: string) => ({ portfolio_id: '3', as_of_date: date, base_currency: 'USD', nav: 1000, status: 'partial', coverage: ['Option exposure is not modeled.'], fcn_contracts: [],
       scopes: [{ scope: 'security', taxonomy_id: null, name: 'Securities', enabled: true, status: 'partial', coverage: [], rows: [{ entity_id: 'gross-a', name: 'Gross exposure A', weight: .9, security_exposure_base: 900, fcn_exposure_base: 0, exposure_base: 900, limit_weight: .8, headroom_weight: -.1, status: 'breached', coverage: [], sources: [] }] }] }))

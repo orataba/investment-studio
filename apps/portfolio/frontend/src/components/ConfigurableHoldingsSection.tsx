@@ -7,7 +7,7 @@ import {
 } from 'react'
 
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
-import { matchesSystemLabel } from '../../../../../packages/ui/src/i18n'
+import { matchesSystemLabel, useLanguage } from '../../../../../packages/ui/src/i18n'
 import { SerialTaskQueue } from '../../../../../packages/ui/src/serialTaskQueue'
 import {
   getPortfolioTableViewStore,
@@ -96,6 +96,7 @@ export default function ConfigurableHoldingsSection({
   onVisibleColumnsChange,
   children,
 }: ConfigurableHoldingsSectionProps) {
+  const zh = useLanguage().language === 'zh-Hans'
   const columnSignature = columns.map((column) => column.key).join('\u0000')
   const systemViewSignature = systemViews
     .map((view) => `${view.id}:${view.name}:${view.columns.join(',')}`)
@@ -452,7 +453,7 @@ export default function ConfigurableHoldingsSection({
             onClick={(event) => event.stopPropagation()}
           >
             <div className="portfolio-table-config-header">
-              <div className="panel-title">Columns</div>
+              <div className="panel-title">Manage Columns</div>
               <button type="button" onClick={() => setColumnsOpen(false)}>
                 Close
               </button>
@@ -461,6 +462,7 @@ export default function ConfigurableHoldingsSection({
               <input
                 className="portfolio-table-config-search-input"
                 placeholder="Search columns"
+                aria-label="Search columns"
                 value={columnSearch}
                 onChange={(event) => setColumnSearch(event.target.value)}
               />
@@ -480,14 +482,14 @@ export default function ConfigurableHoldingsSection({
                       <div>
                         <div className="portfolio-table-config-field-label">{column.label}</div>
                         {locked ? (
-                          <div className="portfolio-table-config-field-meta">required</div>
+                          <div className="portfolio-table-config-field-meta">{zh ? '必选' : 'Required'}</div>
                         ) : null}
                       </div>
                     </label>
                   )
                 })
               ) : (
-                <div className="portfolio-table-config-field-empty">No columns.</div>
+                <div className="portfolio-table-config-field-empty">No matching columns. <button type="button" onClick={() => setColumnSearch('')}>Clear search</button></div>
               )}
             </div>
             <div className="portfolio-table-config-actions portfolio-table-config-actions-sticky">

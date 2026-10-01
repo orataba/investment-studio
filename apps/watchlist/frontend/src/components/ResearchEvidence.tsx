@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { researchStamp } from '../../../../../packages/ui/src/ResearchRunStatus'
 import type { EventSource } from '../lib/researchDossierApi'
 import { API_BASE_URL } from '../lib/api'
 import { getSavedResearchSource, type NotebookSource, type SavedComparison, type SavedResearchSource } from '../lib/researchDossierApi'
@@ -9,7 +10,7 @@ export function dateLabel(value?: string | null) {
   if (!value) return '时间未知'
   if (value.length === 10 || Number.isNaN(Date.parse(value))) return value
   if (!hasTimeZone(value)) return `${value}（时区未披露）`
-  return new Date(value).toLocaleString('zh-CN', { hour12: false, timeZoneName: 'short' })
+  return researchStamp(value)
 }
 
 export function sourceUrl(value?: string) {

@@ -968,6 +968,7 @@ export default function ResearchPage() {
               </button>
               </div>
             </div>
+            {!effectiveSavedTaxonomyId ? <p className="research-run-unavailable" role="status">{zh ? '运行前需在参数中选择并保存分类；没有分类时先配置分类与目标。' : 'Before running, select and save a taxonomy in Parameters. If none is available, configure taxonomies and targets.'}</p> : null}
           </section>
           {settingsOpen ? <div className="taxonomy-modal-overlay" role="presentation" onClick={closeSettings}>
             <div ref={settingsDialogRef} className="taxonomy-modal research-parameters-modal" role="dialog" aria-modal="true" aria-label={zh ? '优化参数' : 'Optimization Parameters'} tabIndex={-1} onClick={(event) => event.stopPropagation()}>
@@ -1306,7 +1307,16 @@ export default function ResearchPage() {
 
           {!latestRun ? (
             <section className="panel">
-              <div className="empty-state">Run to generate the latest solved result.</div>
+              <div className="empty-state">
+                {!workbench.planning_taxonomy_options.length ? <>
+                  <p>{zh ? '尚无可用于优化的分类。先配置分类、成员与配置目标。' : 'No optimization taxonomy is available. Configure a taxonomy, its members and allocation targets first.'}</p>
+                  <Link to={`/portfolios/${portfolioId}/taxonomies`}>{zh ? '查看分类与目标' : 'Review taxonomies and targets'}</Link>
+                  {!canEditPortfolio ? <p>{zh ? '需要组合编辑者完成配置并运行。' : 'A portfolio editor must complete the setup and run optimization.'}</p> : null}
+                </> : !effectiveSavedTaxonomyId ? <>
+                  <p>{zh ? '请选择并保存优化分类，之后即可运行。' : 'Select and save an optimization taxonomy before running.'}</p>
+                  <button type="button" onClick={openSettings}>{zh ? '优化参数' : 'Optimization Parameters'}</button>
+                </> : <p>{canEditPortfolio ? (zh ? '尚无已保存的优化结果，请检查参数后运行优化。' : 'No optimization result is saved. Review the parameters, then run Optimization.') : (zh ? '暂无已保存结果，需要组合编辑者运行优化。' : 'No saved result is available. A portfolio editor must run optimization.')}</p>}
+              </div>
             </section>
           ) : latestRun.status === 'completed' && latestRun.detail == null ? (
             <section className="panel" aria-busy={runDetailLoading}>

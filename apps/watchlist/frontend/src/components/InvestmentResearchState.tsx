@@ -26,7 +26,7 @@ function ReferencedThemeEvidence({ instrumentId, themeId }: { instrumentId: stri
     <p className="sector-research-note">实质更新 {dateLabel(theme.last_changed_at)} · 最近检查 {dateLabel(theme.last_reviewed_at)}</p>
     <p className="research-dossier-text" translate="no">{theme.synthesis || '主题基线尚待建立。'}</p>
     {theme.latest_development && <p translate="no">{theme.latest_development}</p>}
-    {theme.next_check && <p translate="no">下一观察：{theme.next_check}</p>}
+    {theme.next_check && <p><span>下一观察：</span><span translate="no">{theme.next_check}</span></p>}
     <SourceList instrumentId={instrumentId} versionId={theme.source_version_id} sources={theme.sources || []} />
   </section> : <ResearchLoading />
 }
@@ -57,7 +57,7 @@ function ViewBody({ view, sources }: { view: InvestmentView; sources: Sources })
   </dl>
     {view.coverage_note && <p className="sector-research-note" translate="no">{view.coverage_note}</p>}
     {([['opportunities', '机会'], ['risks', '风险']] as const).map(([key, label]) => Boolean(view[key]?.length) && <section key={key} className="research-insight-history"><h4>{label}</h4>{view[key]!.map(item => <article key={item.key}>
-      <h5 translate="no">{item.title}</h5><p translate="no">{item.explanation}</p><p translate="no">下一观察：{item.next_watch}</p>
+      <h5 translate="no">{item.title}</h5><p translate="no">{item.explanation}</p><p><span>下一观察：</span><span translate="no">{item.next_watch}</span></p>
       {sources([...new Set([...(item.source_ids || []), ...(item.figure_source_ids || [])])])}
     </article>)}</section>)}
   </>

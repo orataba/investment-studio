@@ -397,7 +397,7 @@ textarea {
 }
 
 .account-shell { margin: 0 auto; }
-.account-section { margin: 28px 0; padding: 24px 0; border-top: 1px solid var(--studio-line); }
+.account-section { scroll-margin-top: 20px; margin: 24px 0; padding: 20px 0; border-top: 1px solid var(--studio-line); }
 .account-section h2 { margin: 0 0 14px; font-size: 20px; }
 .account-section-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
 .account-section-heading h2 { margin: 0; }
@@ -422,3 +422,12 @@ textarea {
 .account-skeleton { display: grid; gap: 18px; padding-top: 22px; }
 .account-skeleton > span { height: 86px; }
 @media (max-width: 760px) { .home-links-skeleton { grid-template-columns: 1fr; } .home-links-skeleton > span { height: 150px; } }
+
+.account-page-nav { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 20px 0; padding: 12px 0; border-block: 1px solid var(--studio-line); font-size: 13px; }
+.account-shell button.account-submit:not(.investment-studio-info-hint) { color: #fff; background: var(--studio-accent); border-color: var(--studio-accent); }
+.account-shell button.account-submit:not(.investment-studio-info-hint):hover:not(:disabled) { background: var(--studio-accent-strong); color: #fff; }
+.account-table-wrap table { min-width: 640px; }
+.account-table-wrap th:nth-child(2), .account-table-wrap td:nth-child(2) { min-width: 190px; }
+.account-table-wrap select { min-width: 174px; }
+.account-table-wrap th:nth-child(3), .account-table-wrap td:nth-child(3) { white-space: nowrap; }
+.account-ownership { border-top: 1px solid var(--studio-line); padding-top: 24px; scroll-margin-top: 20px; }

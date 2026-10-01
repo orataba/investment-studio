@@ -291,6 +291,8 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 - `POST /api/watchlists/{watchlist_id}/views`
 - `PUT /api/watchlists/{watchlist_id}/views/{view_id}`
 
+名单详情同时返回实际成员 `instrument_ids`，独立于当前视图、筛选和行情计算覆盖；添加窗口据此标记并禁选已有成员，不以可见表格行推断成员关系。
+
 创建请求只接受 `name`、`description`；列表摘要、详情以及创建/复制结果均返回创建人字段。复制的创建人为执行复制的成员，源列表的作者不继承。创建、复制、改名和增删成员均要求团队写权限；列表排序和个人显示视图允许只读成员维护。
 
 名单添加请求接受 `instrument_ids` 和可选 `coverage_status`（`Watch / Proposed / Invested / Paused / Exited`）。不传状态或传 `null` 保留原状态；指定状态时，已存在成员也会更新其全局状态。成功返回 `accepted_count` 和 `pending_recalc_instrument_ids`；成员、状态和新成员的持久队列在一个事务中提交，行情计算由现有 worker 完成，接口不再声称已完成重算。已有 queued 全量任务可合并，已有 running 任务必须有一个提交后的后继任务。队列提交失败回滚整个添加，后台计算失败不删除已保存的成员。
