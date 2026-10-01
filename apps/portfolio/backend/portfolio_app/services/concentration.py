@@ -251,6 +251,7 @@ def read_portfolio_concentration(portfolio_id: str, *, as_of_date: date | None =
     from portfolio_app.services.taxonomy_configuration import current_taxonomy_configuration_in_session
     from portfolio_app.services.workspace_cache import get_cached_materialized_holdings_workspace
     from portfolio_app.services.instrument_registry import InstrumentRegistryError, get_registry_instrument_summaries
+    supplied_workspace = workspace is not None
     if workspace is None:
         _, effective_date = resolve_holdings_request(portfolio_id, as_of_date)
         workspace = get_cached_materialized_holdings_workspace(portfolio_id, as_of_date=effective_date)
@@ -259,7 +260,7 @@ def read_portfolio_concentration(portfolio_id: str, *, as_of_date: date | None =
     effective_date = date.fromisoformat(workspace["as_of_date"])
     if workspace.get("portfolio_id") != portfolio_id:
         raise ValueError("Concentration workspace belongs to another portfolio.")
-    if as_of_date is not None and effective_date != as_of_date:
+    if supplied_workspace and as_of_date is not None and effective_date != as_of_date:
         raise ValueError("Concentration workspace date differs from the requested date.")
     settings = read_concentration_settings(portfolio_id, as_of_date=effective_date)
     with get_session_factory()() as session:

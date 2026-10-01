@@ -4,6 +4,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import SectorResearchPanel, { type SectorEventRecord } from './SectorResearchPanel'
 import InstrumentRiskPanel from './InstrumentRiskPanel'
 import { announceResearchPublication } from '../lib/researchUpdates'
+import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
+import { researchMessages, researchPatterns } from '../researchMessages'
 const request = vi.hoisted(() => vi.fn())
 vi.mock('../lib/api', () => ({ fetchJson: request }))
 vi.mock('./ResearchDossierPanel', () => ({ default: (props: { instrumentId: string; variant: string; readingMode: boolean }) => <div data-testid="canonical-dossier" data-variant={props.variant} data-reading={String(props.readingMode)}>已保存的同源研究 · {props.instrumentId}</div> }))
@@ -200,4 +202,51 @@ it('opens list risk directly without research execution controls', async () => {
   expect(screen.getByRole('button', { name: '重点关注 0' })).toBeTruthy()
   expect(request).toHaveBeenCalledTimes(1)
   expect(request).toHaveBeenCalledWith('/api/risk?watchlist_id=sector-list&summary=true', undefined)
+})
+
+it('shows the persisted running stage and retry without treating elapsed time as failure', async () => {
+  const data = payload('running')
+  request.mockResolvedValue({ ...data, sectors: [{ ...data.sectors[0], latest_review: {
+    ...review('running'), created_at: '2026-09-06T07:40:00+08:00',
+    execution: { stage: 'review', attempt: 2, failures: [{ attempt: 1, failed_at: '2026-09-06T07:45:00+08:00', error: { type: 'ProviderUnavailable' } }] },
+  } }] })
+  render(<SectorResearchPanel instrumentId="xlk-us" />)
+  await load()
+  const status = screen.getByRole('region', { name: '任务运行状态' })
+  expect(status.textContent).toContain('run-1')
+  expect(status.textContent).toContain('核对研究')
+  expect(status.textContent).toContain('20:00')
+  expect(status.textContent).toContain('恢复运行中')
+  expect(screen.getByRole('button', { name: '研究更新中…' }).hasAttribute('disabled')).toBe(true)
+  expect(request.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+})
+
+it('discloses whole-instrument shared outputs before submitting an update', async () => {
+  request.mockResolvedValue(payload())
+  render(<SectorResearchPanel instrumentId="xlk-us" />)
+  await load()
+  const scope = screen.getByRole('complementary', { name: '研究发布范围' })
+  expect(scope.textContent).toContain('xlk-us')
+  expect(scope.textContent).toContain('自动新增研究主题与待审风险线索')
+  expect(scope.textContent).toContain('不会中止当前任务')
+  expect(request.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+})
+
+it('translates shared failure diagnostics while preserving a generated review summary', async () => {
+  window.history.replaceState(null, '', '/?lang=en')
+  const data = payload('failed')
+  request.mockResolvedValue({ ...data, sectors: [{ ...data.sectors[0], latest_review: {
+    ...review('failed'), summary: '事实核证失败：模型服务暂时限流，草稿与已有证据已保留。',
+  } }] })
+  const view = render(<LanguageProvider messages={researchMessages} patterns={researchPatterns}><SectorResearchPanel instrumentId="xlk-us" /></LanguageProvider>)
+  await load()
+  expect(screen.getByText('Fact verification failed: The model provider is temporarily rate limited. The draft and evidence are retained.')).toBeTruthy()
+  request.mockResolvedValue({ ...data, sectors: [{ ...data.sectors[0], latest_review: {
+    ...review('completed'), reflection: { status: 'reviewed', summary: '模型服务暂时限流，草稿与已有证据已保留。', reviewed_update_ids: [] },
+  } }] })
+  view.rerender(<LanguageProvider messages={researchMessages} patterns={researchPatterns}><SectorResearchPanel instrumentId="second-instrument" /></LanguageProvider>)
+  await load()
+  expect(screen.getByText('Prior judgments reviewed')).toBeTruthy()
+  expect(screen.getByText('模型服务暂时限流，草稿与已有证据已保留。').getAttribute('translate')).toBe('no')
+  expect(request.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
 })

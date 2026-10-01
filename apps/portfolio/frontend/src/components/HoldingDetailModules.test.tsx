@@ -33,20 +33,33 @@ describe('Holding detail investment semantics', () => {
       summary: { start_date: '2026-06-30', end_date: '2026-07-15', include_start_date_return: false },
       groups: [
         { group_key: 'linked-option', total_pnl: 9999 },
-        { group_key: 'asset-1', total_pnl: 123, realized_capital_gains: 100, unrealized_pnl_change: -20, earnings: 50, instrument_currency_gains: 3, cash_currency_gains: 0, pending_settlement_currency_gains: 0, expense_cash_amount: 2, fees: 5, taxes: 3, initial_value: 1000, final_value: 1123, period_contribution: 0.0123 },
+        { group_key: 'asset-1', total_pnl: 123, realized_capital_gains: 92, unrealized_pnl_change: -20, earnings: 50, instrument_currency_gains: 3, cash_currency_gains: 0, pending_settlement_currency_gains: 0, expense_cash_amount: 2, fees: 5, taxes: 3, initial_value: 1000, final_value: 1123, period_contribution: 0.0123 },
       ],
     })
     render(<HoldingPeriodPanel portfolioId="3" holdingId="asset-1" asOfDate="2026-07-15" eventValued={false} />)
     expect(await screen.findByText('+HK$123.00')).toBeInTheDocument()
     expect(screen.queryByText(/9,999/)).not.toBeInTheDocument()
     expect(screen.getByText('Change in unrealized price P/L').parentElement).toHaveTextContent('-HK$20.00')
-    expect(screen.getByText('Expenses and taxes').parentElement).toHaveTextContent('-HK$10.00')
+    expect(screen.getByText('Separate cash expenses').parentElement).toHaveTextContent('-HK$2.00')
+    expect(screen.getByText(/Included fees and taxes/)).toHaveTextContent('-HK$8.00')
+    expect(screen.getByText(/Net period P\/L = realized/)).toBeInTheDocument()
     expect(screen.getByText('1.230 percentage points')).toBeInTheDocument()
     expect(api.getPortfolioPerformanceCalculationGroups).toHaveBeenCalledWith('3', { axis: 'instrument', start_date: '2026-06-30', end_date: '2026-07-15' })
     await user.clear(screen.getByLabelText('P/L opening boundary'))
     await user.type(screen.getByLabelText('P/L opening boundary'), '2026-07-02')
     await user.click(screen.getByRole('button', { name: 'Apply period' }))
     await waitFor(() => expect(api.getPortfolioPerformanceCalculationGroups).toHaveBeenLastCalledWith('3', { axis: 'instrument', start_date: '2026-07-02', end_date: '2026-07-15' }))
+  })
+
+  it('shows the acceptance ledger charges once and reconciles the additive components', async () => {
+    api.getPortfolioPerformanceCalculationGroups.mockResolvedValue({ portfolio_id: '3', base_currency: 'CNY', summary: {}, groups: [
+      { group_key: 'asset-1', total_pnl: 99859.60, realized_capital_gains: 70, unrealized_pnl_change: 99789.60, earnings: 0, instrument_currency_gains: 0, cash_currency_gains: 0, pending_settlement_currency_gains: 0, expense_cash_amount: 0, fees: 10, taxes: 0 },
+    ] })
+    render(<HoldingPeriodPanel portfolioId="3" holdingId="asset-1" asOfDate="2026-10-01" eventValued={false} />)
+    expect(await screen.findByText(/Included fees and taxes/)).toHaveTextContent('-CN¥10.00')
+    expect(screen.getByText('Realized price P/L').parentElement).toHaveTextContent('+CN¥70.00')
+    expect(screen.getByText('Change in unrealized price P/L').parentElement).toHaveTextContent('+CN¥99,789.60')
+    expect(screen.getByText('+CN¥99,859.60')).toBeInTheDocument()
   })
 
   it('keeps missing derivative valuation unavailable instead of reporting a zero market return', async () => {

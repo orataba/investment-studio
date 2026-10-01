@@ -1,3 +1,4 @@
+import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { usePortfolioAccess } from '../components/PortfolioAccessProvider'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -122,6 +123,8 @@ function AccountDetailLoading() {
 }
 
 export default function AccountsPage() {
+  const { language } = useLanguage()
+  const text = (en: string, zh: string) => language === 'zh-Hans' ? zh : en
   const canEditPortfolio = Boolean(usePortfolioAccess()?.can_edit)
   const { portfolioId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -201,7 +204,6 @@ export default function AccountsPage() {
       loadedWorkspaceResourceRef.current = loadedResourceId
       inFlightWorkspaceResourceRef.current = null
       setWorkspace(response)
-      setForm(buildInitialAccountForm(response.accounts.map((item) => item.account)))
       setError(null)
       setLoading(false)
 
@@ -394,6 +396,12 @@ export default function AccountsPage() {
   ] as const
 
   useEffect(() => {
+    if (searchParams.get('add') !== '1' || loading || !canEditPortfolio) return
+    openCreateAccountModal()
+    setSearchParams((current) => { const next = new URLSearchParams(current); next.delete('add'); return next }, { replace: true })
+  }, [searchParams, loading, canEditPortfolio])
+
+  useEffect(() => {
     setShowAllDirectTransactions(false)
     setShowAllLedgerEntries(false)
   }, [resolvedSelectedAccountId])
@@ -545,7 +553,7 @@ export default function AccountsPage() {
   }
 
   function openEditAccountModal() {
-    if (!selectedAccount) {
+    if (!selectedAccount || detailBusy) {
       return
     }
     setEditorMode('edit')
@@ -664,7 +672,7 @@ export default function AccountsPage() {
                       >
                         Transaction Workbench
                       </Link>
-                      <button type="button" className="toolbar-link" disabled={!canEditPortfolio} onClick={openEditAccountModal}>
+                      <button type="button" className="toolbar-link" disabled={!canEditPortfolio || detailBusy} onClick={openEditAccountModal}>
                         Edit Account
                       </button>
                     </div>
@@ -1118,11 +1126,11 @@ export default function AccountsPage() {
                 </label>
 
                 {form.account_category === 'cash' ? <>
-                  <label><span>现金用途</span><select value={form.cash_purpose} onChange={(event) => setForm((current) => ({ ...current, cash_purpose: event.target.value as AccountFormState['cash_purpose'] }))}>
-                    <option value="operating">普通结算现金</option><option value="margin">券商保证金账户（可有融资借方）</option><option value="collateral">已抵押现金（不可自由使用）</option><option value="financing">独立融资负债</option>
+                  <label><span>{text('Cash purpose', '现金用途')}</span><select value={form.cash_purpose} onChange={(event) => setForm((current) => ({ ...current, cash_purpose: event.target.value as AccountFormState['cash_purpose'] }))}>
+                    <option value="operating">{text('Operating cash', '普通结算现金')}</option><option value="margin">{text('Broker margin account (may include borrowing)', '券商保证金账户（可有融资借方）')}</option><option value="collateral">{text('Pledged cash (restricted)', '已抵押现金（不可自由使用）')}</option><option value="financing">{text('Separate financing liability', '独立融资负债')}</option>
                   </select></label>
-                  {form.cash_purpose === 'collateral' ? <label><span>抵押对象及券商确认依据</span><input value={form.collateral_reference} onChange={(event) => setForm((current) => ({ ...current, collateral_reference: event.target.value }))} placeholder="合约号、业务号及分配说明" /></label> : null}
-                  {form.cash_purpose !== 'operating' ? <p className="field-help account-cash-purpose-help">借款与还款、抵押与释放用账户间内部现金划转记录，不是入金或收益；融资利息和融券费按实际账单记费用。本系统不推算券商购买力或保证金许可。</p> : null}
+                  {form.cash_purpose === 'collateral' ? <label><span>{text('Collateral reference and broker confirmation', '抵押对象及券商确认依据')}</span><input value={form.collateral_reference} onChange={(event) => setForm((current) => ({ ...current, collateral_reference: event.target.value }))} placeholder={text('Contract, transaction and allocation reference', '合约号、业务号及分配说明')} /></label> : null}
+                  {form.cash_purpose !== 'operating' ? <p className="field-help account-cash-purpose-help">{text('Record borrowing, repayments, pledges and releases as internal cash transfers, not deposits or income. Record financing interest and stock borrow charges from statements. Broker buying power and margin permission are not estimated.', '借款与还款、抵押与释放用账户间内部现金划转记录，不是入金或收益；融资利息和融券费按实际账单记费用。本系统不推算券商购买力或保证金许可。')}</p> : null}
                 </> : null}
                 {form.account_category !== 'cash' ? (
                   <label>

@@ -3827,9 +3827,10 @@ export default function PortfolioHomePage() {
           </div>
         </div>
         {loading || waitingForTaxonomy ? <CalculationStatus /> : null}
-        {loading && workspace ? (
-          <div className="portfolio-detail-meta"><span>As Of Date</span>: {workspace.as_of_date}</div>
-        ) : null}
+        {workspace ? <div className="portfolio-detail-meta" role="status" aria-label={zh ? '持仓日期状态' : 'Holdings date status'}>
+          {zh ? '有效持仓日期' : 'Effective holdings date'}: {workspace.as_of_date}
+          {requestedAsOfDate && requestedAsOfDate !== workspace.as_of_date ? ` · ${zh ? '请求日期' : 'Requested date'}: ${requestedAsOfDate} · ${loading ? (zh ? '正在加载请求日期，当前仍显示上次快照' : 'Loading requested date; the previous snapshot remains visible') : (zh ? '显示最近可靠估值日持仓' : 'Showing the latest reliable valuation snapshot')}` : ''}
+        </div> : null}
         <NoticeToast notice={error ? { id: 0, tone: 'error', message: error } : null} onDismiss={() => setError(null)} />
         {holdingsViewStoreError ? (
           <div className="inline-notice inline-notice-error holdings-view-error" role="alert">

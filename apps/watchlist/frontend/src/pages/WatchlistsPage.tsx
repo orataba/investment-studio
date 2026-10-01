@@ -47,6 +47,7 @@ import {
   summarizeMetricAsOfDates,
 } from '../lib/watchlistMetricSemantics'
 import LoadingOverlay from '../components/LoadingOverlay'
+import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
 import RenameWatchlistDialog from '../components/RenameWatchlistDialog'
 import WatchlistCreator, { watchlistCreatorLabel } from '../components/WatchlistCreator'
 import ResearchPage from '../components/LazyResearchPage'
@@ -531,6 +532,7 @@ function buildGroupAverageCell(
   fieldKey: string,
   field: FieldRegistryRecord | undefined,
   rows: Array<Record<string, unknown>>,
+  zh = false,
 ): GroupAverageCell | null {
   if (!isAverageSummaryField(fieldKey, field) || !rows.length) {
     return null
@@ -539,7 +541,7 @@ function buildGroupAverageCell(
     .map((row) => asNumber(row[fieldKey]))
     .filter((value): value is number => value != null)
   if (!values.length) {
-    return null
+    return { value: null, count: 0, total: rows.length, asOfDate: null, unavailableReason: zh ? '没有有效数值；缺失值不计为零。' : 'No valid values; missing values are not counted as zero.' }
   }
   const asOfSummary = summarizeMetricAsOfDates(fieldKey, rows)
   if (!asOfSummary.comparable) {
@@ -550,8 +552,8 @@ function buildGroupAverageCell(
       asOfDate: null,
       unavailableReason:
         asOfSummary.missingDateCount > 0
-          ? 'Average withheld because one or more populated rows have no metric as-of date.'
-          : `Average withheld because rows use different metric endpoints (${asOfSummary.dates.join(', ')}).`,
+          ? zh ? '有效成员缺少指标日期，未汇总。' : 'Average withheld because one or more populated rows have no metric as-of date.'
+          : zh ? `成员指标截至日期不同，未汇总（${asOfSummary.dates.join('、')}）。` : `Average withheld because rows use different metric endpoints (${asOfSummary.dates.join(', ')}).`,
     }
   }
   return {
@@ -589,13 +591,13 @@ function renderCell(
 ) {
   if (fieldKey === 'instrument_name') {
     return (
-      <span className="watchlist-instrument-name"><Link translate="no" to={buildInstrumentDetailPath(instrumentId, watchlistId)} className="table-link watchlists-instrument-link">
+      <span className="watchlist-instrument-identity"><span className="watchlist-instrument-name"><Link translate="no" to={buildInstrumentDetailPath(instrumentId, watchlistId)} className="table-link watchlists-instrument-link">
         {typeof value === 'string' && value ? value : instrumentId.toUpperCase()}
       </Link>{['attention', 'pending'].includes(String(row['attr.risk_attention'])) && <button className={`watchlist-risk-indicator${row['attr.risk_attention'] === 'pending' ? ' watchlist-risk-indicator-pending' : ''}`} type="button" onClick={() => openRisk(instrumentId)}
         aria-label={row['attr.risk_attention'] === 'pending'
           ? zh ? `${value || instrumentId} 有风险线索，查看风险提示` : `View risk leads for ${value || instrumentId}`
           : zh ? `${value || instrumentId} 有关注事项，查看风险提示` : `View risk alerts for ${value || instrumentId}`}
-        title={row['attr.risk_attention'] === 'pending' ? zh ? '风险线索' : 'Risk leads' : zh ? '重点关注' : 'Risk alerts'}><WorkspaceToolIcon kind="risk" /></button>}</span>
+        title={row['attr.risk_attention'] === 'pending' ? zh ? '风险线索' : 'Risk leads' : zh ? '重点关注' : 'Risk alerts'}><WorkspaceToolIcon kind="risk" /></button>}</span><small translate="no" className="watchlist-instrument-identifier">{String(row.ticker_or_isin || instrumentId)}</small></span>
     )
   }
 
@@ -808,6 +810,10 @@ export default function WatchlistsPage() {
   const [watchlistDetailOwnerId, setWatchlistDetailOwnerId] = useState('')
   const [screenerResult, setScreenerResult] = useState<ScreenerResponse | null>(null)
   const [screenerResultOwnerId, setScreenerResultOwnerId] = useState('')
+  const [screenerResultCriteria, setScreenerResultCriteria] = useState('')
+  const [recoveryToken, setRecoveryToken] = useState(0)
+  const [viewSavePending, setViewSavePending] = useState(false)
+  const [viewSaveError, setViewSaveError] = useState<string | null>(null)
   const [screenerLoading, setScreenerLoading] = useState(false)
   const [renderRowLimit, setRenderRowLimit] = useState(WATCHLIST_INITIAL_RENDER_ROWS)
   const [workingColumns, setWorkingColumns] = useState<string[]>([])
@@ -899,6 +905,9 @@ export default function WatchlistsPage() {
     setError,
   )
   const filterMenuRef = useRef<HTMLDivElement | null>(null)
+  const filterButtonRef = useRef<HTMLButtonElement | null>(null)
+  const filterPanelRef = useRef<HTMLDivElement | null>(null)
+  const [filterPanelPosition, setFilterPanelPosition] = useState({ left: 16, top: 100, maxHeight: 500 })
   const groupMenuRef = useRef<HTMLDivElement | null>(null)
   const selectorMenuRef = useRef<HTMLDivElement | null>(null)
   const tableShellRef = useRef<HTMLDivElement | null>(null)
@@ -912,11 +921,15 @@ export default function WatchlistsPage() {
   const pendingResize = useRef<{ column: string; width: number } | null>(null)
   const batchFileInputRef = useRef<HTMLInputElement | null>(null)
   const activeWatchlistIdRef = useRef(watchlistId)
+  const activeViewIdRef = useRef(activeViewId)
+  activeViewIdRef.current = activeViewId
   const viewSaveQueueRef = useRef(new SerialTaskQueue())
   const viewSaveSequenceRef = useRef(0)
   const latestViewSaveSequenceRef = useRef(new Map<string, number>())
   activeWatchlistIdRef.current = watchlistId
   const watchlistSearchKey = watchlistSearchParams.toString()
+  const handledSearchKeyRef = useRef(watchlistSearchKey)
+  const pendingSearchWriteRef = useRef<{ from: string; to: string } | null>(null)
 
   const modalBusy = isSavingView || isCreatingWatchlist || isCopyingItems || isMovingItems || isAdding || isBatchAdding
   function closeActiveModal() {
@@ -967,6 +980,7 @@ export default function WatchlistsPage() {
 
     const requestedFields = (workingColumns.length ? [...workingColumns] : [primaryDisplayColumn])
       .filter((fieldKey) => columnKeys.has(fieldKey))
+    if (!requestedFields.includes('ticker_or_isin')) requestedFields.push('ticker_or_isin')
     if (fieldKeys.has('attr.risk_attention') && !requestedFields.includes('attr.risk_attention')) {
       requestedFields.push('attr.risk_attention')
     }
@@ -1060,7 +1074,7 @@ export default function WatchlistsPage() {
       cancelled = true
       controller.abort()
     }
-  }, [])
+  }, [recoveryToken])
 
   useEffect(() => {
     let cancelled = false
@@ -1101,11 +1115,15 @@ export default function WatchlistsPage() {
 
     let cancelled = false
     const controller = new AbortController()
+    handledSearchKeyRef.current = watchlistSearchKey
+    pendingSearchWriteRef.current = null
     setWatchlistDetail(null)
     setWatchlistDetailOwnerId('')
     setScreenerResult(null)
     setScreenerResultOwnerId('')
     setSelectedRows([])
+    setViewSavePending(false)
+    setViewSaveError(null)
     setModalKind(null)
     setModalError(null)
     setConfirmError(null)
@@ -1184,7 +1202,7 @@ export default function WatchlistsPage() {
       cancelled = true
       controller.abort()
     }
-  }, [watchlistId])
+  }, [watchlistId, recoveryToken])
 
   useEffect(() => {
     function handleClick(event: MouseEvent) {
@@ -1203,6 +1221,34 @@ export default function WatchlistsPage() {
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
   }, [filterMenuOpen, groupMenuOpen, selectorMenuOpen])
+
+  useLayoutEffect(() => {
+    if (!filterMenuOpen) return
+    const position = () => {
+      const anchor = filterButtonRef.current?.getBoundingClientRect()
+      if (!anchor) return
+      const panel = filterPanelRef.current
+      const width = Math.min(680, window.innerWidth - 32)
+      const height = panel?.scrollHeight || 440
+      const below = window.innerHeight - anchor.bottom - 20
+      const above = anchor.top - 20
+      const flip = below < Math.min(height, 300) && above > below
+      const maxHeight = Math.max(100, flip ? above : below)
+      setFilterPanelPosition({ left: Math.max(16, Math.min(anchor.left, window.innerWidth - width - 16)), top: flip ? Math.max(16, anchor.top - Math.min(height, maxHeight) - 4) : anchor.bottom + 4, maxHeight })
+    }
+    function escape(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setFilterMenuOpen(false)
+        filterButtonRef.current?.focus()
+      }
+    }
+    position()
+    window.addEventListener('resize', position)
+    window.addEventListener('scroll', position, true)
+    document.addEventListener('keydown', escape)
+    return () => { window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); document.removeEventListener('keydown', escape) }
+  }, [filterMenuOpen])
 
   useEffect(() => {
     if (modalKind !== 'add') {
@@ -1278,6 +1324,7 @@ export default function WatchlistsPage() {
         if (!cancelled) {
           setScreenerResult(result)
           setScreenerResultOwnerId(watchlistId)
+          setScreenerResultCriteria(screenerCriteriaKey)
           setSparklineMap(result.sparklines || {})
           setSelectedRows((current) =>
             current.filter((instrumentId) => result.rows.some((row) => String(row.instrument_id) === instrumentId)),
@@ -1303,7 +1350,7 @@ export default function WatchlistsPage() {
   }, [reloadToken, screenerCriteriaKey, watchlistDetailOwnerId, watchlistId])
 
   const detailIsCurrent = watchlistDetailOwnerId === watchlistId
-  const rowsAreCurrent = detailIsCurrent && screenerResultOwnerId === watchlistId
+  const rowsAreCurrent = detailIsCurrent && screenerResultOwnerId === watchlistId && screenerResultCriteria === screenerCriteriaKey
   const activeView = detailIsCurrent
     ? watchlistDetail?.views.find((item) => item.view_id === activeViewId) ||
       watchlistDetail?.views[0] ||
@@ -1314,6 +1361,14 @@ export default function WatchlistsPage() {
     if (!detailIsCurrent || !watchlistDetail) {
       return
     }
+    const pendingWrite = pendingSearchWriteRef.current
+    if (pendingWrite && (watchlistSearchKey === pendingWrite.from || watchlistSearchKey === pendingWrite.to)) {
+      if (watchlistSearchKey === pendingWrite.to) pendingSearchWriteRef.current = null
+      handledSearchKeyRef.current = watchlistSearchKey
+      return
+    }
+    if (handledSearchKeyRef.current === watchlistSearchKey) return
+    handledSearchKeyRef.current = watchlistSearchKey
     const requestedViewId = watchlistSearchParams.get('view') || ''
     const requestedView =
       watchlistDetail.views.find((view) => view.view_id === requestedViewId) ||
@@ -1322,8 +1377,8 @@ export default function WatchlistsPage() {
       null
     if (requestedView && requestedView.view_id !== activeViewId) {
       setActiveViewId(requestedView.view_id)
+      applyWatchlistView(requestedView)
     }
-    applyWatchlistView(requestedView)
     if (watchlistSearchParams.has('group')) {
       setWorkingGroupBy(watchlistSearchParams.get('group') || 'none')
     }
@@ -1683,7 +1738,9 @@ export default function WatchlistsPage() {
     // Sync the committed view before loading/interaction can navigate away.
     // Depend on URL values, so equivalent filter objects cannot repeat a stale
     // replacement while the router is transitioning to another list.
+    if (watchlistSearchKey !== handledSearchKeyRef.current && pendingSearchWriteRef.current?.to !== watchlistSearchKey) return
     if (nextWatchlistSearchKey !== null && nextWatchlistSearchKey !== watchlistSearchKey) {
+      pendingSearchWriteRef.current = { from: watchlistSearchKey, to: nextWatchlistSearchKey }
       setWatchlistSearchParams(nextWatchlistSearchKey, { replace: true })
     }
   }, [nextWatchlistSearchKey, setWatchlistSearchParams, watchlistSearchKey])
@@ -1986,12 +2043,12 @@ export default function WatchlistsPage() {
     setRenderRowLimit(WATCHLIST_INITIAL_RENDER_ROWS)
   }, [screenerCriteriaKey, watchlistSearchQuery])
   const searchedRows = useMemo(() => {
-    const rows = screenerResult?.rows || []
+    const rows = rowsAreCurrent ? screenerResult?.rows || [] : []
     if (!watchlistSearchQuery) {
       return rows
     }
     return rows.filter((row) => rowMatchesWatchlistSearch(row, watchlistSearchQuery))
-  }, [screenerResult, watchlistSearchQuery])
+  }, [screenerResult, rowsAreCurrent, watchlistSearchQuery])
 
   const groupedRows = useMemo(() => {
     const rows = searchedRows
@@ -2265,6 +2322,14 @@ export default function WatchlistsPage() {
   const allVisibleInstrumentIds = rowsAreCurrent
     ? searchedRows.map((row) => String(row.instrument_id))
     : []
+  useEffect(() => {
+    if (!rowsAreCurrent) return
+    const visible = new Set(searchedRows.map(row => String(row.instrument_id)))
+    setSelectedRows(current => {
+      const next = current.filter(id => visible.has(id))
+      return next.length === current.length ? current : next
+    })
+  }, [rowsAreCurrent, searchedRows])
   const allRowsSelected =
     allVisibleInstrumentIds.length > 0 && allVisibleInstrumentIds.every((instrumentId) => selectedRows.includes(instrumentId))
 
@@ -2311,6 +2376,8 @@ export default function WatchlistsPage() {
     viewSaveSequenceRef.current = saveSequence
     latestViewSaveSequenceRef.current.set(viewKey, saveSequence)
     const payload = buildViewPayload(activeView.name, activeView.description, settings)
+    setViewSavePending(true)
+    setViewSaveError(null)
     try {
       const updated = await viewSaveQueueRef.current.enqueue(() =>
         updateWatchlistView(sourceWatchlistId, viewId, payload),
@@ -2332,15 +2399,20 @@ export default function WatchlistsPage() {
           ),
         }
       })
-      if (updated.view_id !== viewId) setActiveViewId(updated.view_id)
-      setError(null)
+      if (activeViewIdRef.current === viewId) {
+        if (updated.view_id !== viewId) setActiveViewId(updated.view_id)
+        setError(null)
+      }
     } catch (saveError) {
       if (
         activeWatchlistIdRef.current === sourceWatchlistId &&
+        activeViewIdRef.current === viewId &&
         latestViewSaveSequenceRef.current.get(viewKey) === saveSequence
       ) {
-        setError(saveError instanceof Error ? saveError.message : 'Failed to update view.')
+        setViewSaveError(saveError instanceof Error ? saveError.message : 'Failed to update view.')
       }
+    } finally {
+      if (activeWatchlistIdRef.current === sourceWatchlistId && activeViewIdRef.current === viewId && latestViewSaveSequenceRef.current.get(viewKey) === saveSequence) setViewSavePending(false)
     }
   }
 
@@ -2598,7 +2670,7 @@ export default function WatchlistsPage() {
     return (
       <div className="watchlists-page">
         <div className="panel">
-          <div className="error-state">{error}</div>
+          <RequestRecovery error={error} onRetry={() => setRecoveryToken(value => value + 1)} />
         </div>
       </div>
     )
@@ -2768,7 +2840,6 @@ export default function WatchlistsPage() {
                 value={watchlistSearch}
                 onChange={(event) => {
                   setWatchlistSearch(event.target.value)
-                  setSelectedRows([])
                 }}
                 placeholder="Search this watchlist"
               />
@@ -2807,6 +2878,8 @@ export default function WatchlistsPage() {
                   const nextView =
                     watchlistDetail?.views.find((item) => item.view_id === nextViewId) || null
                   setActiveViewId(nextViewId)
+                  setViewSavePending(false)
+                  setViewSaveError(null)
                   applyWatchlistView(nextView)
                   setNotice(null)
                 }}
@@ -2888,6 +2961,8 @@ export default function WatchlistsPage() {
 
             <div className="watchlists-dropdown" ref={filterMenuRef}>
               <button
+                ref={filterButtonRef}
+                aria-expanded={filterMenuOpen}
                 type="button"
                 className={
                   activeFilterCount
@@ -2906,7 +2981,7 @@ export default function WatchlistsPage() {
                 ) : null}
               </button>
               {filterMenuOpen ? (
-                <div className="watchlists-menu watchlists-filter-menu">
+                <div ref={filterPanelRef} role="dialog" aria-label={zh ? '筛选标的' : 'Filter instruments'} className="watchlists-menu watchlists-filter-menu" style={filterPanelPosition}>
                   <div className="watchlists-filter-header">
                     <div>
                       <div className="watchlists-filter-title">Filters</div>
@@ -3066,7 +3141,7 @@ export default function WatchlistsPage() {
               onSelect={(format) => void handleDownloadCurrentView(format)}
             />
             {canWriteTeam && selectedRows.length > 0 && rowsAreCurrent && <>
-              <span className="watchlists-selection-count">{zh ? `已选 ${selectedRows.length} 项` : `${selectedRows.length} selected`}</span>
+              <span title={zh ? '选择覆盖全部筛选结果，包括未展开行。投资状态在所有列表和组合间共享，并可能触发后台研究。' : 'Selection covers all filtered results, including rows not expanded. Investment status is shared across lists and portfolios and may trigger background research.'} className="watchlists-selection-count">{zh ? `已选 ${selectedRows.length} / ${searchedRows.length} 个筛选结果` : `${selectedRows.length} selected of ${searchedRows.length} filtered results`}</span>
               {(['Invested', 'Proposed'] as const).map(status => <button key={status} type="button" className="watchlists-toolbar-button" disabled={updatingCoverage}
                 onClick={async () => {
                   setUpdatingCoverage(true)
@@ -3157,7 +3232,9 @@ export default function WatchlistsPage() {
           </div>
         ) : null}
 
-        <NoticeToast notice={error ? { id: 0, message: error, tone: 'error' } : null} onDismiss={() => setError(null)} />
+        {error && <RequestRecovery error={error} onRetry={() => { setError(null); setReloadToken(value => value + 1) }} busy={screenerLoading} />}
+        {viewSaveError ? <div role="alert" className="watchlists-view-save-status">{zh ? '视图保存失败：' : 'View save failed: '}{t(viewSaveError)} <button type="button" onClick={() => void persistActiveWatchlistView({ columns: visibleColumns, groupBy: workingGroupBy, sortRules, filters: workingFilters, columnWidths })}>{zh ? '重试保存' : 'Retry save'}</button></div> : (viewSavePending || viewEdited) && <div role="status" className="watchlists-view-save-status">{zh ? '正在保存视图…' : 'Saving view…'}</div>}
+        {showGroupHeaders && <p className="watchlists-aggregation-note">{zh ? '分组数值为有效成员的算术平均；n/N 为有效数/成员数，缺失值不计为零。混合指标日期时不汇总；回撤均值不等于组合回撤。' : 'Group values are arithmetic means of valid members; n/N shows valid/total members. Missing values are excluded, not zero. Mixed metric dates are not aggregated; mean drawdown is not portfolio drawdown.'}</p>}
 
         <HorizontalTableScroll className="table-shell" ref={tableShellRef}>
           <table className="terminal-table watchlists-table" style={{ minWidth: `${watchlistTableMinWidth}px` }}>
@@ -3232,8 +3309,8 @@ export default function WatchlistsPage() {
                           sortMode === 'none'
                             ? undefined
                             : sortAction === 'clear'
-                              ? `Clear sort for ${columnLabel}`
-                              : `Sort ${columnLabel} ${sortAction}`
+                              ? (zh ? `清除${columnLabel}排序` : `Clear sort for ${columnLabel}`)
+                              : (zh ? `${columnLabel}：${sortAction === 'ascending' ? '升序' : '降序'}` : `Sort ${columnLabel} ${sortAction}`)
                         }
                         onClick={() => {
                           if (sortMode !== 'none') {
@@ -3255,7 +3332,7 @@ export default function WatchlistsPage() {
                       <span
                         className="watchlists-th-resizer"
                         role="separator"
-                        aria-label={`Resize ${columnLabel} column`}
+                        aria-label={zh ? `调整${columnLabel}列宽` : `Resize ${columnLabel} column`}
                         aria-orientation="vertical"
                         aria-valuemin={90}
                         aria-valuemax={420}
@@ -3348,7 +3425,7 @@ export default function WatchlistsPage() {
                               )
                             }
                             const field = fieldByKey.get(column)
-                            const average = buildGroupAverageCell(column, field, group.summaryRows)
+                            const average = buildGroupAverageCell(column, field, group.summaryRows, zh)
                             return (
                               <td
                                 key={column}
@@ -3363,21 +3440,19 @@ export default function WatchlistsPage() {
                                   <span
                                     className="watchlists-group-summary-value"
                                     title={[
-                                      `Equal-weight average of ${average.count}/${average.total} rows`,
-                                      average.asOfDate ? `metric as of ${average.asOfDate}` : '',
+                                      zh ? `有效成员算术平均 ${average.count}/${average.total}；缺失值排除` : `Arithmetic mean of ${average.count}/${average.total} valid members; missing values excluded`,
+                                      average.asOfDate ? `${zh ? '指标截至' : 'metric as of'} ${average.asOfDate}` : '',
                                     ].filter(Boolean).join('; ')}
                                   >
                                     <span>{formatGroupAverageCell(column, field, average.value)}</span>
-                                    {average.count !== average.total ? (
-                                      <small>{average.count}/{average.total}</small>
-                                    ) : null}
+                                    <small>{zh ? '均值' : 'Mean'} · {average.count}/{average.total}</small>
                                   </span>
                                 ) : (
                                   <span
                                     className="watchlists-group-summary-empty"
                                     title={average?.unavailableReason || undefined}
                                   >
-                                    —
+                                    —{average && <small> {average.count}/{average.total}</small>}
                                   </span>
                                 )}
                               </td>
@@ -3393,7 +3468,7 @@ export default function WatchlistsPage() {
                             <td className="watchlists-select-col">
                               <input
                                 type="checkbox"
-                                aria-label={`Select ${String(row[primaryDisplayColumn] || instrumentId)}`}
+                                aria-label={`${zh ? '选择' : 'Select'} ${String(row[primaryDisplayColumn] || instrumentId)} · ${String(row.ticker_or_isin || instrumentId)}`}
                                 checked={checked}
                                 onChange={(event) =>
                                   setSelectedRows((current) =>
@@ -3443,12 +3518,16 @@ export default function WatchlistsPage() {
                     </React.Fragment>
                   )
                 })
-              ) : screenerLoading || !screenerResult ? null : (
+              ) : screenerLoading || !rowsAreCurrent || !screenerResult ? null : (
                 <tr>
                   <td colSpan={Math.max(visibleColumns.length + 1, 1)} className="empty-state">
-                    {watchlistSearchQuery
-                      ? 'No rows matched the current watchlist search.'
-                      : 'No rows matched the current watchlist view.'}
+                    {activeFilterCount || watchlistSearchQuery ? <>
+                      <p>{zh ? '没有符合当前搜索或筛选条件的标的。' : 'No instruments match the current search or filters.'}</p>
+                      <button type="button" onClick={() => { setWorkingFilters({}); setWatchlistSearch('') }}>{zh ? '清除搜索和筛选' : 'Clear search and filters'}</button>
+                    </> : <>
+                      <p>{zh ? '此列表尚未添加标的。' : 'This watchlist has no instruments yet.'}</p>
+                      {canWriteTeam && !activeWatchlistIsSystem && <button type="button" onClick={() => { setModalError(null); setInstrumentSearch(''); setModalKind('add') }}>{zh ? '添加标的' : 'Add instruments'}</button>}
+                    </>}
                   </td>
                 </tr>
               )}
@@ -3648,6 +3727,9 @@ export default function WatchlistsPage() {
                 Instruments already present in the target will not be duplicated. They will remain in the current
                 watchlist after the copy.
               </div>
+              <p className="watchlists-move-note">{zh
+                ? '此操作只改变列表成员关系；投资状态、研究和风险记录仍按标的共享，不会复制成隔离的研究对象或停止其后台跟踪。'
+                : 'This changes list membership only. Investment status, research and risk records remain shared by instrument; this does not create isolated research or stop background tracking.'}</p>
             </div>
 
             <div className="watchlists-modal-actions">
@@ -3753,6 +3835,9 @@ export default function WatchlistsPage() {
                 Instruments already present in the target will not be duplicated. They will still be removed from the
                 current watchlist.
               </div>
+              <p className="watchlists-move-note">{zh
+                ? '此操作只改变列表成员关系；投资状态、研究和风险记录仍按标的共享，不会复制成隔离的研究对象或停止其后台跟踪。'
+                : 'This changes list membership only. Investment status, research and risk records remain shared by instrument; this does not create isolated research or stop background tracking.'}</p>
             </div>
 
             <div className="watchlists-modal-actions">
@@ -4030,6 +4115,9 @@ export default function WatchlistsPage() {
                   ? '搜索已登记标的或市场证券目录。未登记的股票和 ETF 会在点击添加后登记并拉取行情。'
                   : 'Search registered assets and the securities directory. New stocks and ETFs are registered and their prices refreshed when you add them.'}
               </p>
+              <p className="watchlists-registry-note">{zh
+                ? '成员关系仅属于当前列表；投资状态、研究和风险记录按标的共享，其他列表及相关组合会使用同一份状态。“保留现有状态”只是不改投资状态，添加成员仍会更新列表指标，既有研究与风险调度继续按其范围运行。'
+                : 'Membership belongs to this list. Investment status, research and risk records are shared by instrument across lists and related portfolios. Keep current status leaves investment status unchanged; adding members still refreshes list metrics, and existing research and risk schedules continue within their scopes.'}</p>
               {catalogErrors.length > 0 && <div className="watchlists-registry-warning" role="status">
                 {zh ? '证券目录查询不完整；仍可添加下方已找到的标的。' : 'Directory search is incomplete; the results below remain available.'}
                 {catalogErrors.map((warning) => <div key={warning}>{warning}</div>)}

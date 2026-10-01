@@ -111,3 +111,26 @@ def test_selected_run_reads_and_authorization_skip_large_unrelated_json(postgres
             assert run_dossier("projected-runtime", "xlk", session=session)["instrument_id"] == "xlk"
     finally:
         engine.dispose()
+
+
+def test_private_history_projects_latest_active_run_without_loading_source_bodies(postgres_watchlist_env):
+    from datetime import UTC, datetime
+    from watchlist_app.api.routes.workbench import topics
+
+    stamp = datetime(2026, 10, 1, tzinfo=UTC)
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id='reopen-private', title='Reopen', visibility='private', created_by_user_id='reopen-owner'))
+        session.flush()
+        for run_id in ('a-older-tie', 'z-newer-tie'):
+            session.add(ResearchEntry(entry_id=run_id, topic_id='reopen-private', kind='analysis',
+                title=run_id, status='running', created_at=stamp, context_json={
+                    'watchlist_id': 'test-scope', 'private_source': 'never return this body\x00' * 1000}))
+        session.commit()
+    from studio_identity import Principal, principal_context
+    with principal_context(Principal('reopen-owner', 'Owner', 'default')), get_session_factory()() as session:
+        rows = topics(session=session)
+        selected = next(row for row in rows if row['topic_id'] == 'reopen-private')
+        assert selected['active_run']['entry_id'] == 'z-newer-tie'
+        assert selected['active_run']['watchlist_id'] == 'test-scope'
+        assert 'private_source' not in str(rows)
+        assert not any(isinstance(obj, ResearchEntry) for obj in session.identity_map.values())

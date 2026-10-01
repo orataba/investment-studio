@@ -82,7 +82,7 @@ def portfolio_page_evidence(portfolio_id: str, page_context: dict | None):
     if page.get("tab") == "risk":
         suffix = "?" + urlencode({"as_of_date": page["as_of_date"]}) if page.get("as_of_date") else ""
         result["risk_context"] = external_json("portfolio", f"/portfolios/{quote(portfolio_id, safe='')}/risk-context" + suffix)
-    return {**result, "page_scope": page,
+    return {**result, "portfolio_id": portfolio_id, "page_scope": page,
             "scope_note": "整体持仓保留组合口径；所选账户或持仓作为单独明细。持仓引用可能是组合本地合约，不等于共享标的编码。历史估值按选定日期读取，研究及解释仍是本轮形成。"}
 
 

@@ -161,17 +161,18 @@ def review_states(session, *, instrument_ids=None, for_risk=False):
                 tuple_(stamp, ResearchEntry.created_at, ResearchEntry.entry_id) < published_before))
         candidates = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.status,
             case((ResearchEntry.status == "failed", ResearchEntry.body), else_="").label("body"),
-            ResearchEntry.context_json, ResearchEntry.created_at, stamp.label("history_at"),
+            ResearchEntry.context_json, ResearchEntry.created_at, ResearchEntry.completed_at, stamp.label("history_at"),
         ).where(*filters).order_by(stamp.desc(), ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc()
         ).offset(0).subquery("ordered_runs")
         relation, values = research_context_projection(session, {
             "instrument_ids": JSON, "reviews": JSON, "cutoff": String,
             "sector_run": Boolean, "research_run": Boolean, "recordkeeping_only": Boolean,
+            "execution": JSON, "runtime_error": JSON,
         }, json_column=candidates.c.context_json)
         if for_risk and session.get_bind().dialect.name == "postgresql":
             values["reviews"] = _risk_reviews_projection(values["reviews"], requested_ids)
         query = select(candidates.c.entry_id, candidates.c.topic_id, candidates.c.status, candidates.c.body,
-            candidates.c.history_at, candidates.c.created_at,
+            candidates.c.history_at, candidates.c.created_at, candidates.c.completed_at,
             *(value.label(name) for name, value in values.items())).select_from(candidates)
         if relation is not None:
             query = query.join(relation, true())
@@ -224,6 +225,8 @@ def review_states(session, *, instrument_ids=None, for_risk=False):
                 if iid in latest and (not accepted or iid in completed):
                     continue
                 state = {"run_id": run.entry_id, "status": review.get("status", run.status),
+                    "created_at": run.created_at, "completed_at": run.completed_at,
+                    "execution": context.get("execution") or {}, "runtime_error": context.get("runtime_error") or {},
                     "checked_at": context.get("cutoff"), "summary": review.get("summary", run.body if run.status == "failed" else ""),
                     "view_updated_at": review.get("view_updated_at"),
                     "change_kind": review.get("change_kind", "investment" if review.get("summary") else "none"),

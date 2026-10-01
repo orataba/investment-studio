@@ -558,7 +558,7 @@ describe('Research rendered page contract', () => {
     renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
     await openParameters()
     fireEvent.change(await screen.findByLabelText('Optimization taxonomy'), { target: { value: 'industry' } })
-    expect(screen.getByText('Configure targets before running optimization')).toHaveAttribute('href', '/portfolios/3/taxonomies')
+    expect(screen.getByText('Review missing targets in the selected scope; multiple members do not default to equal weights')).toHaveAttribute('href', '/portfolios/3/taxonomies')
     expect(screen.getByTestId('research-result-taxonomy')).not.toHaveTextContent('Run Optimization again')
     expect(screen.queryByText('Historical result — not current or execution-ready.')).not.toBeInTheDocument()
     await saveParameters()

@@ -15,7 +15,9 @@ export async function getPortfolioBootstrap(portfolioId: string | null, signal?:
   })
   if (!response.ok) {
     const body = await response.json().catch(() => ({}))
-    throw Object.assign(new Error(typeof body.detail === 'string' ? body.detail : '暂时无法确认账号与组合权限'), { status: response.status })
+    const message = typeof body.detail === 'string' ? body.detail : '暂时无法确认账号与组合权限'
+    const requestId = response.headers?.get('X-Request-ID')
+    throw Object.assign(new Error(requestId ? `${message} [request_id=${requestId}]` : message), { status: response.status })
   }
   return response.json()
 }

@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 import App from './App'
+import { LanguageProvider } from '../../../../packages/ui/src/i18n'
 
 const loaded = vi.hoisted(() => vi.fn())
 vi.mock('./pages/WatchlistsPage', () => {
@@ -37,7 +38,7 @@ it('loads only the requested route alongside identity and renders only the lates
   let finishIdentity!: (response: unknown) => void
   const fetch = vi.fn(() => new Promise(resolve => { finishIdentity = resolve }))
   vi.stubGlobal('fetch', fetch)
-  render(<MemoryRouter initialEntries={['/watchlists/alpha']}><Navigation /><App /></MemoryRouter>)
+  render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/watchlists/alpha']}><Navigation /><App /></MemoryRouter></LanguageProvider>)
   await waitFor(() => expect(loaded).toHaveBeenCalledWith('watchlist'))
   expect(fetch).toHaveBeenCalledOnce()
   expect(screen.queryByText('Watchlist data')).toBeNull()

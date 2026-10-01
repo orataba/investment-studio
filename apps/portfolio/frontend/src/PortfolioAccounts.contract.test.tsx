@@ -15,10 +15,10 @@ vi.mock('./lib/bootstrap', () => ({ getPortfolioBootstrap: vi.fn() }))
 const bootstrap = vi.mocked(getPortfolioBootstrap)
 const response = (session: Record<string, unknown> = {}, access: unknown = null) => ({ user_id: 'alice', session_id: 'session-a', capabilities: { research_enabled: true }, ...session, access: access ? { user_id: session.user_id || 'alice', ...access as object } : null }) as Awaited<ReturnType<typeof getPortfolioBootstrap>>
 function Boundary({ children, portfolioId = null }: { children: React.ReactNode; portfolioId?: string | null }) {
-  return <PortfolioBootstrapProvider portfolioId={portfolioId}><PortfolioSessionProvider>{children}</PortfolioSessionProvider></PortfolioBootstrapProvider>
+  return <LanguageProvider enableDomTranslation={false}><PortfolioBootstrapProvider portfolioId={portfolioId}><PortfolioSessionProvider>{children}</PortfolioSessionProvider></PortfolioBootstrapProvider></LanguageProvider>
 }
 
-beforeEach(() => vi.resetAllMocks())
+beforeEach(() => { vi.resetAllMocks(); window.history.replaceState(null, '', '/?lang=zh-Hans') })
 const member = { user_id: 'alice', display_name: '甲经理', role: 'manager', granted_by: 'alice', granted_at: '2026-09-08' }
 
 describe('Portfolio account boundaries', () => {
@@ -111,6 +111,7 @@ describe('Portfolio account boundaries', () => {
   })
 
   it('grants an explicitly selected member a role and displays manager handover conflicts', async () => {
+    window.history.replaceState(null, '', '/?lang=en')
     api.getPortfolioMembers.mockResolvedValue({ members: [member] })
     api.getPortfolioMemberCandidates.mockResolvedValue({ members: [member, { user_id: 'bob', display_name: '乙经理' }] })
     api.setPortfolioMember.mockResolvedValue({})

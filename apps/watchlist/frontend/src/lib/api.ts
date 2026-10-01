@@ -1046,18 +1046,20 @@ const referenceGetCache = new Map<
 >()
 
 async function responseErrorMessage(response: Response): Promise<string> {
+  const requestId = response.headers?.get('X-Request-ID')
+  const diagnostic = (message: string) => requestId ? `${message} [request_id=${requestId}]` : message
   const fallback = `Request failed: ${response.status}`
   const body = await response.text()
   if (!body) {
-    return fallback
+    return diagnostic(fallback)
   }
   try {
     const parsed = JSON.parse(body) as { detail?: unknown; message?: unknown }
     if (typeof parsed.detail === 'string' && parsed.detail.trim()) {
-      return parsed.detail
+      return diagnostic(parsed.detail)
     }
     if (typeof parsed.message === 'string' && parsed.message.trim()) {
-      return parsed.message
+      return diagnostic(parsed.message)
     }
     if (Array.isArray(parsed.detail)) {
       const messages = parsed.detail.flatMap((item) => {
@@ -1066,13 +1068,13 @@ async function responseErrorMessage(response: Response): Promise<string> {
         return typeof message === 'string' && message.trim() ? [message] : []
       })
       if (messages.length) {
-        return messages.join('; ')
+        return diagnostic(messages.join('; '))
       }
     }
   } catch {
     // Non-JSON error bodies are already suitable for display.
   }
-  return body
+  return diagnostic(body)
 }
 
 export async function fetchJson<T>(

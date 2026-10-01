@@ -31,7 +31,7 @@ export default function ConcentrationPanel({ portfolioId, asOfDate, onAsOfDateCh
   }, [storageKey])
   useEffect(() => {
     let active = true
-    setLoading(true); setError(null)
+    setLoading(true); setError(null); setData(null)
     getConcentration(portfolioId, asOfDate).then((value) => { if (active) setData(value) })
       .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : String(reason)) })
       .finally(() => { if (active) setLoading(false) })
@@ -81,6 +81,7 @@ export default function ConcentrationPanel({ portfolioId, asOfDate, onAsOfDateCh
         <a href={`/portfolios/${encodeURIComponent(portfolioId)}/taxonomies`}>{text('Edit limits in Taxonomies', '在分类中编辑上限')}</a>
       </div>
     </div>
+    {data && asOfDate && data.as_of_date !== asOfDate ? <p className="portfolio-detail-meta" role="status">{text('Requested date', '请求日期')}: {asOfDate} · {text('Effective holdings date', '有效持仓日期')}: {data.as_of_date}</p> : null}
     {error ? <div role="alert" className="inline-notice inline-notice-error">{concentrationMessage(error, zh)}</div> : null}
     {loading ? <p role="status" className="portfolio-detail-meta">{text('Loading concentration…', '正在加载集中度…')}</p> : null}
     {data && !error ? <>

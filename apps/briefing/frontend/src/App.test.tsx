@@ -284,7 +284,7 @@ it('shows a discovery quota failure separately from missing collection records',
   report.coverage.text.sources = [{ channel_id: 'x-a16z', source_name: 'X @a16z', latest_discovery: { status: 'failed', failure_reason: 'approved event_view fetch failed closed with HTTP 402: https://api.x.com/2/users/by/username/a16z' }, latest_run: null }]
   vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status') ? { harness_available: true, can_generate: true, can_read_sources: true } : url.includes('/reports?') ? { rows: [report], total: 1 } : report })))
   page(<App />)
-  await screen.findByText('X @a16z')
+  await screen.findAllByText('X @a16z')
   expect(screen.getByText('来源服务额度不足，未取得本轮资料。')).toBeTruthy()
   expect(screen.getByText(/发现：失败.*采集：未保留记录/)).toBeTruthy()
 })
@@ -472,4 +472,42 @@ it('polls a pending deep-linked edition even when it is outside the loaded index
   await screen.findByRole('heading', { name: 'Daily research briefing | 2026-09-07' })
   expect(screen.getByText('Generating')).toBeTruthy()
   expect(interval.mock.calls.some(([, milliseconds]) => milliseconds === 5000)).toBe(true)
+})
+
+it('keeps source failures and effective price dates visible before opening coverage', async () => {
+  const report = structuredClone(detail)
+  report.coverage.text.sources = [
+    { source_name: 'X channel', latest_discovery: { status: 'failed', failure_reason: 'HTTP 402' } },
+    { source_name: 'Semafor', latest_run: { status: 'partial', accepted_count: 17, failed_count: 1 } },
+  ]
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { harness_available: true, can_generate: true, can_read_sources: true }
+    : url.includes('/reports?') ? { rows: [report], total: 1 } : report })))
+  page(<App />)
+  const summary = await screen.findByRole('region', { name: '阅读前的覆盖说明' })
+  expect(summary.textContent).toContain('来源覆盖有缺口：2/2 个渠道')
+  expect(summary.textContent).toContain('X channel · Semafor')
+  expect(summary.textContent).toContain('2026-09-04')
+  expect(summary.textContent).toContain('生成完成只表示报告流程完成')
+  expect(summary.closest('details')).toBeNull()
+  expect(screen.getByText('生成完成')).toBeTruthy()
+})
+
+it('retries dependency failures on the same report and rechecks source permissions', async () => {
+  window.history.replaceState(null, '', '/?lang=en&type=daily&report=report-v1')
+  let available = false
+  const fetch = vi.fn(async (url: string) => available
+    ? { ok: true, json: async () => url.endsWith('/status') ? { harness_available: false, can_generate: false, can_read_sources: true }
+      : url.includes('/reports?') ? { rows: [detail], total: 1 } : detail }
+    : { ok: false, status: 503, json: async () => ({ detail: '统一账号服务暂时不可用' }) })
+  vi.stubGlobal('fetch', fetch)
+  page(<App />)
+  await screen.findAllByText('Account service is temporarily unavailable.')
+  expect(screen.queryByText('前往登录')).toBeNull()
+  available = true
+  fireEvent.click(screen.getAllByRole('button', { name: 'Retry' })[0])
+  await screen.findByRole('heading', { name: '央行继续观察就业' })
+  expect(window.location.search).toContain('report=report-v1')
+  expect(fetch.mock.calls.filter(([url]) => url.endsWith('/status'))).toHaveLength(2)
+  expect(screen.queryByRole('alert')).toBeNull()
 })

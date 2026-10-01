@@ -90,6 +90,7 @@ export default function ResearchEventCard({ update, onAskAssistant, initiallyOpe
       {canWrite && reference.event_case_id && versionId && <button type="button" disabled={saving} onClick={() => void togglePin()}>{pinned ? '取消固定' : '固定跟进'}</button>}
       {error && <p role="alert">{error}</p>}
     </section>
+    {update.run_id && <p className="sector-research-note"><span>来源任务</span> <code translate="no">{update.run_id}</code></p>}
     <section><h5>来源</h5><SourceList instrumentId={reference.instrument_id} versionId={versionId} sources={sources} /></section>
   </div>
   return <article id={update.event_key ? `research-event-${encodeURIComponent(update.event_key)}` : undefined} className="research-event-card">

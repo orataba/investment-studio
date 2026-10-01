@@ -207,7 +207,7 @@ function TableStatusRow({
 }
 
 export default function PortfolioHoldingDetailPage() {
-  const { t } = useLanguage()
+  const { t, language } = useLanguage()
   const { portfolioId = '', holdingId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const [workspaceResponse, setWorkspace] = useState<PortfolioPositionHoldingProjectionResponse | null>(null)
@@ -231,13 +231,14 @@ export default function PortfolioHoldingDetailPage() {
   const [lotFilter, setLotFilter] = useState('all')
 
   const requestedAsOfDate = searchParams.get('as_of_date') ?? ''
+  const [loadedRequestDate, setLoadedRequestDate] = useState<string | null>(null)
   const requestedHoldingLineId = searchParams.get('holding_line_id')
   const selectedPositionLotId = searchParams.get('position_lot_id')
   const detailTab = parseDetailTab(searchParams.get('detail_tab'))
   const chartRangeKey = parseChartRange(searchParams.get('chart_range'))
   const workspace =
     workspaceResponse?.portfolio_id === portfolioId &&
-    (!requestedAsOfDate || workspaceResponse.as_of_date === requestedAsOfDate)
+    loadedRequestDate === requestedAsOfDate
       ? workspaceResponse
       : null
   const positionLotsWorkspace =
@@ -588,6 +589,7 @@ export default function PortfolioHoldingDetailPage() {
       .then((response) => {
         if (!cancelled) {
           setWorkspace(response)
+          setLoadedRequestDate(requestedAsOfDate)
           setWorkspaceError(null)
         }
       })
@@ -899,7 +901,8 @@ export default function PortfolioHoldingDetailPage() {
               <span aria-hidden="true">←</span>
               Holdings
             </Link>
-            <label className="holding-detail-asof">{t('As of date')}<input type="date" aria-label={t('Holding date')} value={resolvedAsOfDate} onChange={(event) => { if (event.target.value) updateSearchParam('as_of_date', event.target.value) }} /></label>
+            <label className="holding-detail-asof">{t('As of date')}<input type="date" aria-label={t('Holding date')} value={requestedAsOfDate || resolvedAsOfDate} onChange={(event) => { if (event.target.value) updateSearchParam('as_of_date', event.target.value) }} /></label>
+            {workspace && requestedAsOfDate && requestedAsOfDate !== workspace.as_of_date ? <span role="status">{language === 'zh-Hans' ? '请求日期' : 'Requested date'}: {requestedAsOfDate} · {language === 'zh-Hans' ? '有效持仓日期' : 'Effective holdings date'}: {workspace.as_of_date}</span> : null}
             <QualityWarningsNotice warnings={workspace?.quality_warnings} />
             {detailKind === 'security' && selectedRow?.instrument_core ? (
               <a data-workspace-link className="portfolio-security-secondary-link" href={watchlistDetailUrl}>

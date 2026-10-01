@@ -251,7 +251,25 @@ def portfolio_context(portfolio_id: str):
 @router.get("/research/topics")
 def topics(instrument_id: str | None = None, session: Session = Depends(get_db_session)):
     records = visible_topics(session)
-    return [dump(x) for x in records if not managed_topic(x.topic_id) and (not instrument_id or instrument_id in x.instrument_ids)]
+    visible = [x for x in records if not managed_topic(x.topic_id) and (not instrument_id or instrument_id in x.instrument_ids)]
+    # Surface unfinished private work on reopen without loading retained snapshots.
+    active = {}
+    if visible:
+        from watchlist_app.services.research_access import research_context_projection, research_projection_rows
+        from sqlalchemy import String
+        relation, values = research_context_projection(session, {"watchlist_id": String})
+        query = select(ResearchEntry.topic_id, ResearchEntry.entry_id, ResearchEntry.status,
+                       ResearchEntry.created_at, values["watchlist_id"].label("watchlist_id")).where(
+            ResearchEntry.topic_id.in_([row.topic_id for row in visible]),
+            ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["queued", "running"])).order_by(
+                ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc())
+        if relation is not None:
+            from sqlalchemy import true
+            query = query.join(relation, true())
+        for run in research_projection_rows(session, query, {"watchlist_id": ("watchlist_id",)}):
+            active.setdefault(run.topic_id, serialize_payload({"entry_id": run.entry_id, "status": run.status,
+                "created_at": run.created_at, "watchlist_id": run.watchlist_id}))
+    return [{**dump(row), "active_run": active.get(row.topic_id)} for row in visible]
 
 
 def validate_scope(session, request):

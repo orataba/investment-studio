@@ -143,6 +143,14 @@ describe('Portfolio holding detail contract', () => {
     })
   })
 
+  it('keeps the requested date visible while using the resolved reliable snapshot for detail reads', async () => {
+    apiMocks.getPortfolioPositionHoldingProjection.mockResolvedValueOnce({ portfolio_id: '3', base_currency: 'USD', as_of_date: '2026-07-15', rows: [compactHoldingProjection()] })
+    renderPortfolioPage(<PortfolioHoldingDetailPage />, '/portfolios/3/holdings/asset-1?as_of_date=2026-10-02', '/portfolios/:portfolioId/holdings/:holdingId')
+    expect(await screen.findByText(/Requested date: 2026-10-02/)).toHaveTextContent('Effective holdings date: 2026-07-15')
+    expect(screen.getByLabelText('Holding date')).toHaveValue('2026-10-02')
+    await waitFor(() => expect(apiMocks.getPortfolioPositionLots).toHaveBeenCalledWith('3', { as_of_date: '2026-07-15', position_reference_id: 'asset-1' }))
+  })
+
   it('fetches the holdings context and related ledgers only after the detail route opens', async () => {
     apiMocks.getPortfolioPositionHoldingProjection.mockResolvedValueOnce({
       portfolio_id: '3', portfolio_name: 'Contract Portfolio', base_currency: 'USD', as_of_date: '2026-07-15', view_label: 'View: Holdings',

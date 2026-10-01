@@ -71,7 +71,7 @@ Performance 页的自然期矩阵另有一条闭合规则：月度收益使用�
 - Screener 每行始终返回 `metric_as_of_date`。页级 `snapshot_metadata.as_of_date` 定义为当前结果中的最晚行终点，仅用于摘要，不得当成所有行的共同终点；同时返回 `as_of_date_min / as_of_date_max / has_mixed_as_of_dates / as_of_date_missing_count`。
 - 分组中的收益、波动率、回撤、Sharpe 和 peer 指标只有在所有有值行的 `metric_as_of_date` 相同时才展示等权横截面平均；终点混合或缺失时必须显示不可用。
 - taxonomy peer 排名只纳入与目标 instrument **同一 snapshot as-of** 的候选；不同终点的候选被排除并记录数量，不能拿 24 日结果与 27 日结果直接排名。
-- benchmark 比较只使用双方日期完全相同的共同观测收盘点。基金自身独立指标仍用自己的 as-of；一旦展示 benchmark，矩阵中的基金值要重算到最晚共同观测终点，SI 从最早共同观测起点开始，所有相对风险统计也只能链接连续的共同 `(start_date, end_date)`。不得把基金目标日前的周五收盘与 benchmark 的周四收盘当作同一期相减。
+- benchmark 比较只使用双方日期完全相同的共同观测收盘点。基金自身独立指标仍用自己的 as-of；一旦展示 benchmark，矩阵中的基金值要重算到最晚共同观测终点，SI 从最早共同观测起点开始，所有相对风险统计也只能链接连续的共同 `(start_date, end_date)`。不得把基金目标日前的周五收盘与 benchmark 的周四收盘当作同一期相减。比较矩阵每列直接显示实际 Anchor / End；不足共同窗口的 1Y 等周期显示不可用，不回退到资产独立最新值。矩阵说明同时列出共同终点与独立指标/月表终点，用户请求的图表区间仍单独保留。
 
 ## 4. 频率、缺点与风险
 
@@ -88,6 +88,8 @@ Performance 页的自然期矩阵另有一条闭合规则：月度收益使用�
 - Metrics Matrix 按各自窗口逐日验证完整性。历史早期缺口继续使 SI 的路径风险不可用，但不使缺口之后完整的 1W/1M 等窗口失效；没有补点或插值。后端全历史风险仍保留原来的覆盖不足状态。
 - BTC/USD 当前点由共享 `market_series_daily` 投影，canonical provider 标识来源序列，日期标识观察日；原始版本、采集批次和按获知时间查询的历史版本保留在 numeric 存储。canonical 当前点会随来源修订更新，并未逐点绑定不可变的原始批次；不能单靠当前点重建历史 PIT。可复核的研究须使用当时冻结的研究输入及原始来源版本。
 - Watchlist 的登记、行情与研究支持不授予 Portfolio 交易能力；当前 Portfolio 的交易选项及录入校验排除 `crypto`。
+
+数据年龄是阅读时钟的日历日差，不是上次物化时冻结的天数。详情新鲜度提示始终显示实际观察日、当前参考日与 UTC 时区，并在跨 UTC 日后更新年龄；交易所 session 与披露滞后仍决定业务上的 stale 状态，日历年龄不替代该判定。
 
 ## 5. 私募基金断段规则
 

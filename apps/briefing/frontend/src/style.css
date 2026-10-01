@@ -132,3 +132,7 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; line-heig
 .edition-skeleton-section span { height: 14px; width: 94%; }
 .edition-skeleton-section span:first-child { width: 35%; height: 20px; }
 .edition-skeleton-section span:last-child { width: 70%; }
+
+.coverage-summary { margin: 0 0 2rem; padding: 1rem 1.25rem; border-left: 3px solid var(--border, #ccd5d9); background: #f5f7f8; overflow-wrap: anywhere; }
+.coverage-summary p { margin: .45rem 0 0; font-size: .85rem; line-height: 1.6; }
+.coverage-summary-warning { border-left-color: #ac7624; background: #fff9ed; }

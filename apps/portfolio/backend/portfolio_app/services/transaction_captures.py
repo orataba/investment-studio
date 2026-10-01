@@ -229,6 +229,7 @@ def _serialize_batch(
         "latest_analysis_revision": row.latest_analysis_revision,
         "analysis_run_status": analysis_run_status,
         "analysis_run_attempt": row.analysis_run_attempt,
+        "analysis_timeout_seconds": get_settings().copilot_analysis_timeout_seconds,
         "analysis_run_started_at": row.analysis_run_started_at,
         "analysis_run_completed_at": row.analysis_run_completed_at,
         "analysis_run_error": analysis_run_error,

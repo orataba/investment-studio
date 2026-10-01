@@ -15,6 +15,15 @@ beforeEach(() => {
 
 afterEach(() => cleanup())
 
+it('localizes the pre-inception holdings boundary without changing the date', async () => {
+  const error = 'Portfolio has no holdings before its inception date (2026-07-01). Choose the inception date or a later date.'
+  render(<LanguageProvider><LanguageSelector /><div role="alert">{error}</div></LanguageProvider>)
+  fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('组合在成立日（2026-07-01）之前尚无持仓，请选择成立日或之后的日期。'))
+  fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(error))
+})
+
 it('distinguishes capital weights from carrying amounts in both languages', async () => {
   const labels = [
     ['Capital Weight', '资金权重'],

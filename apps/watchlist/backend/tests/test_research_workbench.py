@@ -406,3 +406,26 @@ def test_watchlist_risk_indicator_exposes_pending_submissions_and_resubmissions(
         assert indicator() == 'attention'
         case.status = 'handled'
         assert indicator() != 'attention'
+
+
+def test_topic_history_surfaces_active_run_without_retained_private_evidence(client):
+    from watchlist_app.db.models.workbench import ResearchEntry
+    from watchlist_app.db.session import get_session_factory
+
+    topic = client.post('/api/research/topics', json={'title': 'Recover running work', 'instrument_ids': []}).json()
+    with get_session_factory()() as session:
+        session.add(ResearchEntry(entry_id='recover-private-run', topic_id=topic['topic_id'],
+            kind='analysis', title='Current question', status='running', context_json={
+                'watchlist_id': 'scope-list', 'tool_evidence': [{'private_snapshot': 'must stay in detail'}],
+                'execution': {'stage': 'generation', 'attempt': 1}}))
+        session.commit()
+    listing = client.get('/api/research/topics').json()
+    active = next(row for row in listing if row['topic_id'] == topic['topic_id'])['active_run']
+    assert active['entry_id'] == 'recover-private-run'
+    assert active['status'] == 'running' and active['watchlist_id'] == 'scope-list'
+    assert 'must stay in detail' not in str(listing)
+    with get_session_factory()() as session:
+        session.get(ResearchEntry, 'recover-private-run').status = 'draft'
+        session.commit()
+    assert next(row for row in client.get('/api/research/topics').json()
+                if row['topic_id'] == topic['topic_id'])['active_run'] is None

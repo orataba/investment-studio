@@ -1,3 +1,4 @@
+import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
 import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useCanWriteTeam } from '../components/AccountBoundary'
 import { useEffect, useRef, useState } from 'react'
@@ -30,6 +31,7 @@ export default function WatchlistEntryPage() {
   const canWriteTeam = useCanWriteTeam()
   const navigate = useNavigate()
   const [watchlists, setWatchlists] = useState<WatchlistRecord[]>([])
+  const [retryToken, setRetryToken] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
@@ -69,6 +71,7 @@ export default function WatchlistEntryPage() {
   useEffect(() => {
     let cancelled = false
     const controller = new AbortController()
+    setLoading(true)
 
     getWatchlists(controller.signal)
       .then((response) => {
@@ -90,7 +93,7 @@ export default function WatchlistEntryPage() {
       cancelled = true
       controller.abort()
     }
-  }, [])
+  }, [retryToken])
 
   useEffect(() => {
     function handleClick(event: MouseEvent) {
@@ -239,7 +242,7 @@ export default function WatchlistEntryPage() {
         </div>
       </header>
 
-      <NoticeToast notice={error ? { id: 0, message: error, tone: 'error' } : null} onDismiss={() => setError(null)} />
+      {error && <RequestRecovery error={error} onRetry={() => setRetryToken(value => value + 1)} busy={loading} />}
       <NoticeToast notice={notice ? { id: 0, message: notice, tone: 'success' } : null} onDismiss={() => setNotice(null)} />
 
       <section className="watchlist-entry-list-shell">

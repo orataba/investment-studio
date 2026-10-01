@@ -1,3 +1,5 @@
+import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
+import FreshnessNote from '../components/FreshnessNote'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { accountStorageKey, useCanWriteTeam } from '../components/AccountBoundary'
 import {
@@ -3658,9 +3660,9 @@ export default function FundDetailPage({
             }
           : current,
       )
-      setQuoteActionNotice({ id: Date.now(), message: '默认基准已保存。', tone: 'success' })
+      setQuoteActionNotice({ id: Date.now(), message: language === 'zh-Hans' ? '默认基准已保存。' : 'Default benchmark saved.', tone: 'success' })
     } catch (saveError) {
-      setSectionError(saveError instanceof Error ? saveError.message : '默认基准保存失败。')
+      setSectionError(saveError instanceof Error ? saveError.message : language === 'zh-Hans' ? '默认基准保存失败。' : 'Unable to save the default benchmark.')
     } finally {
       setSavingDefaultBenchmark(false)
     }
@@ -3710,7 +3712,7 @@ export default function FundDetailPage({
     return (
       <div className="terminal-page">
         <section className="panel">
-          <div className="error-state">{error || 'Detail unavailable.'}</div>
+          <RequestRecovery error={error || 'Detail unavailable.'} onRetry={() => setRefreshToken(value => value + 1)} />
         </section>
       </div>
     )
@@ -3823,9 +3825,9 @@ export default function FundDetailPage({
         'on_or_before',
       )
     : null
-  const fundReturnWindow =
-    alignedChartReturnWindows?.left ??
-    resolveReturnWindow(
+  const fundReturnWindow = hasBenchmarkSelection
+    ? alignedChartReturnWindows?.left ?? null
+    : resolveReturnWindow(
       navBasisSeries,
       requestedChartWindow.start,
       requestedChartWindow.end,
@@ -3908,21 +3910,30 @@ export default function FundDetailPage({
   const benchmarkReturnKind = activeBenchmarkBasis === benchmarkSelectedCalculationBasis
     ? benchmarkNavSeries?.return_kind
     : activeBenchmarkBasis === 'nav_with_dividend' ? 'total_return' : 'unit_nav_return'
-  const returnKindLabels = { price_return: '价格收益', total_return: '总收益', unit_nav_return: '单位净值收益' }
-  const benchmarkSeriesBasisLabel = benchmarkReturnKind ? returnKindLabels[benchmarkReturnKind] : '收益口径待确认'
+  const returnKindLabels = language === 'zh-Hans'
+    ? { price_return: '价格收益', total_return: '总收益', unit_nav_return: '单位净值收益' }
+    : { price_return: 'Price return', total_return: 'Total return', unit_nav_return: 'Unit NAV return' }
+  const benchmarkSeriesBasisLabel = benchmarkReturnKind ? returnKindLabels[benchmarkReturnKind] : (language === 'zh-Hans' ? '收益口径待确认' : 'Return basis unconfirmed')
   const benchmarkCalculationBasisLabel = benchmarkNavSeries?.return_kind
-    ? returnKindLabels[benchmarkNavSeries.return_kind] : '收益口径待确认'
-  const fundCalculationBasisLabel = navSeries.return_kind ? returnKindLabels[navSeries.return_kind] : '收益口径待确认'
+    ? returnKindLabels[benchmarkNavSeries.return_kind] : (language === 'zh-Hans' ? '收益口径待确认' : 'Return basis unconfirmed')
+  const fundCalculationBasisLabel = navSeries.return_kind ? returnKindLabels[navSeries.return_kind] : (language === 'zh-Hans' ? '收益口径待确认' : 'Return basis unconfirmed')
   const benchmarkReturnKindsMatch = Boolean(navSeries.return_kind && navSeries.return_kind === benchmarkNavSeries?.return_kind)
   const benchmarkRiskLabel = selectedBenchmark
     ? `${selectedBenchmark.primary_identifier || selectedBenchmark.instrument_name} · ${benchmarkCalculationBasisLabel}`
     : null
-  const benchmarkStatusText = benchmarkLoading ? 'Loading'
-    : benchmarkLoadError ? `基准加载失败：${benchmarkLoadError}`
-    : benchmarkCurrencyUnavailable ? `基准没有 ${effectiveCurrency || '当前币种'} 数据。`
-    : benchmarkBasisUnavailable ? '基准没有可用的价格或净值序列。'
-    : benchmarkCalculationUnavailable ? '基准没有可用的计算样本。'
-    : `标的：${fundCalculationBasisLabel}；基准：${benchmarkCalculationBasisLabel}。按共同观察区间展示各自收益。${benchmarkNavSeries?.return_kind === 'price_return' ? '基准价格收益不含分红。' : ''}${benchmarkReturnKindsMatch ? '收益口径一致，可计算相对指标。' : '收益口径不同或未确认，未计算超额收益及相对风险指标。'}`
+  const benchmarkStatusText = language === 'zh-Hans'
+    ? benchmarkLoading ? '正在加载基准…'
+      : benchmarkLoadError ? `基准加载失败：${benchmarkLoadError}`
+      : benchmarkCurrencyUnavailable ? `基准没有 ${effectiveCurrency || '当前币种'} 数据。`
+      : benchmarkBasisUnavailable ? '基准没有可用的价格或净值序列。'
+      : benchmarkCalculationUnavailable ? '基准没有可用的计算样本。'
+      : `标的：${fundCalculationBasisLabel}；基准：${benchmarkCalculationBasisLabel}。按共同观察区间展示各自收益。${benchmarkNavSeries?.return_kind === 'price_return' ? '基准价格收益不含分红。' : ''}${benchmarkReturnKindsMatch ? '收益口径一致，可计算相对指标。' : '收益口径不同或未确认，未计算超额收益及相对风险指标。'}`
+    : benchmarkLoading ? 'Loading benchmark…'
+      : benchmarkLoadError ? `Benchmark failed to load: ${benchmarkLoadError}`
+      : benchmarkCurrencyUnavailable ? `The benchmark has no data in ${effectiveCurrency || 'the selected currency'}.`
+      : benchmarkBasisUnavailable ? 'The benchmark has no available price or NAV series.'
+      : benchmarkCalculationUnavailable ? 'The benchmark has no available calculation sample.'
+      : `Instrument: ${fundCalculationBasisLabel}; benchmark: ${benchmarkCalculationBasisLabel}. Returns use common observation dates. ${benchmarkNavSeries?.return_kind === 'price_return' ? 'Benchmark price returns exclude dividends. ' : ''}${benchmarkReturnKindsMatch ? 'Return bases match; relative metrics are available.' : 'Return bases differ or are unconfirmed; excess returns and relative risk metrics are withheld.'}`
   const benchmarkHasIssue = Boolean(benchmarkLoadError || benchmarkCurrencyUnavailable || benchmarkBasisUnavailable || benchmarkCalculationUnavailable)
   const latestReturnSegmentBreak =
     navSeries.return_segment_breaks[navSeries.return_segment_breaks.length - 1]
@@ -4764,6 +4775,9 @@ export default function FundDetailPage({
     const benchmarkWindow = alignedComparisonWindows?.right.points ?? []
     return {
       ...period,
+      effectiveDates: selectedBenchmark
+        ? alignedComparisonWindows ? { anchor: alignedComparisonWindows.left.anchorDate, end: alignedComparisonWindows.left.endDate } : null
+        : fundWindow.length >= 2 ? { anchor: fundWindow[0].date, end: fundWindow[fundWindow.length - 1].date } : null,
       fund: buildPerformanceMetricSnapshot(fundWindow, fundPathRiskAvailable),
       comparisonFund: buildPerformanceMetricSnapshot(
         comparisonFundWindow,
@@ -4808,7 +4822,7 @@ export default function FundDetailPage({
   const peerComparisonMetricByKey = new Map(
     (peerComparison?.metrics || []).map((metric) => [metric.metric_key, metric]),
   )
-  const activePerformanceMatrixMode = peerRankingAvailable ? performanceMatrixMode : 'values'
+  const activePerformanceMatrixMode = peerRankingAvailable && !selectedBenchmark ? performanceMatrixMode : 'values'
   const formatRecoveryValue = (snapshot: PerformanceMetricSnapshot | null) => {
     if (!snapshot || snapshot.maxDrawdown == null) {
       return null
@@ -4829,7 +4843,7 @@ export default function FundDetailPage({
     benchmarkMetricPrefix && value ? `${benchmarkMetricPrefix} ${value}` : null
   const displayedFundSnapshot = (
     period: (typeof performancePeriodSnapshots)[number],
-  ) => (period.benchmark ? period.comparisonFund : period.fund)
+  ) => (selectedBenchmark ? period.comparisonFund : period.fund)
   const buildPeerPerformanceMatrixCell = (
     rowKey: PerformanceMatrixRowKey,
     periodKey: PerformanceMetricPeriodKey,
@@ -5232,7 +5246,7 @@ export default function FundDetailPage({
   const renderBenchmarkSearch = (ariaLabel: string, extraClassName = '') => {
     const className = ['instrument-chart-compare', extraClassName].filter(Boolean).join(' ')
     const statusText = benchmarkStatusText + (activeTab === 'performance' && comparisonReferenceEndDate
-      ? ` 共同截至日期 ${formatDate(comparisonReferenceEndDate)}，双方使用该日或之前的共同有效观察区间。` : '')
+      ? language === 'zh-Hans' ? ` 共同截至日期 ${formatDate(comparisonReferenceEndDate)}，双方使用该日或之前的共同有效观察区间。` : ` Common endpoint ${formatDate(comparisonReferenceEndDate)}; both series use common observations through that date.` : '')
     return (
       <div className={className}>
         <div className="instrument-chart-compare-search">
@@ -5282,8 +5296,8 @@ export default function FundDetailPage({
             <button
               type="button"
               className="instrument-benchmark-default"
-              aria-label={savingDefaultBenchmark ? '正在保存默认基准' : savedDefaultBenchmarkId === benchmarkFundId && selectedBenchmark ? '已是默认基准' : '设置为默认基准'}
-              title={savedDefaultBenchmarkId === benchmarkFundId && selectedBenchmark ? '已是默认基准' : '设置为默认基准'}
+              aria-label={language === 'zh-Hans' ? savingDefaultBenchmark ? '正在保存默认基准' : savedDefaultBenchmarkId === benchmarkFundId && selectedBenchmark ? '已是默认基准' : '设置为默认基准' : savingDefaultBenchmark ? 'Saving default benchmark' : savedDefaultBenchmarkId === benchmarkFundId && selectedBenchmark ? 'Current default benchmark' : 'Set as default benchmark'}
+              title={language === 'zh-Hans' ? savedDefaultBenchmarkId === benchmarkFundId && selectedBenchmark ? '已是默认基准' : '设置为默认基准' : savedDefaultBenchmarkId === benchmarkFundId && selectedBenchmark ? 'Current default benchmark' : 'Set as default benchmark'}
               aria-pressed={Boolean(selectedBenchmark && savedDefaultBenchmarkId === benchmarkFundId)}
               disabled={!canWriteTeam || !selectedBenchmark || savingDefaultBenchmark || benchmarkLoading || Boolean(benchmarkLoadError) || savedDefaultBenchmarkId === benchmarkFundId}
               onMouseDown={(event) => event.preventDefault()}
@@ -5294,7 +5308,7 @@ export default function FundDetailPage({
             {hasBenchmarkSelection && (
               <div className="instrument-benchmark-status">
                 {benchmarkLoading ? <span role="status" aria-label="Loading">…</span>
-                  : <InfoHint label="基准比较口径" detail={statusText} tone={benchmarkHasIssue ? 'warning' : 'info'} />}
+                  : <InfoHint label={language === 'zh-Hans' ? '基准比较口径' : 'Benchmark comparison basis'} detail={statusText} tone={benchmarkHasIssue ? 'warning' : 'info'} />}
               </div>
             )}
             {showBenchmarkResults ? (
@@ -5885,7 +5899,7 @@ export default function FundDetailPage({
             </div>
           </div>
           {resourceReady('navSeries') ? <p className="fund-overview-date-note">{language === 'zh-Hans' ? '可用历史' : 'Available history'} {formatDate(calculationBasisSeries[0]?.date)} — {formatDate(performanceReferenceEndDate)} · {calculationFrequencyStatus}</p> : !sectionLoadErrors.navSeries ? <p className="fund-overview-date-note">Loading</p> : null}
-          {summary.freshness.staleness_reason && <p className="fund-overview-date-note" role="status">{summary.freshness.staleness_reason}</p>}
+          {summary.freshness.staleness_reason && <p className="fund-overview-date-note" role="status"><FreshnessNote reason={summary.freshness.staleness_reason} observationDate={performanceReferenceEndDate || unitNavDate} /></p>}
           {resourceReady('navSeries') && (navSeries.calculation_frequency_profile.gap_count > 0 || hasUnconfirmedReturnSegmentBreak) ? <p className="fund-overview-quality" role="status">{hasUnconfirmedReturnSegmentBreak
             ? (language === 'zh-Hans' ? '存在尚未确认的基金事件，完整收益历史与风险指标暂不可用。' : 'An unconfirmed fund event prevents complete return history and path risk metrics.')
             : (language === 'zh-Hans' ? '净值历史存在缺口，路径风险指标暂不可用。' : 'NAV history has gaps; path risk metrics are unavailable.')}</p> : null}
@@ -6631,7 +6645,7 @@ export default function FundDetailPage({
                     {canUseZoom ? (
                       <div className="instrument-chart-zoom">
                         <div className="instrument-chart-zoom-meta">
-                          <span>Period</span>
+                          <span>{language === 'zh-Hans' ? '请求区间' : 'Requested period'}</span>
                           <strong>
                             {formatDate(effectiveStartDate)} - {formatDate(effectiveEndDate)}
                           </strong>
@@ -6719,7 +6733,8 @@ export default function FundDetailPage({
                       key={option.value}
                       type="button"
                       className={option.value === activePerformanceMatrixMode ? 'instrument-performance-toggle-active' : undefined}
-                      disabled={option.value !== 'values' && !peerRankingAvailable}
+                      disabled={option.value !== 'values' && (!peerRankingAvailable || Boolean(selectedBenchmark))}
+                      title={option.value !== 'values' && selectedBenchmark ? language === 'zh-Hans' ? '移除比较基准后查看独立同类排名' : 'Clear the benchmark to inspect standalone peer rankings' : undefined}
                       onClick={() => setPerformanceMatrixMode(option.value)}
                     >
                       {option.label}
@@ -6729,13 +6744,18 @@ export default function FundDetailPage({
               </div>
             </div>
             <div className="instrument-performance-section-body">
+              <p className="fund-overview-date-note" role="note">{selectedBenchmark
+                ? language === 'zh-Hans'
+                  ? `比较矩阵：所有周期按共同观察日计算，截至 ${comparisonReferenceEndDate || '尚无共同日期'}；覆盖不足的周期不展示独立最新值。标的独立最新指标及月表截至 ${performanceReferenceEndDate || '—'}。`
+                  : `Comparison matrix: all periods use common observation dates through ${comparisonReferenceEndDate || 'no common date'}. Periods without coverage are unavailable. Standalone instrument metrics and the monthly table are through ${performanceReferenceEndDate || '—'}.`
+                : language === 'zh-Hans' ? `标的独立指标截至 ${performanceReferenceEndDate || '—'}；每列标明实际锚点与终点。` : `Standalone instrument metrics through ${performanceReferenceEndDate || '—'}; each column shows its actual anchor and end.`}</p>
               <HorizontalTableScroll className="table-shell instrument-performance-table-shell">
                 <table className="terminal-table terminal-table-compact instrument-metrics-table">
                   <thead>
                     <tr>
                       <th>Metric</th>
-                      {PERFORMANCE_METRIC_PERIODS.map((period) => (
-                        <th key={period.key}>{period.label}</th>
+                      {performancePeriodSnapshots.map((period) => (
+                        <th key={period.key}>{period.label}<small className="instrument-metric-dates">{period.effectiveDates ? `${period.effectiveDates.anchor} → ${period.effectiveDates.end}` : language === 'zh-Hans' ? '区间覆盖不足' : 'Insufficient coverage'}</small></th>
                       ))}
                     </tr>
                   </thead>
@@ -6751,7 +6771,7 @@ export default function FundDetailPage({
                       >
                         <td className="instrument-metrics-row-label">{row.label}</td>
                         {row.cells.map((cell, index) => (
-                          <td key={`${row.key}-${PERFORMANCE_METRIC_PERIODS[index]?.key || index}`}>
+                          <td key={`${row.key}-${PERFORMANCE_METRIC_PERIODS[index]?.key || index}`} title={performancePeriodSnapshots[index]?.effectiveDates ? `${performancePeriodSnapshots[index].effectiveDates?.anchor} → ${performancePeriodSnapshots[index].effectiveDates?.end}` : language === 'zh-Hans' ? '区间覆盖不足' : 'Insufficient coverage'}>
                             <div
                               className={`instrument-metrics-cell${
                                 'tone' in cell ? ` instrument-metrics-cell-${cell.tone}` : ''
@@ -7659,7 +7679,7 @@ export default function FundDetailPage({
             <div><span>{language === 'zh-Hans' ? '业绩数据截至' : 'Performance as of'}</span><strong>{formatDate(performance.snapshot_metadata?.as_of_date || null)}</strong></div>
             <div><span>{language === 'zh-Hans' ? '风险数据截至' : 'Risk as of'}</span><strong>{formatDate(risk.snapshot_metadata?.as_of_date || null)}</strong></div>
           </div>
-          {summary.freshness.staleness_reason && <p role="status">{summary.freshness.staleness_reason}</p>}
+          {summary.freshness.staleness_reason && <p role="status"><FreshnessNote reason={summary.freshness.staleness_reason} observationDate={performanceReferenceEndDate || unitNavDate} /></p>}
           {navRefreshStatus?.message && <p>{navRefreshStatus.message}</p>}
           {bundle.reference && Object.keys(bundle.reference.section_errors).length > 0 && <p>{Object.values(bundle.reference.section_errors).join(' ')}</p>}
         </section>

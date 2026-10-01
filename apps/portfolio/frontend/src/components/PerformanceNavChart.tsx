@@ -19,6 +19,7 @@ type PerformanceNavChartProps = {
   twrPoints?: PerformanceNavChartPoint[]
   benchmarkPoints?: PerformanceNavChartPoint[]
   benchmarkLabel?: string | null
+  includeStartDateReturn?: boolean
 }
 
 const CHART_WIDTH = 960
@@ -481,6 +482,7 @@ export default function PerformanceNavChart({
   twrPoints = [],
   benchmarkPoints = [],
   benchmarkLabel = null,
+  includeStartDateReturn = false,
 }: PerformanceNavChartProps) {
   const isOverview = variant === 'overview'
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
@@ -527,25 +529,26 @@ export default function PerformanceNavChart({
   const visibleStartDate = visibleRawPoints[0]?.date
   const visibleEndDate = visibleRawPoints[visibleRawPoints.length - 1]?.date
   const visibleTwrRawPoints = filterPointsByDateWindow(sortedTwrPoints, visibleStartDate, visibleEndDate)
+  const includesFundedStart = includeStartDateReturn && clampedWindowStartIndex === 0
   const visiblePoints =
     effectiveSeriesMode === 'twr_index'
-      ? rebasePerformanceSeriesTo100(visibleRawPoints)
+      ? includesFundedStart ? visibleRawPoints : rebasePerformanceSeriesTo100(visibleRawPoints)
       : visibleRawPoints
   const visibleTwrPoints =
     effectiveSeriesMode === 'twr_index'
       ? visiblePoints
       : visibleTwrRawPoints
-  const firstVisibleTwrDate = visibleTwrRawPoints[0]?.date
-  const twrWindowBaseValue = firstVisibleTwrDate
-    ? findPointBefore(sortedTwrPoints, firstVisibleTwrDate)?.value ?? 100
-    : 100
+  const twrWindowBaseValue = includesFundedStart ? 100 : visibleTwrRawPoints[0]?.value ?? 100
   const visibleBenchmarkRawPoints =
     isOverview && effectiveSeriesMode === 'twr_index'
       ? filterPointsByDateWindow(sortedBenchmarkPoints, visibleStartDate, visibleEndDate)
       : []
+  const benchmarkOpeningPoint = includesFundedStart && visibleStartDate ? findPointBefore(sortedBenchmarkPoints, visibleStartDate) : null
   const visibleBenchmarkPoints =
     visibleBenchmarkRawPoints.length > 1 && visiblePoints.length
-      ? rebasePerformanceSeriesTo100(visibleBenchmarkRawPoints)
+      ? benchmarkOpeningPoint && benchmarkOpeningPoint.value !== 0
+        ? visibleBenchmarkRawPoints.map((point) => ({ ...point, value: point.value / benchmarkOpeningPoint.value * 100 }))
+        : rebasePerformanceSeriesTo100(visibleBenchmarkRawPoints)
       : []
 
   const drawdownSourcePoints = useTwrDrawdown ? visibleTwrPoints : visiblePoints
@@ -561,7 +564,7 @@ export default function PerformanceNavChart({
             drawdownSourcePoints,
             useTwrDrawdown && effectiveSeriesMode !== 'twr_index'
               ? twrWindowBaseValue
-              : undefined,
+              : includesFundedStart ? 100 : undefined,
           )
         : []
 
@@ -572,6 +575,7 @@ export default function PerformanceNavChart({
     }
   }, [
     drawdownSourcePoints,
+    includesFundedStart,
     effectiveSeriesMode,
     twrWindowBaseValue,
     useTwrDrawdown,
@@ -792,6 +796,7 @@ export default function PerformanceNavChart({
                 <em>{formatCurrency(activePoint.value, currency)}</em>
               ) : null}
               <em className={activeChangeClassName}>{activePeriodLabel} {formatSignedPercent(activePeriodReturn)}</em>
+              <span>{includesFundedStart ? 'Includes the first funded day' : 'Opening close; first-day return excluded'}</span>
             </div>
             {benchmarkLabel && effectiveSeriesMode === 'twr_index' ? (
               <div className="portfolio-series-label portfolio-series-label-benchmark-row">

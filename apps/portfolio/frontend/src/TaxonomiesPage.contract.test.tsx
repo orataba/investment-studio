@@ -300,7 +300,7 @@ describe('Taxonomies integrated tree contract', () => {
     await user.click(screen.getByRole('button', { name: 'Add instrument' }))
     expect(screen.getByRole('combobox', { name: 'Instrument destination' })).toHaveValue('growth')
     await user.type(screen.getByRole('searchbox', { name: 'Search instrument' }), 'Beta')
-    await user.click(screen.getByRole('button', { name: /BETA.*Beta Fund/ }))
+    await user.click(screen.getByRole('button', { name: /^BETA.*Beta Fund/ }))
     await user.click(within(screen.getByRole('form', { name: 'Add instrument' })).getByRole('button', { name: 'Add instrument' }))
     await waitFor(() => expect(api.createPortfolioTaxonomyAssignment).toHaveBeenCalledWith('3', 'tax', { target_scope: 'instrument', target_entity_id: 'asset-2', taxonomy_node_id: 'growth' }))
     expect(api.createPortfolioInstrumentUniverseRecord).toHaveBeenCalledWith('3', { instrument_id: 'asset-2' })
@@ -326,7 +326,7 @@ describe('Taxonomies integrated tree contract', () => {
     api.getPortfolioTaxonomyCatalog.mockResolvedValue(catalog)
     api.getHoldingsWorkspace.mockResolvedValue(holdingsWorkspaceFixture({ rows: [holdingFixture(), holdingFixture({ line_id: 'fcn-beta', instrument_core: null, holding_category: 'derivatives', derivative_contract: fcnContractFixture({ terms: { ...fcnContractFixture().terms, underlyings: [{ ...fcnContractFixture().terms.underlyings[0], instrument_id: 'asset-2' }] } }) })] }))
     const user = userEvent.setup(); renderPage(); await ready(); await user.click(screen.getByRole('button', { name: 'Growth' })); await user.click(screen.getByRole('button', { name: '+ Add instrument' }))
-    await user.type(screen.getByRole('searchbox', { name: 'Search instrument' }), 'Beta'); await user.click(screen.getByRole('button', { name: /BETA.*Beta Fund/ }))
+    await user.type(screen.getByRole('searchbox', { name: 'Search instrument' }), 'Beta'); await user.click(screen.getByRole('button', { name: /^BETA.*Beta Fund/ }))
     await user.click(within(screen.getByRole('form', { name: 'Add instrument' })).getByRole('button', { name: 'Add instrument' }))
     await waitFor(() => expect(api.createPortfolioInstrumentUniverseRecord).toHaveBeenCalledWith('3', { instrument_id: 'asset-2' }))
     expect(api.createPortfolioTaxonomyAssignment).not.toHaveBeenCalled()
@@ -420,13 +420,24 @@ describe('Taxonomies integrated tree contract', () => {
 
   it('shows the existing assignment and explicitly moves an instrument without duplicating it', async () => {
     const user = userEvent.setup(); renderPage(); await ready(); await user.click(screen.getByRole('button', { name: '+ Add instrument' }))
-    await user.type(screen.getByRole('searchbox', { name: 'Search instrument' }), 'Alpha'); await user.click(screen.getByRole('button', { name: /ALPHA.*Alpha Fund/ }))
+    await user.type(screen.getByRole('searchbox', { name: 'Search instrument' }), 'Alpha'); await user.click(screen.getByRole('button', { name: /^ALPHA.*Alpha Fund/ }))
     await user.click(screen.getByRole('button', { name: 'Current assignment: Growth' }))
     expect(screen.getByRole('tooltip')).toHaveTextContent('Growth')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Instrument destination' }), 'defensive')
     await user.click(screen.getByRole('button', { name: 'Move instrument' }))
     await waitFor(() => expect(api.updatePortfolioTaxonomyAssignment).toHaveBeenCalledWith('3', 'tax', 'assignment-alpha', { taxonomy_node_id: 'defensive' }))
     expect(api.createPortfolioTaxonomyAssignment).not.toHaveBeenCalled()
+  })
+
+  it('opens visible category actions with the keyboard and restores focus on Escape', async () => {
+    const user = userEvent.setup(); renderPage(); await ready()
+    const trigger = screen.getByRole('button', { name: 'Actions: Growth' })
+    trigger.focus()
+    await user.keyboard('{Enter}')
+    expect(screen.getByRole('button', { name: 'Add instrument' })).toHaveFocus()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('button', { name: 'Add instrument' })).not.toBeInTheDocument()
+    expect(trigger).toHaveFocus()
   })
 
   it('exposes structural actions through the root context menu and protects destructive deletion', async () => {

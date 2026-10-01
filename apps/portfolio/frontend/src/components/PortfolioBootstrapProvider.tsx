@@ -1,10 +1,11 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
+import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
 import { clearPortfolioApiCache } from '../lib/api'
 import { getPortfolioBootstrap, type PortfolioBootstrap } from '../lib/bootstrap'
 
-type BootstrapState = { data: PortfolioBootstrap | null; error: string | null; portfolioId: string | null }
-const BootstrapContext = createContext<BootstrapState>({ data: null, error: null, portfolioId: null })
+type BootstrapState = { data: PortfolioBootstrap | null; error: string | null; portfolioId: string | null; retry: () => void }
+const BootstrapContext = createContext<BootstrapState>({ data: null, error: null, portfolioId: null, retry: () => {} })
 export function usePortfolioBootstrap() { return useContext(BootstrapContext) }
 
 function authorityKey(value: PortfolioBootstrap) {
@@ -14,8 +15,10 @@ function authorityKey(value: PortfolioBootstrap) {
 
 /** Fetch session, deployment settings and current portfolio access as one identity-bound snapshot. */
 export default function PortfolioBootstrapProvider({ portfolioId, children }: { portfolioId: string | null; children: ReactNode }) {
+  const [retryToken, setRetryToken] = useState(0)
+  const retry = () => setRetryToken(value => value + 1)
   const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
-  const [state, setState] = useState<BootstrapState>({ data: null, error: null, portfolioId })
+  const [state, setState] = useState<Omit<BootstrapState, 'retry'>>({ data: null, error: null, portfolioId })
   useEffect(() => {
     let active = true
     let requestNumber = 0
@@ -50,7 +53,7 @@ export default function PortfolioBootstrapProvider({ portfolioId, children }: { 
           const status = (reason as { status?: number } | null)?.status
           const transient = reason instanceof TypeError || requestController.signal.aborted || (typeof status === 'number' && status >= 500)
           if (confirmed && transient) {
-            setNotice({ id: Date.now(), message: '账号服务暂时无法连接，已保留当前页面和未保存内容。', tone: 'error' })
+            setNotice({ id: Date.now(), message: <RequestRecovery embedded error="账号服务暂时无法连接，已保留当前页面和未保存内容。" onRetry={() => { void check() }} />, tone: 'error' })
             return
           }
           confirmed = null
@@ -71,8 +74,8 @@ export default function PortfolioBootstrapProvider({ portfolioId, children }: { 
       window.removeEventListener('focus', onFocus)
       window.removeEventListener('studio-auth-changed', onAuthChanged)
     }
-  }, [portfolioId])
+  }, [portfolioId, retryToken])
   // The new route must never render with the prior portfolio's authority.
   const value = state.portfolioId === portfolioId ? state : { data: null, error: null, portfolioId }
-  return <BootstrapContext.Provider value={value}>{children}<NoticeToast notice={notice} onDismiss={() => setNotice(null)} /></BootstrapContext.Provider>
+  return <BootstrapContext.Provider value={{ ...value, retry }}>{children}<NoticeToast notice={notice} durationMs={0} onDismiss={() => setNotice(null)} /></BootstrapContext.Provider>
 }

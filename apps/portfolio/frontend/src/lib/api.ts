@@ -1306,6 +1306,7 @@ export type PortfolioResearchAsOfMode = 'dynamic' | 'pinned'
 export type PortfolioResearchPlanningTaxonomyOption = {
   taxonomy_id: string
   targets_available?: boolean
+  target_source?: 'single_member' | 'configured' | 'incomplete'
   name: string
   taxonomy_type: string
 }
@@ -3043,6 +3044,7 @@ export type PortfolioTransactionCaptureBatchRecord = {
   latest_analysis_revision: number
   analysis_run_status: 'idle' | 'queued' | 'running' | 'succeeded' | 'failed'
   analysis_run_attempt: number
+  analysis_timeout_seconds?: number
   analysis_run_started_at?: string | null
   analysis_run_completed_at?: string | null
   analysis_run_error?: string | null

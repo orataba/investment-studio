@@ -64,7 +64,6 @@ from portfolio_app.services.portfolio_store import (
     get_portfolio,
     list_portfolio_instrument_universe,
     list_taxonomies,
-    list_target_sets,
     list_taxonomy_nodes,
     list_accounts,
     list_transactions,
@@ -519,18 +518,20 @@ def _validate_top_sleeve_weight_bounds(
 
 
 def _planning_taxonomy_options(portfolio_id: str) -> list[dict[str, object]]:
-    configured = {item["taxonomy_id"] for item in list_target_sets(portfolio_id)
-                  if item.get("status") == "active"}
-    return [
-        {
-            "taxonomy_id": item["taxonomy_id"],
-            "name": item["name"],
-            "taxonomy_type": item["taxonomy_type"],
-            "targets_available": item["taxonomy_id"] in configured,
-        }
-        for item in list_taxonomies(portfolio_id)
-        if item.get("status") == "active" and item.get("primary_assignment_scope") == "instrument"
-    ]
+    from portfolio_app.services.taxonomy_configuration import current_taxonomy_catalog
+    catalog = current_taxonomy_catalog(portfolio_id)
+    resolutions = {item["taxonomy_id"]: item for item in catalog["target_resolution"]}
+    options = []
+    for item in catalog["taxonomies"]:
+        if item.get("status") != "active" or item.get("primary_assignment_scope") != "instrument":
+            continue
+        scopes = resolutions.get(item["taxonomy_id"], {}).get("scope_targets", [])
+        ready = bool(scopes) and all(scope["taa"]["status"] == "complete" for scope in scopes)
+        implicit = any(scope["taa"].get("source_stage") == "single_member" for scope in scopes)
+        options.append({"taxonomy_id": item["taxonomy_id"], "name": item["name"],
+                        "taxonomy_type": item["taxonomy_type"], "targets_available": ready,
+                        "target_source": "single_member" if ready and implicit else "configured" if ready else "incomplete"})
+    return options
 
 
 def _taxonomy_name_map(portfolio_id: str) -> dict[str, str]:

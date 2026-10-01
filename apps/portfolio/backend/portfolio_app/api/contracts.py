@@ -1823,6 +1823,7 @@ class TaxonomyCatalogResponse(BaseModel):
 
 class ResearchPlanningTaxonomyOption(BaseModel):
     targets_available: bool = True
+    target_source: str | None = None
     taxonomy_id: str
     name: str
     taxonomy_type: str

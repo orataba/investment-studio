@@ -14,6 +14,7 @@ const chineseNotes: Record<string, string> = {
 export function concentrationMessage(note: string, zh: boolean) {
   if (!zh) return note
   return chineseNotes[note] ?? note
+    .replace(/^Portfolio has no holdings before its inception date \(([^)]+)\)\. Choose the inception date or a later date\.$/, '组合在成立日（$1）之前尚无持仓，请选择成立日或之后的日期。')
     .replace(/^Missing exposure: (.*)\.$/, '缺少敞口金额：$1。')
     .replace(/^FCN linked securities are missing or ambiguous: (.*)\.$/, 'FCN 挂钩标的缺失或不明确：$1。')
     .replace(/^FCN allocation does not match its linked securities: (.*)\.$/, 'FCN 分配与挂钩标的不一致：$1。')

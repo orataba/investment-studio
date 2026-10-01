@@ -21,6 +21,8 @@
   Portfolio 与 Watchlist 共用的小型价格/NAV 趋势图，统一表格内 chart 列的渲染、空态、颜色与尺寸。
 - `ConfirmDialog` / `useModalDialog` / `modalStack`
   跨 app 的确认弹窗、焦点管理和嵌套弹窗栈。
+- `RequestRecovery`
+  统一账号或业务读取失败时保留当前目标，并提供本地化的重试、首页和请求诊断编号。暂时依赖失败不推断为退出登录；原有会话明确失效时仍卸载受保护内容。
 - `NoticeToast`
   统一的非阻塞右侧通知，加载、成功、错误和一般状态共用一个堆叠容器；`LoadingNotice` 随操作结束消失，错误可关闭，成功自动收起。通知通过 portal 挂在页面根部，弹窗内调用也不改变布局或被遮挡。字段校验和长期数据覆盖说明仍留在相关字段/数据区域。
 - `InfoHint` / `info-hint.css`

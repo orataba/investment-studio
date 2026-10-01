@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import HorizontalTableScroll from '../../../../packages/ui/src/HorizontalTableScroll'
+import RequestRecovery from '../../../../packages/ui/src/RequestRecovery'
 import InfoHint from '../../../../packages/ui/src/InfoHint'
-import NoticeToast, { LoadingNotice } from '../../../../packages/ui/src/NoticeToast'
+import { LoadingNotice } from '../../../../packages/ui/src/NoticeToast'
 import '../../../../packages/ui/src/notice-toast.css'
 import { useModalDialog } from '../../../../packages/ui/src/useModalDialog'
 import { LanguageSelector, useLanguage } from '../../../../packages/ui/src/i18n'
@@ -14,7 +15,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${api}${path}`, { credentials: 'include', ...options })
   if (!response.ok) {
     const body = await response.json().catch(() => ({}))
-    throw new Error(typeof body.detail === 'string' ? body.detail : `HTTP ${response.status}`)
+    const message = typeof body.detail === 'string' ? body.detail : `HTTP ${response.status}`
+    const requestId = response.headers?.get('X-Request-ID')
+    throw new Error(requestId ? `${message} [request_id=${requestId}]` : message)
   }
   return response.json()
 }
@@ -88,6 +91,25 @@ function Coverage({ detail }: { detail: ReportDetail }) {
       </li>
     })}</ul></>}
   </>
+}
+
+export function CoverageSummary({ detail, canReadSources }: { detail: ReportDetail; canReadSources: boolean }) {
+  const copy = useCopy()
+  const channels = Array.isArray(detail.coverage.text.sources) ? detail.coverage.text.sources as Record<string, unknown>[] : []
+  const gaps = channels.filter(channel => {
+    const discovery = channel.latest_discovery as { status?: string } | undefined
+    const run = channel.latest_run as { status?: string; failed_count?: number } | undefined
+    return discovery?.status === 'failed' || run?.status === 'failed' || run?.status === 'partial' || Number(run?.failed_count || 0) > 0
+  })
+  const prices = [...new Set(detail.market_rows.map(row => row.end_date))].sort()
+  return <section className={`coverage-summary${gaps.length ? ' coverage-summary-warning' : ''}`} aria-label={copy('阅读前的覆盖说明', 'Coverage at a glance')}>
+    <strong>{gaps.length ? copy(`来源覆盖有缺口：${gaps.length}/${channels.length} 个渠道`, `Source coverage gaps: ${gaps.length}/${channels.length} channels`) : copy('来源与日期', 'Sources and dates')}</strong>
+    {gaps.length > 0 && <p>{gaps.map(channel => String(channel.source_name || channel.channel_id)).join(' · ')}</p>}
+    <p>{copy('行情有效日', 'Price dates')}: {prices.length ? prices.join(' · ') : copy('没有留存行情', 'No retained prices')}</p>
+    <p>{copy('生成完成只表示报告流程完成，不代表来源齐备。', 'Completed describes report generation, not complete source coverage.')}
+      {' '}{!canReadSources && copy('登录后可查看来源覆盖细节。', 'Sign in to inspect source coverage details.')} {' '}<a href="#source-coverage">{copy('查看来源与缺口', 'Inspect sources and gaps')}</a></p>
+    {detail.report && <p className="muted">{copy('研究内容保留原文；切换界面语言不会改写报告。', 'Research content remains in its original language; changing the interface language does not translate the report.')}</p>}
+  </section>
 }
 
 export function ReportBody({ detail, onSource, canReadSources = true }: { detail: ReportDetail; onSource: (source: string) => void; canReadSources?: boolean }) {
@@ -173,7 +195,7 @@ export function ReportBody({ detail, onSource, canReadSources = true }: { detail
 
 export default function App() {
   const copy = useCopy()
-  const { language } = useLanguage()
+  const { language, t } = useLanguage()
   const [kind, setKind] = useState<BriefingView>(() => reportLocation().kind)
   const [rows, setRows] = useState<ReportSummary[]>([])
   const [total, setTotal] = useState(0)
@@ -217,10 +239,11 @@ export default function App() {
     const controller = new AbortController()
     request<{ harness_available: boolean; can_generate: boolean; can_read_sources: boolean }>('/status', { signal: controller.signal }).then(result => { if (controller.signal.aborted) return; setAvailable(result.harness_available); setCanGenerate(result.can_generate); setCanReadSources(result.can_read_sources) }).catch(reason => { if (!controller.signal.aborted) setError(String(reason.message)) })
     return () => controller.abort()
-  }, [isIndustry])
+  }, [isIndustry, revision])
   useEffect(() => {
     if (kind === 'industry') return
     const controller = new AbortController()
+    setError(''); setLoading(true)
     Promise.all(Array.from({ length: Math.ceil(limit / 30) }, (_, page) => request<{ rows: ReportSummary[]; total: number }>(`/reports?report_type=${kind}&limit=30&offset=${page * 30}`, { signal: controller.signal }))).then(pages => {
       if (controller.signal.aborted) return
       const result = { rows: pages.flatMap(page => page.rows), total: pages[0].total }
@@ -304,18 +327,19 @@ export default function App() {
     <header className="briefing-masthead"><nav className="workspace-breadcrumbs" aria-label={copy('工作区导航', 'Workspace navigation')}><a data-workspace-link href={withLanguage(resolveWorkspaceUrl(import.meta.env.VITE_HOME_URL, 'home'), language)}>{copy('首页', 'Home')}</a><span aria-hidden="true">/</span><span aria-current="page">{copy('市场简报', 'Market Briefing')}</span></nav><LanguageSelector /></header>
     <div className="briefing-heading"><div className="section-heading"><h1>{copy('市场简报', 'Market Briefing')}</h1><InfoHint label={copy('关于市场简报', 'About Market Briefing')} detail={copy('关注值得理解的变化，保留每一份判断的依据。', 'Understand meaningful changes, with the evidence behind each edition.')} /></div>{!isIndustry && canGenerate && <div className="generation-actions"><button className="primary-button" onClick={() => setShowGenerate(value => !value)} disabled={available === false}>{copy('生成本期', 'Generate edition')}</button>{available === false && <InfoHint tone="warning" label={copy('生成不可用', 'Generation unavailable')} detail={copy('报告生成环境尚未配置。已完成报告仍可阅读。', 'Report generation is not configured. Completed editions remain available.')} />}</div>}</div>
     {!isIndustry && showGenerate && <section className="generate-panel"><div className="section-heading"><h2>{kind === 'daily' ? copy('生成日报', 'Generate daily report') : copy('生成周报', 'Generate weekly report')}</h2><InfoHint label={copy('生成口径', 'Generation basis')} detail={copy('默认以当前时刻为截止时间。日报读取过去24小时；周报重新读取本周一至截止时刻的资料。重新生成会保留为新版本。', 'Uses the current time by default. Daily reports cover 24 hours; weekly reports reread evidence from Monday. Regeneration creates a new version.')} /></div><label>{copy('指定截止时间（含时区，可留空）', 'Cutoff timestamp (include timezone, optional)')}<input type="text" value={cutoff} onChange={event => setCutoff(event.target.value)} placeholder="2026-09-07T22:45:00+08:00" /></label><div><button className="primary-button" onClick={generate} disabled={generating}>{generating ? copy('正在提交…', 'Submitting…') : copy('开始生成', 'Start generation')}</button><button onClick={() => setShowGenerate(false)}>{copy('取消', 'Cancel')}</button></div></section>}
-    <NoticeToast notice={!isIndustry && error ? { id: 0, message: error, tone: 'error' } : null} onDismiss={() => setError('')} />
+    {!isIndustry && error && <RequestRecovery error={error} onRetry={() => setRevision(value => value + 1)} busy={loading} />}
     <LoadingNotice active={!isIndustry && (loading || detailLoading || generating)} message={generating ? copy('正在提交…', 'Submitting…') : copy('加载中', 'Loading')} />
     <div className="briefing-tabs" role="tablist" aria-label={copy('报告类型', 'Report type')}>{(['daily', 'weekly', 'industry'] as const).map(type => <button role="tab" aria-selected={kind === type} key={type} onClick={() => changeKind(type)}>{type === 'daily' ? copy('日报', 'Daily') : type === 'weekly' ? copy('周报', 'Weekly') : copy('行业研究', 'Industry research')}</button>)}</div>
     {isIndustry ? <IndustryResearch /> : <div className="briefing-layout"><aside className="edition-index" aria-busy={loading}><h2>{copy('历史期刊', 'Editions')}</h2>{loading && <p role="status" className="muted">{copy('加载中', 'Loading')}</p>}{rows.map(row => <button className={`edition ${selected === row.report_id ? 'selected' : ''}`} key={row.report_id} onClick={() => choose(row.report_id)}><strong>{row.report_date}</strong><span>{copy('版本', 'Version')} {row.version}<small className={row.status === 'failed' ? 'negative' : ''}>{statusText(row.status)}</small></span></button>)}{total > rows.length && <button className="load-more" onClick={() => setLimit(value => value + 30)}>{copy('更多期刊', 'More editions')}</button>}</aside>
       <div className="edition-content" aria-busy={detailLoading || loading}>
         {!detail && (loading || detailLoading || Boolean(selected && !detailError)) && <div className="edition-skeleton" role="status" aria-label={copy('加载中', 'Loading')}><div className="edition-skeleton-header" /><div className="edition-skeleton-facts" />{[0, 1, 2].map(index => <div className="edition-skeleton-section" key={index}><span /><span /><span /></div>)}</div>}
         {!detail && !selected && !loading && !error && <p className="muted">{copy('尚无报告。', 'No editions yet.')}</p>}
-        {detailError && <div className="error" role="alert">{detailError} <button onClick={() => setRevision(value => value + 1)}>{copy('重试', 'Retry')}</button></div>}
-      {detail && <><header className="edition-header"><p className="eyebrow">{copy('版本', 'VERSION')} {detail.version} · <span role={pending(detail.status) ? 'status' : undefined}>{statusText(detail.status)}</span>{pending(detail.status) && <InfoHint label={copy('生成进度', 'Generation progress')} detail={copy('正在整理本期材料并生成报告，完成后此处自动更新。', 'Preparing evidence and composing this edition. This page updates when it completes.')} />}{detail.edition_role === 'preview' ? ` · ${copy('本地预览', 'LOCAL PREVIEW')}` : ''}</p><h2>{detail.report_type === 'daily' ? copy('投研日报', 'Daily research briefing') : copy('投研周报', 'Weekly research briefing')} | {detail.report_date}</h2><dl className="edition-facts"><div><dt>{copy('资料窗口', 'Evidence window')}</dt><dd>{detail.window.period_start && stamp(detail.window.period_start)} — {stamp(detail.cutoff)}</dd></div><div><dt>{copy('时区', 'Timezone')}</dt><dd>{detail.window.timezone}</dd></div><div><dt>{copy('原始材料', 'Original materials')}</dt><dd>{detail.source_count}</dd></div></dl></header>
-        {detail.status === 'failed' && <p className="error" role="alert">{detail.error}</p>}
+        {detailError && <RequestRecovery error={detailError} onRetry={() => setRevision(value => value + 1)} busy={detailLoading} />}
+      {detail && <><header className="edition-header"><p className="eyebrow">{copy('版本', 'VERSION')} {detail.version} · <span role={pending(detail.status) ? 'status' : undefined}>{statusText(detail.status)}</span>{pending(detail.status) && <InfoHint label={copy('生成进度', 'Generation progress')} detail={copy('正在整理本期材料并生成报告，完成后此处自动更新。', 'Preparing evidence and composing this edition. This page updates when it completes.')} />}{detail.edition_role === 'preview' ? ` · ${copy('本地预览', 'LOCAL PREVIEW')}` : ''}</p><h2>{detail.report_type === 'daily' ? copy('投研日报', 'Daily research briefing') : copy('投研周报', 'Weekly research briefing')} | {detail.report_date}</h2><dl className="edition-facts"><div><dt>{copy('资料窗口', 'Evidence window')}</dt><dd>{detail.window.period_start && stamp(detail.window.period_start)} — {stamp(detail.cutoff)}</dd></div><div><dt>{copy('生成完成', 'Generated')}</dt><dd>{detail.completed_at ? stamp(detail.completed_at) : '—'}</dd></div><div><dt>{copy('时区', 'Timezone')}</dt><dd>{detail.window.timezone}</dd></div><div><dt>{copy('原始材料', 'Original materials')}</dt><dd>{detail.source_count}</dd></div></dl></header>
+        {detail.status === 'failed' && <p className="error" role="alert">{t(detail.error || '')}</p>}
+        <CoverageSummary detail={detail} canReadSources={canReadSources} />
         {detail.report && <ReportBody detail={detail} onSource={showSource} canReadSources={canReadSources} />}
-        <details className="coverage"><summary>{copy('来源与覆盖范围', 'Sources and coverage')}</summary><p>{copy('报告保留生成时使用的原文与数值版本；日期未知与未覆盖内容不会被补写为事实。', 'Each edition retains its original evidence and numeric versions. Unknown dates and missing coverage remain explicit.')}</p>{canReadSources && <Coverage detail={detail} />}<ul className="all-sources">{detail.sources.filter(item => item.source_type === 'public_document').map(item => <li key={item.source_id}>{safeUrl(item.url) ? <a href={safeUrl(item.url)} target="_blank" rel="noreferrer" translate="no">{item.title} ↗</a> : <span translate="no">{item.title}</span>}<span>{item.source_name} · {item.published_at || copy('首发时间未知', 'Publication time unknown')}{canReadSources && <> · <button onClick={() => showSource(item.source_id)}>{copy('留存版本', 'Retained version')}</button></>}</span></li>)}</ul></details>
+        <details className="coverage" id="source-coverage"><summary>{copy('来源与覆盖范围', 'Sources and coverage')}</summary><p>{copy('报告保留生成时使用的原文与数值版本；日期未知与未覆盖内容不会被补写为事实。', 'Each edition retains its original evidence and numeric versions. Unknown dates and missing coverage remain explicit.')}</p>{canReadSources && <Coverage detail={detail} />}<ul className="all-sources">{detail.sources.filter(item => item.source_type === 'public_document').map(item => <li key={item.source_id}>{safeUrl(item.url) ? <a href={safeUrl(item.url)} target="_blank" rel="noreferrer" translate="no">{item.title} ↗</a> : <span translate="no">{item.title}</span>}<span>{item.source_name} · {item.published_at || copy('首发时间未知', 'Publication time unknown')}{canReadSources && <> · <button onClick={() => showSource(item.source_id)}>{copy('留存版本', 'Retained version')}</button></>}</span></li>)}</ul></details>
       </>}
       </div>
     </div>}

@@ -94,7 +94,7 @@ it('loads rows after directory synchronization without waiting for optional clas
   await act(async () => directory.resolve([record('Alpha'), record('Beta')]))
   await waitFor(() => expect(mocks.runScreenerQuery).toHaveBeenCalledTimes(1))
   expect(mocks.runScreenerQuery.mock.calls[0][0]).toMatchObject({
-    watchlist_id: 'Alpha', view_id: 'Alpha-overview', selected_fields: ['instrument_name', 'currency'],
+    watchlist_id: 'Alpha', view_id: 'Alpha-overview', selected_fields: ['instrument_name', 'currency', 'ticker_or_isin'],
   })
   expect(screen.getByRole('status').classList.contains('investment-studio-notice-toast-loading')).toBe(true)
   await act(async () => result.resolve(rows('Alpha')))

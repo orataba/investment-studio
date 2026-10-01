@@ -12,7 +12,8 @@ export default function HoldingPeriodPanel({
   asOfDate: string
   eventValued: boolean
 }) {
-  const { t } = useLanguage()
+  const { t, language } = useLanguage()
+  const text = (en: string, zh: string) => language === 'zh-Hans' ? zh : en
   const [params, setParams] = useSearchParams()
   const period = params.get('pnl_period') ?? 'mtd'
   const monthBoundary = new Date(`${asOfDate.slice(0, 7)}-01T00:00:00Z`)
@@ -52,13 +53,14 @@ export default function HoldingPeriodPanel({
   const sum = (values: Array<number | null | undefined>) => values.some((value) => value == null)
     ? null : values.reduce<number>((total, value) => total + Number(value), 0)
   const fx = row ? sum([row.instrument_currency_gains, row.cash_currency_gains, row.pending_settlement_currency_gains ?? 0]) : null
-  const expenses = row ? sum([row.expense_cash_amount, row.fees, row.taxes]) : null
+  const expenses = row?.expense_cash_amount ?? null
+  const includedCharges = row ? sum([row.fees, row.taxes]) : null
   const lines = [
     ['Realized price P/L', row?.realized_capital_gains],
     ['Change in unrealized price P/L', row?.unrealized_pnl_change],
     ['Dividends / coupons', row?.earnings],
     ['FX P/L', fx],
-    ['Expenses and taxes', expenses == null ? null : -expenses],
+    [text('Separate cash expenses', '独立现金费用'), expenses == null ? null : -expenses],
   ] as const
 
   function selectPeriod(value: string) {
@@ -110,6 +112,9 @@ export default function HoldingPeriodPanel({
               {lines.map(([label, value]) => <div key={label}><dt>{t(label)}</dt><dd className={signedValueClass(value)}>{formatSignedCurrency(value, currency)}</dd></div>)}
             </dl>
           </div>
+          <p className="holding-detail-note">{text('Net period P/L = realized price P/L + unrealized price P/L change + income + FX P/L − separate cash expenses.', '期间净损益 = 已实现价格损益 + 未实现价格损益变动 + 收入 + 汇兑损益 − 独立现金费用。')}</p>
+          <p className="holding-detail-note">{text('Included fees and taxes (already reflected; do not subtract again)', '其中交易费用与税费（已包含，不再加减）')}: {formatSignedCurrency(includedCharges == null ? null : -includedCharges, currency)}</p>
+          <p className="holding-detail-note">{text('Period price attribution uses opening market value and period trades. FIFO book realized P/L uses matched acquisition lots and allocated opening charges; the two realized amounts need not match. New purchases can change the period split while total net P/L remains reconciled.', '期间价格归因使用期初市值和期间交易；FIFO 账面已实现损益使用匹配批次的取得成本及分摊买入费用，两者的已实现部分不必相等。新增买入可改变期间拆分，净损益总额仍须对平。')}</p>
           <div className="holding-period-boundaries">
             <span>{t('Opening position value')} <strong>{formatCurrency(row.initial_value, currency)}</strong></span>
             <span>{t('Closing position value')} <strong>{formatCurrency(row.final_value, currency)}</strong></span>

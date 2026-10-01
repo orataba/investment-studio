@@ -1,3 +1,4 @@
+import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
 import { LanguageSelector } from '../../../../../packages/ui/src/i18n'
 import { useEffect, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
@@ -25,6 +26,7 @@ export default function InstrumentDetailPage() {
   const watchlistId = (searchParams.get('watchlist') || '').trim()
   const [instrument, setInstrument] = useState<InstrumentResolveResponse | null>(null)
   const [watchlistContext, setWatchlistContext] = useState<WatchlistBreadcrumbContext | null>(null)
+  const [retryToken, setRetryToken] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -59,7 +61,7 @@ export default function InstrumentDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [instrumentId])
+  }, [instrumentId, retryToken])
 
   useEffect(() => {
     let cancelled = false
@@ -80,7 +82,7 @@ export default function InstrumentDetailPage() {
   if (error || !instrument) {
     return (
       <section className="panel">
-        <div className="error-state">{error || 'Detail unavailable.'}</div>
+        <RequestRecovery error={error || 'Detail unavailable.'} onRetry={() => setRetryToken(value => value + 1)} />
       </section>
     )
   }

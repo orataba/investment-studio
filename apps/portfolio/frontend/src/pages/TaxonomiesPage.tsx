@@ -609,6 +609,8 @@ export default function TaxonomiesPage() {
   const [nodeEditId, setNodeEditId] = useState<string | null>(null)
   const [nodeEditName, setNodeEditName] = useState('')
   const [contextMenuState, setContextMenuState] = useState<TaxonomyContextMenuState | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement | null>(null)
+  const contextTriggerRef = useRef<HTMLButtonElement | null>(null)
   const [dragTargetNodeId, setDragTargetNodeId] = useState<string | null>(null)
 
   currentPortfolioIdRef.current = portfolioId
@@ -903,6 +905,7 @@ export default function TaxonomiesPage() {
     if (!contextMenuState) {
       return
     }
+    contextMenuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
     const handleWindowPointer = () => setContextMenuState(null)
     window.addEventListener('click', handleWindowPointer)
     window.addEventListener('scroll', handleWindowPointer, true)
@@ -915,6 +918,7 @@ export default function TaxonomiesPage() {
   useEffect(() => {
     function handleWindowKeydown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
+        contextTriggerRef.current?.focus()
         setContextMenuState(null)
         closeModalStack()
       }
@@ -1764,6 +1768,19 @@ export default function TaxonomiesPage() {
     }
   }
 
+  function renderActionsButton(label: string, state: Omit<Extract<TaxonomyContextMenuState, { kind: 'node' }>, 'x' | 'y'> | Omit<Extract<TaxonomyContextMenuState, { kind: 'entity' }>, 'x' | 'y'> | Omit<Extract<TaxonomyContextMenuState, { kind: 'taxonomy' }>, 'x' | 'y'>) {
+    if (!canEditPortfolio || targetEditMode) return null
+    return <button type="button" className="table-inline-button" disabled={Boolean(actionPending)} aria-haspopup="true" aria-label={`${zh ? '操作' : 'Actions'}: ${label}`} onClick={(event) => {
+      event.stopPropagation()
+      contextTriggerRef.current = event.currentTarget
+      const rect = event.currentTarget.getBoundingClientRect()
+      if (state.kind === 'node') setSelectedNodeId(state.nodeId)
+      if (state.kind === 'taxonomy') setSelectedNodeId(null)
+      if (state.kind === 'entity' && !selectedEntityIds.has(state.entityId)) setSelectedEntityIds(new Set([state.entityId]))
+      setContextMenuState({ ...state, x: rect.left, y: rect.bottom })
+    }}>{zh ? '操作' : 'Actions'}</button>
+  }
+
   function handleNodeContextMenu(event: ReactMouseEvent, node: PortfolioTaxonomyNodeRecord) {
     event.preventDefault()
     if (actionPending || targetEditMode || !canEditPortfolio) return
@@ -2409,6 +2426,7 @@ export default function TaxonomiesPage() {
           <input type="checkbox" checked={selected} disabled={targetEditMode} onChange={() => toggleEntitySelection(entity.entity_id)} /></label>}
         <span className="taxonomy-level-label portfolio-tree-label" data-tree-level="item" translate="no" title={entity.label}>{entity.label}</span>{renderInstrumentStatusCell(entity)}
         {entity.supporting_label ? <span className="taxonomy-entity-supporting-label">{entity.supporting_label}</span> : null}
+        {!lockedCashEntity ? renderActionsButton(entity.label, { kind: 'entity', entityId: entity.entity_id }) : null}
       </div></td>
       <td>—</td>
       <td>{formatReportAmount(entity.market_value_base)}</td>
@@ -2488,7 +2506,7 @@ export default function TaxonomiesPage() {
           {hasChildren ? <button type="button" className="taxonomy-tree-toggle" aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${node.node_name}`} aria-expanded={!collapsed} onClick={() => toggleNodeCollapse(node.taxonomy_node_id)}>
             <span className={`taxonomy-tree-arrow ${collapsed ? 'taxonomy-tree-arrow-collapsed' : 'taxonomy-tree-arrow-expanded'}`} /></button> : <span className="taxonomy-tree-toggle taxonomy-tree-toggle-empty" />}
           <button type="button" className={`taxonomy-node-select portfolio-tree-label ${selected ? 'taxonomy-node-select-active' : ''}`} data-tree-level={depth === 1 ? 'primary' : 'nested'} translate="no" title={node.node_name} onClick={() => revealTargetScope(targetScopeKey(node.taxonomy_node_id))}>{node.node_name}</button>
-          <span className="taxonomy-tree-count">{aggregate?.current_entity_count ?? 0}</span></div></td>
+          <span className="taxonomy-tree-count">{aggregate?.current_entity_count ?? 0}</span>{renderActionsButton(node.node_name, { kind: 'node', nodeId: node.taxonomy_node_id })}</div></td>
         <td>{renderAllocationBasis(node)}</td><td>{formatReportAmount(aggregate?.current_value_base)}</td>
         <td>{renderExposure('taxonomy', node.taxonomy_node_id, selectedTaxonomy!.taxonomy_id)}</td>
         <td>{renderTargetCell('saa', member, targetEditMode)}</td><td>{renderTargetCell('taa', member, targetEditMode)}</td>
@@ -2608,7 +2626,7 @@ export default function TaxonomiesPage() {
               </tr></thead><tbody>
                 <tr className={`portfolio-tree-row taxonomy-root-row ${!selectedNode ? 'taxonomy-node-row-active' : ''}`} data-tree-level="root" onContextMenu={canEditPortfolio && !targetEditMode && !actionPending ? (event) => { event.preventDefault(); setSelectedNodeId(null); setContextMenuState({ kind: 'taxonomy', taxonomyId: selectedTaxonomy.taxonomy_id, x: event.clientX, y: event.clientY }) } : undefined}>
                   <td className="holding-name-cell"><div className="taxonomy-node-row"><button type="button" className="taxonomy-tree-toggle" aria-label={`${collapsedNodeIds.has(TAXONOMY_ROOT_ROW_ID) ? 'Expand' : 'Collapse'} ${selectedTaxonomy.name}`} aria-expanded={!collapsedNodeIds.has(TAXONOMY_ROOT_ROW_ID)} onClick={() => toggleNodeCollapse(TAXONOMY_ROOT_ROW_ID)}><span className={`taxonomy-tree-arrow ${collapsedNodeIds.has(TAXONOMY_ROOT_ROW_ID) ? 'taxonomy-tree-arrow-collapsed' : 'taxonomy-tree-arrow-expanded'}`} /></button>
-                    <button type="button" className="taxonomy-node-select portfolio-tree-label" data-tree-level="root" translate="no" onClick={() => revealTargetScope(ROOT_TARGET_SCOPE_KEY)}>{selectedTaxonomy.name}</button></div></td>
+                    <button type="button" className="taxonomy-node-select portfolio-tree-label" data-tree-level="root" translate="no" onClick={() => revealTargetScope(ROOT_TARGET_SCOPE_KEY)}>{selectedTaxonomy.name}</button>{renderActionsButton(selectedTaxonomy.name, { kind: 'taxonomy', taxonomyId: selectedTaxonomy.taxonomy_id })}</div></td>
                   <td>{renderAllocationBasis(null)}</td><td>{formatReportAmount(displayedBookValueBase)}</td><td>—</td><td>—</td><td>—</td><td>—</td>
                   <td><label className="taxonomy-reminder-toggle">
                     <input type="checkbox" aria-label="Taxonomy concentration reminders" checked={taxonomyConcentrationEnabled} disabled={!canEditPortfolio || !targetEditMode || !concentrationSettings || Boolean(actionPending)} onChange={(event) => setTaxonomyConcentrationEnabled(event.target.checked)} />{zh ? '分类提醒' : 'Reminders'}</label></td>
@@ -2728,6 +2746,7 @@ export default function TaxonomiesPage() {
           </TaxonomyModal>
           {canEditPortfolio && contextMenuState ? (
             <div
+              ref={contextMenuRef}
               className="taxonomy-context-menu"
               style={contextMenuStyle}
               onClick={(event) => event.stopPropagation()}

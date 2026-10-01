@@ -125,6 +125,8 @@ def test_failed_runner_retains_only_explicit_safe_error_marker(client, monkeypat
             return '{"reviews":[]}', stderr
 
     def start_process(*args, **kwargs):
+        with get_session_factory()() as session:
+            assert session.get(ResearchEntry, "runner-test").context_json["execution"]["stage"] == "generation"
         assert kwargs["stderr"] == runner.subprocess.PIPE
         return FailedProcess()
 

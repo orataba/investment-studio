@@ -732,9 +732,14 @@ def resolve_holdings_request(
         else None
     )
     resolved_as_of_date = as_of_date or portfolio_as_of_date or date.today()
+    inception_date = _parse_iso_date(resolved_portfolio.get("inception_date"))
+    if inception_date is not None and resolved_as_of_date < inception_date:
+        raise HTTPException(status_code=422, detail=f"Portfolio has no holdings before its inception date ({inception_date.isoformat()}). Choose the inception date or a later date.")
     blocked_from = resolved_portfolio.get("valuation_blocked_from")
     if blocked_from and resolved_as_of_date >= date.fromisoformat(str(blocked_from)):
         raise HTTPException(status_code=409, detail=str(resolved_portfolio["valuation_blocked_reason"]))
+    if portfolio_as_of_date is not None and resolved_as_of_date > portfolio_as_of_date:
+        resolved_as_of_date = portfolio_as_of_date
     return resolved_portfolio, resolved_as_of_date
 
 
@@ -1211,14 +1216,14 @@ def position_holding_projection(
             status_code=400,
             detail="position_reference_id is required",
         )
-    resolved_portfolio = _require_portfolio(portfolio_id)
+    resolved_portfolio, effective_date = resolve_holdings_request(portfolio_id, as_of_date)
     resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
     normalized_position_reference_id = position_reference_id.strip()
     try:
         response = build_materialized_position_holding_projection(
             resolved_portfolio_id,
             normalized_position_reference_id,
-            as_of_date=as_of_date,
+            as_of_date=effective_date,
         )
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
@@ -1230,7 +1235,7 @@ def position_holding_projection(
 
     rows = response.get("rows")
     row_items = rows if isinstance(rows, list) else []
-    resolved_as_of_date = as_of_date or _parse_iso_date(response.get("as_of_date")) or date.today()
+    resolved_as_of_date = _parse_iso_date(response.get("as_of_date")) or effective_date
     transactions = list_transactions(resolved_portfolio_id)
     _enrich_position_cycle_costs(
         row_items, transactions=transactions, as_of_date=resolved_as_of_date,

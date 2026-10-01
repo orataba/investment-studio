@@ -1,4 +1,5 @@
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
+import ResearchRunStatus from '../../../../../packages/ui/src/ResearchRunStatus'
 import { useSecurityCatalog } from '../lib/useSecurityCatalog'
 import { usePortfolioAccess } from '../components/PortfolioAccessProvider'
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -1329,6 +1330,11 @@ export default function TransactionsPage() {
       .then((response) => {
         if (!cancelled) {
           setTransactionCaptureBatches(response.batches)
+          const unfinished = response.batches.find(batch => batch.analysis_run_status === 'queued' || batch.analysis_run_status === 'running')
+          if (unfinished) {
+            setSelectedCaptureBatchId(unfinished.batch_id)
+            setCaptureAssistantView('history')
+          }
         }
       })
       .catch((error) => {
@@ -2354,31 +2360,9 @@ export default function TransactionsPage() {
     }
 
     setForm((current) => {
-      let nextValue = value
-      if (
-        field === 'quantity' &&
-        current.transaction_type === 'sell' &&
-        positionPreview &&
-        positionPreview.account_id === current.account_id &&
-        positionPreview.position_kind ===
-          (current.asset_domain === 'derivative'
-            ? 'derivative_contract'
-            : 'instrument') &&
-        positionPreview.position_reference_id ===
-          (current.asset_domain === 'security'
-            ? current.instrument_id
-            : current.derivative_contract_id) &&
-        positionPreview.as_of_date === current.trade_date
-      ) {
-        const requestedQuantity = parsePositiveFormNumber(value)
-        const availableQuantity = Math.max(0, positionPreview.quantity)
-        if (requestedQuantity && requestedQuantity > availableQuantity) {
-          nextValue = formatCalculatedFormNumber(availableQuantity, 6)
-        }
-      }
       const next = {
         ...current,
-        [field]: nextValue,
+        [field]: value,
       }
 
       if (field === 'quantity') {
@@ -2806,8 +2790,9 @@ export default function TransactionsPage() {
   }
 
   function openCaptureAssistant(view: TransactionCaptureAssistantView, batchId?: string) {
-    setCaptureAssistantView(view)
-    setSelectedCaptureBatchId(batchId ?? null)
+    const unfinished = transactionCaptureBatches.find(batch => batch.analysis_run_status === 'queued' || batch.analysis_run_status === 'running')
+    setCaptureAssistantView(!batchId && unfinished ? 'history' : view)
+    setSelectedCaptureBatchId(batchId ?? unfinished?.batch_id ?? null)
     setCaptureError(null)
     setCaptureReviewDraft(null)
     setCaptureAssistantOpen(true)
@@ -4481,6 +4466,11 @@ export default function TransactionsPage() {
         </div>}
         </FundDistributionTasksPanel>
 
+        {!metaLoading && !metadataError && accounts.length === 0 ? <div className="inline-notice" role="status">
+          {fcnLabel('Create an account before recording transactions.', '请先创建账户，再录入交易。')}{' '}
+          <Link to={`/portfolios/${portfolioId}/accounts?add=1`}>{fcnLabel('Add account', '添加账户')}</Link>
+        </div> : null}
+
         <section className="transaction-filter-bar">
           <div className="transaction-filter-group">
             <label>
@@ -5155,6 +5145,8 @@ export default function TransactionsPage() {
               </button>
             </div>
 
+            <p className="transaction-capture-run-note">Closing this panel does not cancel analysis or record transactions. Reopen to continue reviewing the same batch; recording requires a separate confirmation.</p>
+            {captureAnalysisActiveKey && <button type="button" className="toolbar-link" onClick={() => openCaptureAssistant('history', captureAnalysisActiveKey.split('|')[0])}>Continue running analysis</button>}
             <div className="transaction-capture-assistant-body">
               {captureAssistantView === 'new' ? (
                 <div className="transaction-capture-new" role="tabpanel">
@@ -5327,6 +5319,14 @@ export default function TransactionsPage() {
                             </span>
                           </div>
 
+                          {selectedCaptureBatch.analysis_run_status !== 'idle' && <ResearchRunStatus
+                            runId={selectedCaptureBatch.batch_id}
+                            status={selectedCaptureBatch.analysis_run_status}
+                            createdAt={selectedCaptureBatch.analysis_run_started_at || selectedCaptureBatch.updated_at}
+                            completedAt={selectedCaptureBatch.analysis_run_completed_at}
+                            execution={{ attempt: selectedCaptureBatch.analysis_run_attempt, stage: selectedCaptureBatch.analysis_run_status === 'queued' ? 'queued' : 'generation' }}
+                            timeoutSeconds={selectedCaptureBatch.analysis_timeout_seconds ?? null}
+                          />}
                           <div className="transaction-capture-evidence-grid">
                             {selectedCaptureBatch.captures.map((capture) => (
                               <figure key={capture.capture_id}>
@@ -7468,6 +7468,8 @@ export default function TransactionsPage() {
                             ? 'Contracts'
                             : 'Shares'
                       }
+                      aria-invalid={enteredQuantityExceedsPosition}
+                      aria-describedby="transaction-position-quantity-hint"
                       max={ticketQuantityDelta != null && ticketQuantityDelta < 0 ? positionPreview?.quantity : undefined}
                       value={form.quantity}
                       onChange={(event) => updatePricingField('quantity', event.target.value)}
@@ -7476,16 +7478,18 @@ export default function TransactionsPage() {
                       <span className="transaction-ticket-hint">Loading</span>
                     ) : positionPreview ? (
                       <span
+                        id="transaction-position-quantity-hint"
+                        role={enteredQuantityExceedsPosition ? 'alert' : undefined}
                         className={
                           enteredQuantityExceedsPosition
                             ? 'transaction-ticket-hint transaction-ticket-hint-warning'
                             : 'transaction-ticket-hint'
                         }
                       >
-                        {positionPreviewAccountRole === 'source' ? 'Source holding' : 'Holding'}:{' '}
+                        {positionPreviewAccountRole === 'source' ? fcnLabel('Source holding', '来源持仓') : fcnLabel('Available shares', '可售数量')} ({positionPreview.as_of_date}):{' '}
                         {formatQuantity(positionPreview.quantity)}
                         {projectedPositionQuantity != null ? ` · After: ${formatQuantity(projectedPositionQuantity)}` : ''}
-                        {enteredQuantityExceedsPosition ? ' · Exceeds available shares' : ''}
+                        {enteredQuantityExceedsPosition ? fcnLabel(' · Exceeds available shares; correct the quantity before saving.', ' · 超过可售数量，请修正后保存。') : ''}
                       </span>
                     ) : positionPreviewError ? (
                       <span className="transaction-ticket-hint">{positionPreviewError}</span>
@@ -7867,7 +7871,7 @@ export default function TransactionsPage() {
                 <button
                   type="submit"
                   className="toolbar-link button-primary"
-                  disabled={!canEditPortfolio || submittingTransaction || !selectedAccount}
+                  disabled={!canEditPortfolio || submittingTransaction || !selectedAccount || enteredQuantityExceedsPosition || (shouldPreviewPosition && (positionPreviewLoading || Boolean(positionPreviewError)))}
                 >
                   {submittingTransaction
                     ? 'Saving…'

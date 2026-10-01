@@ -288,8 +288,8 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
   realized_gain: 'Realized Gain',
   unrealized_gain: 'Unrealized Gain',
   income: 'Income',
-  fees: 'Fees',
-  taxes: 'Taxes',
+  fees: 'Included Fees',
+  taxes: 'Included Taxes',
   fx_pnl: 'Position & Cash FX',
   pending_settlement_fx: 'Pending Settlement FX',
   period_return: 'Period Return',
@@ -304,6 +304,8 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
 }
 
 const CALCULATION_COLUMN_DESCRIPTIONS: Partial<Record<CalculationColumnKey, string>> = {
+  fees: 'Recorded transaction fees already reflected in period capital gains or separate cash expenses. Supplementary disclosure; do not subtract again.',
+  taxes: 'Recorded taxes already reflected in period capital gains or separate cash expenses. Supplementary disclosure; do not subtract again.',
   return_contribution:
     'Each daily contribution is multiplied by the portfolio growth before that day. Top-level contributions sum to period TWR; child contributions sum to their parent.',
   arithmetic_return_contribution:
@@ -2295,7 +2297,7 @@ function PerformancePage() {
   const benchmarkStartBoundaryDate = summary ? performanceStartBoundary(summary) : reportStartDate
   const benchmarkGuard = useMemo(
     () =>
-      selectedBenchmarkInstrument && benchmarkChart
+      workspace && selectedBenchmarkInstrument && benchmarkChart
         ? assessBenchmarkComparisonGuard({
             chartBasis: benchmarkChart.chart_basis,
             returnSemantics: benchmarkChart.return_semantics,
@@ -2309,6 +2311,7 @@ function PerformancePage() {
           })
         : null,
     [
+      workspace,
       baseCurrency,
       benchmarkChart,
       benchmarkEligibleDates,

@@ -226,3 +226,5 @@
     max-width: 100%;
   }
 }
+
+.assistant-evidence [id]:target, .assistant-evidence [id]:focus { outline: 2px solid var(--accent, #4374a5); outline-offset: .25rem; }

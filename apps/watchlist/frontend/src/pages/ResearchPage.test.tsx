@@ -13,6 +13,7 @@ import { MemoryRouter, useLocation } from 'react-router'
 import ResearchPage from './ResearchPage'
 import InstrumentAssistantDrawer from '../components/InstrumentAssistantDrawer'
 import { RESEARCH_UPDATED } from '../lib/researchUpdates'
+import { LanguageProvider, LanguageSelector } from '../../../../../packages/ui/src/i18n'
 const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   write: vi.fn(),
@@ -288,7 +289,7 @@ it('shows readable public links and source dates, including incomplete searches'
   render(<MemoryRouter initialEntries={['/assistant?topic=chat-1']}><ResearchPage /></MemoryRouter>)
   fireEvent.click(await screen.findByText('查阅依据（2）'))
   expect(screen.getByRole('link', { name: '公司最新公告' }).getAttribute('href')).toBe('https://example.com/announcement')
-  expect(screen.getByText('原文发布 2026-09-05')).toBeTruthy()
+  expect(screen.getByText('原文发布时间').parentElement?.textContent).toContain('2026-09-05')
   expect(screen.getByText('公开信息检索 · 读取未完成')).toBeTruthy()
   expect(screen.getByText('未能覆盖最新公开信息')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: /^对话说明:/ }))
@@ -368,4 +369,62 @@ it('shows committed user records and refreshes their instrument even when the la
   expect((updated.mock.calls[0][0] as CustomEvent).detail).toEqual(['fund-a'])
   expect(mocks.saveNote).not.toHaveBeenCalled()
   window.removeEventListener(RESEARCH_UPDATED, updated)
+})
+
+
+it('restores an unfinished scoped conversation on reopen without submitting another run', async () => {
+  entries = [{ ...answer, status: 'running', context_json: { execution: { stage: 'generation', attempt: 1 } } }]
+  mocks.read.mockImplementation(async (path: string) => {
+    if (path.startsWith('/research/topics?') || path === '/research/topics') return [{ ...topic, active_run: { entry_id: answer.entry_id, status: 'running', created_at: answer.created_at, watchlist_id: '3' } }]
+    if (path === '/research/catalogue') return { instruments: [] }
+    if (path === '/research/connections') return { assistant_available: true, portfolios: [] }
+    return { topic, entries }
+  })
+  const view = render(<MemoryRouter initialEntries={['/watchlists/3?assistant=1']}><ResearchPage watchlistId="3" /></MemoryRouter>)
+  await screen.findByText('reply-1')
+  expect(screen.getByText('分析与撰写')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '新对话' }).hasAttribute('disabled')).toBe(true)
+  expect(mocks.write).not.toHaveBeenCalled()
+  view.unmount()
+  render(<MemoryRouter initialEntries={['/watchlists/3?assistant=1']}><ResearchPage watchlistId="3" /></MemoryRouter>)
+  await screen.findByText('reply-1')
+  expect(mocks.write).not.toHaveBeenCalled()
+})
+
+it('renders retained evidence receipts and links factual paragraphs to the original snapshot', async () => {
+  entries = [{ ...answer, body: '当时持仓为空。[portfolio:receipt] 原有研究。[instrument:receipt]', context_json: {
+    portfolio_id: 'qa-portfolio', cutoff: '2026-09-05T00:00:00Z',
+    tool_evidence: [
+      { source_id: 'portfolio:receipt', tool: 'portfolio', retrieved_at: '2026-09-05T00:01:00Z', result: { portfolio_id: 'qa-portfolio', as_of_date: '2026-09-04', holdings: [] } },
+      { source_id: 'instrument:receipt', tool: 'instruments', retrieved_at: '2026-09-05T00:02:00Z', result_storage: 'instrument_inputs', request: { instrument_ids: ['fund-a'] }, source_ids: ['retained-a'] },
+      { source_id: 'dossier:receipt', tool: 'dossier', retrieved_at: '2026-09-05T00:03:00Z', result_storage: 'research_dossiers', request: { instrument_ids: ['fund-a'], source_id: 'requested-source' }, source_ids: ['requested-source'] },
+    ], instrument_inputs: [{ instrument_id: 'fund-a', snapshot_label: 'original evidence' }],
+    research_dossiers: [{ instrument_id: 'fund-a', materials: [{ source_id: 'requested-source', body: 'Actually requested original' }, { source_id: 'unread-source', body: 'Unread material must not masquerade as reviewed evidence' }] }],
+  } }]
+  render(<MemoryRouter initialEntries={['/watchlists/3?topic=chat-1']}><ResearchPage watchlistId="3" /></MemoryRouter>)
+  const link = await screen.findByRole('link', { name: 'instrument:receipt' })
+  fireEvent.click(link)
+  expect(document.getElementById('assistant-evidence-reply-1-instrument:receipt')?.closest('details')?.open).toBe(true)
+  expect(screen.getByText(/original evidence/)).toBeTruthy()
+  expect(screen.getByText('估值日期').parentElement?.textContent).toContain('2026-09-04')
+  expect(screen.getAllByText('获取时间', { selector: 'span' })).toHaveLength(3)
+  expect(screen.getByText(/Actually requested original/)).toBeTruthy()
+  expect(screen.queryByText(/Unread material must not masquerade/)).toBeNull()
+  expect(mocks.read.mock.calls.filter(([path]) => String(path).includes('holdings'))).toHaveLength(0)
+})
+
+it.each([
+  ['研究助手本次运行超时；可以缩小问题范围后重试。', 'This research assistant run timed out. Consider narrowing the question before trying again.'],
+  ['DeepSeek账户余额不足，本次分析未完成。充值后可重新更新。', 'The DeepSeek account balance is insufficient. This analysis did not complete; retry after adding funds.'],
+  ['事实核证失败：研究证据接口返回 HTTP 503。', 'Fact verification failed: The research evidence API returned HTTP 503.'],
+])('localizes the failed run while retaining generated original content: %s', async (failure, translated) => {
+  window.history.replaceState(null, '', '/?lang=en')
+  entries = [{ ...answer, status: 'failed', body: failure }, { ...answer, entry_id: 'original-answer', body: failure }]
+  render(<LanguageProvider><LanguageSelector /><MemoryRouter initialEntries={['/assistant?topic=chat-1']}><ResearchPage /></MemoryRouter></LanguageProvider>)
+  expect(await screen.findByText(translated)).toBeTruthy()
+  expect(screen.getByText(failure).closest('[translate="no"]')).toBeTruthy()
+  fireEvent.change(screen.getByRole('combobox', { name: 'Language' }), { target: { value: 'zh-Hans' } })
+  await waitFor(() => expect(screen.getAllByText(failure)).toHaveLength(2))
+  expect(screen.queryByText(translated)).toBeNull()
+  expect(mocks.write).not.toHaveBeenCalled()
 })

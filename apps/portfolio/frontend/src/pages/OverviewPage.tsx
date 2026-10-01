@@ -1264,7 +1264,8 @@ export default function OverviewPage() {
     holdingsWorkspace?.as_of_date ??
     summary?.as_of_date ??
     null
-  const benchmarkStartBoundaryDate = previousDateKey(portfolioInceptionDate)
+  const benchmarkStartBoundaryDate = performanceWorkspace?.summary.include_start_date_return
+    ? previousDateKey(portfolioInceptionDate) : portfolioInceptionDate
   const benchmarkEligibleDates = useMemo(
     () =>
       (performanceWorkspace?.daily_series ?? [])
@@ -1725,6 +1726,7 @@ export default function OverviewPage() {
                         currency={resolvedBaseCurrency}
                         showRangeControls
                         variant="overview"
+                        includeStartDateReturn={performanceWorkspace.summary.include_start_date_return}
                       />
                     ) : null}
                   </div>

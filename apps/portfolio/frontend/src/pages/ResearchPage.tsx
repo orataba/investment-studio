@@ -951,6 +951,7 @@ export default function ResearchPage() {
                   <span translate="no">{planningTaxonomyName}</span>
                   <span>{zh ? '数据截至' : 'Data cutoff'} · {workbench.settings.as_of_mode === 'dynamic' ? workbench.as_of_date : workbench.settings.as_of_date || '-'}</span>
                   <span>{zh ? '当前目标' : 'Current targets'}</span>
+                  {workbench.planning_taxonomy_options.find(option => option.taxonomy_id === effectiveSavedTaxonomyId)?.target_source === 'single_member' ? <span>{zh ? '单成员范围自动采用 100%，多成员必须配置完整目标' : 'Single-member scopes use implicit 100%; multiple members require complete targets'}</span> : null}
                   <span>{capitalSummary}</span>
                   <span>{rebalanceLabel}</span>
                 </div>
@@ -993,11 +994,11 @@ export default function ResearchPage() {
                       updateRunSetupDraft({ planningTaxonomyId: event.target.value, frozenNodeIds: [], topSleeveBounds: [] })
                     }}>
                       {!workbench.planning_taxonomy_options.some((item) => item.taxonomy_id === planningTaxonomyId) && <option value="">{zh ? '请选择优化分类' : 'Select an optimization taxonomy'}</option>}
-                      {workbench.planning_taxonomy_options.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id} translate="no">{taxonomy.name}{taxonomy.targets_available === false ? (zh ? ' · 未配置目标' : ' · No targets') : ''}</option>)}
+                      {workbench.planning_taxonomy_options.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id} translate="no">{taxonomy.name}{taxonomy.targets_available === false ? (zh ? ' · 目标不完整' : ' · Incomplete targets') : taxonomy.target_source === 'single_member' ? (zh ? ' · 单成员自动 100%' : ' · Single member: implicit 100%') : ''}</option>)}
                     </select>
                   </div>
                   {workbench.planning_taxonomy_options.find((item) => item.taxonomy_id === planningTaxonomyId)?.targets_available === false && (
-                    <Link to={`/portfolios/${portfolioId}/taxonomies`}>{zh ? '运行优化前配置目标' : 'Configure targets before running optimization'}</Link>
+                    <Link to={`/portfolios/${portfolioId}/taxonomies`}>{zh ? '检查所选范围的缺失目标；多成员不会自动等权' : 'Review missing targets in the selected scope; multiple members do not default to equal weights'}</Link>
                   )}
                 </div>
                   <label>

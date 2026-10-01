@@ -295,6 +295,14 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
         if not risk_run and not resume_review:
             from watchlist_app.services.sector_research import prepare_initialization_searches
             prepare_initialization_searches(run_id)
+        if checkpoint is None and not resume_review:
+            with get_session_factory()() as session:
+                current = session.get(ResearchEntry, run_id, with_for_update=True)
+                if current is None or current.status != "running":
+                    return
+                current.context_json = {**current.context_json, "execution": {
+                    **current.context_json.get("execution", {}), "stage": "generation"}}
+                session.commit()
         # The pinned headless CLI returns its last assistant text.
         # Research/risk drafts use structured tool submissions; conversations retain prose.
         mode = ["sector"] if sector_run else ["risk"] if risk_run else []

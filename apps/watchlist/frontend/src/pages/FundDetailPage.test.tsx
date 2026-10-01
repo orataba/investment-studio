@@ -363,3 +363,35 @@ it.each(['public_fund', 'private_fund'] as const)('opens legacy report links in 
   show('/instruments/fund-1?tab=research', type)
   expect(await screen.findByRole('region', { name: '投资观点时间线' })).toBeTruthy()
 })
+
+it('keeps all benchmark matrix periods on common endpoints and marks uncovered 1Y unavailable', async () => {
+  window.history.replaceState({}, '', '?lang=en')
+  const template = await api.nav()
+  const dates = ['2025-09-09', '2025-12-31', '2026-06-15', '2026-09-30']
+  const navFor = (id: string, prices: number[]) => ({ ...template, fund_id: id, return_kind: 'total_return',
+    rows: prices.map((price, i) => ({ ...template.rows[0], as_of_date: dates[i], nav: price, nav_with_dividend: price, selected_value: price })),
+    calculation_series: prices.map((value, i) => ({ date: dates[i], value })), series: prices.map((value, i) => ({ date: dates[i], value })) })
+  api.resolve.mockResolvedValue({ detail_supported: true, canonical_instrument_id: 'benchmark-1', instrument_name: 'Benchmark', primary_identifier: 'BENCH', instrument_type: 'index' })
+  api.nav.mockImplementation((id: string) => Promise.resolve(id === 'benchmark-1' ? navFor(id, [1, 1.01, 1.02]) : navFor(id, [1, 1.02, 1.142706, 1.051824])))
+  const { container } = show('/instruments/fund-1?tab=performance&benchmark=benchmark-1')
+  await screen.findByText(/Comparison matrix: all periods use common observation dates through 2026-06-15/)
+  const table = container.querySelector('.instrument-metrics-table') as HTMLElement
+  const headings = [...table.querySelectorAll('thead th')]
+  const ytd = headings.findIndex(node => node.textContent?.startsWith('YTD'))
+  const oneYear = headings.findIndex(node => node.textContent?.startsWith('1Y'))
+  const values = within(table).getByText('Period Return').closest('tr')!.querySelectorAll('td')
+  expect(headings[ytd].textContent).toContain('2025-12-31 → 2026-06-15')
+  expect(values[ytd].textContent).toContain('12.03%')
+  expect(headings[oneYear].textContent).toContain('Insufficient coverage')
+  expect(values[oneYear].querySelector('strong')!.textContent).toBe('—')
+  expect(screen.getByText(/Standalone instrument metrics and the monthly table are through 2026-09-30/)).toBeTruthy()
+  expect(screen.getByRole('button', { name: /Benchmark comparison basis: Instrument: Total return/ })).toBeTruthy()
+})
+it('recovers a failed fund summary without losing the requested performance tab or benchmark', async () => {
+  api.summary.mockRejectedValueOnce(new Error('统一账号服务暂时不可用'))
+  show('/instruments/fund-1?tab=performance&benchmark=benchmark-1')
+  fireEvent.click(await screen.findByRole('button', { name: '重试' }))
+  expect(await screen.findByRole('heading', { name: '测试基金 TEST' })).toBeTruthy()
+  expect(screen.getByTestId('fund-detail-location').textContent).toContain('tab=performance')
+  expect(screen.getByTestId('fund-detail-location').textContent).toContain('benchmark=benchmark-1')
+})

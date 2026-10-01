@@ -310,3 +310,21 @@ def test_risk_summary_and_detail_keep_team_read_and_delegation_boundaries(accoun
     assert client.get(f'/api/risk/cases/{case_id}').status_code == 403
     as_user(client, 'revoked')
     assert client.get(f'/api/risk/cases/{case_id}').status_code == 401
+
+
+def test_active_conversation_discovery_preserves_user_and_portfolio_authority(accounts):
+    client, _, grants = accounts
+    alice_topic = create_topic(as_user(client, 'alice'), portfolio_id='A')
+    bob_topic = create_topic(as_user(client, 'bob'), portfolio_id='B')
+    with get_session_factory()() as session:
+        for owner, topic_id in [('alice', alice_topic), ('bob', bob_topic)]:
+            session.add(ResearchEntry(entry_id=f'{owner}-unfinished', topic_id=topic_id,
+                kind='analysis', title='Private unfinished answer', status='running',
+                context_json={'portfolio_id': 'A' if owner == 'alice' else 'B', 'tool_evidence': []}))
+        session.commit()
+    alice_history = as_user(client, 'alice').get('/api/research/topics').json()
+    assert [row['active_run']['entry_id'] for row in alice_history] == ['alice-unfinished']
+    assert 'bob-unfinished' not in str(alice_history)
+    assert as_user(client, 'alice').get(f'/api/research/topics/{bob_topic}').status_code == 404
+    grants['alice'].clear()
+    assert as_user(client, 'alice').get('/api/research/topics').json() == []

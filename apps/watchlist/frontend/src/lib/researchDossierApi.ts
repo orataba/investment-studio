@@ -179,6 +179,7 @@ export type ResearchTheme = ResearchThemeInput & {
   theme_id: string; instrument_id: string; status: 'active' | 'paused' | 'closed'; author_user_id: string; author: string
   created_at: string; updated_at: string; revision_number: number
   notes: InstrumentResearchNote[]; research_progress: ResearchThemeProgress[]
+  source_run_id?: string | null
   origin?: 'user' | 'researcher'; close_reason?: string; theme_key?: string; updates?: ResearchUpdate[]
   last_changed_at?: string | null
   synthesis?: string; latest_development?: string; next_check?: string; last_reviewed_at?: string | null
@@ -265,6 +266,7 @@ export function uploadResearchMaterial(instrumentId: string, file: File, materia
 }
 
 export type ResearchUpdate = {
+  run_id?: string | null
   risk_assessment?: RiskAssessment
   event_key?: string; importance_score?: number | null; importance_reason?: string
   market_views?: Array<{ publisher: string; published_at: string | null; view: string; source_ids: string[] }>

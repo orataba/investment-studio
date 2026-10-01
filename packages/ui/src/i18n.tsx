@@ -592,6 +592,7 @@ export function matchesSystemLabel(label: string, query: string) {
 }
 
 const systemPatterns: LanguagePattern[] = [
+  { match: /^Portfolio has no holdings before its inception date \((\d{4}-\d{2}-\d{2})\)\. Choose the inception date or a later date\.$/, replace: (date) => `组合在成立日（${date}）之前尚无持仓，请选择成立日或之后的日期。` },
   // Only known system fields accept a currency suffix; arbitrary business names do not.
   { match: /^(Securities Subtotal|FCN Subtotal|Options Subtotal|Cash & Settlement Subtotal|Carrying Amount|Beginning Carrying Amount|Ending Carrying Amount|Signed NAV Amount|Historical Carrying Basis|Carrying FX Translation|Strike Notional|Base Value|FX Cost Basis|Unrealized FX P&L) \(([A-Z]{3})\)$/, replace: (label, currency) => `${systemLabel(label)} (${currency})` },
   { match: /^([\d,]+) (matching )?activit(?:y|ies)$/i, replace: (count, matching) => `${count} 项${matching ? '匹配' : ''}活动` },
@@ -690,6 +691,8 @@ function mergePatterns(patterns?: LanguagePatternMessages): LanguagePatternMessa
   return supportedLanguages.reduce<LanguagePatternMessages>((merged, language) => {
     merged[language.value] = [
       ...(language.value === 'zh-Hans' ? systemPatterns : [
+        { match: /^事实核证失败：(.+)$/, replace: (summary: string) => `Fact verification failed: ${systemEnglishLabels[summary] || summary.replace(/^研究证据接口返回 HTTP (\d+)。$/, 'The research evidence API returned HTTP $1.')}` },
+        { match: /^研究证据接口返回 HTTP (\d+)。$/, replace: 'The research evidence API returned HTTP $1.' },
         { match: /^分类层级 (\d+)$/, replace: 'Taxonomy Level $1' },
         { match: /^(\d+) 个标的$/, replace: '$1 instruments' },
         { match: /^(\d+) 项限制$/, replace: '$1 limitations' },

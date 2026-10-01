@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
+import { LanguageProvider } from '../../../../packages/ui/src/i18n'
 
 const apiMocks = vi.hoisted(() => ({ getPortfolioBootstrap: vi.fn() }))
 vi.mock('./lib/bootstrap', () => apiMocks)
@@ -16,10 +17,10 @@ function CurrentPath() {
 
 function renderResearchLink() {
   return render(
-    <MemoryRouter initialEntries={['/portfolios/private/research']}>
+    <LanguageProvider><MemoryRouter initialEntries={['/portfolios/private/research']}>
       <App />
       <CurrentPath />
-    </MemoryRouter>,
+    </MemoryRouter></LanguageProvider>,
   )
 }
 
@@ -41,7 +42,7 @@ describe('Portfolio deployment capabilities', () => {
     let resolve!: (value: ReturnType<typeof bootstrap>) => void
     apiMocks.getPortfolioBootstrap.mockReturnValue(new Promise((done) => { resolve = done }))
     renderResearchLink()
-    expect(screen.getByRole('status')).toHaveTextContent('正在确认账号与组合权限')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Checking account and portfolio access'))
     expect(screen.getByTestId('current-path')).toHaveTextContent('/portfolios/private/research')
     resolve(bootstrap(true))
     expect(await screen.findByText('Private research')).toBeInTheDocument()

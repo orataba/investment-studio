@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { createResearchTheme, getResearchThemes, updateResearchTheme, type ResearchTheme, type ResearchThemeInput, type ResearchThemeKind } from '../lib/researchDossierApi'
 import { announceResearchPublication } from '../lib/researchUpdates'
+import ResearchScopeNotice from './ResearchScopeNotice'
 
 export default function ResearchThemeComposer({ instrumentId, title, background, kind, reference, onCancel, onSaved }: {
   instrumentId: string; title: string; background: string; kind: ResearchThemeKind; reference: ResearchThemeInput['reference']; onCancel: () => void; onSaved: (action: 'created' | 'linked', message?: string) => void
@@ -33,6 +34,7 @@ export default function ResearchThemeComposer({ instrumentId, title, background,
     {!selectedTheme && <><label>主题名称<input required value={name} disabled={saving} onChange={event => setName(event.target.value)} /></label><label>希望验证的问题（可选）<textarea rows={2} value={question} disabled={saving} onChange={event => setQuestion(event.target.value)} /></label></>}
     <details><summary>关联的研究背景</summary><p translate="no">{background}</p></details>
     {error && <p role="alert">{error}</p>}
+    <ResearchScopeNotice instrumentId={instrumentId} />
     <div className="research-theme-actions"><button type="submit" disabled={saving || (!selectedTheme && !name.trim())}>{saving ? '保存中…' : selectedTheme ? '关联并继续研究' : '创建并开始研究'}</button><button type="button" disabled={saving} onClick={onCancel}>取消</button></div>
   </form>
 }

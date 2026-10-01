@@ -115,6 +115,7 @@
 - 所有显式区间都必须满足 `start_date <= end_date`；逆序区间由 API 以校验错误拒绝，UI 不发起该请求，不能通过排序或空结果掩盖调用错误。
 - Performance、Calculation、Contribution 与 Groups 的主摘要必须保留 `requested_start_date` / `requested_end_date`，并单独返回 `effective_start_date` / `effective_end_date` 与 clamp reason。请求晚于最后可靠估值日时只收缩 effective end，不能改写用户原始请求。
 - 主摘要还必须声明 `start_boundary_kind` 与 `include_start_date_return`：普通期初收盘为 `close_eod / false`，首次或重启入资为 `funded_bod / true`，导入式期初余额为 `imported_opening_eod / false`。下游不得再根据日期或首条收益自行猜测边界语义。
+- Overview 图表使用同一边界标识：窗口包含首次入资起点时以 TWR 指数 100 为 BOD 基数，保留首日收益；缩放后的普通窗口以首个显示点 EOD 为基数。Value 与 TWR 图表提示使用同一收益窗口，不重新猜测首日边界。
 
 已全部处置的证券在份额生效日以确认的卖出／赎回金额形成现金或应收，其已实现损益由真实成本与处置金额确定。该日日末持仓为零时，不要求该证券已无估值用途的收盘价或净值；部分处置后仍有持仓则仍须有当日有效估值。早于处置日的持仓估值缺口仍会阻断连续收益，不能用后来的处置金额跨越历史缺口。
 
@@ -129,6 +130,8 @@
 - 组合绝对口径快照只有在该 `as_of_date` 的全部必要市场和 FX 数据完整有效时，才能标记为 `complete`；
 - benchmark 相关区块的 `complete / partial / unavailable` 由 benchmark coverage 单独决定，不反向阻塞绝对口径 snapshot；
 - 组合 summary、Overview 和未显式指定日期的 Holdings 默认展示 latest fresh complete `as_of_date`，而不是当前本地时钟下尚未收齐数据的“今天”。fresh complete 表示 `valuation_coverage_state = complete`、`nav` 存在，且 `stale_price_flag = false`、`stale_fx_flag = false`。来源日历确认前一有效点至估值日之间没有应更新交易日时，沿用该点是合法休市估值，可以成为完整 EOD 边界；保留真实 source date，不伪造当日报价。日历未知、不可解析或期间已有交易日却缺价时不能如此沿用；必要 FX 同样不得以 stale point 补齐。
+
+Holdings 列表、单持仓详情与 Concentration 共用日期解析：晚于最后可靠日且没有已知估值阻断时，读取同一最近可靠快照，并持续同时展示请求日期与有效持仓日期。已知历史估值缺口仍显式拒绝，不被日期收缩掩盖；成立前请求明确说明尚无持仓，并要求选择成立日或之后日期，不建议无效刷新。
 
 示例：
 
@@ -783,8 +786,8 @@ Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要�
 - `Calculation`：合并 realized risk attribution、initial value、group rows、external flow、portfolio total 与 final value。表格有和 Holdings 一致的 view selector；系统默认视图命名为 `Default`，展示区间期初权重、平均权重、期末权重、区间收益、收益贡献、标的自身风险、相关性和风险贡献；`Beta to Portfolio` 保留为高级可选列，不进入默认视图。Group By 默认是 `None`，语义是直接展示 instrument lines，不做额外分组；也可按 instrument type / currency / account / 所选当前 taxonomy 聚合。instrument type 与 currency 是底层 contribution axis，不允许仅在前端把 instrument rows 相加；taxonomy 聚合按当前 assignment 重述整个历史区间，并保留 cash 独立组，不把 reclassification residual 当成真实 P&L；已清仓 instrument 的历史 P&L 同样按当前归属分组，没有当前 active assignment 时列为 Unassigned，不回退读取旧分类。`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
 - Performance group daily return 使用组内 flow-neutral `total_pnl`。普通内部买入按既有 `BOD-in / EOD-out` 约定，分母为 `beginning_value + weighted capital flow in`；但 cash 先结算、头寸下一 EOD 才确认的 `position_recognition_bridge` 是结算日的 **EOD flow**，不得进入结算日收益分母，而应作为下一日 beginning value。这样收盘后申购不会稀释当天原有持仓收益，确认日又能完整计入成交成本至确认日收盘的价格变化。直接 axis、taxonomy regroup 与 calculation detail 聚合必须保留同一 flow-timing 分类，不能在聚合时丢失或重置。
 - Calculation 底层的 `Capital Gain` 使用期间绩效成本，而不是账户 book cost；它是 reconciliation 派生值，不作为默认表格列展示。显式区间的期初已有持仓按 `start_date` EOD market value 重置为期间成本，只重放 `(start_date, end_date]` 内交易；期末未卖出的持仓用 `end_date` EOD market value 计算 `Unrealized Gain`。
-- `Capital Gain = Realized Gain + Unrealized Gain`；`Realized Gain` 是期间卖出部分相对于期间成本的资本利得，`Unrealized Gain` 是期末仍持有部分相对于期间成本的资本利得。FIFO / moving average 可影响已实现与未实现的期间拆分，但不改变二者之和或组合收益。FIFO 使用原始取得顺序，内部转仓保留该顺序；已发布的期初批次与区间内交易采用相同规则。
-- `Income` 只包含 dividend / coupon / interest / dividend reinvestment 收益确认，不包含 realized capital gain。fees、taxes、FX P&L 分列。P&L 与 book attribution 不和 benchmark 对比。
+- `Net Capital Gain = Realized Gain + Unrealized Gain`（交易费用已包含）；`Realized Gain` 是净资本利得减未实现期间利得的余项，包含期间交易费用影响，`Unrealized Gain` 是期末仍持有部分相对于期间成本的资本利得。FIFO / moving average 可影响已实现与未实现的期间拆分，但不改变二者之和或组合收益。FIFO 使用原始取得顺序，内部转仓保留该顺序；已发布的期初批次与区间内交易采用相同规则。
+- `Income` 只包含 dividend / coupon / interest / dividend reinvestment 收益确认，不包含 realized capital gain。fees、taxes 作为已包含的补充项分列，独立现金费用是加总式的扣减项；FX P&L 独立归因。P&L 与 book attribution 不和 benchmark 对比。
 - 红利再投资允许确认函明确的代扣业绩报酬：`gross_amount` 为净再投，`fees` 为代扣且 `fee_category=performance_fee`，毛收入计 `gross_amount + fees`、费用计 `fees`。两项按权益日归原持仓，净应收在份额生效日转成相同金额的成本；不改变现金、外部流量或持仓周期投入金额。taxes 与其他附加费仍不支持。Registry 基金总回报使用每份毛分红，不包含投资者专属报酬。
 - Performance 中的区间风险贡献是 realized market-risk attribution，不另设 Risk tab。每个 daily slice 独立保存 `market_risk_excluded_pnl`、`market_risk_total_pnl`、`market_risk_daily_return`、`market_risk_daily_contribution` 及其 coverage/eligibility；分组、taxonomy 和 calculation detail 聚合都必须消费这些字段，不能复用 operational `daily_return` / `daily_contribution`，也不能靠分类过滤猜测风险范围。纯衍生品与本币现金 slice 没有 eligible observation；非本币现金的 FX return/contribution 正常进入矩阵。对每个 eligible group，`Vol / Sharpe` 使用 group 自身 market-risk daily return；`Corr to Portfolio` 使用 group return 与 portfolio `market_risk_daily_return`；`Beta to Portfolio = Cov(R_g, R_p) / Var(R_p)` 保留为高级可选列；`Realized RC` 使用 `Cov(MarketRiskContribution_g, R_p) / Var(R_p)`。行级 `Obs` 表示该组自身有效收益 observation count。少于 12 个对齐 period 的 Corr / Realized RC 可以计算，但 UI 必须明确标记为 low-sample preliminary estimate。这些指标服务区间复盘，不使用 Risk 页的 point-in-time covariance lookback。
 - Calculation 默认展示 `Linked Return Contribution`（收益贡献（复利链接）），使用组合此前的累计 TWR 增长倍数逐日链接贡献；顶层行合计等于期间 TWR，子行合计等于父组。`Arithmetic Return Contribution` 保留为可选列，只有展示算术列时才显示对应的 `TWR Linking Difference`；链接差不是额外投资损益。CSV/XLSX 沿用可见列、表格数值与口径解释，并附实际期间、本位币、收益 basis、起点边界、估值时区/截止规则、已记录费用、风险方法及百分比小数单位说明。
@@ -902,20 +905,24 @@ $$
 其中：
 
 $$
-PeriodPnL = CapitalGain + Income - Fees - Taxes + SettledCashFXPnL + PendingSettlementFXPnL + InstrumentFXPnL
+PeriodPnL = NetCapitalGain + Income - SeparateCashExpenses + SettledCashFXPnL + PendingSettlementFXPnL + InstrumentFXPnL
 $$
 
 其中：
 
 $$
-CapitalGain = RealizedCapitalGain + UnrealizedCapitalGain
+NetCapitalGain = RealizedCapitalGain + UnrealizedCapitalGain
 $$
+
+`NetCapitalGain` 对应现有 `capital_gains`：以净期间损益减收入、加独立现金费用、减 FX 归因反推。交易附带的 fee/tax 已进入价格损益；`fees` / `taxes` 作为“其中”补充披露，不再次相加或扣除。只有独立 `expense_cash_amount` 是上述桥接式中的扣减项。UI 的 Period P/L 与 Calculation 必须显式区分这些角色。
+
+期间已实现价格归因是净资本利得减未实现期间利得的余项，不能冒充 FIFO 原始批次已实现损益。例：买 100×10、费 5，卖 40×12、费 2，再买 20×15、费 3，期末价为 1,258.62，FIFO 批次已实现为 76；期间价格拆分为 70 + 99,789.60 = 99,859.60，交易费用 10 已包含。后续买入费用可以改变期间拆分，但不得改变净额对账。
 
 `RealizedCapitalGain` 和 `UnrealizedCapitalGain` 在 Performance Calculation 中使用期间绩效成本：
 
 - 期初已有持仓按 `start_date` EOD 市值重置为期间成本；
 - `(start_date, end_date]` 内买入按成交 gross amount 建立期间成本；
-- `(start_date, end_date]` 内卖出释放对应期间成本并形成 `RealizedCapitalGain`；
+- `(start_date, end_date]` 内卖出释放对应期间成本；`RealizedCapitalGain` 是净资本利得扣除期末未实现期间利得的余项，因此还包含该期交易费用影响；
 - 期末仍持有的剩余数量形成 `UnrealizedCapitalGain`；
 - 已在期末完全卖出的资产没有剩余 period lot，因此 `UnrealizedCapitalGain = 0`。
 

@@ -225,6 +225,7 @@ function CaseRow({
       <details className="risk-follow-up" onToggle={(event) => setDetailsOpen(event.currentTarget.open)}>
         <summary>跟进与证据</summary>
         {detailStatus}
+        {typeof evidence.run_id === 'string' && <p className="risk-source"><span>来源任务</span> <code translate="no">{evidence.run_id}</code></p>}
         {sectorEvent && confidence && <p className="risk-source">证据状态：{confidence}</p>}
         {sources.length > 0 && <ul className="risk-event-sources">
           {sources.map((source, index) => {

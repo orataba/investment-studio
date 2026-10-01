@@ -551,6 +551,23 @@ describe('Performance rendered page contract', () => {
     expect(apiMocks.savePortfolioTableViewStore).not.toHaveBeenCalled()
   })
 
+  it('does not invent a USD currency mismatch while the CNY portfolio is still loading', async () => {
+    let resolve!: (value: ReturnType<typeof performanceFixture>) => void
+    apiMocks.getPortfolioPerformance.mockReturnValue(new Promise((done) => { resolve = done }))
+    const instrument = { instrument_id: 'cny-benchmark', instrument_name: 'CNY Benchmark', instrument_type: 'index', currency: 'CNY', identifiers: [], latest_market_data: [] }
+    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [instrument] })
+    apiMocks.getPortfolioInstrumentPriceChart.mockResolvedValue({ portfolio_id: '3', instrument_core: instrument,
+      as_of_date: '2026-07-15', range_key: 'all', chart_basis: 'close', return_semantics: 'price_return', currency: 'CNY', metric_family: 'price', points: [], summary: {} })
+    const user = userEvent.setup()
+    renderPortfolioPage(<PerformancePage />, '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15', '/portfolios/:portfolioId/performance')
+    await user.type(await screen.findByRole('searchbox', { name: 'Compare benchmark' }), 'CNY')
+    await user.click(await screen.findByRole('button', { name: /CNY Benchmark/ }))
+    await waitFor(() => expect(apiMocks.getPortfolioInstrumentPriceChart).toHaveBeenCalled())
+    expect(screen.queryByRole('button', { name: /Benchmark comparison:/ })).not.toBeInTheDocument()
+    await act(async () => resolve({ ...performanceFixture(), base_currency: 'CNY' }))
+    expect(await screen.findByRole('button', { name: /Benchmark comparison:/ })).not.toHaveAttribute('aria-label', expect.stringContaining('USD'))
+  })
+
   it.each(['price_return', 'unknown'] as const)('shows benchmark differences and relative statistics for a %s price series', async (returnSemantics) => {
     const user = userEvent.setup()
     apiMocks.getPortfolioInstruments.mockResolvedValue({

@@ -654,6 +654,25 @@ describe('Transactions rendered page contract', () => {
     expect(within(inspector).getByText(/\$251.00 released/)).toBeInTheDocument()
   })
 
+  it('reopens the same unfinished screenshot batch without starting or recording another analysis', async () => {
+    const batch = { ...screenshotBatchFixture({ batchId: 'running-capture', records: [], candidates: [] }),
+      analysis_run_status: 'running' as const, analysis_run_started_at: '2026-10-01T01:00:00Z',
+      analysis_run_attempt: 1, analysis_timeout_seconds: 900, latest_analysis: null }
+    apiMocks.getPortfolioTransactionCaptureBatches.mockResolvedValue({ portfolio_id: '3', batches: [batch] })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'From Screenshot' }))
+    let assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
+    expect(await within(assistant).findByText('running-capture')).toBeInTheDocument()
+    expect(within(assistant).getByRole('tab', { name: /History/ })).toHaveAttribute('aria-selected', 'true')
+    await user.click(within(assistant).getByRole('button', { name: 'Close' }))
+    await user.click(screen.getByRole('button', { name: 'From Screenshot' }))
+    assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
+    expect(within(assistant).getByText('running-capture')).toBeInTheDocument()
+    expect(apiMocks.startPortfolioTransactionCaptureAnalysis).not.toHaveBeenCalled()
+    expect(apiMocks.commitPortfolioTransactionImport).not.toHaveBeenCalled()
+  })
+
   it('groups multiple screenshots for one agent analysis without creating a transaction fact', async () => {
     const user = userEvent.setup()
     const contentSha = 'c'.repeat(64)
@@ -2506,6 +2525,43 @@ describe('Transactions rendered page contract', () => {
         'txn-1': 3,
       }),
     )
+  })
+
+  it('retains oversell input and blocks saving until the user corrects it', async () => {
+    apiMocks.getPortfolioTransactionPositionPreview.mockImplementation((_id, request) => Promise.resolve({
+      portfolio_id: '3', account_id: request.account_id, position_kind: request.position_kind,
+      position_reference_id: request.position_reference_id, as_of_date: request.as_of_date, quantity: 80,
+    }))
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    fireEvent.change(within(dialog).getByRole('searchbox', { name: 'Security' }), { target: { value: 'GETF' } })
+    await user.click(await within(dialog).findByRole('button', { name: /GETF.*Global Equity ETF.*USD/ }))
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'sell')
+    const quantity = within(dialog).getByRole('spinbutton', { name: /^Shares/ })
+    await waitFor(() => expect(quantity).toHaveValue(80))
+    for (const value of ['81', '999', '80.0001']) {
+      fireEvent.change(quantity, { target: { value } })
+      expect(quantity).toHaveValue(Number(value))
+      expect(quantity).toHaveAttribute('aria-invalid', 'true')
+      expect(within(dialog).getByRole('button', { name: 'Record Transaction' })).toBeDisabled()
+      expect(within(dialog).getByRole('alert')).toHaveTextContent('80')
+    }
+    fireEvent.change(quantity, { target: { value: '-1' } })
+    expect(quantity).toHaveValue(-1)
+    expect(quantity).toBeInvalid()
+    fireEvent.change(quantity, { target: { value: '79.5' } })
+    expect(quantity).toHaveValue(79.5)
+    expect(quantity).toHaveAttribute('aria-invalid', 'false')
+    expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+  })
+
+  it('links an account-free portfolio to account creation', async () => {
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [] })
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    expect(await screen.findByRole('link', { name: 'Add account' })).toHaveAttribute('href', '/portfolios/3/accounts?add=1')
+    expect(screen.getByRole('button', { name: 'Record Transaction' })).toBeDisabled()
   })
 
   it('clears prior economics when the selected instrument changes', async () => {

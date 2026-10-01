@@ -25,6 +25,14 @@ function renderOverviewChart(
 }
 
 describe('PerformanceNavChart Overview TWR boundaries', () => {
+  it('includes funded inception BOD return but uses an EOD boundary after zooming', () => {
+    render(<PerformanceNavChart currency="CNY" variant="overview" includeStartDateReturn points={[]}
+      twrPoints={[{ date: '2026-07-01', value: 101.9301 }, { date: '2026-08-01', value: 102 }, { date: '2026-09-30', value: 102.5862 }]} />)
+    expect(screen.getByText('Period TWR +2.59%')).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('slider', { name: 'Portfolio chart zoom start date' }), { target: { value: '1' } })
+    expect(screen.getByText('Period TWR +0.57%')).toBeInTheDocument()
+  })
+
   it('rebases the first visible TWR point to 100', () => {
     renderOverviewChart([
       { date: '2026-07-01', value: 90 },

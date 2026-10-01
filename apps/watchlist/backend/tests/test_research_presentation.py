@@ -9,6 +9,7 @@ from .test_research_activity import activity_client, publish
 from watchlist_app.db.models.workbench import ResearchEntry
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services.research_dossier import read_dossier
+from watchlist_app.services.read_models import serialize_payload
 from watchlist_app.services.sector_research import review_states
 
 
@@ -43,8 +44,8 @@ def test_browser_reads_leave_agent_inputs_and_versioned_originals_complete(activ
         shown = status[field]
         assert "research" not in shown
         assert shown["current_research"] == {"investment_view": notebook["investment_view"]}
-        assert {k: v for k, v in shown.items() if k != "current_research"} == {
-            k: v for k, v in states[key]["xlk"].items() if k not in {"current_research", "research"}}
+        assert {k: v for k, v in shown.items() if k != "current_research"} == serialize_payload({
+            k: v for k, v in states[key]["xlk"].items() if k not in {"current_research", "research"}})
 
     base = "/api/research/instruments/xlk/dossier"
     response = client.get(base + "?include_history=true")

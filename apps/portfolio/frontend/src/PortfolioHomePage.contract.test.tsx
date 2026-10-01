@@ -802,12 +802,11 @@ describe('Holdings rendered page contract', () => {
     await user.click(await within(fcnRegion).findByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Terms & Events' }))
 
-    expect(await screen.findByRole('status')).toHaveTextContent('View save failed')
-    expect(screen.getByRole('status')).toHaveAttribute('title', 'View save offline.')
+    expect(await screen.findByTitle('View save offline.')).toHaveTextContent('View save failed')
     await user.click(screen.getByRole('button', { name: 'Retry save' }))
     await waitFor(() => {
       expect(apiMocks.savePortfolioTableViewStore).toHaveBeenCalledTimes(2)
-      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      expect(screen.queryByTitle('View save offline.')).not.toBeInTheDocument()
     })
   })
 
@@ -1079,13 +1078,15 @@ describe('Holdings rendered page contract', () => {
     fireEvent.change(screen.getByLabelText('As Of Date'), { target: { value: '2026-07-14' } })
 
     expect(screen.getByRole('table', { name: 'Security holdings' })).toBe(originalTable)
-    expect(screen.getByText('As Of Date').parentElement).toHaveTextContent('2026-07-15')
+    expect(screen.getByRole('status', { name: 'Holdings date status' })).toHaveTextContent('Effective holdings date: 2026-07-15')
+    expect(screen.getByRole('status', { name: 'Holdings date status' })).toHaveTextContent('Loading requested date; the previous snapshot remains visible')
     expect(apiMocks.getHoldingsWorkspace).toHaveBeenLastCalledWith('3', { as_of_date: '2026-07-14' }, expect.any(AbortSignal))
     expect(apiMocks.getPortfolioTaxonomyCatalog).toHaveBeenCalledTimes(1)
 
     await act(async () => refreshedHoldings.resolve(holdingsWorkspaceFixture({ as_of_date: '2026-07-14' })))
     expect(screen.getByRole('table', { name: 'Security holdings' })).toBe(originalTable)
-    expect(screen.queryByText('As Of Date')).not.toBeInTheDocument()
+    expect(screen.getByRole('status', { name: 'Holdings date status' })).toHaveTextContent('Effective holdings date: 2026-07-14')
+    expect(screen.getByRole('status', { name: 'Holdings date status' })).not.toHaveTextContent('Loading requested date')
   })
 
   it('puts FCN and option facts in explicit derivative columns instead of name annotations', async () => {

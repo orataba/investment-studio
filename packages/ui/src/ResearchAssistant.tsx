@@ -5,6 +5,7 @@ import NoticeToast, { type NoticeToastMessage } from './NoticeToast'
 import { readRiskReferenceParams, setRiskReferenceParams, type ResearchAssistantReference } from './researchReference'
 import './notice-toast.css'
 import './research-assistant.css'
+import ResearchRunStatus, { researchStamp, type ResearchRunExecution, type ResearchRunError } from './ResearchRunStatus'
 
 export type { ResearchAssistantReference } from './researchReference'
 
@@ -45,6 +46,7 @@ type Topic = {
   portfolio_id: string | null
   status: string
   updated_at: string
+  active_run?: { entry_id: string; status: string; created_at: string; watchlist_id?: string | null } | null
 }
 type Entry = {
   entry_id: string
@@ -55,6 +57,7 @@ type Entry = {
   context_json: Record<string, unknown>
   status: string
   created_at: string
+  completed_at?: string | null
 }
 type Connections = {
   assistant_available: boolean
@@ -71,7 +74,10 @@ type Evidence = {
   source_id: string
   tool: string
   retrieved_at: string
-  result: Record<string, unknown>
+  result?: Record<string, unknown>
+  request?: Record<string, unknown>
+  source_ids?: string[]
+  result_storage?: string
 }
 type UserRecord = { kind: 'theme' | 'investment_view' | 'research_publication'; instrument_id: string; id: string; title?: string }
 type PublicSource = { source_id?: string; title?: string; url?: string; published_at?: string | null }
@@ -89,36 +95,55 @@ const matchingTopic = (topic: Topic, instrumentId?: string, portfolioId?: string
   && !topic.topic_id.startsWith('instrument-events:')
   && (!instrumentId || (topic.instrument_ids.length === 1 && topic.instrument_ids[0] === instrumentId))
   && (!portfolioId || topic.portfolio_id === portfolioId)
-function stamp(value: string | null | undefined) {
-  if (!value) return '未知'
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
-  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value))
-}
+const stamp = researchStamp
 function publicHref(value?: string) {
   try { const url = new URL(value || ''); return ['http:', 'https:'].includes(url.protocol) ? url.href : undefined } catch { return undefined }
 }
-function EvidenceDetails({ evidence }: { evidence: Evidence[] }) {
+function evidenceId(runId: string, sourceId: string) { return `assistant-evidence-${runId}-${sourceId}` }
+function linkedAnswer(entry: Entry, evidence: Evidence[]) {
+  let body = entry.body
+  for (const item of evidence) body = body.split(`[${item.source_id}]`).join(`[${item.source_id}](#${evidenceId(entry.entry_id, item.source_id)})`)
+  return body
+}
+function EvidenceDetails({ evidence, entry }: { evidence: Evidence[]; entry: Entry }) {
   return <details className="assistant-evidence"><summary>查阅依据（{evidence.length}）</summary>
+    <p>以下是本次回答实际查阅并保留的证据。目录、历史对话和未检索的扩展范围不代表已核实；未关联来源的结论仍有证据限制。</p>
     {evidence.map((item) => {
-      const failed = item.result.available === false
-      const sources = failed ? [] : item.tool === 'search' && Array.isArray(item.result.sources)
-        ? item.result.sources as PublicSource[] : item.tool === 'source' ? [item.result as PublicSource] : []
-      const coverage = Array.isArray(item.result.coverage) ? item.result.coverage as string[] : []
-      return <div key={item.source_id}>
-        <p><strong>{toolLabels[item.tool] || item.tool}{failed ? ' · 读取未完成' : ''}</strong> · 获取 {stamp(item.retrieved_at)}</p>
-        {failed && <>
-          {typeof item.result.reason === 'string' && <p>{item.result.reason}</p>}
-          {typeof item.result.limitation === 'string' && <p>{item.result.limitation}</p>}
-        </>}
+      let result = item.result
+      if (!result && item.result_storage) {
+        const retained = entry.context_json[item.result_storage]
+        const ids = [...((item.request?.instrument_ids || []) as string[]), ...(typeof item.request?.benchmark_id === 'string' ? [item.request.benchmark_id] : [])]
+        const selected = Array.isArray(retained) ? retained.filter(value => item.result_storage === 'computed_metrics' ? value.source_id === item.source_id : !ids?.length || ids.includes(value.instrument_id)) : []
+        if (item.result_storage === 'research_dossiers') {
+          const dossier = selected[0]
+          const sourceId = item.request?.source_id
+          const sources = dossier ? [...(dossier.materials || []), ...(dossier.historical_cases || []), ...(dossier.prior_sources || []),
+            ...(dossier.themes || []).flatMap((theme: { sources?: unknown[] }) => theme.sources || []),
+            ...(dossier.pm_views || []).flatMap((view: { sources?: unknown[] }) => view.sources || []), ...(dossier.notebook?.sources || [])] : []
+          const source = sourceId ? sources.find(value => value.source_id === sourceId) : null
+          result = { source_ids: item.source_ids || [], retained_source: source,
+            limitation: sourceId ? '此处展示当时绑定的来源记录；未展开的原文不能视为已核实。' : '本条查阅的是研究档案概览；资料目录不代表已阅读每份原文。' }
+          if (!dossier || (sourceId && !source)) result.available = false
+        } else {
+          result = selected.length ? { retained_snapshot: selected, source_ids: item.source_ids || [] }
+            : { available: false, limitation: '此历史记录未保留可展示的证据明细。' }
+        }
+      }
+      result ||= { available: false, limitation: '此历史记录未保留可展示的证据明细。' }
+      const failed = result.available === false
+      const sources = failed ? [] : item.tool === 'search' && Array.isArray(result.sources)
+        ? result.sources as PublicSource[] : item.tool === 'source' ? [result as PublicSource] : []
+      const coverage = Array.isArray(result.coverage) ? result.coverage as string[] : []
+      return <div key={item.source_id} id={evidenceId(entry.entry_id, item.source_id)} tabIndex={-1}>
+        <p><strong>{toolLabels[item.tool] || item.tool}{failed ? ' · 读取未完成' : ''}</strong> · <span>获取时间</span> {stamp(item.retrieved_at)}</p>
+        <p><span>来源编号</span> <code translate="no">{item.source_id}</code>{item.tool === 'portfolio' && <> · <span>组合编号</span> <code translate="no">{String(result.portfolio_id || entry.context_json.portfolio_id || '—')}</code> · <span>估值日期</span> <span translate="no">{String(result.as_of_date || (result.summary as Record<string, unknown> | undefined)?.as_of_date || (entry.context_json.page_context as Record<string, unknown> | undefined)?.as_of_date || '—')}</span></>}</p>
+        {typeof result.reason === 'string' && <p>{result.reason}</p>}{typeof result.limitation === 'string' && <p>{result.limitation}</p>}
         {sources.map((source, index) => {
           const href = publicHref(source.url)
-          return <p key={source.source_id || index}>
-            {href ? <a href={href} target="_blank" rel="noopener noreferrer" translate="no">{source.title || source.url}</a> : source.title}
-            <br /><small>原文发布 {stamp(source.published_at)}</small>
-          </p>
+          return <p key={source.source_id || index}>{href ? <a href={href} target="_blank" rel="noopener noreferrer" translate="no">{source.title || source.url}</a> : source.title}<br /><small><span>原文发布时间</span> {stamp(source.published_at)}</small></p>
         })}
         {coverage.length > 0 && <ul>{coverage.map((gap) => <li key={gap}>{gap}</li>)}</ul>}
-        <details><summary>依据明细</summary><small>{item.source_id}</small><pre className="research-evidence-json" translate="no">{JSON.stringify(item.result, null, 2)}</pre></details>
+        <details><summary>当时证据快照</summary><pre className="research-evidence-json" translate="no">{JSON.stringify({ request: item.request, result }, null, 2)}</pre></details>
       </div>
     })}
   </details>
@@ -159,6 +184,8 @@ export default function ResearchAssistant({
   )
   const [historyOpen, setHistoryOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(true)
+  const restoreOnLoad = useRef(!selected)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
   const [adoption, setAdoption] = useState<{
@@ -176,6 +203,8 @@ export default function ResearchAssistant({
     () => onClose?.(),
     questionRef,
   )
+  const unfinishedTopic = topics.find(topic => topic.active_run && (instrumentId || pagePortfolioId || !listId || topic.active_run.watchlist_id === listId))
+  const otherRunning = Boolean(unfinishedTopic && unfinishedTopic.topic_id !== selected)
   const running =
     detail?.entries.some((entry) =>
       ['queued', 'running'].includes(entry.status),
@@ -190,7 +219,13 @@ export default function ResearchAssistant({
     ])
       .then(([history, catalogue, available]) => {
         if (active) {
-          setTopics(history.filter((topic) => matchingTopic(topic, instrumentId, pagePortfolioId)))
+          const scoped = history.filter((topic) => matchingTopic(topic, instrumentId, pagePortfolioId))
+          setTopics(scoped)
+          const unfinished = scoped.find(topic => topic.active_run && (instrumentId || pagePortfolioId || !listId || topic.active_run.watchlist_id === listId))
+          if (restoreOnLoad.current && unfinished) {
+            restoreOnLoad.current = false
+            openConversation(unfinished.topic_id, false)
+          }
           setAssets(catalogue.instruments)
           setConnections(available)
         }
@@ -198,6 +233,7 @@ export default function ResearchAssistant({
       .catch((e) => {
         if (active) setError(e.message)
       })
+    .finally(() => { if (active) setHistoryLoading(false) })
     return () => {
       active = false
     }
@@ -238,7 +274,12 @@ export default function ResearchAssistant({
     const timer = window.setInterval(() => {
       read<Conversation>(`/research/topics/${encodeURIComponent(selected)}`)
         .then((value) => {
-          if (active) setDetail(value)
+          if (active) {
+            setDetail(value)
+            if (!value.entries.some(entry => ['queued', 'running'].includes(entry.status))) {
+              setTopics(current => current.map(topic => topic.topic_id === selected ? { ...topic, active_run: null } : topic))
+            }
+          }
         })
         .catch((e) => {
           if (active) setError(e.message)
@@ -317,7 +358,7 @@ export default function ResearchAssistant({
   }
   async function send() {
     const message = question.trim()
-    if (!message || busy || running || !connections?.assistant_available) return
+    if (!message || busy || historyLoading || running || otherRunning || !connections?.assistant_available) return
     const pageContext: Record<string, string | null | ResearchAssistantReference> = {
       surface: pagePortfolioId ? 'portfolio' : instrumentId ? 'instrument' : 'watchlist',
       instrument_id: instrumentId || (focusIds.length === 1 ? focusIds[0] : null),
@@ -391,7 +432,7 @@ export default function ResearchAssistant({
         <div className="toolbar">
           <button onClick={() => setHistoryOpen(!historyOpen)}>历史对话</button>
           <button
-            disabled={busy}
+            disabled={busy || running || otherRunning || historyLoading}
             onClick={() => {
               openConversation('')
               setDetail(null)
@@ -433,6 +474,8 @@ export default function ResearchAssistant({
           </select>
         </label>
       </div>
+      <p className="assistant-scope">仅回答问题不会保存观点、创建主题、发布团队研究或修改风险事项；只有明确的保存指令才会创建共享成果。</p>
+      {otherRunning && unfinishedTopic && <button type="button" onClick={() => openConversation(unfinishedTopic.topic_id, false)}>继续查看运行中的分析</button>}
       {historyOpen && (
         <nav className="assistant-history" aria-label="历史对话">
           {topics.map((topic) => (
@@ -442,7 +485,7 @@ export default function ResearchAssistant({
               onClick={() => openConversation(topic.topic_id)}
             >
               <span translate="no">{topic.title}</span>
-              <small>{stamp(topic.updated_at)}</small>
+              <small>{topic.active_run && <span>继续查看运行中的分析 · </span>}{stamp(topic.updated_at)}</small>
             </button>
           ))}
           {!topics.length && <p>{instrumentId ? '还没有当前标的的独立历史对话。' : '还没有历史对话。'}</p>}
@@ -501,6 +544,9 @@ export default function ResearchAssistant({
               </article>
               <article className="assistant-answer">
                 <small>DeepSeek · {stateLabels[entry.status] || entry.status}</small>
+                <ResearchRunStatus runId={entry.entry_id} status={entry.status} createdAt={entry.created_at} completedAt={entry.completed_at} execution={entry.context_json.execution as ResearchRunExecution | undefined} error={entry.context_json.runtime_error as ResearchRunError | undefined} />
+                <p className="assistant-scope"><span>回答范围与证据时点</span> · <span>组合编号</span> <code translate="no">{String(entry.context_json.portfolio_id || '—')}</code> · <span>标的编号</span> <code translate="no">{((entry.context_json.instrument_ids || []) as string[]).join(', ') || '—'}</code> · <span>信息截至</span> {stamp(String(entry.context_json.cutoff || entry.created_at))}</p>
+                <p className="assistant-scope">研究原文保留生成时的语言；历史回答和证据快照不会随当前持仓变化。</p>
                 {['queued', 'running'].includes(entry.status) ? (
                   <p role="status">
                     {entry.status === 'queued' ? '问题已排队，等待回复。' : evidence.length
@@ -508,8 +554,15 @@ export default function ResearchAssistant({
                       : '正在理解问题并查阅资料…'}
                   </p>
                 ) : (
-                  <div className="assistant-markdown" translate="no">
-                    {renderMarkdown(entry.body)}
+                  <div className="assistant-markdown" translate={entry.status === 'failed' ? 'yes' : 'no'} onClick={(event) => {
+                    const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>('a[href^="#assistant-evidence-"]')
+                    if (!anchor) return
+                    const target = document.getElementById(anchor.hash.slice(1))
+                    let parent = target?.parentElement
+                    while (parent) { if (parent instanceof HTMLDetailsElement) parent.open = true; parent = parent.parentElement }
+                    target?.focus()
+                  }}>
+                    {renderMarkdown(linkedAnswer(entry, evidence))}
                   </div>
                 )}
                 {publication && publication.status !== 'not_requested' && <p className="assistant-scope" role={publication.status === 'published' ? 'status' : 'alert'}>
@@ -518,7 +571,8 @@ export default function ResearchAssistant({
                 {userRecords.map((record) => <p className="assistant-scope" role="status" key={record.id}>
                   已保存{record.kind === 'theme' ? '关注主题' : record.kind === 'research_publication' ? '团队研究发布指令' : '你的投资观点'}{record.title ? `：${record.title}` : '。'}
                 </p>)}
-                {evidence.length > 0 && <EvidenceDetails evidence={evidence} />}
+                {evidence.length > 0 ? <EvidenceDetails evidence={evidence} entry={entry} /> : !['queued', 'running'].includes(entry.status) && <p className="assistant-scope">本次回答没有可展示的工具查阅记录；无法据此核实扩展范围的事实。</p>}
+                {entry.status === 'failed' && <button type="button" disabled={busy || running} onClick={() => { setQuestion(entry.title); questionRef.current?.focus() }}>重新填写本次问题</button>}
                 {entry.status === 'draft' && canSaveNote && saveNote && !pagePortfolioId && !detail?.topic.portfolio_id && !portfolioId && (
                   <button
                     onClick={() =>
@@ -653,7 +707,9 @@ export default function ResearchAssistant({
             type="submit"
             disabled={
               busy ||
+              historyLoading ||
               running ||
+              otherRunning ||
               !question.trim() ||
               !connections?.assistant_available ||
               Boolean(selected && !detail)
