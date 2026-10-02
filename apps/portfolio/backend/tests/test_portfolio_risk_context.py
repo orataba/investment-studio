@@ -245,8 +245,8 @@ def test_risk_workspace_projection_retains_only_needed_histories_and_skips_previ
     original = deepcopy(raw)
     monkeypatch.setattr(holdings, "resolve_holdings_request", lambda pid, day: ({"portfolio_id": pid}, day))
     reads, overlays = [], []
-    def analysis(pid, day, *, response_projection):
-        reads.append((pid, day))
+    def analysis(pid, day, *, response_projection, risk_comparison):
+        reads.append((pid, day, risk_comparison))
         return deepcopy(response_projection(raw))
     monkeypatch.setattr(holdings, "read_holdings_analysis", analysis)
     monkeypatch.setattr(holdings, "list_transactions", lambda pid: [])
@@ -258,6 +258,7 @@ def test_risk_workspace_projection_retains_only_needed_histories_and_skips_previ
     current = holdings.read_holdings_risk_workspace("p", AS_OF_DATE)
     previous = holdings.read_holdings_risk_workspace("p", AS_OF_DATE - timedelta(days=1), live_overlays=False)
     assert len(reads) == 2 and len(overlays) == 1
+    assert [item[2] for item in reads] == [False, True]
     assert overlays[0]["include_position_cycles"] is False
     assert "price_chart_6m" not in current["rows"][0]
     assert "instrument_return_series_1m" not in current["rows"][0]

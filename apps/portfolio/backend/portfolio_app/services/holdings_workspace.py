@@ -20,6 +20,7 @@ from portfolio_app.services.taxonomy_configuration import taxonomy_configuration
 from portfolio_app.services.instrument_charts import (
     HOLDINGS_PRICE_CHART_RANGE_KEYS,
     build_instrument_holdings_market_profile_from_detail,
+    build_instrument_risk_return_series_from_detail,
     empty_instrument_holdings_market_profile,
 )
 from portfolio_app.services.risk_basis import (
@@ -258,6 +259,7 @@ def _calculate_holdings_forward_risk(
     workspace: dict[str, object], *, as_of_date: date,
     calculation_frequency: CalculationFrequency, risk_policy: dict[str, object],
     instrument_details: dict[str, dict[str, object] | None],
+    include_return_series: bool = True,
 ) -> dict[str, object]:
     currencies = {
         str((row.get("instrument_core") or {}).get("currency") or "")
@@ -271,6 +273,7 @@ def _calculate_holdings_forward_risk(
     return enrich_holdings_forward_risk(
         workspace, as_of_date=as_of_date, calculation_frequency=calculation_frequency,
         risk_policy=risk_policy,
+        include_return_series=include_return_series,
         fx_histories=risk_fx_histories_from_details(
             {instrument_id: instrument_details.get(instrument_id) for instrument_id in fx_ids},
             end_date=as_of_date,
@@ -589,6 +592,7 @@ def _enrich_holdings_workspace_market_data(
     risk_basis_profile: dict[str, object],
     instrument_details: dict[str, dict[str, object] | None],
     include_details: bool = True,
+    risk_comparison: bool = False,
 ) -> dict[str, object]:
     enriched_workspace = deepcopy(workspace)
     enriched_workspace.pop("price_chart_range", None)
@@ -627,16 +631,23 @@ def _enrich_holdings_workspace_market_data(
         row.pop("price_chart", None)
         detail = instrument_details.get(instrument_id)
         if isinstance(detail, dict):
-            row.update(
-                build_instrument_holdings_market_profile_from_detail(
+            if risk_comparison:
+                row["instrument_return_series_all"] = build_instrument_risk_return_series_from_detail(
                     detail,
-                    instrument_id=instrument_id,
                     as_of_date=as_of_date,
-                    holding_start_date=holding_start_date,
                     calculation_frequency=calculation_frequency,
-                    include_details=include_details,
                 )
-            )
+            else:
+                row.update(
+                    build_instrument_holdings_market_profile_from_detail(
+                        detail,
+                        instrument_id=instrument_id,
+                        as_of_date=as_of_date,
+                        holding_start_date=holding_start_date,
+                        calculation_frequency=calculation_frequency,
+                        include_details=include_details,
+                    )
+                )
         else:
             row.update(
                 empty_instrument_holdings_market_profile(
@@ -813,7 +824,10 @@ def read_holdings_risk_workspace(portfolio_id: str, as_of_date: date | None = No
         return {**workspace, "rows": [{key: value for key, value in row.items() if key not in omitted}
                                       for row in workspace.get("rows", [])]}
 
-    response = read_holdings_analysis(str(portfolio["portfolio_id"]), resolved_date, response_projection=project)
+    response = read_holdings_analysis(
+        str(portfolio["portfolio_id"]), resolved_date, response_projection=project,
+        risk_comparison=not live_overlays,
+    )
     if live_overlays:
         covariance = response.get("_forward_risk_covariance")
         response = _public_holdings_workspace_response(response, include_details=True,
@@ -829,29 +843,54 @@ def read_holdings_analysis(
     *,
     include_details: bool = True,
     response_projection: Callable[[dict[str, object]], dict[str, object]] | None = None,
+    risk_comparison: bool = False,
 ) -> dict[str, object]:
-    """Shared source-bound analysis, before live task/lifecycle overlays."""
+    """Source-bound full analysis or compact historical risk comparison.
+
+    Both shapes calculate the same model before live task/lifecycle overlays;
+    the comparison keeps its own cache entry without unused UI histories.
+    """
     risk_policy = get_portfolio_risk_policy(resolved_portfolio_id)
 
     def build_analytics_workspace() -> dict[str, object]:
         # Read inputs after the cache captures its source generation. Otherwise
         # a worker could publish a newer generation before this builder starts.
-        return _build_holdings_analytics_workspace(
+        value = _build_holdings_analytics_workspace(
             _require_portfolio(resolved_portfolio_id),
             resolved_as_of_date=resolved_as_of_date,
             transactions=list_transactions(resolved_portfolio_id),
             risk_policy=risk_policy or {},
             include_details=True,
+            risk_comparison=risk_comparison,
         )
+        if risk_comparison:
+            # These histories have already fed the unchanged production model.
+            # The comparison consumes row RC, covariance and coverage, not UI
+            # prices or return arrays; discard them before the bounded cache.
+            omitted = (
+                set(_HOLDINGS_CHART_FIELD_NAMES)
+                | set(_HOLDINGS_RETURN_SERIES_FIELD_NAMES)
+                | set(_HOLDINGS_TREND_FIELD_NAMES)
+            )
+            value = {
+                **value,
+                "rows": [
+                    {key: item for key, item in row.items() if key not in omitted}
+                    for row in value.get("rows", [])
+                ],
+            }
+        return value
 
-    # Keep the complete calculation once for Holdings, Risk and tail-risk.
-    # Trim compact-only responses before copying histories they will not return.
+    # Current Holdings, Risk and tail-risk share the complete analysis. Prior-day
+    # comparisons cache only their consumed fields under a separate shape key.
+    # Project responses before copying histories they will not return.
     return get_cached_holdings_analytics_workspace(
         resolved_portfolio_id,
         as_of_date=resolved_as_of_date,
         risk_policy=risk_policy or {},
         taxonomy_configuration_version=taxonomy_configuration_version(resolved_portfolio_id),
         builder=build_analytics_workspace,
+        risk_comparison=risk_comparison,
         response_projection=(response_projection if response_projection is not None
                              else None if include_details else _compact_holdings_workspace_projection),
     )
@@ -864,6 +903,7 @@ def _build_holdings_analytics_workspace(
     transactions: list[dict[str, object]],
     risk_policy: dict[str, object],
     include_details: bool,
+    risk_comparison: bool = False,
 ) -> dict[str, object]:
     resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
     materialized_workspace = get_cached_materialized_holdings_workspace(
@@ -913,12 +953,12 @@ def _build_holdings_analytics_workspace(
                     calculation_frequency=calculation_frequency,
                     risk_policy=risk_policy or {},
                     instrument_details=instrument_details,
+                    include_return_series=not risk_comparison,
                 )
                 return enriched_response
-            accounts = list_accounts(resolved_portfolio_id)
-            position_lots = build_position_lots(
+            position_lots = [] if risk_comparison else build_position_lots(
                 resolved_portfolio_id,
-                accounts,
+                list_accounts(resolved_portfolio_id),
                 list_transactions(
                     resolved_portfolio_id,
                     end_date=resolved_as_of_date,
@@ -936,6 +976,7 @@ def _build_holdings_analytics_workspace(
                 risk_basis_profile=risk_basis_profile,
                 instrument_details=instrument_details,
                 include_details=include_details,
+                risk_comparison=risk_comparison,
             )
             covered_response = _enrich_holdings_model_coverage(response)
             enriched_response = _calculate_holdings_forward_risk(
@@ -944,6 +985,7 @@ def _build_holdings_analytics_workspace(
                 calculation_frequency=calculation_frequency,
                 risk_policy=risk_policy or {},
                 instrument_details=instrument_details,
+                include_return_series=not risk_comparison,
             )
             return enriched_response
         except InstrumentRegistryError as error:
@@ -989,13 +1031,20 @@ def _build_holdings_analytics_workspace(
             },
         )
         market_profile_by_instrument = {
-            instrument_id: build_instrument_holdings_market_profile_from_detail(
-                detail,
-                instrument_id=instrument_id,
-                as_of_date=resolved_as_of_date,
-                holding_start_date=holding_start_dates.get(instrument_id),
-                calculation_frequency=calculation_frequency,
-                include_details=include_details,
+            instrument_id: (
+                {"instrument_return_series_all": build_instrument_risk_return_series_from_detail(
+                    detail,
+                    as_of_date=resolved_as_of_date,
+                    calculation_frequency=calculation_frequency,
+                )}
+                if risk_comparison else build_instrument_holdings_market_profile_from_detail(
+                    detail,
+                    instrument_id=instrument_id,
+                    as_of_date=resolved_as_of_date,
+                    holding_start_date=holding_start_dates.get(instrument_id),
+                    calculation_frequency=calculation_frequency,
+                    include_details=include_details,
+                )
             )
             for position in statement.get("positions", [])
             if (instrument_id := str(position.get("instrument_id") or ""))
@@ -1265,6 +1314,7 @@ def _build_holdings_analytics_workspace(
         calculation_frequency=calculation_frequency,
         risk_policy=risk_policy or {},
         instrument_details=instrument_details,
+        include_return_series=not risk_comparison,
     )
     return enriched_response
 
