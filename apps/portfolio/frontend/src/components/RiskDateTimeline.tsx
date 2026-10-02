@@ -24,4 +24,3 @@ export default function RiskDateTimeline({ dates, value, onChange, label }: {
     {invalid ? <span role="status">{zh ? '该日没有收益观察，请选择范围内已有观察的日期。' : 'No return observation exists on this date. Choose an observed date within the available range.'}</span> : null}
   </div>
 }
-
