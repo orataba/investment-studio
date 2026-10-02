@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  dayDiff, absoluteDayDiff,
   pairWindowReturns,
   returnPointsInWindow,
   riskWindowStart,
@@ -63,5 +64,18 @@ describe('Risk window calendar alignment', () => {
         30,
       ).map((point) => point.date),
     ).toEqual(['2026-06-29', '2026-07-27'])
+  })
+})
+
+
+describe('date-only day counts', () => {
+  it.each([['2026-03-08', '2026-03-09'], ['2026-11-01', '2026-11-02'], ['2024-02-28', '2024-02-29'], ['2024-02-29', '2024-03-01']])('counts %s to %s independently of browser DST', (start, end) => {
+    expect(dayDiff(start, end)).toBe(1)
+    expect(absoluteDayDiff(end, start)).toBe(1)
+    expect(dayDiff(end, start)).toBe(0)
+  })
+  it('keeps invalid input unavailable', () => {
+    expect(dayDiff('invalid', '2026-03-09')).toBeNull()
+    expect(absoluteDayDiff('2026-03-09', 'invalid')).toBeNull()
   })
 })

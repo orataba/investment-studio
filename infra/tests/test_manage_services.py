@@ -20,6 +20,27 @@ def test_home_restart_does_not_touch_data_or_regime(monkeypatch):
     ], check=True)
 
 
+def test_database_restore_stops_every_generated_market_writer(tmp_path):
+    import os
+    import subprocess
+    root = module.ROOT
+    pipeline_spec = importlib.util.spec_from_file_location('market_pipeline', root / 'infra/scripts/install_market_pipeline.py')
+    pipeline = importlib.util.module_from_spec(pipeline_spec)
+    pipeline_spec.loader.exec_module(pipeline)
+    generated = set(pipeline.definitions('systemd', 'collector', root, tmp_path, Path('/usr/bin/python3'), tmp_path))
+    # Evaluate the restore script's actual inventory, stopping before any DB or
+    # service operation. A newly installed schedule must be inside this boundary.
+    restore = (root / 'infra/postgres/restore_project_dump.sh').read_text().split('PSQL_BIN=""', 1)[0]
+    script = tmp_path / 'restore-inventory.sh'
+    script.write_text(restore + '\nprintf "%s\\n" "${SYSTEMD_UNITS[@]}"\n')
+    result = subprocess.run(['bash', str(script), '/unused.pgdump'],
+        env={**os.environ, 'PROJECT_ROOT': str(root)}, capture_output=True, text=True, check=True)
+    assert generated <= set(result.stdout.splitlines())
+    assert 'investment-studio-market-crypto.timer' in generated
+    managed = {f'investment-studio-{name}.{kind}' for name in module.GROUPS['market'] for kind in ('timer', 'service')}
+    assert generated == managed
+
+
 def test_investments_start_schedules_data_without_forcing_refresh(monkeypatch):
     monkeypatch.setattr(module.platform, 'system', lambda: 'Linux')
     monkeypatch.setattr(module.os, 'geteuid', lambda: 1000)

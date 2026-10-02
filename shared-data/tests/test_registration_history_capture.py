@@ -96,12 +96,16 @@ def test_partial_collection_failure_is_not_reported_ready(capture_env):
     client = FakeFmp(dates=("2001-01-03",), fail_after=2)
     with pytest.raises(FmpApiError, match="HTTP 503"):
         ensure(store, Collector(settings, store=store, client=client))
-    assert store.query("raw_eod_daily", symbols=["SHV"])["total"] == 1
+    # A successful provider window is source evidence, not a publishable history.
+    assert store.query("raw_eod_daily", symbols=["SHV"])["total"] == 0
     assert statuses[-1]["status"] == "failed"
-    # Retained successful chunks are reusable; retry resumes at their last row.
+    # Retry must capture the complete symbol before exposing any prices.
     retry = FakeFmp(dates=("2001-01-03", "2026-09-08"))
     ensure(store, Collector(settings, store=store, client=retry))
-    assert retry.calls[0][1]["from"] == "2001-01-03"
+    assert retry.calls[0][1]["from"] == "2000-01-03"
+    rows = store.query("raw_eod_daily", symbols=["SHV"])["rows"]
+    assert {row["date"] for row in rows} == {"2001-01-03", "2026-09-08"}
+    assert len({row["batch_id"] for row in rows}) == 1
 
 
 def test_holiday_uses_last_actual_exchange_session(capture_env):
@@ -125,16 +129,20 @@ def test_current_quote_with_pending_adjustment_requires_complete_history_rebuild
     store.ingest("dividends", [], source="fixture", observed_at=NOW, details={
         "price_revision_requests": [{"symbol": "SHV", "effective_date": "2026-09-08"}],
     })
+    previous_rows = store.query("raw_eod_daily", symbols=["SHV"])["rows"]
     client = FakeFmp(dates=("2026-09-08",) if omit_retained_history else ("2001-01-03", "2026-09-08"))
     collector = Collector(settings, store=store, client=client)
     if omit_retained_history:
         with pytest.raises(FmpApiError, match="collection failed"):
             ensure(store, collector)
         assert statuses[-1]["status"] == "failed"
+        assert store.query("raw_eod_daily", symbols=["SHV"])["rows"] == previous_rows
     else:
         ensure(store, collector)
         assert statuses == []
-    assert client.calls[2][1]["from"] == "2000-01-03"
+    # A known revision goes straight to full history; publishing an incremental
+    # overlap first would mix adjustment vintages even before a later failure.
+    assert client.calls[0][1]["from"] == "2000-01-03"
     assert bool(eod_capture.pending_revisions(
         store, dataset="raw_eod_daily", symbols=["SHV"], end=date(2026, 9, 8),
     )) is omit_retained_history

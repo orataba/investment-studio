@@ -80,12 +80,18 @@ schema rename; verify actual market-data and NAV writes after upgrading.
 
 For the managed local database, use `infra/launchd/install_local_services.sh`
 instead. It stops all managed writers, creates and retains a verified backup of
-all eight schemas, runs the ordered migration, restores the backup automatically
-if migration, release snapshot refresh, the read-only integrity audit, or deployment fails, and
-only resumes service after health checks. The installer manages Studio writers; stop or wait for Regime source writers separately before shared-schema maintenance. PostgreSQL rollback does not restore external Parquet or original-text files.
+all project schemas, and runs the ordered migration. Before the first new-writer
+start attempt, migration, release snapshot refresh, integrity-audit, or definition
+publication failure restores the backup automatically. Once bootstrap may have
+started an application or scheduled worker, startup/readiness failure stops the
+managed writers and preserves the new database and definitions for forward
+repair; it does not replay the old dump. Health checks establish readiness after
+startup, not the absence of startup writes. The installer manages Studio writers;
+stop or wait for Regime source writers separately before shared-schema maintenance.
+PostgreSQL rollback does not restore external Parquet or original-text files.
 Clean-cut derivative migrations may reject Alembic downgrade because restoring
 schema shape cannot reconstruct the original business facts. Recovery for such
-migrations uses the retained pre-migration eight-schema backup, not a forced
+migrations uses the retained pre-migration project-schema backup, not a forced
 downgrade.
 
 Portfolio taxonomy uses current classifications, assignments and scalar targets.

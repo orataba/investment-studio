@@ -32,6 +32,7 @@ touch \
   "$PROJECT_ROOT/deploy/serve_spa_proxy.mjs"
 cp "$REPOSITORY_ROOT/infra/launchd/load_runtime_env.sh" \
   "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
+cp "$REPOSITORY_ROOT/infra/market_pipeline_actions.txt" "$PROJECT_ROOT/infra/market_pipeline_actions.txt"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' \
   > "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
 chmod +x "$PROJECT_ROOT/infra/scripts/migrate_all.sh"

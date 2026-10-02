@@ -1129,24 +1129,8 @@ function getPeerMetricKeyForMatrixCell(
       {
         '3Y': 'return_3y_annualized',
         '5Y': 'return_5y_annualized',
-        SI: 'annualized_return',
       } as Partial<Record<PerformanceMetricPeriodKey, string>>
     )[periodKey] || null
-  }
-  if (rowKey === 'annualized_volatility') {
-    return periodKey === 'SI' ? 'volatility' : null
-  }
-  if (rowKey === 'sharpe_ratio') {
-    return periodKey === 'SI' ? 'sharpe_ratio' : null
-  }
-  if (rowKey === 'sortino_ratio') {
-    return periodKey === 'SI' ? 'sortino_ratio' : null
-  }
-  if (rowKey === 'calmar_ratio') {
-    return periodKey === 'SI' ? 'calmar' : null
-  }
-  if (rowKey === 'max_drawdown') {
-    return periodKey === 'SI' ? 'max_drawdown' : null
   }
   return null
 }
@@ -3596,6 +3580,7 @@ export default function FundDetailPage({
     try {
       const taxonomyChanged = taxonomyDraftNodeId !== currentTaxonomyNodeId
       const statusChanged = coverageStatusDraft !== currentCoverageStatus
+      let recalcQueued = false
 
       if (taxonomyChanged || statusChanged) {
         const response = await updateInstrumentSettings(fundId, {
@@ -3603,6 +3588,7 @@ export default function FundDetailPage({
           coverage_status: coverageStatusDraft || null,
           updated_by: 'terminal_ui',
         })
+        recalcQueued = Boolean(response.recalc_queued)
         setProductFrameworkAttributes(response)
         setBundle((current) =>
           current
@@ -3622,7 +3608,9 @@ export default function FundDetailPage({
       }
 
       setSettingsModalOpen(false)
-      setSectionNotice('Fund settings saved.')
+      setSectionNotice(recalcQueued
+        ? language === 'zh-Hans' ? '设置已保存，指标正在后台更新。' : 'Settings saved. Metrics are updating in the background.'
+        : 'Fund settings saved.')
       if (taxonomyChanged || statusChanged) {
         setRefreshToken((value) => value + 1)
       }
@@ -4823,7 +4811,10 @@ export default function FundDetailPage({
   const peerComparisonMetricByKey = new Map(
     (peerComparison?.metrics || []).map((metric) => [metric.metric_key, metric]),
   )
-  const activePerformanceMatrixMode = peerRankingAvailable && !selectedBenchmark ? performanceMatrixMode : 'values'
+  const peerMedianAvailable = Boolean(peerComparison?.metrics.length)
+  const peerModeAvailable = (mode: PerformanceMatrixMode) => mode === 'values'
+    || (!selectedBenchmark && (mode === 'peer_median_delta' ? peerMedianAvailable : peerRankingAvailable))
+  const activePerformanceMatrixMode = peerModeAvailable(performanceMatrixMode) ? performanceMatrixMode : 'values'
   const formatRecoveryValue = (snapshot: PerformanceMetricSnapshot | null) => {
     if (!snapshot || snapshot.maxDrawdown == null) {
       return null
@@ -6719,7 +6710,7 @@ export default function FundDetailPage({
                   {peerComparison?.status === 'limited_sample' ? (
                     <span
                       className="context-chip"
-                      title="Peer medians are shown, but the exact taxonomy leaf has too few same-date peers for a stable percentile or rank."
+                      title={language === 'zh-Hans' ? '仅比较实际起止日、币种、频率和收益口径一致的同类；样本不足时只展示中位数。' : 'Peers must share actual start/end dates, currency, frequency and return basis. Small samples support medians only.'}
                     >
                       Peer median only · {formatNumber(peerComparison.sample_count, 0)} peers
                     </span>
@@ -6733,7 +6724,7 @@ export default function FundDetailPage({
                       key={option.value}
                       type="button"
                       className={option.value === activePerformanceMatrixMode ? 'instrument-performance-toggle-active' : undefined}
-                      disabled={option.value !== 'values' && (!peerRankingAvailable || Boolean(selectedBenchmark))}
+                      disabled={!peerModeAvailable(option.value)}
                       title={option.value !== 'values' && selectedBenchmark ? language === 'zh-Hans' ? '移除比较基准后查看独立同类排名' : 'Clear the benchmark to inspect standalone peer rankings' : undefined}
                       onClick={() => setPerformanceMatrixMode(option.value)}
                     >
@@ -6749,6 +6740,9 @@ export default function FundDetailPage({
                   ? `比较矩阵：所有周期按共同观察日计算，截至 ${comparisonReferenceEndDate || '尚无共同日期'}；覆盖不足的周期不展示独立最新值。标的独立最新指标及月表截至 ${performanceReferenceEndDate || '—'}。`
                   : `Comparison matrix: all periods use common observation dates through ${comparisonReferenceEndDate || 'no common date'}. Periods without coverage are unavailable. Standalone instrument metrics and the monthly table are through ${performanceReferenceEndDate || '—'}.`
                 : language === 'zh-Hans' ? `标的独立指标截至 ${performanceReferenceEndDate || '—'}；每列标明实际锚点与终点。` : `Standalone instrument metrics through ${performanceReferenceEndDate || '—'}; each column shows its actual anchor and end.`}</p>
+              {activePerformanceMatrixMode !== 'values' && <p className="fund-overview-date-note" role="note">{language === 'zh-Hans'
+                ? '同类比较仅使用实际起止日、币种、频率和收益口径一致的固定区间收益；成立以来收益和风险指标不参与排名或中位数比较。'
+                : 'Peer comparisons use fixed-window returns with matching actual start/end dates, currency, frequency and return basis. Since-inception returns and risk metrics are excluded from ranks and medians.'}</p>}
               <HorizontalTableScroll className="table-shell instrument-performance-table-shell">
                 <table className="terminal-table terminal-table-compact instrument-metrics-table">
                   <thead>

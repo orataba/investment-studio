@@ -260,10 +260,10 @@ for briefing_period in daily weekly; do
   REFRESH_SERVICE_UNITS+=("$UNIT_PREFIX-briefing-$briefing_period.service")
   REFRESH_TIMER_UNITS+=("$UNIT_PREFIX-briefing-$briefing_period.timer")
 done
-for market_action in daily weekly crypto publish sync registered-prices-cn registered-prices-hk registered-prices-us registered-prices-eu; do
+while IFS= read -r market_action; do
   REFRESH_SERVICE_UNITS+=("$UNIT_PREFIX-market-$market_action.service")
   REFRESH_TIMER_UNITS+=("$UNIT_PREFIX-market-$market_action.timer")
-done
+done < "$PROJECT_ROOT/infra/market_pipeline_actions.txt"
 RETIRED_UNITS=("$UNIT_PREFIX-us-reference-data-refresh.timer" "$UNIT_PREFIX-us-reference-data-refresh.service")
 WRITER_UNITS=(
   "${REFRESH_TIMER_UNITS[@]}"
@@ -276,8 +276,18 @@ state_captured=false
 backup_created=false
 database_mutation_started=false
 units_published=false
+writers_may_have_resumed=false
 backup_path=""
 manifest_path=""
+
+mark_writers_may_have_resumed() {
+  # A start/restart can partially succeed, and startup workers write before HTTP
+  # readiness. From this point a pre-install dump is no longer safe to replay.
+  writers_may_have_resumed=true
+  printf '%s\n' 'writers-may-have-resumed' > "$INSTALL_WORK_DIR/phase"
+  printf '%s\n' "$backup_path" > "$INSTALL_WORK_DIR/database-backup-path"
+  printf '%s\n' "$manifest_path" > "$INSTALL_WORK_DIR/database-manifest-path"
+}
 
 write_api_service() {
   local app="$1"
@@ -492,6 +502,7 @@ restore_refresh_writer_state() {
   local unit
   for unit in "${REFRESH_SERVICE_UNITS[@]}" "${REFRESH_TIMER_UNITS[@]}"; do
     if grep -Fxq "$unit" "$ACTIVE_STATE_FILE"; then
+      mark_writers_may_have_resumed
       systemctl --user start "$unit"
     fi
   done
@@ -504,6 +515,18 @@ recover_failed_install() {
   set +e
 
   if [[ "$original_exit_code" -ne 0 && "$state_captured" == "true" ]]; then
+    if [[ "$writers_may_have_resumed" == "true" ]]; then
+      if ensure_writer_units_stopped; then
+        echo "Managed writers stopped after a new-writer start attempt." >&2
+      else
+        echo "Some managed writers could not be stopped; stop them manually before repair." >&2
+      fi
+      printf '%s\n' 'forward-repair-required' > "$INSTALL_WORK_DIR/phase"
+      echo "New application or scheduled workers may have written data; automatic database and unit rollback is disabled. Repair forward with the new database and unit definitions." >&2
+      echo "Recovery state retained at: $INSTALL_WORK_DIR" >&2
+      echo "Pre-install backup retained at: ${backup_path:-not-created}" >&2
+      exit "$original_exit_code"
+    fi
     echo "Systemd installation failed; restoring the prior database, units, and service state." >&2
     if ! ensure_writer_units_stopped; then
       recovery_failed=true
@@ -588,6 +611,7 @@ systemctl --user daemon-reload
 systemctl --user enable "${MANAGED_UNITS[@]}"
 
 if [[ "$START_SERVICES" == "true" ]]; then
+  mark_writers_may_have_resumed
   systemctl --user restart "${MANAGED_UNITS[@]}"
   for unit in "${MANAGED_UNITS[@]}"; do
     if ! systemctl --user is-active --quiet "$unit"; then

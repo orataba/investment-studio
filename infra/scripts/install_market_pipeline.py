@@ -10,7 +10,7 @@ import plistlib
 
 def definitions(scheduler, role, project_root, env_root, python_bin, log_root, label_prefix='com.orataba.investment-studio'):
     runner=project_root/'infra/scripts/run_market_pipeline.sh'
-    actions=['sync'] if role=='replica' else ['daily','weekly','crypto','publish','sync','registered-prices-cn','registered-prices-hk','registered-prices-us','registered-prices-eu']
+    actions=['sync'] if role=='replica' else (Path(__file__).resolve().parents[1]/'market_pipeline_actions.txt').read_text().splitlines()
     result={}
     for action in actions:
         name='investment-studio-market-'+action

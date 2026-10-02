@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
@@ -198,7 +199,7 @@ def test_business_comparison_ignores_new_source_id_but_preserves_sample_and_meth
     assert observations.observation_business_values(before) != observations.observation_business_values(after)
 
 
-def test_snapshot_clock_and_retained_figure_schema():
+def test_snapshot_clock_and_retained_figure_schema(monkeypatch):
     from investment_studio_instrument_core.db_models import Instrument
     from watchlist_app.db.models import InstrumentChartReadModel
     from watchlist_app.services.research_quant import QuantOutput
@@ -206,7 +207,8 @@ def test_snapshot_clock_and_retained_figure_schema():
     chart = SimpleNamespace(last_recalculated_at=datetime(2026, 9, 25, 21, tzinfo=UTC),
         source_cutoff_at=datetime(2026, 9, 25, 20, tzinfo=UTC), materialization_version="fixture", data_freshness_status="fresh",
         payload_json={"research_returns": series([("2026-08-24", 100), ("2026-09-24", 110), ("2026-09-25", 121)])})
-    session = SimpleNamespace(get=lambda model, iid: instrument if model is Instrument else chart if model is InstrumentChartReadModel else None)
+    monkeypatch.setattr(observations, "calculation_input_read", lambda *args: nullcontext())
+    session = SimpleNamespace(get=lambda model, iid, **kwargs: instrument if model is Instrument else chart if model is InstrumentChartReadModel else None)
     early = observations.instrument_observations(session, "fixture", as_of=datetime(2026, 9, 25, 19, tzinfo=UTC))
     assert early["data"]["status"] == "unavailable"
     saved = observations.instrument_observations(session, "fixture", as_of=datetime(2026, 9, 25, 22, tzinfo=UTC))
@@ -218,7 +220,7 @@ def test_snapshot_clock_and_retained_figure_schema():
 
 @pytest.mark.parametrize("scenario", ["cash", "mixed_weekend", "future_snapshot", "future_available",
     "excess_weight", "short_future", "negative_future"])
-def test_instrument_observation_reads_actual_retained_market_versions_in_batches(tmp_path, scenario):
+def test_instrument_observation_reads_actual_retained_market_versions_in_batches(tmp_path, scenario, monkeypatch):
     from investment_studio_instrument_core.db_models import Instrument
     from studio_market.config import MarketSettings
     from studio_market.numeric import NumericStore
@@ -236,7 +238,8 @@ def test_instrument_observation_reads_actual_retained_market_versions_in_batches
     own_series = series([(d.isoformat(), 100 + index) for index, d in enumerate(days)])
     chart = SimpleNamespace(last_recalculated_at=known, source_cutoff_at=known, materialization_version="fixture",
         data_freshness_status="fresh", payload_json={"research_returns": own_series})
-    session = SimpleNamespace(get=lambda model, iid: instrument if model is Instrument else chart if model is InstrumentChartReadModel else None)
+    monkeypatch.setattr(observations, "calculation_input_read", lambda *args: nullcontext())
+    session = SimpleNamespace(get=lambda model, iid, **kwargs: instrument if model is Instrument else chart if model is InstrumentChartReadModel else None)
     store = NumericStore(MarketSettings(f"sqlite:///{tmp_path / 'market.db'}", tmp_path / "data"))
     store.create_schema_for_testing()
     try:

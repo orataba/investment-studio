@@ -45,6 +45,31 @@ function observationDensity(dates: string[]) {
   return span > 0 ? dates.length / span * 365.25 : null
 }
 
+// Index immutable input once. Each rolling estimate validates only its (start, end]
+// sample with the same canonical alignment checks, rather than rescanning all history.
+function upperDateIndex<T>(rows: T[], date: string, dateOf: (row: T) => string) {
+  let low = 0, high = rows.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (dateOf(rows[middle]) <= date) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+function indexWindowSeries(series: GroupReturnSeries): (start: string, end: string) => GroupReturnSeries {
+  const returns = [...series.returnsByDate.entries()].sort(([left], [right]) => left.localeCompare(right))
+  const input = series.inputPoints?.filter(point => point.date).sort((left, right) => left.date.localeCompare(right.date))
+  const undated = series.inputPoints?.filter(point => !point.date) ?? []
+  const members = series.sourceMembers?.map(indexWindowSeries)
+  return (start, end) => ({
+    ...series,
+    returnsByDate: new Map(returns.slice(upperDateIndex(returns, start, row => row[0]), upperDateIndex(returns, end, row => row[0]))),
+    inputPoints: input ? [...undated, ...input.slice(upperDateIndex(input, start, row => row.date), upperDateIndex(input, end, row => row.date))] : undefined,
+    sourceMembers: members?.map(member => member(start, end)),
+  })
+}
+
 export function buildRollingRisk({ series, asOfDate, lookbackDays, inputIssues = [], performance }: {
   series: GroupReturnSeries[]; asOfDate: string; lookbackDays: number
   inputIssues?: CorrelationMatrixCoverageIssue[]; performance?: PortfolioPerformanceResponse | null
@@ -55,16 +80,15 @@ export function buildRollingRisk({ series, asOfDate, lookbackDays, inputIssues =
   const candidateDates = [...new Set(active.flatMap((item) => [...item.returnsByDate.keys(), ...(item.unavailablePeriods ?? []).map((period) => period.date)]))]
     .filter((date) => date >= commonStart && date <= asOfDate).sort()
   if (asOfDate && !candidateDates.includes(asOfDate)) candidateDates.push(asOfDate)
+  const windows = active.map(indexWindowSeries)
+  const valuationDates = performance?.daily_series.map(row => row.as_of_date).sort()
   const estimate = (date: string) => {
-    const { dates, issues: alignmentIssues } = alignedWindowIssues(active, date, lookbackDays)
+    const start = riskWindowStart(date, lookbackDays)
+    const { dates, issues: alignmentIssues } = alignedWindowIssues(windows.map(window => window(start, date)), date, lookbackDays)
     const issues = [...inputIssues, ...alignmentIssues]
     if (!active.length) issues.push(windowIssue('portfolio', 'Portfolio', 'missing_series', 'No eligible market-risk return observations are available.'))
     let anchor = dates.length ? active[0]?.periodStartByDate.get(dates[0]) ?? null : null
-    if (performance) {
-      const requiredStart = riskWindowStart(date, lookbackDays)
-      const rows = performance.daily_series.filter((row) => row.as_of_date <= requiredStart).sort((a, b) => a.as_of_date.localeCompare(b.as_of_date))
-      anchor = rows[rows.length - 1]?.as_of_date ?? anchor
-    }
+    if (valuationDates) anchor = valuationDates[upperDateIndex(valuationDates, start, value => value) - 1] ?? anchor
     const coverage = assessRiskWindowCoverage(dates, date, lookbackDays, 'daily', undefined, anchor)
     if (!coverage.ok) issues.push(windowIssue('portfolio', 'Portfolio', 'window_coverage', coverage.error || 'The selected window is incomplete.'))
     const diagnostics = windowDiagnostics({ asOfDate: date, lookbackDays, frequency: 'daily', dates, firstPeriodStartDate: anchor, scopeMemberCount: active.length, issues })

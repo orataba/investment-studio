@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 import logging
-from typing import Mapping, Sequence
+from typing import Collection, Mapping, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, select
+from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from watchlist_app.core.settings import get_settings
@@ -36,6 +38,88 @@ from watchlist_app.services.shared_instrument_registry import (
 logger = logging.getLogger(__name__)
 instrument_repository = SQLAlchemyInstrumentRepository()
 recalc_repository = SQLAlchemyRecalcJobRepository()
+
+
+def _recalculation_state(
+    session: Session, instrument_ids: Collection[str],
+    *, configuration_only: bool = False,
+) -> tuple[dict[str, dict[str, str]], dict[str, tuple]]:
+    """Expose retained calculation results honestly while a successor is pending.
+
+    A completed receipt is committed with its read models. Only a calculation
+    started after a failed configuration rebuild can prove recovery; an older
+    worker's later publication or an exposure-only job cannot clear the failure.
+    """
+    if not instrument_ids:
+        return {}, {}
+    configuration_job = RecalcJob.payload_json["configuration_changed"].as_boolean().is_(True)
+    changed_configuration = (
+        configuration_job
+        if configuration_only else True
+    )
+    states = session.execute(select(
+        RecalcJob.instrument_id,
+        func.max(case((and_(changed_configuration, RecalcJob.job_type == "all",
+                           RecalcJob.job_status.in_(("queued", "running"))), 1), else_=0)),
+        func.max(case((and_(changed_configuration, RecalcJob.job_type == "all", RecalcJob.job_status == "failed"),
+                           func.coalesce(RecalcJob.finished_at, RecalcJob.enqueued_at)))),
+        func.max(case((and_(RecalcJob.job_type.in_(("all", "performance")),
+                           RecalcJob.job_status == "completed"), RecalcJob.started_at))),
+        func.count(case((configuration_job, 1))),
+        func.max(case((configuration_job, RecalcJob.recalc_job_id))),
+        func.max(case((configuration_job, RecalcJob.enqueued_at))),
+        func.max(case((configuration_job, RecalcJob.started_at))),
+        func.max(case((configuration_job, RecalcJob.finished_at))),
+    ).where(RecalcJob.instrument_id.in_(set(instrument_ids)))
+        .group_by(RecalcJob.instrument_id))
+    overrides, receipts = {}, {}
+    for instrument_id, pending, failed_at, recovered_at, count, identity, enqueued, started, finished in states:
+        if count:
+            receipts[instrument_id] = (count, identity, enqueued, started, finished)
+        if pending:
+            overrides[instrument_id] = {
+                "data_freshness_status": "pending_recalc",
+                "staleness_reason": "Recalculation is pending; displayed results may precede the latest data or saved settings.",
+            }
+        elif failed_at is not None and (recovered_at is None or recovered_at <= failed_at):
+            overrides[instrument_id] = {
+                "data_freshness_status": "stale",
+                "staleness_reason": "Recalculation failed; displayed results have not been refreshed for the latest data or saved settings.",
+            }
+    return overrides, receipts
+
+
+def recalculation_freshness_overrides(
+    session: Session, instrument_ids: Collection[str],
+    *, configuration_only: bool = False,
+) -> dict[str, dict[str, str]]:
+    return _recalculation_state(session, instrument_ids, configuration_only=configuration_only)[0]
+
+
+@contextmanager
+def calculation_input_read(session: Session, instrument_ids: Collection[str]):
+    """Fence a multi-query read without holding a lock across external I/O.
+
+    Pending state alone is insufficient: a successor can finish after old rows
+    were loaded. Retain actual configuration job identities and lifecycle clocks
+    on both sides of the read, including completed receipts. Membership-only
+    refreshes do not change this checkpoint or block research.
+    """
+    from watchlist_app.services.research_errors import ResearchInputUnavailable
+
+    ids = set(instrument_ids)
+    before_state, before = _recalculation_state(session, ids, configuration_only=True)
+    if before_state:
+        raise ResearchInputUnavailable(
+            "标的设置已更新，数值重算尚未成功完成，请稍后重试：" + "、".join(sorted(before_state))
+        )
+    yield
+    after_state, after = _recalculation_state(session, ids, configuration_only=True)
+    if after_state or before != after:
+        changed = set(after_state) | {iid for iid in ids if before.get(iid) != after.get(iid)}
+        raise ResearchInputUnavailable(
+            "读取期间标的设置或数值重算状态已变化，请稍后重试：" + "、".join(sorted(changed))
+        )
 
 
 @dataclass(frozen=True, slots=True)

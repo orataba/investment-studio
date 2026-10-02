@@ -8,10 +8,8 @@ from sqlalchemy import func, select
 from portfolio_app.db.models import PortfolioDailySnapshotModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.taxonomy_targets import resolve_taxonomy_targets
-from portfolio_app.services.risk_model import (
-    _daily_mark_to_last_return_matrix, _return_series_with_periods,
-    _row_key, estimate_covariance,
-)
+from portfolio_app.services.risk_model import _row_key
+from portfolio_app.services.taxonomy_configuration import current_taxonomy_catalog
 
 
 def _risk_live_overlay_identity(portfolio_id: str, underlying_ids: set[str]) -> tuple:
@@ -264,24 +262,26 @@ def _correlations(workspace):
     risk = workspace.get("forward_risk") or {}
     if risk.get("status") != "ok":
         return {"status": "unavailable", "pairs": [], "limitations": risk.get("errors") or ["生产风险模型不可用。"]}
-    model = risk["risk_model"]
     active = []
     for index, row in enumerate(workspace["rows"]):
         if row.get("forward_risk_status") == "ok":
-            series, starts = _return_series_with_periods(row)
-            active.append((_row_key(row, index), row, series, starts))
+            active.append((_row_key(row, index), row))
     if len(active) < 2:
         return {"status": "unavailable", "pairs": [], "limitations": ["少于两个可建模持仓，无法比较相关性。"]}
     try:
-        returns, _ = _daily_mark_to_last_return_matrix(active)
-        covariance = estimate_covariance(returns, model_id=model["covariance_model_id"], lookback_days=model["lookback_days"],
-            parameters=model["parameters"], missing_return_policy=model["missing_return_policy"],
-            calculation_frequency=model["resolved_calculation_frequency"], as_of_date=date.fromisoformat(workspace["as_of_date"]))
+        covariance = workspace.get("_forward_risk_covariance")
+        if not covariance:
+            raise ValueError("生产风险协方差物化结果不可用，需按当前计算版本重建。")
+        indices = {key: index for index, key in enumerate(covariance["keys"])}
+        matrix = covariance["values"]
+        if any(key not in indices for key, _ in active):
+            raise ValueError("生产风险协方差与持仓成员不一致。")
         pairs = []
-        for index, (left_key, left, *_rest) in enumerate(active):
-            for right_key, right, *_rest in active[index + 1:]:
-                denominator = float(covariance.loc[left_key, left_key] * covariance.loc[right_key, right_key])
-                correlation = float(covariance.loc[left_key, right_key]) / sqrt(denominator) if denominator > 0 else None
+        for index, (left_key, left) in enumerate(active):
+            for right_key, right in active[index + 1:]:
+                i, j = indices[left_key], indices[right_key]
+                denominator = float(matrix[i][i] * matrix[j][j])
+                correlation = float(matrix[i][j]) / sqrt(denominator) if denominator > 0 else None
                 pairs.append({"holding_ids": [_holding_id(left), _holding_id(right)],
                     "instrument_ids": [(left.get("instrument_core") or {}).get("instrument_id"), (right.get("instrument_core") or {}).get("instrument_id")],
                     "correlation": correlation})
@@ -374,11 +374,10 @@ def project_portfolio_risk(workspace, catalog, previous=None, *, previous_error=
 
 def read_portfolio_risk_context(portfolio_id: str, *, as_of_date: date | None = None):
     from fastapi import HTTPException
-    from portfolio_app.services.holdings_workspace import holdings_workspace
-    from portfolio_app.api.routes.taxonomies import get_portfolio_taxonomies
+    from portfolio_app.services.holdings_workspace import read_holdings_risk_workspace
     from portfolio_app.services.daily_snapshots import PortfolioCalculationUnavailable
-    workspace = holdings_workspace(portfolio_id=portfolio_id, as_of_date=as_of_date, include_details=True)
-    catalog = get_portfolio_taxonomies(portfolio_id, include_market_profile=False).model_dump(mode="json")
+    workspace = read_holdings_risk_workspace(portfolio_id, as_of_date)
+    catalog = current_taxonomy_catalog(portfolio_id)
     with get_session_factory()() as session:
         previous_date = session.scalar(select(PortfolioDailySnapshotModel.as_of_date).where(
             PortfolioDailySnapshotModel.portfolio_id == portfolio_id,
@@ -387,7 +386,7 @@ def read_portfolio_risk_context(portfolio_id: str, *, as_of_date: date | None = 
     previous, error = None, None
     if previous_date:
         try:
-            previous = holdings_workspace(portfolio_id=portfolio_id, as_of_date=previous_date, include_details=True)
+            previous = read_holdings_risk_workspace(portfolio_id, previous_date, live_overlays=False)
         except (HTTPException, PortfolioCalculationUnavailable, ValueError) as exc:
             error = f"历史持仓风险重算暂不可用：{getattr(exc, 'detail', str(exc))}"
     result = project_portfolio_risk(workspace, catalog, previous, previous_error=error)

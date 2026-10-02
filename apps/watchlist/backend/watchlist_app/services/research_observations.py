@@ -18,6 +18,8 @@ from studio_market.numeric.store import cutoff_instant
 
 from watchlist_app.services.calculation_frequency import _market_calendar_sessions, source_calendar_date
 from watchlist_app.services.research_metrics import _evidence, _number, ewma_price_evidence
+from watchlist_app.services.read_model_freshness import calculation_input_read
+from watchlist_app.services.research_errors import ResearchInputUnavailable
 from watchlist_app.services.return_windows import (
     named_return_window_spec, period_return_percent, resolve_return_window, return_window_metadata,
 )
@@ -276,12 +278,17 @@ def basket_observations(positions, member_series, *, as_of_date, information_as_
 
 
 def _snapshot(session, instrument_id, cutoff):
+    with calculation_input_read(session, [instrument_id]):
+        return _read_snapshot(session, instrument_id, cutoff)
+
+
+def _read_snapshot(session, instrument_id, cutoff):
     from investment_studio_instrument_core.db_models import Instrument
     from watchlist_app.db.models import InstrumentChartReadModel
-    instrument = session.get(Instrument, instrument_id)
+    instrument = session.get(Instrument, instrument_id, populate_existing=True)
     if instrument is None:
         raise ValueError("Unknown registered instrument")
-    chart = session.get(InstrumentChartReadModel, instrument_id)
+    chart = session.get(InstrumentChartReadModel, instrument_id, populate_existing=True)
     calendar = (instrument.source_settings_json or {}).get("market_calendar") or instrument.exchange_code
     known = chart.last_recalculated_at if chart else None
     source = chart.source_cutoff_at if chart else None
@@ -304,7 +311,7 @@ def _snapshot(session, instrument_id, cutoff):
 def _benchmark(session, instrument_id, benchmark_id, cutoff):
     from watchlist_app.db.models import InstrumentManualProfile
     if not benchmark_id:
-        profile = session.get(InstrumentManualProfile, instrument_id)
+        profile = session.get(InstrumentManualProfile, instrument_id, populate_existing=True)
         benchmark_id = ((profile.nav_settings_json or {}).get("default_benchmark_instrument_id") if profile else None)
     if not benchmark_id or benchmark_id == instrument_id:
         return None, None, None
@@ -363,8 +370,13 @@ def _raw_market(instrument, cutoff, store, as_of_date):
 def instrument_observations(session, instrument_id, *, as_of, benchmark_id=None, store=None):
     from watchlist_app.services.canonical_recalc import _current_drawdown
     cutoff = cutoff_instant(as_of)
-    instrument, series, calendar, snapshot = _snapshot(session, instrument_id, cutoff)
-    benchmark_id, benchmark, benchmark_snapshot = _benchmark(session, instrument_id, benchmark_id, cutoff)
+    try:
+        with calculation_input_read(session, [instrument_id]):
+            instrument, series, calendar, snapshot = _read_snapshot(session, instrument_id, cutoff)
+            benchmark_id, benchmark, benchmark_snapshot = _benchmark(session, instrument_id, benchmark_id, cutoff)
+    except ResearchInputUnavailable as error:
+        return _evidence("量化观察", cutoff, {"status": "unavailable", "summary": "数值重算尚未成功完成，暂不能生成新观察。", "limitations": [str(error)],
+            "metrics": {}, "tables": [], "charts": []}, {"version": OBSERVATION_METHOD_VERSION}, instrument_id=instrument_id)
     points = _points(series)
     as_of_date = date.fromisoformat(points[-1]["date"]) if points else source_calendar_date(cutoff, calendar)
     limits = ["固定数值只提供观察线索，不预设买卖阈值，也不自动确认机会或风险。"]
@@ -499,10 +511,15 @@ def event_reaction(series, *, event_date, calendar, as_of, benchmark=None, timin
 
 def instrument_event_reaction(session, instrument_id, *, as_of, event_date, timing="date_only", benchmark_id=None, sessions=1):
     cutoff = cutoff_instant(as_of)
-    instrument, series, calendar, snapshot = _snapshot(session, instrument_id, cutoff)
+    try:
+        with calculation_input_read(session, [instrument_id]):
+            instrument, series, calendar, snapshot = _read_snapshot(session, instrument_id, cutoff)
+            benchmark_id, benchmark, benchmark_snapshot = _benchmark(session, instrument_id, benchmark_id, cutoff)
+    except ResearchInputUnavailable as error:
+        return _evidence("事件市场反应", cutoff, {"status": "unavailable", "summary": "数值重算尚未成功完成，暂不能生成新观察。", "limitations": [str(error)],
+            "metrics": {}, "tables": [], "charts": []}, {"version": REACTION_METHOD_VERSION}, instrument_id=instrument_id)
     if instrument.instrument_type not in {"equity", "etf", "index", "crypto"}:
         raise ValueError("事件日频价格反应仅适用于已有日频市场价格的标的")
-    benchmark_id, benchmark, benchmark_snapshot = _benchmark(session, instrument_id, benchmark_id, cutoff)
     data = event_reaction(series, event_date=event_date, calendar=calendar, as_of=cutoff,
         benchmark=benchmark, timing=timing, sessions=sessions)
     data.update(method_version=REACTION_METHOD_VERSION, benchmark_id=benchmark_id,

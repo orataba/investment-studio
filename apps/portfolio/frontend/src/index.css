@@ -4703,32 +4703,27 @@ input[type='checkbox'] {
   pointer-events: none;
 }
 
-.risk-ranked-bars,
-.risk-ribbon,
-.risk-account-bars {
+.risk-ranked-bars {
   display: grid;
   gap: 12px;
   padding: 14px 0 12px;
   border-top: 1px solid var(--portfolio-line);
 }
 
-.risk-ranked-row,
-.risk-account-row {
+.risk-ranked-row {
   display: grid;
   grid-template-columns: minmax(180px, 220px) minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
 }
 
-.risk-ranked-label,
-.risk-account-label {
+.risk-ranked-label {
   display: grid;
   gap: 2px;
   min-width: 0;
 }
 
-.risk-ranked-title,
-.risk-account-title {
+.risk-ranked-title {
   font-size: 13px;
   font-weight: 400;
   color: var(--portfolio-ink);
@@ -4738,23 +4733,18 @@ input[type='checkbox'] {
 }
 
 .risk-ranked-meta,
-.risk-account-meta,
-.risk-ranked-detail,
-.risk-account-detail-line,
-.risk-account-value-meta {
+.risk-ranked-detail {
   font-size: 12px;
   color: var(--portfolio-muted);
 }
 
-.risk-ranked-bar-stack,
-.risk-account-bar-stack {
+.risk-ranked-bar-stack {
   display: grid;
   gap: 6px;
   min-width: 0;
 }
 
-.risk-ranked-bar-track,
-.risk-account-track {
+.risk-ranked-bar-track {
   position: relative;
   height: 16px;
   border-radius: 0;
@@ -4762,37 +4752,12 @@ input[type='checkbox'] {
   overflow: hidden;
 }
 
-.risk-ranked-bar-fill,
-.risk-account-track-span {
+.risk-ranked-bar-fill {
   height: 100%;
   border-radius: inherit;
 }
 
-.risk-account-track-span {
-  display: flex;
-  overflow: hidden;
-}
-
-.risk-account-segment {
-  height: 100%;
-}
-
-.risk-account-segment-cash,
-.risk-account-legend-swatch-cash {
-  background: var(--portfolio-muted);
-}
-
-.risk-account-segment-position,
-.risk-account-legend-swatch-position {
-  background: var(--studio-chart-primary);
-}
-
-.risk-account-segment-negative {
-  background: var(--portfolio-negative);
-}
-
-.risk-ranked-value,
-.risk-account-value {
+.risk-ranked-value {
   display: grid;
   gap: 2px;
   justify-items: end;
@@ -4801,81 +4766,6 @@ input[type='checkbox'] {
   font-size: 12px;
   font-weight: 400;
   color: var(--portfolio-ink);
-}
-
-.risk-account-detail-line {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.risk-ribbon-track {
-  display: flex;
-  min-height: 28px;
-  border-radius: 0;
-  background: var(--portfolio-band-strong);
-  overflow: hidden;
-}
-
-.risk-ribbon-segment {
-  min-width: 4px;
-  border-radius: 0;
-}
-
-.risk-ribbon-legend {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 14px;
-}
-
-.risk-ribbon-legend-item {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 4px 8px;
-  align-items: center;
-}
-
-.risk-ribbon-swatch,
-.risk-account-legend-swatch {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-}
-
-.risk-ribbon-label,
-.risk-ribbon-value,
-.risk-account-legend-item {
-  font-size: 12px;
-  color: var(--portfolio-ink);
-}
-
-.risk-ribbon-label {
-  min-width: 0;
-  font-weight: 400;
-}
-
-.risk-ribbon-value {
-  font-weight: 400;
-  white-space: nowrap;
-}
-
-.risk-ribbon-detail {
-  grid-column: 2 / 4;
-  font-size: 12px;
-  color: var(--portfolio-muted);
-}
-
-.risk-account-legend {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-
-.risk-account-legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
 }
 
 .holdings-side-toolbar {
@@ -4905,21 +4795,15 @@ input[type='checkbox'] {
   }
 
   .risk-ranked-row,
-  .risk-account-row,
   .risk-target-gap-row {
     grid-template-columns: minmax(0, 1fr);
   }
 
   .risk-ranked-value,
-  .risk-account-value,
   .risk-target-gap-values {
     justify-items: start;
     justify-content: start;
     text-align: left;
-  }
-
-  .risk-ribbon-legend {
-    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -10545,73 +10429,6 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .transaction-filter-label > span {
   font-size: 12px;
   color: var(--portfolio-muted);
-}
-
-.transaction-instrument-filter {
-  position: relative;
-  min-width: 0;
-}
-
-.transaction-instrument-filter input {
-  padding-right: 30px;
-  text-overflow: ellipsis;
-}
-
-.transaction-instrument-filter-clear {
-  position: absolute;
-  top: 4px;
-  right: 5px;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--portfolio-muted);
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.transaction-instrument-filter-results {
-  position: absolute;
-  z-index: 36;
-  top: calc(100% + 4px);
-  left: 0;
-  width: min(460px, 78vw);
-  max-height: 320px;
-  overflow: auto;
-  border: 1px solid var(--portfolio-line-strong);
-  background: #ffffff;
-  box-shadow: 0 14px 34px rgba(17, 24, 39, 0.14);
-}
-
-.transaction-instrument-filter-option {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  width: 100%;
-  padding: 9px 10px;
-  border: 0;
-  border-bottom: 1px solid var(--portfolio-line);
-  background: #ffffff;
-  color: var(--portfolio-ink);
-  text-align: left;
-  cursor: pointer;
-}
-
-.transaction-instrument-filter-option:last-child {
-  border-bottom: 0;
-}
-
-.transaction-instrument-filter-option-active,
-.transaction-instrument-filter-option:hover {
-  background: var(--portfolio-accent-soft);
-}
-
-.transaction-instrument-filter-option strong {
-  font-size: 13px;
-  font-weight: 500;
 }
 
 .transaction-active-filters {

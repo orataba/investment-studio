@@ -397,3 +397,19 @@ it('recovers a failed fund summary without losing the requested performance tab 
   expect(screen.getByTestId('fund-detail-location').textContent).toContain('tab=performance')
   expect(screen.getByTestId('fund-detail-location').textContent).toContain('benchmark=benchmark-1')
 })
+
+it('excludes since-inception metrics from peer ranking and permits median-only small samples', async () => {
+  const metric = (metric_key: string) => ({ metric_key, label: metric_key, domain: 'performance', format: 'percent', direction: 'higher', value: 0.1, peer_median: 0.08, peer_p25: 0.05, peer_p75: 0.12, percentile: 77, quartile: 1, rank: 777, sample_count: 1000, peer_sample_count: 999 })
+  api.performance.mockResolvedValue({ growth_chart_series: [], annual_returns: [], trailing_returns: [], ranking: null,
+    peer_comparison: { status: 'limited_sample', sample_count: 3, metrics: [metric('return_1m'), metric('annualized_return'), metric('volatility')], peer_path: ['Funds'] }, calculation_frequency_profile: null, snapshot_metadata: null })
+  show('/instruments/fund-1?tab=performance')
+  const median = await screen.findByRole('button', { name: 'vs Median' })
+  await waitFor(() => expect((median as HTMLButtonElement).disabled).toBe(false))
+  expect((screen.getByRole('button', { name: 'Peer Rank' }) as HTMLButtonElement).disabled).toBe(true)
+  fireEvent.click(median)
+  expect(screen.getByText('同类比较仅使用实际起止日、币种、频率和收益口径一致的固定区间收益；成立以来收益和风险指标不参与排名或中位数比较。')).toBeTruthy()
+  const annualizedRow = screen.getByRole('cell', { name: 'Ann. Return' }).closest('tr')!
+  expect(annualizedRow.lastElementChild?.textContent).toBe('—')
+  const volatilityRow = screen.getByRole('cell', { name: 'Ann. Volatility' }).closest('tr')!
+  expect(volatilityRow.lastElementChild?.textContent).toBe('—')
+})

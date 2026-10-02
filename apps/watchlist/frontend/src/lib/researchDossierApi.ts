@@ -291,13 +291,6 @@ export type ResearchUpdate = {
   }
   organization_revision?: { original_recorded_at?: string; source_update_id?: string; organized_at?: string }
 }
-export type ResearchActivityResponse = {
-  instrument_id: string; updates: ResearchUpdate[]; recent_events: ResearchUpdate[]
-}
-export function getResearchActivity(instrumentId: string, signal?: AbortSignal) {
-  return fetchJson<ResearchActivityResponse>(`/api/research/instruments/${encodeURIComponent(instrumentId)}/activity`, { signal })
-}
-
 export type ResearchEventScope = 'recent' | 'watch' | 'history'
 export type ResearchEventsResponse = {
   instrument_id: string; events: ResearchUpdate[]; late_arrivals: ResearchUpdate[]; late_arrival_count?: number

@@ -359,7 +359,8 @@ async def _save_uploaded_material(topic: ResearchTopic, file: UploadFile, sessio
     await _persist_uploaded_document(file, path)
     try:
         from watchlist_app.services.research_dossier import _file_text
-        text, extraction_status, extraction = _file_text(path)
+        from starlette.concurrency import run_in_threadpool
+        text, extraction_status, extraction = await run_in_threadpool(_file_text, path)
         if extraction_status in {"failed", "missing"}:
             raise ValueError("Uploaded research material could not be read")
         record = ResearchEntry(entry_id=entry_id, topic_id=topic.topic_id, team_id=topic.team_id, author_user_id=current_principal().user_id, kind="evidence", title=(title or "").strip() or name, body=text,
@@ -705,7 +706,7 @@ class RiskFollowUp(BaseModel):
 @router.get("/risk")
 def risk_workspace(instrument_id: str | None = None, instrument_ids: str | None = None, watchlist_id: str | None = None, summary: bool = False, session: Session = Depends(get_db_session)):
     from watchlist_app.services.risk_workspace_projection import RISK_FIELDS, case_detail, case_summary_rows, return_series, risk_assets
-    cases_query = select(RiskCase).order_by(RiskCase.trigger_active.desc(), RiskCase.updated_at.desc())
+    cases_query = select(RiskCase).order_by(RiskCase.trigger_active.desc(), RiskCase.updated_at.desc()).execution_options(populate_existing=True)
     ids = None
     if watchlist_id:
         require(session, Watchlist, watchlist_id)
@@ -720,9 +721,9 @@ def risk_workspace(instrument_id: str | None = None, instrument_ids: str | None 
     instruments = catalogue(session, instrument_ids=ids)
     member_ids = [item["instrument_id"] for item in instruments]
     risks = (risk_assets(session, member_ids) if summary else {row.instrument_id: row for row in session.scalars(select(InstrumentRiskReadModel).where(
-        InstrumentRiskReadModel.instrument_id.in_(member_ids)))}) if member_ids else {}
+        InstrumentRiskReadModel.instrument_id.in_(member_ids)).execution_options(populate_existing=True))}) if member_ids else {}
     rules = {row.instrument_id: row for row in session.scalars(select(RiskReviewRule).where(
-        RiskReviewRule.instrument_id.in_(member_ids)))} if member_ids else {}
+        RiskReviewRule.instrument_id.in_(member_ids)).execution_options(populate_existing=True))} if member_ids else {}
     series_by_id = return_series(session, member_ids) if member_ids else {}
     for item in instruments:
         iid = item["instrument_id"]

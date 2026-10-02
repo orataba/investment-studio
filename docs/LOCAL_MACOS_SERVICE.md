@@ -36,8 +36,13 @@ history 和进程参数暴露凭据。
 
 安装器会停止并等待旧服务退出，创建并校验 `identity / instrument_data / instrument_registry / data_ingestion / platform / portfolio / watchlist / market_data / market_text / briefing`
 项目 schema 的迁移前 custom-format 备份，初始化身份表并执行业务迁移；刷新本次发布所需的股票/ETF 搜索目录后，按共享登记目录同步四个系统 Watchlist 的成员及行物化，保留用户名单、视图和研究，补齐已有 chart 的紧凑列表投影，再刷新失效的 Portfolio 快照、预计算最新可靠日期的持仓与风险页面结果并执行只读审计。安装不全量重采已登记证券的行情；行情和参考事实由公共数据同步及既有定时维护流程更新。目录或物化失败同样触发回滚，不依赖浏览器访问补齐目录。随后重建四个前端，以原子文件替换更新各 plist 并启动 `launchd`
-服务。任一迁移、构建、plist 安装或健康检查失败时，会先卸载新服务、恢复数据库备份
-和旧 plist，再恢复此前加载的服务；数据库或 plist 回滚失败时所有托管服务保持停止。
+服务。首次尝试 `bootstrap` 新服务前，迁移、构建或 plist 安装失败会恢复数据库备份
+和旧 plist，再恢复此前加载的服务；恢复失败则保留私有恢复目录，不重新启动服务。
+`RunAtLoad` 可能在健康检查前就产生新记录，因此安装器会在首次 `bootstrap` 前记录
+`writers-may-have-resumed`。此后部分启动或健康检查失败，只卸载托管服务并保留新数据库
+和新 plist，不自动回放旧备份。恢复目录中的 `phase` 记为 `forward-repair-required`，
+并保留原服务状态、旧 plist 和备份路径；继续保持维护状态，基于现有数据修复后再恢复运行。
+如某个服务无法卸载，安装器会明确报告，须先人工停止该服务。
 校验后的迁移前备份默认保留在
 `~/Library/Application Support/investment-studio/backups/`。晚间结算任务在加载后按已有运行状态判断是否补跑；市场行情和资料任务只注册日历计划，不在加载时额外执行。首次上线前先完成资料采集，再启动研究服务。所有批次共用独占写锁，定时刷新在下述有界窗口内等待已有批次完成。
 
@@ -67,7 +72,8 @@ Watchlist 不依赖外部 DuckDB。港股和美股盘后任务在每小时 `:30`
 `infra/scripts/market_close_schedule.py`，不维护另一份冬夏令时或提前收盘日期表。
 
 Mac 在日历时间睡眠时，`launchd` 会在唤醒后合并触发；盘后港股/美股任务若已错过目标半小时窗口，则等待下一个交易日，必要时显式补采。
-安装器会停止并删除旧 `us-reference-data-refresh` plist，安装失败时恢复旧定义和运行状态。
+安装器会停止并删除旧 `us-reference-data-refresh` plist；仅在首次启动新服务前的失败中
+恢复旧定义和运行状态，跨过启动边界后的失败保留新定义并按上述方式修复。
 定时刷新共用独占写锁，默认最多等待 900 秒；runner 可通过进程环境变量 `INVESTMENT_STUDIO_LOCAL_REFRESH_LOCK_WAIT_SECONDS` 覆盖。等待写入日志，超时明确返回 75，不启动并行写入或伪报成功。
 注销或关机期间用户级任务不运行，锁屏不影响调度。
 

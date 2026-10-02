@@ -6,8 +6,8 @@ import ResearchUpdateCard from './ResearchUpdateCard'
 import { SavedFigure } from './ResearchModules'
 import type { ResearchUpdate } from '../lib/researchDossierApi'
 
-const api = vi.hoisted(() => ({ activity: vi.fn(), events: vi.fn(), themes: vi.fn(), create: vi.fn(), update: vi.fn(), note: vi.fn(), source: vi.fn() }))
-vi.mock('../lib/researchDossierApi', async original => ({ ...await original<typeof import('../lib/researchDossierApi')>(), getResearchActivity: api.activity, getResearchEvents: api.events, getResearchThemes: api.themes, createResearchTheme: api.create, updateResearchTheme: api.update, getSavedResearchSource: api.source }))
+const api = vi.hoisted(() => ({ events: vi.fn(), themes: vi.fn(), create: vi.fn(), update: vi.fn(), note: vi.fn(), source: vi.fn() }))
+vi.mock('../lib/researchDossierApi', async original => ({ ...await original<typeof import('../lib/researchDossierApi')>(), getResearchEvents: api.events, getResearchThemes: api.themes, createResearchTheme: api.create, updateResearchTheme: api.update, getSavedResearchSource: api.source }))
 vi.mock('../lib/api', async original => ({ ...await original<typeof import('../lib/api')>(), createInstrumentResearchNote: api.note }))
 const event: ResearchUpdate = { update_id: 'event:case:version', kind: 'event', title: '配售完成', body: '资金已经取得，后续用途仍待核实。', recorded_at: '2026-09-23T00:00:00Z', author: '研究员', author_role: 'researcher', theme_ids: [], sources: [{ source_id: 'original', title: '配售原文' }], reference: { instrument_id: 'fund', event_case_id: 'case', event_version_id: 'version' }, direction: 'uncertain' }
 beforeEach(() => { vi.resetAllMocks(); api.themes.mockResolvedValue({ identity: { user_id: 'pm', display_name: 'PM', team_role: 'member' }, themes: [] }); api.source.mockResolvedValue({ source_id: 'computed:1', title: '已留存回报比较', data: { rows: [{ instrument_id: 'fund', return_pct: 2, max_drawdown_pct: -3 }] } }) })
@@ -27,7 +27,6 @@ it('reads the server-filtered important events without downloading the activity 
   render(<ResearchRecentEvents instrumentId="fund" />)
   expect(await screen.findByRole('heading', { name: event.title })).toBeTruthy()
   expect(api.events).toHaveBeenCalledWith('fund', 'recent', expect.any(AbortSignal), 0)
-  expect(api.activity).not.toHaveBeenCalled()
   expect(screen.getByText(event.body).closest('details')).toBeNull()
   expect(screen.queryByRole('region', { name: '研究动态' })).toBeNull()
 })

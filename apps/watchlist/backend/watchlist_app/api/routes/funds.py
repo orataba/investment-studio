@@ -25,6 +25,7 @@ from watchlist_app.repositories.sqlalchemy.manual_profiles import (
 )
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
+from watchlist_app.services.recalc import lock_instrument_configuration, queue_configuration_recalculation
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
 from watchlist_app.services.instrument_taxonomy import (
     build_taxonomy_context,
@@ -42,6 +43,7 @@ from watchlist_app.services.read_models import (
     serialize_payload,
 )
 from watchlist_app.services.read_model_freshness import (
+    recalculation_freshness_overrides,
     latest_local_market_data_date,
     local_materialization_source_cutoff,
     local_materialization_version,
@@ -326,6 +328,10 @@ def get_instrument_summary(
         merged["management_firm_name"] = (
             str(instrument.metadata_json.get("management_firm_name") or "").strip() or None
         )
+    merged["freshness"] = {
+        **merged.get("freshness", {}),
+        **recalculation_freshness_overrides(session, [instrument_id]).get(instrument_id, {}),
+    }
     return merge_taxonomy_into_summary(merged, taxonomy_context)
 
 
@@ -344,9 +350,11 @@ def get_instrument_chart_data(
     _require_instrument(session, instrument_id)
     _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_chart_read")
     record = read_model_repository.get_chart(session, instrument_id)
-    if record is None:
-        return default_instrument_chart_payload(instrument_id)
-    return serialize_payload(record.payload_json)
+    payload = serialize_payload(record.payload_json) if record is not None else default_instrument_chart_payload(instrument_id)
+    freshness = recalculation_freshness_overrides(session, [instrument_id]).get(instrument_id)
+    if freshness:
+        payload["freshness"] = freshness
+    return payload
 
 
 @router.get("/{instrument_id}/performance")
@@ -357,13 +365,14 @@ def get_instrument_performance_data(
     _require_instrument(session, instrument_id)
     _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_performance_read")
     record = read_model_repository.get_performance(session, instrument_id)
-    if record is None:
-        return default_instrument_performance_payload()
     payload, _ = canonical_recalc_service.apply_current_peer_comparison(
         session,
         instrument_id=instrument_id,
-        performance_payload=dict(record.payload_json),
+        performance_payload=dict(record.payload_json) if record is not None else default_instrument_performance_payload(),
     )
+    freshness = recalculation_freshness_overrides(session, [instrument_id]).get(instrument_id)
+    if freshness:
+        payload["freshness"] = freshness
     return serialize_payload(payload or default_instrument_performance_payload())
 
 
@@ -375,13 +384,14 @@ def get_instrument_risk_data(
     _require_instrument(session, instrument_id)
     _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_risk_read")
     record = read_model_repository.get_risk(session, instrument_id)
-    if record is None:
-        return default_instrument_risk_payload()
     _, payload = canonical_recalc_service.apply_current_peer_comparison(
         session,
         instrument_id=instrument_id,
-        risk_payload=dict(record.payload_json),
+        risk_payload=dict(record.payload_json) if record is not None else default_instrument_risk_payload(),
     )
+    freshness = recalculation_freshness_overrides(session, [instrument_id]).get(instrument_id)
+    if freshness:
+        payload["freshness"] = freshness
     return serialize_payload(payload or default_instrument_risk_payload())
 
 
@@ -646,6 +656,7 @@ def upsert_fund_nav_settings(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _require_instrument(session, instrument_id, allowed_types=FUND_INSTRUMENT_TYPES)
+    lock_instrument_configuration(session, [instrument_id])
     record = manual_profile_repository.get_for_update(session, instrument_id)
     current_payload = _normalize_nav_settings_payload(
         record.nav_settings_json if record is not None else None
@@ -684,10 +695,9 @@ def upsert_fund_nav_settings(
         updated_by=current_principal().user_id,
     )
     if _normalize_nav_settings_payload(next_payload) != current_payload:
-        canonical_recalc_service.execute_recalc(
+        queue_configuration_recalculation(
             session,
             instrument_id=instrument_id,
-            job_type="all",
             trigger_type="calculation_settings_changed",
             trigger_ref_type="nav_settings",
             trigger_ref_id=instrument_id,

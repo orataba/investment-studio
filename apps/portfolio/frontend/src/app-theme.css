@@ -127,8 +127,7 @@
 .research-freeze-menu,
 .taxonomy-picker-menu,
 .taxonomy-context-menu,
-.portfolio-table-view-menu,
-.transaction-instrument-filter-results {
+.portfolio-table-view-menu {
   border: 1px solid var(--portfolio-line-strong);
   border-top: 2px solid var(--portfolio-ink);
   border-radius: 0;

@@ -4,11 +4,14 @@ import ReactDOM from 'react-dom/client'
 import { LanguageProvider } from '../../../packages/ui/src/i18n'
 import InputModality from '../../../packages/ui/src/InputModality'
 import App from './App'
+import { normalizeProxyLoginDestination } from './loginDestination'
 import { homeMessages } from './messages'
 import './index.css'
 import '../../../packages/ui/src/language.css'
 import '../../../packages/ui/src/studio-theme.css'
 import './app-theme.css'
+
+normalizeProxyLoginDestination()
 
 installBrowserDiagnostics('home', import.meta.env.VITE_HOME_URL)
 

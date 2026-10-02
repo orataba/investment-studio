@@ -128,16 +128,20 @@ def test_financing_collateral_interest_and_actual_liquidation(client):
     assert [cash_balance(final, item) for item in (cash, debt, collateral)] == [6950, 0, 0]
 
 
-def test_open_stock_short_borrow_fee_is_an_expense_not_income(client):
+@pytest.mark.parametrize("charge_type", ["fee", "tax"])
+@pytest.mark.parametrize("charge_date", ["2026-01-05", "2026-01-06"])
+def test_open_stock_short_borrow_fee_is_an_expense_not_income(client, charge_type, charge_date):
     cash = funded(client)
     stock = account(client, "security", cash)
-    post(client, transaction_type="short_sell", trade_date="2026-01-05", account_id=stock, instrument_id="equity-us-abbv", quantity=100, price=100, gross_amount=10000, fees=2, settlement_cash_account_id=cash)
-    post(client, transaction_type="fee", trade_date="2026-01-06", account_id=stock, instrument_id="equity-us-abbv", gross_amount=15, fee_category="borrow_fee", settlement_cash_account_id=cash)
+    post(client, transaction_type="short_sell", trade_date="2026-01-05", trade_time="10:00", account_id=stock, instrument_id="equity-us-abbv", quantity=100, price=100, gross_amount=10000, fees=2, settlement_cash_account_id=cash)
+    charge = post(client, transaction_type=charge_type, trade_date=charge_date, trade_time="11:00", account_id=stock, instrument_id="equity-us-abbv", gross_amount=15, **({"fee_category": "borrow_fee"} if charge_type == "fee" else {}), settlement_cash_account_id=cash)
     facts = history(cash, stock)
     lots = build_position_lots(PORTFOLIO, list_accounts(PORTFOLIO), facts, resolve_pricing=False, pricing_map={})
     assert cash_balance(facts, cash) == 19983
     assert lots[0]["expense_cash_amount"] == 15
     assert lots[0]["opening_transaction_type"] == "short_sell"
+    response = client.get(f"{BASE}/transactions/workspace?selected_transaction_id={charge['transaction_id']}")
+    assert response.status_code == 200, response.text
 
 
 @pytest.mark.parametrize("entry", ["outcome", "import"])
@@ -801,3 +805,35 @@ def test_written_opening_additional_terms_round_trip_through_file_preview_and_co
     assert response.status_code == 200, response.text
     assert cash_balance(history(cash, holder), cash) == 10000
     assert open_option_obligations(history(cash, holder))[0]["carrying_liability"] == 1000
+
+
+@pytest.mark.parametrize("initial_short", [False, True])
+@pytest.mark.parametrize("historical_entitlement", [False, True])
+def test_asset_charge_tracks_side_at_actual_or_explicit_entitlement_time(client, initial_short, historical_entitlement):
+    cash = funded(client, 50000)
+    stock = account(client, "security", cash)
+    post(client, transaction_type="short_sell" if initial_short else "buy", trade_date="2026-01-05", trade_time="10:00",
+         account_id=stock, instrument_id="equity-us-abbv", quantity=10, price=100, gross_amount=1000, settlement_cash_account_id=cash)
+    post(client, transaction_type="buy" if initial_short else "short_sell", trade_date="2026-01-06", trade_time="10:00",
+         account_id=stock, instrument_id="equity-us-abbv", quantity=20, price=100, gross_amount=2000, settlement_cash_account_id=cash)
+    post(client, transaction_type="fee", trade_date="2026-01-06", trade_time="11:00",
+         account_id=stock, instrument_id="equity-us-abbv", gross_amount=15, fee_category="borrow_fee", settlement_cash_account_id=cash,
+         **({"entitlement_date": "2026-01-06"} if historical_entitlement else {}))
+    lots = build_position_lots(PORTFOLIO, list_accounts(PORTFOLIO), history(cash, stock), resolve_pricing=False, pricing_map={})
+    expense_lots = [lot for lot in lots if lot["expense_cash_amount"]]
+    assert len(expense_lots) == 1
+    assert expense_lots[0]["expense_cash_amount"] == 15
+    expected_short = initial_short if historical_entitlement else not initial_short
+    assert (expense_lots[0].get("position_side") == "short") is expected_short
+
+
+def test_asset_fee_before_first_short_is_rejected(client):
+    cash = funded(client)
+    stock = account(client, "security", cash)
+    post(client, transaction_type="short_sell", trade_date="2026-01-05", trade_time="10:00",
+         account_id=stock, instrument_id="equity-us-abbv", quantity=10, price=100, gross_amount=1000, settlement_cash_account_id=cash)
+    response = client.post(f"{BASE}/transactions", json={"currency": "USD", "transaction_type": "fee",
+        "trade_date": "2026-01-05", "trade_time": "09:00", "account_id": stock, "instrument_id": "equity-us-abbv",
+        "gross_amount": 15, "fee_category": "borrow_fee", "settlement_cash_account_id": cash})
+    assert response.status_code == 400
+    assert len(history(cash, stock)) == 2

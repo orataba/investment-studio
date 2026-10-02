@@ -1532,6 +1532,7 @@ export function updateInstrumentSettings(
       updated: boolean
       taxonomy_updated: boolean
       status_updated: boolean
+      recalc_queued?: boolean
     }
   >(`/api/instrument-attributes/instruments/${encodeURIComponent(instrumentId)}/settings`, {
     method: 'PUT',

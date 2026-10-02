@@ -111,8 +111,8 @@ LISTED_DETAIL_TABS = {
 }
 
 PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v9"
-RISK_METHODOLOGY_VERSION = "canonical-risk/v8"
-PEER_COMPARISON_POLICY_VERSION = "peer-comparison/v4"
+RISK_METHODOLOGY_VERSION = "canonical-risk/v9"
+PEER_COMPARISON_POLICY_VERSION = "peer-comparison/v5"
 
 
 class RecalcJobLeaseLostError(RuntimeError):
@@ -146,8 +146,8 @@ PEER_PERCENTILE_MIN_PEERS = 4
 PEER_COMPARISON_METRICS = [
     {
         "metric_key": "return_1w",
+        "window": "1W",
         "label": "1W Return",
-        "source": "performance",
         "attr": "return_1w",
         "direction": "higher",
         "domain": "return",
@@ -155,8 +155,8 @@ PEER_COMPARISON_METRICS = [
     },
     {
         "metric_key": "return_1m",
+        "window": "1M",
         "label": "1M Return",
-        "source": "performance",
         "attr": "return_1m",
         "direction": "higher",
         "domain": "return",
@@ -164,8 +164,8 @@ PEER_COMPARISON_METRICS = [
     },
     {
         "metric_key": "return_mtd",
+        "window": "MTD",
         "label": "MTD Return",
-        "source": "performance",
         "attr": "return_mtd",
         "direction": "higher",
         "domain": "return",
@@ -173,8 +173,8 @@ PEER_COMPARISON_METRICS = [
     },
     {
         "metric_key": "return_ytd",
+        "window": "YTD",
         "label": "YTD Return",
-        "source": "performance",
         "attr": "return_ytd",
         "direction": "higher",
         "domain": "return",
@@ -182,8 +182,8 @@ PEER_COMPARISON_METRICS = [
     },
     {
         "metric_key": "return_3m",
+        "window": "3M",
         "label": "3M Return",
-        "source": "performance",
         "attr": "return_3m",
         "direction": "higher",
         "domain": "return",
@@ -191,8 +191,8 @@ PEER_COMPARISON_METRICS = [
     },
     {
         "metric_key": "return_6m",
+        "window": "6M",
         "label": "6M Return",
-        "source": "performance",
         "attr": "return_6m",
         "direction": "higher",
         "domain": "return",
@@ -200,8 +200,8 @@ PEER_COMPARISON_METRICS = [
     },
     {
         "metric_key": "return_1y",
+        "window": "1Y",
         "label": "1Y Return",
-        "source": "performance",
         "attr": "return_1y",
         "direction": "higher",
         "domain": "return",
@@ -209,8 +209,8 @@ PEER_COMPARISON_METRICS = [
     },
     {
         "metric_key": "return_3y_annualized",
+        "window": "3Y",
         "label": "3Y Ann. Return",
-        "source": "performance",
         "attr": "return_3y_annualized",
         "direction": "higher",
         "domain": "return",
@@ -218,67 +218,14 @@ PEER_COMPARISON_METRICS = [
     },
     {
         "metric_key": "return_5y_annualized",
+        "window": "5Y",
         "label": "5Y Ann. Return",
-        "source": "performance",
         "attr": "return_5y_annualized",
         "direction": "higher",
         "domain": "return",
         "format": "percent",
     },
-    {
-        "metric_key": "annualized_return",
-        "label": "Ann. Return",
-        "source": "performance",
-        "attr": "annualized_return",
-        "direction": "higher",
-        "domain": "return",
-        "format": "percent",
-    },
-    {
-        "metric_key": "volatility",
-        "label": "Ann. Vol",
-        "source": "risk",
-        "attr": "volatility",
-        "direction": "lower",
-        "domain": "risk",
-        "format": "percent",
-    },
-    {
-        "metric_key": "max_drawdown",
-        "label": "Max Drawdown",
-        "source": "performance",
-        "attr": "max_drawdown",
-        "direction": "higher",
-        "domain": "risk",
-        "format": "percent",
-    },
-    {
-        "metric_key": "sharpe_ratio",
-        "label": "Sharpe",
-        "source": "risk",
-        "attr": "sharpe_ratio",
-        "direction": "higher",
-        "domain": "risk_adjusted",
-        "format": "ratio",
-    },
-    {
-        "metric_key": "sortino_ratio",
-        "label": "Sortino",
-        "source": "risk",
-        "attr": "sortino_ratio",
-        "direction": "higher",
-        "domain": "risk_adjusted",
-        "format": "ratio",
-    },
-    {
-        "metric_key": "calmar",
-        "label": "Calmar",
-        "source": "performance",
-        "attr": "calmar",
-        "direction": "higher",
-        "domain": "risk_adjusted",
-        "format": "ratio",
-    },
+
 ]
 
 
@@ -629,18 +576,14 @@ def _risk_payload_with_peer_comparison(
     payload: dict[str, object],
     peer_comparison: dict[str, object],
 ) -> dict[str, object]:
-    peer_metrics = {
-        str(row.get("metric_key") or ""): row
-        for row in peer_comparison.get("metrics") or []
-        if isinstance(row, dict)
-    }
     risk_metrics = []
     for raw_row in payload.get("risk_metrics") or []:
         if not isinstance(raw_row, dict):
             continue
         row = dict(raw_row)
-        metric = peer_metrics.get(str(row.get("metric") or ""), {})
-        row["category"] = _safe_float(metric.get("peer_median"))
+        # Individual risk statistics use each asset's available history; they
+        # are not comparable across members without a common risk window.
+        row["category"] = None
         risk_metrics.append(row)
     risk_overview = payload.get("risk_overview")
     if isinstance(risk_overview, dict):
@@ -664,11 +607,6 @@ PEER_WATCHLIST_PERCENTILE_ATTRIBUTE_KEYS = {
     "return_1y": "peer_return_1y_percentile",
     "return_3y_annualized": "peer_return_3y_percentile",
     "return_5y_annualized": "peer_return_5y_percentile",
-    "annualized_return": "peer_annualized_return_percentile",
-    "volatility": "peer_volatility_percentile",
-    "max_drawdown": "peer_max_drawdown_percentile",
-    "sharpe_ratio": "peer_sharpe_percentile",
-    "calmar": "peer_calmar_percentile",
 }
 
 
@@ -878,7 +816,7 @@ def _annualization_periods_per_year(nav_points: list[dict[str, Any]], return_cou
 def _compute_downside_deviation(nav_points: list[dict[str, Any]]) -> float | None:
     nav_points = _numeric_nav_points(nav_points)
     periodic_returns = _periodic_returns(nav_points)
-    if len(periodic_returns) < 2 or not any(value < 0 for value in periodic_returns):
+    if len(periodic_returns) < 2:
         return None
     periods_per_year = _annualization_periods_per_year(nav_points, len(periodic_returns))
     if periods_per_year is None:
@@ -1291,6 +1229,34 @@ def _performance_window_metadata(
     else:
         window = None
     return return_window_metadata(window) if window is not None else {}
+
+
+def _peer_comparison_basis(*, snapshot, nav_points, selection, frequency, currency):
+    """Small, snapshot-bound provenance for fixed-window peer comparisons.
+
+    Since-inception risk and return descriptors do not share a period across
+    funds, so they remain individual metrics and never enter a peer rank.
+    """
+    return {
+        "snapshot_id": getattr(snapshot, "snapshot_id", None),
+        "currency": currency,
+        "return_kind": selection.get("return_kind"),
+        "frequency": frequency.get("resolved_frequency"),
+        "windows": {definition["metric_key"]: _performance_window_metadata(nav_points, definition["window"])
+                    for definition in PEER_COMPARISON_METRICS},
+    }
+
+
+def _comparable_peer_window(target, candidate, metric_key):
+    if not target or not candidate:
+        return False
+    for key in ("currency", "return_kind", "frequency"):
+        if not target.get(key) or target[key] != candidate.get(key):
+            return False
+    target_window = (target.get("windows") or {}).get(metric_key) or {}
+    candidate_window = (candidate.get("windows") or {}).get(metric_key) or {}
+    return all(target_window.get(key) is not None and target_window[key] == candidate_window.get(key)
+               for key in ("anchor_date", "end_date"))
 
 
 def _growth_of_100(nav_points: list[dict[str, Any]]) -> float | None:
@@ -2368,12 +2334,23 @@ class CanonicalRecalcService:
             "currency": str(nav_selection["points"][-1]["currency"]) if nav_selection["points"] else shared_currency,
             "points": [{"date": p["as_of_date"].isoformat(), "value": p["value"]} for p in calculation_nav_points],
         }
+        comparison_basis = _peer_comparison_basis(
+            snapshot=performance_snapshot, nav_points=calculation_nav_points,
+            selection=nav_selection, frequency=calculation_frequency_profile,
+            currency=chart_payload["research_returns"]["currency"],
+        )
+        if job_type not in {"performance", "all"}:
+            # An exposure-only refresh must not bind a retained performance
+            # snapshot to today's potentially revised price observations.
+            comparison_basis = session.scalar(select(
+                InstrumentPerformanceReadModel.payload_json["comparison_basis"]
+            ).where(InstrumentPerformanceReadModel.instrument_id == instrument_id)) or {}
         peer_comparison = self._peer_comparison_payload(
             session,
             instrument_id=instrument_id,
+            comparison_basis=comparison_basis,
             taxonomy_node=taxonomy_node,
             performance_snapshot=performance_snapshot,
-            risk_snapshot=risk_snapshot,
         )
         performance_payload = self._performance_payload(
             performance_snapshot=performance_snapshot,
@@ -2381,10 +2358,10 @@ class CanonicalRecalcService:
             nav_points=calculation_nav_points,
             calculation_frequency_profile=calculation_frequency_profile,
         )
+        performance_payload["comparison_basis"] = comparison_basis
         risk_payload = self._risk_payload(
             risk_snapshot=risk_snapshot,
             performance_snapshot=performance_snapshot,
-            peer_comparison=peer_comparison,
             nav_points=calculation_nav_points,
             calculation_frequency_profile=calculation_frequency_profile,
         )
@@ -2912,20 +2889,21 @@ class CanonicalRecalcService:
         ):
             if snapshot.methodology_version == PERFORMANCE_METHODOLOGY_VERSION:
                 performance_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
-        risk_by_asset: dict[str, object] = {}
-        for snapshot in self.snapshot_repository.list_current_risk(
-            session,
-            instrument_ids=sorted(active_peer_instrument_ids),
-        ):
-            if snapshot.methodology_version == RISK_METHODOLOGY_VERSION:
-                risk_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
+        comparison_basis_by_asset = {}
+        for instrument_id, basis in session.execute(select(
+            InstrumentPerformanceReadModel.instrument_id,
+            InstrumentPerformanceReadModel.payload_json["comparison_basis"],
+        ).where(InstrumentPerformanceReadModel.instrument_id.in_(sorted(active_peer_instrument_ids)))):
+            snapshot = performance_by_asset.get(instrument_id)
+            if isinstance(basis, dict) and basis.get("snapshot_id") == getattr(snapshot, "snapshot_id", None):
+                comparison_basis_by_asset[instrument_id] = basis
         return {
+            "comparison_basis_by_asset": comparison_basis_by_asset,
             "node_by_id": node_by_id,
             "assigned_node_by_asset": assigned_node_by_asset,
             "attributes_by_asset": attributes_by_asset,
             "active_peer_instrument_ids": active_peer_instrument_ids,
             "performance_by_asset": performance_by_asset,
-            "risk_by_asset": risk_by_asset,
         }
 
     def _peer_comparison_payload(
@@ -2935,8 +2913,8 @@ class CanonicalRecalcService:
         instrument_id: str,
         taxonomy_node,
         performance_snapshot,
-        risk_snapshot,
         context: dict[str, object] | None = None,
+        comparison_basis: dict[str, object] | None = None,
     ) -> dict[str, object]:
         assigned_path_node_ids = _node_path_node_ids(taxonomy_node)
         if taxonomy_node is None or not assigned_path_node_ids:
@@ -2988,6 +2966,10 @@ class CanonicalRecalcService:
             }
 
         context = context or self._peer_comparison_context(session)
+        comparison_basis_by_asset = dict(context.get("comparison_basis_by_asset") or {})
+        if comparison_basis is not None:
+            comparison_basis_by_asset[instrument_id] = comparison_basis
+        target_basis = comparison_basis_by_asset.get(instrument_id)
         node_by_id = dict(context["node_by_id"])
         assigned_node_by_asset = dict(context["assigned_node_by_asset"])
         attributes_by_asset = dict(context.get("attributes_by_asset") or {})
@@ -2995,9 +2977,6 @@ class CanonicalRecalcService:
         performance_by_asset = dict(context["performance_by_asset"])
         if performance_snapshot is not None and instrument_id in active_peer_instrument_ids:
             performance_by_asset[str(instrument_id)] = performance_snapshot
-        risk_by_asset = dict(context["risk_by_asset"])
-        if risk_snapshot is not None and instrument_id in active_peer_instrument_ids:
-            risk_by_asset[str(instrument_id)] = risk_snapshot
 
         target_geographic_exposure = _peer_geographic_exposure(
             taxonomy_node,
@@ -3032,12 +3011,6 @@ class CanonicalRecalcService:
         performance_as_of_date = getattr(
             performance_snapshot, "as_of_date", None
         )
-        comparable_performance_ids = {
-            candidate_instrument_id
-            for candidate_instrument_id, candidate_snapshot in performance_by_asset.items()
-            if getattr(candidate_snapshot, "as_of_date", None)
-            == performance_as_of_date
-        }
 
         selected_peer_node_id = assigned_path_node_ids[-1]
         peer_node = node_by_id.get(selected_peer_node_id) or taxonomy_node
@@ -3056,11 +3029,6 @@ class CanonicalRecalcService:
             )
             == target_geographic_exposure
         )
-        selected_peer_instrument_ids = sorted(
-            candidate_instrument_id
-            for candidate_instrument_id in eligible_peer_instrument_ids
-            if candidate_instrument_id in comparable_performance_ids
-        )
         excluded_mismatched_as_of_count = sum(
             1
             for candidate_instrument_id in eligible_peer_instrument_ids
@@ -3076,25 +3044,22 @@ class CanonicalRecalcService:
         )
         comparison_instrument_ids = [instrument_id, *eligible_peer_instrument_ids]
         metric_rows: list[dict[str, object]] = []
+        comparable_peer_ids: set[str] = set()
         for definition in PEER_COMPARISON_METRICS:
             metric_key = str(definition["metric_key"])
             attr = str(definition["attr"])
-            source = str(definition["source"])
             direction = str(definition["direction"])
-            target_snapshot = performance_snapshot if source == "performance" else risk_snapshot
+            target_snapshot = performance_snapshot
             target_value = _safe_float(getattr(target_snapshot, attr, None))
             if target_value is None:
                 continue
 
             samples: list[tuple[str, float]] = []
             mismatched_as_of_count = 0
+            mismatched_basis_count = 0
             target_as_of_date = getattr(target_snapshot, "as_of_date", None)
             for candidate_instrument_id in comparison_instrument_ids:
-                candidate_snapshot = (
-                    performance_by_asset.get(candidate_instrument_id)
-                    if source == "performance"
-                    else risk_by_asset.get(candidate_instrument_id)
-                )
+                candidate_snapshot = performance_by_asset.get(candidate_instrument_id)
                 if (
                     candidate_snapshot is not None
                     and getattr(candidate_snapshot, "as_of_date", None)
@@ -3102,6 +3067,10 @@ class CanonicalRecalcService:
                 ):
                     if candidate_instrument_id != instrument_id:
                         mismatched_as_of_count += 1
+                    continue
+                if not _comparable_peer_window(target_basis, comparison_basis_by_asset.get(candidate_instrument_id), metric_key):
+                    if candidate_instrument_id != instrument_id:
+                        mismatched_basis_count += 1
                     continue
                 candidate_value = _safe_float(getattr(candidate_snapshot, attr, None))
                 if candidate_value is not None:
@@ -3113,6 +3082,7 @@ class CanonicalRecalcService:
             ]
             if not peer_values:
                 continue
+            comparable_peer_ids.update(iid for iid, _ in samples if iid != instrument_id)
             ranking_samples = list(samples)
             if instrument_id not in {sample_id for sample_id, _ in ranking_samples}:
                 ranking_samples.append((instrument_id, target_value))
@@ -3148,6 +3118,8 @@ class CanonicalRecalcService:
                         else None
                     ),
                     "excluded_mismatched_as_of_count": mismatched_as_of_count,
+                    "excluded_mismatched_basis_count": mismatched_basis_count,
+                    "comparison_window": (target_basis.get("windows") or {}).get(metric_key),
                     **ranking,
                 }
             )
@@ -3177,7 +3149,7 @@ class CanonicalRecalcService:
             "peer_path": _node_path_labels(peer_node),
             "fallback_levels": 0,
             "candidate_count": len(eligible_peer_instrument_ids),
-            "sample_count": len(selected_peer_instrument_ids),
+            "sample_count": len(comparable_peer_ids),
             "peer_dimensions": {
                 "primary_geographic_exposure": target_geographic_exposure,
             },
@@ -3203,13 +3175,11 @@ class CanonicalRecalcService:
         context = context or self._peer_comparison_context(session)
         assigned_node_by_asset = dict(context["assigned_node_by_asset"])
         performance_by_asset = dict(context["performance_by_asset"])
-        risk_by_asset = dict(context["risk_by_asset"])
         return self._peer_comparison_payload(
             session,
             instrument_id=instrument_id,
             taxonomy_node=assigned_node_by_asset.get(instrument_id),
             performance_snapshot=performance_by_asset.get(instrument_id),
-            risk_snapshot=risk_by_asset.get(instrument_id),
             context=context,
         )
 
@@ -3292,7 +3262,7 @@ class CanonicalRecalcService:
             "1Y": _safe_float(peer_metrics_by_key.get("return_1y", {}).get("peer_median")),
             "3Y": _safe_float(peer_metrics_by_key.get("return_3y_annualized", {}).get("peer_median")),
             "5Y": _safe_float(peer_metrics_by_key.get("return_5y_annualized", {}).get("peer_median")),
-            "Ann.": _safe_float(peer_metrics_by_key.get("annualized_return", {}).get("peer_median")),
+            "Ann.": None,
         }
         if performance_snapshot is not None:
             trailing_returns = [
@@ -3333,7 +3303,6 @@ class CanonicalRecalcService:
         *,
         risk_snapshot,
         performance_snapshot,
-        peer_comparison: dict[str, object] | None,
         nav_points: list[dict[str, Any]],
         calculation_frequency_profile: dict[str, object],
     ) -> dict[str, object]:
@@ -3363,11 +3332,6 @@ class CanonicalRecalcService:
             if has_unresolved_gaps
             else _build_risk_change_monitor(nav_points, drawdown_summary)
         )
-        peer_metrics_by_key = {
-            str(row.get("metric_key")): row
-            for row in (peer_comparison or {}).get("metrics", [])
-            if isinstance(row, dict)
-        }
         return {
             "risk_overview": {
                 "exposure_risk_score": None,
@@ -3389,11 +3353,11 @@ class CanonicalRecalcService:
                 else []
             ),
             "risk_metrics": [
-                {"metric": "volatility", "investment": volatility, "category": _safe_float(peer_metrics_by_key.get("volatility", {}).get("peer_median")), "index": None},
-                {"metric": "sharpe_ratio", "investment": _safe_float(getattr(risk_snapshot, "sharpe_ratio", None)), "category": _safe_float(peer_metrics_by_key.get("sharpe_ratio", {}).get("peer_median")), "index": None},
-                {"metric": "max_drawdown", "investment": _safe_float(getattr(performance_snapshot, "max_drawdown", None)), "category": _safe_float(peer_metrics_by_key.get("max_drawdown", {}).get("peer_median")), "index": None},
-                {"metric": "calmar_ratio", "investment": _safe_float(getattr(performance_snapshot, "calmar", None)), "category": _safe_float(peer_metrics_by_key.get("calmar", {}).get("peer_median")), "index": None},
-                {"metric": "annualized_return", "investment": annualized_return, "category": _safe_float(peer_metrics_by_key.get("annualized_return", {}).get("peer_median")), "index": None},
+                {"metric": "volatility", "investment": volatility, "category": None, "index": None},
+                {"metric": "sharpe_ratio", "investment": _safe_float(getattr(risk_snapshot, "sharpe_ratio", None)), "category": None, "index": None},
+                {"metric": "max_drawdown", "investment": _safe_float(getattr(performance_snapshot, "max_drawdown", None)), "category": None, "index": None},
+                {"metric": "calmar_ratio", "investment": _safe_float(getattr(performance_snapshot, "calmar", None)), "category": None, "index": None},
+                {"metric": "annualized_return", "investment": annualized_return, "category": None, "index": None},
             ],
             "drawdown_summary": drawdown_summary,
             "current_drawdown": current_drawdown,

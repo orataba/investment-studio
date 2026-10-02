@@ -17,6 +17,7 @@ from studio_identity import (IdentityError, current_principal, issue_delegation,
                              resolve_token, revoke_delegation, service_principal)
 from watchlist_app.db.models.workbench import ResearchEntry
 from watchlist_app.db.session import get_session_factory
+from watchlist_app.services.research_errors import ResearchInputUnavailable
 
 ROOT = Path(__file__).resolve().parents[5]
 SCRIPT = ROOT / "apps/watchlist/backend/scripts/run_research_harness.sh"
@@ -377,6 +378,10 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
                          "retryable": resume_review, "stage": "review" if resume_review else "generation"}
     except (IdentityError, HTTPException):
         raise  # Preserve authorization status and do not start/publish a model result.
+    except ResearchInputUnavailable as error:
+        outcome = str(error)
+        runtime_error = {"type": type(error).__name__, "summary": outcome,
+                         "retryable": True, "stage": "preparation"}
     except OSError as error:
         outcome = "无法启动研究运行进程。" if process is None else "读取研究运行进程结果失败。"
         runtime_error = {"type": type(error).__name__, "summary": outcome, "exit_code": process.returncode if process else None}

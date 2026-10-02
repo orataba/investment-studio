@@ -31,8 +31,10 @@ def catalog():
         for key in ["macro", "gold"]]}
 
 
-def test_reuses_production_rc_and_covariance_with_same_workspace_and_real_dated_comparison():
+def test_reuses_production_rc_and_covariance_with_same_workspace_and_real_dated_comparison(monkeypatch):
     current, previous = workspace(), workspace(previous=True)
+    from portfolio_app.services import risk_model
+    monkeypatch.setattr(risk_model, "estimate_covariance", lambda *a, **kw: pytest.fail("Risk context must reuse the fitted covariance."))
     current["risk_basis"] = {"resolved_frequency": "daily", "gap_instrument_ids": ["alpha"]}
     original = deepcopy(current)
     result = service.project_portfolio_risk(current, catalog(), previous)
@@ -86,18 +88,16 @@ def test_route_reuses_financial_read_generation_contract():
 
 
 def test_historical_risk_context_uses_requested_holding_date(monkeypatch):
-    from types import SimpleNamespace
     from portfolio_app.services import holdings_workspace as workspace_routes
-    from portfolio_app.api.routes import taxonomies
     calls = []
     selected = date(2026, 3, 10)
-    def read_holdings(**kwargs):
-        calls.append(kwargs)
+    def read_holdings(portfolio_id, as_of_date, **kwargs):
+        calls.append({"portfolio_id": portfolio_id, "as_of_date": as_of_date, **kwargs})
         value = workspace()
-        value['as_of_date'] = kwargs['as_of_date'].isoformat()
+        value['as_of_date'] = as_of_date.isoformat()
         return value
-    monkeypatch.setattr(workspace_routes, 'holdings_workspace', read_holdings)
-    monkeypatch.setattr(taxonomies, 'get_portfolio_taxonomies', lambda *args, **kwargs: SimpleNamespace(model_dump=lambda **kwargs: catalog()))
+    monkeypatch.setattr(workspace_routes, 'read_holdings_risk_workspace', read_holdings)
+    monkeypatch.setattr(service, 'current_taxonomy_catalog', lambda *args: catalog())
     from portfolio_app.services import concentration, tail_risk
     def read_extra(portfolio_id, *, workspace):
         assert portfolio_id == workspace['portfolio_id']
@@ -105,7 +105,7 @@ def test_historical_risk_context_uses_requested_holding_date(monkeypatch):
     monkeypatch.setattr(concentration, 'read_portfolio_concentration', read_extra)
     monkeypatch.setattr(tail_risk, 'read_portfolio_tail_risk', read_extra)
     result = service.read_portfolio_risk_context('p', as_of_date=selected)
-    assert calls == [{'portfolio_id': 'p', 'as_of_date': selected, 'include_details': True}]
+    assert calls == [{'portfolio_id': 'p', 'as_of_date': selected}]
     assert result['as_of_date'] == result['workspace']['as_of_date'] == selected.isoformat()
     assert result['concentration']['as_of_date'] == result['tail_risk']['as_of_date'] == selected.isoformat()
     assert all(source['end_date'] == selected.isoformat() for source in result['sources'])
@@ -235,3 +235,33 @@ def test_risk_changes_include_new_and_fully_disposed_categories(new_position):
     assert change["previous" if new_position else "current"] == 0
     assert change["change_pp"] > 0 if new_position else change["change_pp"] < 0
     assert change["instrument_ids"] == change["holding_ids"] == ["beta"]
+
+
+def test_risk_workspace_projection_retains_only_needed_histories_and_skips_previous_overlays(monkeypatch):
+    from portfolio_app.services import holdings_workspace as holdings
+    raw = workspace()
+    raw["rows"][0]["price_chart_6m"] = [{"date": "2026-01-01", "value": 123}]
+    raw["rows"][0]["instrument_return_series_1m"] = {"points": [1, 2]}
+    original = deepcopy(raw)
+    monkeypatch.setattr(holdings, "resolve_holdings_request", lambda pid, day: ({"portfolio_id": pid}, day))
+    reads, overlays = [], []
+    def analysis(pid, day, *, response_projection):
+        reads.append((pid, day))
+        return deepcopy(response_projection(raw))
+    monkeypatch.setattr(holdings, "read_holdings_analysis", analysis)
+    monkeypatch.setattr(holdings, "list_transactions", lambda pid: [])
+    def public(value, **kwargs):
+        overlays.append(kwargs)
+        value.pop("_forward_risk_covariance")
+        return value
+    monkeypatch.setattr(holdings, "_public_holdings_workspace_response", public)
+    current = holdings.read_holdings_risk_workspace("p", AS_OF_DATE)
+    previous = holdings.read_holdings_risk_workspace("p", AS_OF_DATE - timedelta(days=1), live_overlays=False)
+    assert len(reads) == 2 and len(overlays) == 1
+    assert overlays[0]["include_position_cycles"] is False
+    assert "price_chart_6m" not in current["rows"][0]
+    assert "instrument_return_series_1m" not in current["rows"][0]
+    assert "instrument_return_series_all" in current["rows"][0]  # tail risk still has evidence
+    assert "instrument_return_series_all" not in previous["rows"][0]
+    assert current["_forward_risk_covariance"] == previous["_forward_risk_covariance"]
+    assert raw == original

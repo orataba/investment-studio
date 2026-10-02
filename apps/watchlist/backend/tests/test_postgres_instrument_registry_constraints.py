@@ -847,7 +847,8 @@ def test_watchlist_addition_coalesces_successors_and_workers_claim_one_at_a_time
     from sqlalchemy import select
     from watchlist_app.db.models.recalc import RecalcJob
     from watchlist_app.db.session import get_session_factory
-    from watchlist_app.services.watchlist_updates import jobs, queue_watchlist_recalculation
+    from watchlist_app.services.recalc import jobs
+    from watchlist_app.services.watchlist_updates import queue_watchlist_recalculation
     from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key
 
     iid, factory, ready = postgres_watchlist_env['instrument_id'], get_session_factory(), Barrier(2)
@@ -885,7 +886,8 @@ def test_watchlist_addition_coalesces_successors_and_workers_claim_one_at_a_time
 
 def test_watchlist_queue_does_not_wait_for_synchronous_calculation(postgres_watchlist_env):
     from watchlist_app.db.session import get_session_factory
-    from watchlist_app.services.watchlist_updates import jobs, queue_watchlist_recalculation
+    from watchlist_app.services.recalc import jobs
+    from watchlist_app.services.watchlist_updates import queue_watchlist_recalculation
     from sqlalchemy import select
     from watchlist_app.db.models.recalc import RecalcJob
 

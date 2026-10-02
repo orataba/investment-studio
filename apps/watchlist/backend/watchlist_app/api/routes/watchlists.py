@@ -41,7 +41,8 @@ from watchlist_app.repositories.sqlalchemy.watchlists import (
     SQLAlchemyWatchlistRepository,
     SystemWatchlistSpec,
 )
-from watchlist_app.services.watchlist_updates import lock_watchlist_instruments, queue_watchlist_recalculation, set_coverage_status
+from watchlist_app.services.recalc import lock_instrument_configuration
+from watchlist_app.services.watchlist_updates import queue_watchlist_recalculation, set_coverage_status
 from watchlist_app.services.instrument_taxonomy import (
     build_taxonomy_context,
     merge_taxonomy_attributes,
@@ -900,7 +901,7 @@ def add_items_to_watchlist(
             ),
         )
 
-    lock_watchlist_instruments(session, canonical_instrument_ids)
+    lock_instrument_configuration(session, canonical_instrument_ids)
     for shared_instrument in resolved_instruments:
         _ensure_local_instrument_detail(session, shared_instrument)
 

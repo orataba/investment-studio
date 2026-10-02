@@ -22,7 +22,7 @@ from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
     SQLAlchemyInstrumentAttributeRepository,
 )
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
-from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+from watchlist_app.services.recalc import lock_instrument_configuration, queue_configuration_recalculation
 from watchlist_app.reference_data.instrument_taxonomy import INSTRUMENT_TAXONOMY_CODE
 from watchlist_app.services.instrument_taxonomy import (
     SUPPORTED_TAXONOMY_INSTRUMENT_TYPES,
@@ -37,7 +37,6 @@ attribute_repository = SQLAlchemyInstrumentAttributeRepository()
 field_registry_repository = SQLAlchemyFieldRegistryRepository()
 instrument_repository = SQLAlchemyInstrumentRepository()
 taxonomy_repository = SQLAlchemyTaxonomyRepository()
-canonical_recalc_service = CanonicalRecalcService()
 
 
 def _require_asset(session: Session, instrument_id: str):
@@ -212,6 +211,7 @@ def upsert_instrument_attribute_values(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     instrument = _require_asset(session, instrument_id)
+    lock_instrument_configuration(session, [instrument_id])
     definitions = {
         item.attribute_key: item for item in attribute_repository.list_definitions(session)
     }
@@ -264,10 +264,9 @@ def upsert_instrument_attribute_values(
     )
     execution = None
     if set(values) - {"coverage_status"}:
-        execution = canonical_recalc_service.execute_recalc(
+        execution = queue_configuration_recalculation(
             session,
             instrument_id=instrument_id,
-            job_type="performance",
             trigger_type="instrument_attribute_update",
             trigger_ref_type="instrument_attribute_value",
             trigger_ref_id=payload.source_record_id,
@@ -276,7 +275,8 @@ def upsert_instrument_attribute_values(
     return current_values | {
         "updated": True,
         "taxonomy": taxonomy_context,
-        "recalculated": execution is not None,
+        "recalculated": False,
+        "recalc_queued": execution is not None,
         "execution": execution,
     }
 
@@ -288,6 +288,7 @@ def update_instrument_settings(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     instrument = _require_asset(session, instrument_id)
+    lock_instrument_configuration(session, [instrument_id])
     instrument_type = str(instrument.instrument_type or "").strip().lower()
     if instrument_type not in SUPPORTED_TAXONOMY_INSTRUMENT_TYPES:
         raise HTTPException(
@@ -384,10 +385,9 @@ def update_instrument_settings(
 
     execution = None
     if taxonomy_changed:
-        execution = canonical_recalc_service.execute_recalc(
+        execution = queue_configuration_recalculation(
             session,
             instrument_id=instrument_id,
-            job_type="performance",
             trigger_type="instrument_settings_update",
             trigger_ref_type="instrument_settings",
             trigger_ref_id=source_record_id,
@@ -411,6 +411,7 @@ def update_instrument_settings(
         "taxonomy_updated": taxonomy_changed,
         "status_updated": status_changed,
         "taxonomy": taxonomy_context,
-        "recalculated": execution is not None,
+        "recalculated": False,
+        "recalc_queued": execution is not None,
         "execution": execution,
     }

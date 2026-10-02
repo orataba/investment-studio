@@ -16,6 +16,8 @@ from watchlist_app.api.routes.research import _research_response
 from watchlist_app.services.read_models import serialize_payload
 from watchlist_app.services.research_dossier import read_research_plan
 from watchlist_app.services.research_methods import analyst_guidance
+from watchlist_app.services.research_errors import ResearchInputUnavailable
+from watchlist_app.services.read_model_freshness import calculation_input_read
 
 
 def bridge_url(service: str):
@@ -45,13 +47,21 @@ def external_json(service: str, path: str):
         token = issue_delegation(principal, audience="portfolio", resource_scope={"kind": "portfolio", "id": portfolio_id}, ttl_seconds=120)
         headers = {"Authorization": f"Bearer {token}"}
     try:
-        with urlopen(Request(base + path, headers=headers), timeout=10) as response:
+        # The risk context includes portfolio-wide valuation and covariance.
+        # Its observed cold-read latency reaches 53 seconds; the delegation
+        # remains valid for 120 seconds and retries are bounded by the runner.
+        timeout = 60 if service == "portfolio" and path.split("?", 1)[0].endswith("/risk-context") else 10
+        with urlopen(Request(base + path, headers=headers), timeout=timeout) as response:
             import json
             return json.load(response)
     except HTTPError as error:
         if error.code in {401, 403, 404}:
             raise HTTPException(404, "所选组合或资料不可访问") from error
-        raise
+        if error.code in {408, 429} or error.code >= 500:
+            raise ResearchInputUnavailable(f"{service} input temporarily unavailable (HTTP {error.code})") from error
+        raise ValueError(f"{service} rejected the input request (HTTP {error.code})") from error
+    except OSError as error:
+        raise ResearchInputUnavailable(f"{service} input could not be read: {type(error).__name__}") from error
     finally:
         if token:
             revoke_delegation(token)
@@ -107,13 +117,19 @@ def catalogue(session: Session, instrument_ids=None):
 
 
 def instrument_evidence(session: Session, ids: list[str], *, include_dossier=True, as_of: datetime | None = None):
+    with calculation_input_read(session, ids):
+        return _read_instrument_evidence(session, ids, include_dossier=include_dossier, as_of=as_of)
+
+
+def _read_instrument_evidence(session: Session, ids: list[str], *, include_dossier=True, as_of=None):
     from watchlist_app.services.shared_instrument_registry import get_shared_fund_actions, get_shared_reference_data
     from watchlist_app.services.sector_estimates import read_estimate_evidence
     from watchlist_app.services.sector_research import latest_reviews
     completed_research = latest_reviews(session, completed_only=True, instrument_ids=ids)
     assets = [item for item in catalogue(session) if item["instrument_id"] in ids]
-    from watchlist_app.services.risk_performance import peer_context, performance_evidence
-    fund_peer_scope = peer_context(session) if any(asset["instrument_type"] in {"public_fund", "private_fund"} for asset in assets) else None
+    from watchlist_app.services.risk_performance import performance_context, performance_evidence
+    fund_ids = [asset["instrument_id"] for asset in assets if asset["instrument_type"] in {"public_fund", "private_fund"}]
+    fund_context = performance_context(session, fund_ids) if fund_ids else None
     for asset in assets:
         iid = asset["instrument_id"]
         asset["research_plan"] = read_research_plan(session, iid)
@@ -122,25 +138,25 @@ def instrument_evidence(session: Session, ids: list[str], *, include_dossier=Tru
         if asset["instrument_type"] in {"public_fund", "private_fund"}:
             canonical_id = (asset["reference_data"] or {}).get("instrument_id", iid)
             asset["fund_actions"] = get_shared_fund_actions(canonical_id, as_of=as_of)
-            asset["performance_evidence"] = performance_evidence(session, iid, peer_scope=fund_peer_scope)
+            asset["performance_evidence"] = performance_evidence(session, iid, context=fund_context)
         if asset["instrument_type"] in {"equity", "etf", "public_fund"}:
             asset["analyst_estimate_history"] = read_estimate_evidence(session, iid, as_of=as_of)
         for name, model in (("summary", InstrumentSummaryReadModel), ("performance", InstrumentPerformanceReadModel),
                             ("exposure", InstrumentExposureReadModel), ("holdings", InstrumentExposureHoldingsReadModel)):
-            row = session.get(model, iid)
+            row = session.get(model, iid, populate_existing=True)
             asset[name] = {"data": row.payload_json, "freshness": row.data_freshness_status,
                            "source_cutoff_at": row.source_cutoff_at} if row else None
         asset["research"] = _research_response(session, iid)
         asset["research_tracking"] = completed_research.get(iid)
         asset["research_tracking_note"] = "这是已保存的自动研究结论，不是本轮最新核实；请按生成日期使用，并回到原始证据核实相关事实。"
-        manual = session.get(InstrumentManualProfile, iid)
+        manual = session.get(InstrumentManualProfile, iid, populate_existing=True)
         asset["product_information"] = {"people": manual.people_payload_json, "strategy": manual.strategy_payload_json,
                                         "terms_and_fees": manual.price_payload_json, "nav_settings": manual.nav_settings_json,
                                         "record_updated_at": manual.updated_at} if manual else None
         asset["data_note"] = "数据截至时间和资料录入时间不是公告发布时间或持仓报告期。空字段表示未取得；人工资料及已披露持仓须按原报告期使用。"
         asset["materials"] = (manual.documents_payload_json or {}).get("current_documents", []) if manual else []
         asset["materials_note"] = "既有材料提供目录；没有正文的文件不能视为已阅读，可由用户补充至对话。"
-        risk = session.get(InstrumentRiskReadModel, iid)
+        risk = session.get(InstrumentRiskReadModel, iid, populate_existing=True)
         asset["risk"] = risk.payload_json if risk else None
         asset["risk_freshness"] = risk.data_freshness_status if risk else "missing"
         asset["risk_cases"] = [{"case_id": x.case_id, "title": x.title, "body": x.body, "trigger_active": x.trigger_active, "status": x.status, "observed_on": x.observed_on, "evidence": x.evidence_json} for x in session.scalars(select(RiskCase).where(RiskCase.instrument_id == iid))]

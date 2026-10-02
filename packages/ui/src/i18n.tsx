@@ -83,6 +83,8 @@ const baseMessages: LanguageMessages = {
     Actions: '操作',
     Taxonomy: '分类体系',
     'Data Freshness Status': '数据时效状态',
+    'Recalculation is pending; displayed results may precede the latest data or saved settings.': '指标正在后台更新，当前结果可能尚未包含最新数据或设置。',
+    'Recalculation failed; displayed results have not been refreshed for the latest data or saved settings.': '后台计算未完成，当前结果尚未按最新数据或设置更新。',
     'Coverage Status': '覆盖状态',
     'Research lifecycle status such as watch, proposed, invested, paused, or exited.':
       '投研生命周期状态，例如观察、拟投、在投、暂停或退出。',

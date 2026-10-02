@@ -1,39 +1,7 @@
 import { type FormEvent, useEffect, useState } from 'react'
 import { LanguageSelector, useLanguage } from '../../../packages/ui/src/i18n'
 import { withLanguage } from '../../../packages/ui/src/navigation'
-
-function requestedLoginDestination(search: string) {
-  const directPrefix = '?next='
-  if (search.startsWith(directPrefix)) {
-    const rawDestination = search.slice(directPrefix.length)
-    if (/^(?:https?:\/\/|\/)/.test(rawDestination)) {
-      return rawDestination
-    }
-    try {
-      return decodeURIComponent(rawDestination)
-    } catch {
-      return null
-    }
-  }
-  return new URLSearchParams(search).get('next')
-}
-
-export function destinationAfterLogin() {
-  const requested = requestedLoginDestination(window.location.search)
-  if (!requested) return '/'
-  try {
-    const candidate = new URL(requested, window.location.origin)
-    const rootHost = window.location.hostname
-    const trustedHost = candidate.hostname === rootHost
-      || candidate.hostname.endsWith(`.${rootHost}`)
-    if (candidate.protocol === window.location.protocol && trustedHost) {
-      return candidate.href
-    }
-  } catch {
-    return '/'
-  }
-  return '/'
-}
+import { destinationAfterLogin } from './loginDestination'
 
 export default function LoginPage() {
   const { t } = useLanguage()

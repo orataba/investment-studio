@@ -267,6 +267,11 @@ Initialize the project-owned public data directory and migrate the `market_data`
 
 The cloud is the numerical collector and formal report publisher. Install shared pipeline definitions with `infra/scripts/install_market_pipeline.py --scheduler systemd --role collector --env-root /absolute/external/config`, then enable its timers. The existing private data jobs project the shared facts and settle NAV. Install formal report schedules with `infra/systemd/install_briefing_timers.sh`.
 
+The collector action inventory is maintained in `infra/market_pipeline_actions.txt`.
+Schedule generation, service control, app installation and database restore all
+read this list, including the separate crypto collector. Add a new action there
+and define its schedule together so every restore stops its timer and worker.
+
 The information feed may push completed archives into a dedicated SFTP inbox. Bind `INVESTMENT_STUDIO_MARKET_MI_INBOX_DIR` to that directory; otherwise configure a trusted `MI_HOST` and `MI_REMOTE_DIR` for pulling. Configure one transport. The SFTP sender publishes a readable checksum receipt before atomically renaming the final ZIP. Keep the dedicated receiver confined to its inbox, with no shell or forwarding.
 
 Regime retains its model and private materialized inputs. Its source workers must install `studio_market` and use explicitly configured public-data credentials and directory access; preserve the private snapshot roles. A source-code or static UI update alone does not switch its running collector.
@@ -509,11 +514,23 @@ do not replay the pre-upgrade dump automatically: recover the code in place when
 the migration is backward compatible, or keep maintenance in effect and repair
 forward. Restore the previously active schedules only after acceptance.
 
-Migration, unit publication, daemon reload, enablement, restart, or readiness
-gate failure restores the database, old unit files, prior enablement, and exact
-prior active set in that order. The refresh timer is restored only after the API
-writers. A database or service-state rollback failure leaves all managed writers
-stopped and retains the private recovery directory. Successful safety backups
+Before the first attempt to start a new application or restore a scheduled
+writer, migration, unit publication, daemon reload, or enablement failure restores
+the database, old unit files, prior enablement, and exact prior active set in that
+order. The refresh timer is restored only after the API writers. A database or
+service-state rollback failure leaves managed writers stopped and retains the
+private recovery directory.
+
+The systemd installer records `writers-may-have-resumed` before its first
+application restart or scheduled-writer start. The launchd installer records it
+before its first bootstrap, because `RunAtLoad` can write before kickstart or HTTP
+readiness. A partial startup, readiness, or subsequent scheduler-start failure
+then stops managed writers and retains the **new** database and definitions;
+it never replays the old dump or restores old definitions automatically. The
+private recovery directory records `forward-repair-required`, the prior service
+state and definitions, and backup paths. Keep external ingress paused and repair
+forward; if any writer cannot be stopped, the installer reports that explicitly
+for manual intervention. Successful safety backups
 remain under `${XDG_STATE_HOME:-~/.local/state}/investment-studio/postgres-backups/`
 unless `INVESTMENT_STUDIO_SYSTEMD_BACKUP_ROOT` is explicitly set.
 
@@ -543,7 +560,11 @@ and Regime artifact-pruning policies for their respective outputs.
 
 `RUN_MIGRATIONS=false` is available only for maintenance workflows that have
 already applied and verified the same release migrations separately; staged unit
-publication and old-unit rollback still remain transactional in that mode.
+publication and old-unit rollback remain transactional only before a new-writer
+start attempt in that mode. `START_SERVICES=false` skips application startup;
+restoring a previously active refresh service or timer still crosses the writer
+boundary. An outer release procedure that starts applications separately must
+record its own forward-repair boundary before starting them.
 
 The same migration entry point can be run independently before another process
 manager deploys the applications:
@@ -664,7 +685,7 @@ for schedule in settlement: market:cn market:hk market:us reference:cn-hk; do
 done
 ```
 
-The app installer retires the former `us-reference-data-refresh` service/timer: it snapshots their files, enablement and active state with the release, stops and disables them, and removes their definitions on success. A failed install restores them with the other prior units. Do not reinstall this obsolete timer.
+The app installer retires the former `us-reference-data-refresh` service/timer: it snapshots their files, enablement and active state with the release, stops and disables them, and removes their definitions on success. A failure before the new-writer start boundary restores them with the other prior units; a later failure retains the new definitions for forward repair. Do not reinstall this obsolete timer.
 
 During a coordinated release, set `START_TIMERS=false` for this installer and
 the Briefing timer installer. Regenerate definitions while writers are paused,

@@ -101,8 +101,12 @@ def _export_bundle(store,output,*,batch_ids,since,names):
                     if ref and ref not in objects:add(ref)
     # Discovery/calendar receipts are also provenance and must travel with facts.
     for batch in selected:
-        for key,value in batch["details"].items():
-            if key.endswith("raw_ref") and isinstance(value,str):add(value)
+        details = batch["details"]
+        # Atomic price histories retain every response, including empty ranges
+        # that have no fact row on which to carry their source reference.
+        for capture in [details, *details.get("source_parts", [])]:
+            for key,value in capture.items():
+                if key.endswith("raw_ref") and isinstance(value,str):add(value)
     manifest=serializable({"format":FORMAT,"version":VERSION,"created_at":datetime.now(timezone.utc),"batches":selected,"files":parts,"snapshots":scopes,"objects":list(objects.values())})
     target=Path(output).expanduser();target.parent.mkdir(parents=True,exist_ok=True)
     temporary=target.with_name(target.name+".tmp")

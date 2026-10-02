@@ -348,6 +348,7 @@ def _validate_aligned_return_periods(
 
 def _daily_mark_to_last_return_matrix(
     active: list[tuple[str, dict[str, object], pd.Series, dict[date, date]]],
+    *, as_of_date: date | None = None,
 ) -> tuple[pd.DataFrame, dict[str, dict[date, date]]]:
     nav_by_key: dict[str, pd.Series] = {}
     for key, _row, series, period_starts in active:
@@ -360,8 +361,10 @@ def _daily_mark_to_last_return_matrix(
             nav_points[pd.Timestamp(raw_end_date).date()] = growth
         nav_by_key[key] = pd.Series(nav_points, dtype="float64").sort_index()
 
-    aligned_nav = pd.DataFrame(nav_by_key).sort_index().ffill()
-    returns = aligned_nav.pct_change(fill_method=None)
+    from portfolio_app.services.risk_alignment import align_risk_navs
+    _, returns = align_risk_navs(nav_by_key, end_date=as_of_date,
+        coverage_by_key={key: (row.get("instrument_return_series_all") or {}).get("observation_coverage") or {}
+                         for key, row, _series, _starts in active})
     aligned_period_starts: dict[str, dict[date, date]] = {
         key: {} for key in nav_by_key
     }
@@ -372,7 +375,8 @@ def _daily_mark_to_last_return_matrix(
         for key in returns.columns:
             if pd.notna(returns.at[end_date, key]):
                 aligned_period_starts[str(key)][end_date] = start_date
-    return returns, aligned_period_starts
+    # The initial reconstructed NAV level has no preceding return interval.
+    return returns.iloc[1:], aligned_period_starts
 
 
 def _clear_forward_risk_fields(
@@ -421,6 +425,7 @@ def enrich_holdings_forward_risk(
     calculation_frequency: CalculationFrequency,
     risk_policy: dict[str, object],
 ) -> dict[str, object]:
+    workspace.pop("_forward_risk_covariance", None)
     rows = workspace.get("rows")
     if not isinstance(rows, list):
         workspace["risk_policy"] = risk_policy
@@ -574,7 +579,7 @@ def enrich_holdings_forward_risk(
         }
         return workspace
 
-    returns, period_starts_by_key = _daily_mark_to_last_return_matrix(active)
+    returns, period_starts_by_key = _daily_mark_to_last_return_matrix(active, as_of_date=as_of_date)
     labels_by_key = {key: _row_label(row) for key, row, _series, _starts in active}
     modeled_exposures = np.asarray(
         [
@@ -668,5 +673,11 @@ def enrich_holdings_forward_risk(
         "coverage": coverage_snapshot,
         "modeled_weight_basis": "total_nav_zero_return_cash_and_derivatives",
         **coverage_disclosure,
+    }
+    # Retain the exact fitted model in the source-bound analytics projection.
+    # Consumers derive correlations from it rather than estimating it again.
+    workspace["_forward_risk_covariance"] = {
+        "keys": [key for key, _row, _series, _starts in active],
+        "values": covariance_matrix.tolist(),
     }
     return workspace

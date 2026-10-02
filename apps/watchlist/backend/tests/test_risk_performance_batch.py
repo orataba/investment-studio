@@ -12,6 +12,7 @@ from watchlist_app.db.models import (
     InstrumentPerformanceReadModel,
 )
 from watchlist_app.services.risk_performance import performance_context, performance_evidence
+from watchlist_app.db.models.recalc import RecalcJob
 
 
 TARGETS = ["target-a", "target-b", "target-missing"]
@@ -21,7 +22,7 @@ TARGETS = ["target-a", "target-b", "target-missing"]
 def retained_evidence():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     for model in (InstrumentDetail, InstrumentManualProfile, InstrumentChartReadModel,
-                  InstrumentPerformanceReadModel):
+                  InstrumentPerformanceReadModel, RecalcJob):
         model.__table__.create(engine)
     stamp = datetime(2026, 9, 4, tzinfo=UTC)
     ids = [*TARGETS, "peer-same", "peer-missing", "explicit", "wrong-frequency",
@@ -82,12 +83,12 @@ def test_batch_context_preserves_exact_evidence_and_missing_comparators(retained
         queries = []
         event.listen(session, "do_orm_execute", lambda state: queries.append(state.statement))
         context = performance_context(session, TARGETS, peer_scope=scope)
-        assert len(queries) == 4
+        assert len(queries) == 8  # Four batch loads plus before/after target and comparator fences.
         assert "unrelated" not in context.records[InstrumentChartReadModel]
         for _ in range(2):
             actual = {iid: performance_evidence(session, iid, context=context) for iid in TARGETS}
             assert actual == expected
-        assert len(queries) == 4, "Repeated peers and missing rows must not trigger individual reads"
+        assert len(queries) == 8, "Repeated peers and missing rows must not trigger individual reads"
         assert not session.dirty
     target = actual["target-a"]
     assert target["freshness"] == "stale"
