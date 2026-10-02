@@ -49,6 +49,38 @@ def test_watchlist_migration_snapshots_do_not_import_runtime_modules() -> None:
         _assert_no_runtime_imports(snapshot_path)
 
 
+def test_fixed_window_peer_catalog_migration_preserves_saved_criteria(tmp_path, monkeypatch):
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'peer-fields.db'}"
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA", "")
+    from watchlist_app.core.settings import get_settings
+
+    get_settings.cache_clear()
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    command.upgrade(config, "20260923_0063")
+    engine = create_engine(database_url)
+    criterion = {"attr.peer_sharpe_percentile": [75]}
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE watchlist_view SET default_filters_json=:value"), {"value": json.dumps(criterion)})
+        before = connection.execute(text("SELECT watchlist_view_id, default_filters_json FROM watchlist_view ORDER BY watchlist_view_id")).all()
+        assert before
+        old_fields = connection.execute(text("SELECT field_key, label FROM field_registry WHERE field_key IN ('attr.peer_annualized_return_percentile','attr.peer_volatility_percentile','attr.peer_max_drawdown_percentile','attr.peer_sharpe_percentile','attr.peer_calmar_percentile') ORDER BY field_key")).all()
+        assert len(old_fields) == 5
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        fields = set(connection.scalars(text("SELECT field_key FROM field_registry")))
+        assert not {row[0] for row in old_fields} & fields
+        assert {"attr.peer_return_1y_percentile", "sharpe_ratio", "annualized_return"} <= fields
+        assert connection.execute(text("SELECT watchlist_view_id, default_filters_json FROM watchlist_view ORDER BY watchlist_view_id")).all() == before
+    command.downgrade(config, "20260923_0063")
+    with engine.connect() as connection:
+        restored = dict(connection.execute(text("SELECT field_key, label FROM field_registry")).all())
+        assert all(restored[key] == label for key, label in old_fields)
+    engine.dispose()
+    get_settings.cache_clear()
+
+
 def test_creator_migration_preserves_unknown_legacy_creator(tmp_path, monkeypatch):
     database_url = f"sqlite+pysqlite:///{tmp_path / 'creator-migration.db'}"
     monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", database_url)

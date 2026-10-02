@@ -881,6 +881,62 @@ def _monetary_acquisition_fx_rate(
     return acquisition_fx_rate, bool((resolved_fx or {}).get("stale"))
 
 
+def _settled_monetary_state(states, posting):
+    account_id = str(posting.get("account_id") or "").strip()
+    if not account_id:
+        raise ValueError("Settled monetary posting is missing account_id.")
+    currency = valuation_fx.required_currency(posting.get("currency"), field_name="ledger-posting currency")
+    return states.setdefault((account_id, currency), {
+        "account_id": account_id, "currency": currency, "amount": 0.0,
+        "historical_cost_basis_base": 0.0, "cost_basis_complete": True,
+        "historical_fx_stale": False, "transaction_ids": set(),
+    })
+
+
+def _apply_cash_transfer_basis(source, target, amount, *, new_borrowing_fx, new_borrowing_stale):
+    """Move assets/debt at their own basis; realize only extinguished exposures.
+
+    A transfer can move existing assets, move existing liabilities, net the two,
+    and create new equal asset/liability balances. Treating the pair together
+    avoids assigning a blended asset/debt basis when both balances cross zero.
+    """
+    source_amount, target_amount = float(source["amount"]), float(target["amount"])
+    source_basis = _safe_float(source.get("historical_cost_basis_base")) if source["cost_basis_complete"] else None
+    target_basis = _safe_float(target.get("historical_cost_basis_base")) if target["cost_basis_complete"] else None
+    source_rate = source_basis / source_amount if source_basis is not None and source_amount else None
+    target_rate = target_basis / target_amount if target_basis is not None and target_amount else None
+    assets_used = min(max(source_amount, 0.0), amount)
+    debt_repaid = min(max(-target_amount, 0.0), amount)
+    netted = min(assets_used, debt_repaid)
+    assets_moved, debt_moved = assets_used - netted, debt_repaid - netted
+    new_borrowing = amount - max(assets_used, debt_repaid)
+    source_after, target_after = source_amount - amount, target_amount + amount
+
+    def basis_sum(parts):
+        used = [(quantity, rate) for quantity, rate in parts if abs(quantity) > 1e-9]
+        return None if any(rate is None for _, rate in used) else sum(quantity * rate for quantity, rate in used)
+
+    next_source_basis = basis_sum([
+        (source_after if source_after > 0 else min(source_amount, 0), source_rate),
+        (-debt_moved, target_rate), (-new_borrowing, new_borrowing_fx),
+    ])
+    next_target_basis = basis_sum([
+        (target_after if target_after < 0 else max(target_amount, 0), target_rate),
+        (assets_moved, source_rate), (new_borrowing, new_borrowing_fx),
+    ])
+    stale_source, stale_target = bool(source["historical_fx_stale"]), bool(target["historical_fx_stale"])
+    for state, balance, basis, stale in (
+        (source, source_after, next_source_basis,
+         (stale_source and (source_after > 0 or source_amount < 0)) or (stale_target and debt_moved > 0) or (new_borrowing_stale and new_borrowing > 0)),
+        (target, target_after, next_target_basis,
+         (stale_target and (target_after < 0 or target_amount > 0)) or (stale_source and assets_moved > 0) or (new_borrowing_stale and new_borrowing > 0)),
+    ):
+        state.update(amount=balance, historical_cost_basis_base=basis,
+                     cost_basis_complete=basis is not None, historical_fx_stale=bool(stale) if abs(balance) > 1e-9 else False)
+    released_basis = basis_sum([(netted, source_rate), (-netted, target_rate)])
+    return netted, released_basis, stale_source or stale_target
+
+
 def _replay_settled_monetary_postings(
     *,
     postings: list[dict[str, object]],
@@ -902,7 +958,15 @@ def _replay_settled_monetary_postings(
     )
     states: dict[tuple[str, str], dict[str, object]] = {}
     impacts: list[dict[str, object]] = []
-    transferred_basis_by_group: dict[str, tuple[float | None, bool]] = {}
+    cash_transfers: dict[str, dict[str, dict[str, object]]] = defaultdict(dict)
+    for posting in postings:
+        kind = str(posting.get("source_transaction_type") or "")
+        if kind in {"transfer_in", "transfer_out"} and posting.get("cash_amount_delta") is not None:
+            group = str(posting.get("transfer_group_id") or "")
+            if not group or kind in cash_transfers[group]:
+                raise ValueError("Cash transfer requires one uniquely paired incoming and outgoing posting.")
+            cash_transfers[group][kind] = posting
+    completed_transfers: set[str] = set()
     conversion_legs = _fx_conversion_legs(postings)
     as_of_iso = as_of_date.isoformat()
     ordered_postings = sorted(
@@ -929,25 +993,50 @@ def _replay_settled_monetary_postings(
         effective_date_iso = ledger_posting_effective_date_iso(posting)
         if amount_delta is None or effective_date_iso > as_of_iso:
             continue
-        account_id = str(posting.get("account_id") or "").strip()
-        if not account_id:
-            raise ValueError("Settled monetary posting is missing account_id.")
-        currency = valuation_fx.required_currency(
-            posting.get("currency"),
-            field_name="ledger-posting currency",
-        )
-        state = states.setdefault(
-            (account_id, currency),
-            {
-                "account_id": account_id,
-                "currency": currency,
-                "amount": 0.0,
-                "historical_cost_basis_base": 0.0,
-                "cost_basis_complete": True,
-                "historical_fx_stale": False,
-                "transaction_ids": set(),
-            },
-        )
+        transaction_type = str(posting.get("source_transaction_type") or "")
+        if transaction_type in {"transfer_in", "transfer_out"}:
+            group = str(posting.get("transfer_group_id") or "")
+            if group in completed_transfers:
+                continue
+            pair = cash_transfers[group]
+            outgoing, incoming = pair.get("transfer_out"), pair.get("transfer_in")
+            if outgoing is None or incoming is None:
+                raise ValueError("Cash transfer is missing its paired posting.")
+            amount = -float(outgoing["cash_amount_delta"])
+            if (amount <= 0 or abs(float(incoming["cash_amount_delta"]) - amount) > 1e-9
+                    or outgoing.get("currency") != incoming.get("currency")
+                    or outgoing.get("account_id") == incoming.get("account_id")
+                    or ledger_posting_effective_date_iso(outgoing) != ledger_posting_effective_date_iso(incoming)):
+                raise ValueError("Cash transfer postings must balance in one currency on the same settlement date.")
+            source, target = _settled_monetary_state(states, outgoing), _settled_monetary_state(states, incoming)
+            new_borrowing = amount - max(min(max(float(source["amount"]), 0), amount), min(max(-float(target["amount"]), 0), amount))
+            rate, stale = (None, False)
+            if new_borrowing > 1e-9:
+                rate, stale = _monetary_acquisition_fx_rate(outgoing, amount_delta=-new_borrowing,
+                    base_currency=normalized_base, direct_fx_instruments=direct_fx_instruments,
+                    instrument_detail_cache=instrument_detail_cache, fx_conversion_legs=conversion_legs,
+                    resolve_fx_rate_on=resolve_fx_rate_on)
+            netted, released_basis, basis_stale = _apply_cash_transfer_basis(
+                source, target, amount, new_borrowing_fx=rate, new_borrowing_stale=stale)
+            for state, leg in ((source, outgoing), (target, incoming)):
+                state["transaction_ids"].add(str(leg["transaction_id"]))
+            # The equal asset and liability cancel at every current FX rate.
+            # This pair-level realization is their combined historical basis,
+            # attributed once to the receiving (debt repayment) transaction.
+            if (netted > 1e-9 and source["currency"] != normalized_base
+                    and impact_transaction_ids is not None
+                    and str(incoming["transaction_id"]) in impact_transaction_ids):
+                impacts.append({"transaction_id": str(incoming["transaction_id"]),
+                    "posting_role": "internal_cash_transfer_netting", "account_id": target["account_id"],
+                    "currency": target["currency"], "recognition_date": effective_date_iso,
+                    "recognition_fx_rate_to_base": None, "local_exposure_released": 0.0,
+                    "historical_cost_basis_base": released_basis, "fair_value_base": 0.0,
+                    "realized_cash_fx_pnl_base": -released_basis if released_basis is not None else None,
+                    "fx_coverage_status": "unavailable" if released_basis is None else "stale" if basis_stale else "complete"})
+            completed_transfers.add(group)
+            continue
+        state = _settled_monetary_state(states, posting)
+        account_id, currency = str(state["account_id"]), str(state["currency"])
         balance_before = _safe_float(state.get("amount")) or 0.0
         historical_basis_before = _safe_float(
             state.get("historical_cost_basis_base")
@@ -961,8 +1050,6 @@ def _replay_settled_monetary_postings(
         if isinstance(transaction_ids, set) and transaction_id:
             transaction_ids.add(transaction_id)
 
-        transfer_group_id = str(posting.get("transfer_group_id") or "").strip()
-        transaction_type = str(posting.get("source_transaction_type") or "")
         balance_after_candidate = balance_before + amount_delta
         crosses_zero_candidate = balance_before * balance_after_candidate < 0
         adds_basis_candidate = (
@@ -970,17 +1057,7 @@ def _replay_settled_monetary_postings(
         )
         acquisition_fx_rate: float | None = None
         acquisition_fx_stale = False
-        if transaction_type == "transfer_in" and transfer_group_id:
-            transferred_basis, acquisition_fx_stale = transferred_basis_by_group.get(
-                transfer_group_id,
-                (None, False),
-            )
-            acquisition_fx_rate = (
-                transferred_basis / amount_delta
-                if transferred_basis is not None and abs(amount_delta) > 1e-12
-                else None
-            )
-        elif crosses_zero_candidate or adds_basis_candidate:
+        if crosses_zero_candidate or adds_basis_candidate:
             acquisition_fx_rate, acquisition_fx_stale = (
                 _monetary_acquisition_fx_rate(
                     posting,
@@ -997,7 +1074,6 @@ def _replay_settled_monetary_postings(
         if (
             impact_transaction_ids is not None
             and transaction_id in impact_transaction_ids
-            and transaction_type not in {"transfer_in", "transfer_out"}
             and currency != normalized_base
             and reduces_existing_exposure
         ):
@@ -1064,7 +1140,7 @@ def _replay_settled_monetary_postings(
                 }
             )
 
-        transferred_or_released_basis = apply_monetary_cost_basis_delta(
+        apply_monetary_cost_basis_delta(
             state,
             amount_delta=amount_delta,
             acquisition_fx_rate=acquisition_fx_rate,
@@ -1072,12 +1148,6 @@ def _replay_settled_monetary_postings(
         balance_after = _safe_float(state.get("amount")) or 0.0
         crosses_zero = balance_before * balance_after < 0
         adds_basis = abs(balance_before) <= 1e-9 or balance_before * amount_delta > 0
-        if transaction_type == "transfer_out" and transfer_group_id:
-            transferred_basis_by_group[transfer_group_id] = (
-                transferred_or_released_basis,
-                historical_fx_stale_before
-                or (acquisition_fx_stale and (crosses_zero or adds_basis)),
-            )
         if abs(balance_after) <= 1e-9:
             state["historical_fx_stale"] = False
         elif crosses_zero:

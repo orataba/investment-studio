@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
 from math import exp, sqrt
 from types import SimpleNamespace
@@ -159,12 +160,13 @@ def test_calendar_and_historical_cutoff_are_enforced(monkeypatch):
 
 
 def test_price_tool_does_not_read_later_recalculated_snapshot(monkeypatch):
+    monkeypatch.setattr("watchlist_app.services.read_model_freshness.calculation_input_read", lambda *args: nullcontext())
     from investment_studio_instrument_core.db_models import Instrument
     series, _ = price_series(monkeypatch)
     instrument = SimpleNamespace(instrument_type="etf", exchange_code="XNYS", source_settings_json={})
     chart = SimpleNamespace(payload_json={"research_returns": series}, last_recalculated_at=stamp(3),
                             source_cutoff_at=stamp(1), materialization_version="test", data_freshness_status="fresh")
-    session = SimpleNamespace(get=lambda model, iid: instrument if model is Instrument else chart)
+    session = SimpleNamespace(get=lambda model, iid, **kwargs: instrument if model is Instrument else chart)
     early = metrics.instrument_price_risk(session, "spy", as_of=stamp(2))
     assert early["data"]["status"] == "unavailable"
     latest = metrics.instrument_price_risk(session, "spy", as_of=stamp(4))

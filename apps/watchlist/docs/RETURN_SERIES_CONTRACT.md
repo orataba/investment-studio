@@ -70,7 +70,7 @@ Performance 页的自然期矩阵另有一条闭合规则：月度收益使用�
 - Watchlist 没有一个强制所有行共用的业务 `as_of_date`。每个 instrument 都以自己所选 calculation series 的最新有效观测日为终点，再独立回看 1W / 1M / 3M / 6M / MTD / YTD / 1Y。
 - Screener 每行始终返回 `metric_as_of_date`。页级 `snapshot_metadata.as_of_date` 定义为当前结果中的最晚行终点，仅用于摘要，不得当成所有行的共同终点；同时返回 `as_of_date_min / as_of_date_max / has_mixed_as_of_dates / as_of_date_missing_count`。
 - 分组中的收益、波动率、回撤、Sharpe 和 peer 指标只有在所有有值行的 `metric_as_of_date` 相同时才展示等权横截面平均；终点混合或缺失时必须显示不可用。
-- taxonomy peer 排名只纳入与目标 instrument **同一 snapshot as-of** 的候选；不同终点的候选被排除并记录数量，不能拿 24 日结果与 27 日结果直接排名。
+- taxonomy peer 中位数及排名只纳入与目标 instrument **同一 snapshot as-of**、实际区间 Anchor / End、币种、观察频率和收益类型的固定区间收益。每个区间独立筛选可比样本；比较依据与 snapshot 一起保存，旧结果缺少依据时不参与。不同存续期的 SI 年化收益、回撤、波动及风险调整比率只作资产自身描述，不生成同类中位数或排名。
 - benchmark 比较只使用双方日期完全相同的共同观测收盘点。基金自身独立指标仍用自己的 as-of；一旦展示 benchmark，矩阵中的基金值要重算到最晚共同观测终点，SI 从最早共同观测起点开始，所有相对风险统计也只能链接连续的共同 `(start_date, end_date)`。不得把基金目标日前的周五收盘与 benchmark 的周四收盘当作同一期相减。比较矩阵每列直接显示实际 Anchor / End；不足共同窗口的 1Y 等周期显示不可用，不回退到资产独立最新值。矩阵说明同时列出共同终点与独立指标/月表终点，用户请求的图表区间仍单独保留。
 
 ## 4. 频率、缺点与风险
@@ -78,7 +78,7 @@ Performance 页的自然期矩阵另有一条闭合规则：月度收益使用�
 - 计算频率固定为 daily；行情点统一按日频计算，不做降采样。
 - daily 数据若配置 `market_calendar`，内部缺点按该交易所真实 session 检测，春节、周末等休市不算缺失；未配置或日历不可解析时才使用保守的日历日阈值。
 - 尾部新鲜度按该 instrument 自己的 market calendar 和 `release_lag_days` 判断，不拿 Watchlist 中其他 instrument 的最新日期做基准。有可用日历时，`release_lag_days` 按该日历的交易日数量延后；24/7 日历的交易日即 UTC 自然日。未显式声明滞后的邮箱私募采用一个交易日，显式配置优先。当日盘中不会强制要求“计划于当日发布”的观测已经到达；无可用日历时按自然日宽限保守判断，不声称已核实具体发布日。
-- 标量端点收益在起点和终点可信时仍可计算；最大回撤、当前回撤、波动率、downside deviation、Sharpe、Sortino 等路径指标在存在预期观测缺失时 fail closed。downside deviation 以全部期间为分母，非负期间的 downside 为 0；Sharpe/Sortino 当前风险自由利率为 0。
+- 标量端点收益在起点和终点可信时仍可计算；最大回撤、当前回撤、波动率、downside deviation、Sharpe、Sortino 等路径指标在存在预期观测缺失时 fail closed。downside deviation 以全部期间为分母，非负期间的 downside 为 0；样本有效且全为非负收益时发布 0，Sortino 因分母为零仍不发布。Sharpe/Sortino 当前风险自由利率为 0。
 
 ### 4.1 原生加密资产与 UTC 日线
 

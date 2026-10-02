@@ -1,0 +1,9 @@
+daily
+weekly
+crypto
+publish
+sync
+registered-prices-cn
+registered-prices-hk
+registered-prices-us
+registered-prices-eu

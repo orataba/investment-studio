@@ -3162,7 +3162,11 @@ function fetchJson<T>(
 ): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase()
   if (init?.signal?.aborted) return Promise.reject(init.signal.reason)
-  const cacheKey = method === 'GET' && !path.endsWith('/access') && !path.endsWith('/session') && !path.endsWith('/access-recovery') && !path.endsWith('/calculation-status') ? `${baseUrl}${path}` : null
+  const freshRead = init?.cache === 'no-store' || init?.cache === 'no-cache' || init?.cache === 'reload'
+  const resourcePath = path.split('?')[0]
+  const liveState = ['/access', '/session', '/access-recovery', '/calculation-status']
+    .some(suffix => resourcePath.endsWith(suffix))
+  const cacheKey = method === 'GET' && !freshRead && !liveState ? `${baseUrl}${path}` : null
   const now = Date.now()
 
   if (cacheKey) {
@@ -4039,6 +4043,7 @@ export function getPortfolioTransactionCaptureBatches(
   return fetchJson<PortfolioTransactionCaptureBatchListResponse>(
     API_BASE_URL,
     `/api/portfolios/${encodeURIComponent(portfolioId)}/transaction-capture-batches?limit=${limit}`,
+    { cache: 'no-store' },
   )
 }
 
@@ -4251,7 +4256,7 @@ export function getPortfolioOptionObligations(
 }
 
 export function requestInstrumentRisk<T>(path: string, init?: RequestInit) {
-  return fetchJson<T>(API_BASE_URL, `/api/instrument-risk${path.slice('/risk'.length)}`, init)
+  return fetchJson<T>(API_BASE_URL, `/api/instrument-risk${path.slice('/risk'.length)}`, { ...init, cache: 'no-store' })
 }
 
 /** Share authenticated requests and financial-read retry semantics with domain panels. */

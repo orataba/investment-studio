@@ -8,9 +8,9 @@
   Watchlist 与 Portfolio 共用的标的风险事项、复核线和跟进界面。各 app 提供数据入口与上下文，事件统一保存在 Watchlist。
 
 - `LanguageProvider`
-  统一保存当前语言，默认英文，支持英文与简体中文。
+  统一保存当前语言，支持英文与简体中文；按 URL、localStorage、语言 cookie、支持的浏览器语言依次选择，最后回退英文。
 - `LanguageSelector`
-  给 `home / portfolio / watchlist` 提供同一套语言切换控件。
+  给 `home / portfolio / watchlist / briefing` 提供同一套语言切换控件。
 - `systemMessages.ts` / `matchesSystemLabel`
   系统字段、选项、提示的中英文文案，以及支持两种语言的字段搜索。基金、股票、组合名称与用户笔记等内容用 `translate="no"` 保留原文；下拉选项只翻译显示文字，不修改保存值。
 - `WorkspaceSwitcher` / `workspace-switcher.css`

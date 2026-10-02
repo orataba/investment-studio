@@ -92,8 +92,9 @@ monetary basis，不能把结算后的 FX 再算进 position realized P&L。完�
 当 withdrawal、证券结算、费用、税费或换汇等交易减少非基准币 monetary exposure 时，Fact
 面板另列 `Realized cash FX`：按释放数量取得移动平均 historical monetary basis，并与该交易
 结算日的 base-currency fair value 比较。它与 realized position price / FX P&L 分开，避免把
-持仓处置与之后现金持有期的汇率变化重复计算。同币种内部现金转账只转移 basis，不确认 cash FX；
-剩余外币现金继续在 Holdings 显示 unrealized FX P&L。
+持仓处置与之后现金持有期的汇率变化重复计算。同币种内部现金转账的同号资产或负债搬移只转移 basis；
+现金偿还融资负债等异号敞口抵销，按两侧历史 basis 差确认一次 cash FX，归于收款腿。
+配对计算及双端穿零规则见计算规格 monetary basis 合同。剩余外币余额继续在 Holdings 显示 unrealized FX P&L。
 
 ## 5. 创建、修改和删除控制
 

@@ -54,9 +54,9 @@ SYSTEMD_UNITS=(
   "$SYSTEMD_UNIT_PREFIX-us-reference-data-refresh.timer"
   "$SYSTEMD_UNIT_PREFIX-us-reference-data-refresh.service"
 )
-for market_action in daily weekly publish sync registered-prices-cn registered-prices-hk registered-prices-us registered-prices-eu; do
+while IFS= read -r market_action; do
   SYSTEMD_UNITS+=("$SYSTEMD_UNIT_PREFIX-market-$market_action.timer" "$SYSTEMD_UNIT_PREFIX-market-$market_action.service")
-done
+done < "$PROJECT_ROOT/infra/market_pipeline_actions.txt"
 
 PSQL_BIN=""
 PG_RESTORE_BIN=""

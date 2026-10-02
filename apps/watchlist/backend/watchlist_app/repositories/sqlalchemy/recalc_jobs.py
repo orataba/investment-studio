@@ -149,7 +149,7 @@ class SQLAlchemyRecalcJobRepository:
             priority=priority,
             dedupe_key=dedupe_key,
             payload_json=payload_json,
-            enqueued_at=datetime.now(UTC).replace(microsecond=0),
+            enqueued_at=datetime.now(UTC),
             started_at=None,
             heartbeat_at=None,
             lease_token=None,
@@ -221,7 +221,7 @@ class SQLAlchemyRecalcJobRepository:
 
     def mark_running(self, session: Session, record: RecalcJob) -> RecalcJob:
         record.job_status = "running"
-        record.started_at = datetime.now(UTC).replace(microsecond=0)
+        record.started_at = datetime.now(UTC)
         record.heartbeat_at = record.started_at
         record.lease_token = uuid4().hex
         record.finished_at = None
@@ -251,11 +251,14 @@ class SQLAlchemyRecalcJobRepository:
     ) -> bool:
         values: dict[str, object] = {
             "job_status": "completed",
-            "finished_at": datetime.now(UTC).replace(microsecond=0),
+            "finished_at": datetime.now(UTC),
             "error_message": None,
         }
         if payload_json is not None:
-            values["payload_json"] = payload_json
+            values["payload_json"] = {
+                **payload_json,
+                **({"configuration_changed": True} if (record.payload_json or {}).get("configuration_changed") else {}),
+            }
         result = session.execute(
             update(RecalcJob)
             .where(
@@ -285,7 +288,7 @@ class SQLAlchemyRecalcJobRepository:
             )
             .values(
                 job_status="failed",
-                finished_at=datetime.now(UTC).replace(microsecond=0),
+                finished_at=datetime.now(UTC),
                 error_message=error_message,
             )
         )

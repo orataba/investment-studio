@@ -61,7 +61,17 @@ def test_topics_share_evidence_keep_conclusion_history_and_complete_followups(cl
     assert detail == client.get(f'/api/research/topics/{tid}').json()
 
 
-def test_research_pdf_without_text_does_not_turn_page_labels_into_evidence(client):
+def test_research_pdf_without_text_does_not_turn_page_labels_into_evidence(client, monkeypatch):
+    import asyncio
+    from watchlist_app.services import research_dossier
+    extract = research_dossier._file_text
+
+    def extract_outside_event_loop(path):
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            asyncio.get_running_loop()
+        return extract(path)
+
+    monkeypatch.setattr(research_dossier, "_file_text", extract_outside_event_loop)
     from io import BytesIO
     from pypdf import PdfWriter
 

@@ -90,6 +90,18 @@ dividend-adjusted response. The adjustment factor is adjusted close divided by
 that dataset's close. Report price returns use split-adjusted closes, exclude
 dividend total return, and disclose each symbol's actual source dates.
 
+FMP price histories publish one complete symbol capture in one numerical batch,
+even when provider requests span multiple date windows. No new price part or
+completion receipt becomes visible until all required windows validate. Rows
+share the completed capture's `observed_at` and `available_at`; each response's
+actual clock remains in `collected_at` and `source_parts`. This keeps historical
+queries and overlapping publications on a coherent adjustment generation.
+Every raw response, including empty ranges, travels with the bundle. A known
+adjustment obligation defers the symbol's new bulk daily prices to its full
+rebuild. A newly changed raw overlap publishes its evidence and durable rebuild
+request without publishing partial adjusted prices. Missing adjusted prices,
+retained dates, or all history remain explicit source coverage failures.
+
 Regime reads each completed price acquisition from its fixed set of immutable
 batch IDs, resolving revisions with the store's latest-observed-per-fact policy
 inside the requested symbol and date range. A dividend-triggered history rebuild

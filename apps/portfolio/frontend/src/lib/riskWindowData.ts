@@ -31,7 +31,12 @@ export function returnWindowInputIssues(series: GroupReturnSeries, asOfDate: str
   const invalid = points.filter((point) => !Number.isFinite(point.value)).map((point) => point.date)
   if (invalid.length) add('missing_series', 'The selected window contains non-finite returns.', invalid)
   const dates = points.map((point) => point.date)
-  const duplicates = dates.filter((date, index) => dates.indexOf(date) !== index)
+  const seenDates = new Set<string>()
+  const duplicates = dates.filter((date) => {
+    if (seenDates.has(date)) return true
+    seenDates.add(date)
+    return false
+  })
   if (duplicates.length) add('misaligned_dates', 'The selected window contains duplicate period end dates.', duplicates)
   const invalidStarts = points.filter((point) => !point.start_date || point.start_date >= point.date).map((point) => point.date)
   if (invalidStarts.length) add('misaligned_dates', 'Return periods require a known start date before their end date.', invalidStarts)

@@ -177,6 +177,7 @@ restart_required="false"
 database_mutated="false"
 backup_ready="false"
 definitions_touched="false"
+writers_may_have_resumed="false"
 
 snapshot_existing_plists() {
   local service label plist
@@ -210,10 +211,17 @@ restore_plist_snapshot() {
 }
 
 stop_all_managed_services() {
-  local service
+  local service failed="false"
   for service in "${previous_services[@]}"; do
     launchctl bootout "gui/$UID/$LABEL_PREFIX.$service" >/dev/null 2>&1 || true
   done
+  for service in "${previous_services[@]}"; do
+    if launchctl print "gui/$UID/$LABEL_PREFIX.$service" >/dev/null 2>&1; then
+      echo "Managed writer remains loaded: $LABEL_PREFIX.$service" >&2
+      failed="true"
+    fi
+  done
+  [[ "$failed" == "false" ]]
 }
 
 cleanup_on_exit() {
@@ -224,11 +232,25 @@ cleanup_on_exit() {
   set +e
 
   if [[ $status -ne 0 && "$restart_required" == "true" ]]; then
+    if [[ "$writers_may_have_resumed" == "true" ]]; then
+      if stop_all_managed_services; then
+        echo "Managed writers stopped after a new-writer start attempt." >&2
+      else
+        echo "Some managed writers could not be stopped; stop them manually before repair." >&2
+      fi
+      printf '%s\n' 'forward-repair-required' > "$WORK_DIR/phase"
+      echo "New application or scheduled workers may have written data; automatic database and LaunchAgent rollback is disabled. Repair forward with the new database and definitions." >&2
+      echo "Installer recovery state retained at: $WORK_DIR" >&2
+      echo "Pre-install backup retained at: ${INVESTMENT_STUDIO_PROJECT_SCHEMA_BACKUP_PATH:-not-created}" >&2
+      exit "$status"
+    fi
     if [[ "$definitions_touched" == "true" ]]; then
-      stop_all_managed_services
+      if ! stop_all_managed_services; then
+        recovery_failed="true"
+      fi
     fi
 
-    if [[ "$database_mutated" == "true" ]]; then
+    if [[ "$database_mutated" == "true" && "$recovery_failed" != "true" ]]; then
       if [[ "$backup_ready" != "true" ]] \
         || ! investment_studio_restore_project_schema_backup \
           "$DATABASE_URL" \
@@ -366,6 +388,12 @@ for service in "${retired_services[@]}"; do
 done
 
 domain="gui/$UID"
+# RunAtLoad can execute an application during bootstrap itself. Persist the
+# forward-repair boundary before the first attempt, including partial failures.
+writers_may_have_resumed="true"
+printf '%s\n' 'writers-may-have-resumed' > "$WORK_DIR/phase"
+printf '%s\n' "${INVESTMENT_STUDIO_PROJECT_SCHEMA_BACKUP_PATH:-}" > "$WORK_DIR/database-backup-path"
+printf '%s\n' "${INVESTMENT_STUDIO_PROJECT_SCHEMA_MANIFEST_PATH:-}" > "$WORK_DIR/database-manifest-path"
 for service in "${services[@]}"; do
   label="$LABEL_PREFIX.$service"
   plist="$LAUNCH_AGENTS_DIR/$label.plist"

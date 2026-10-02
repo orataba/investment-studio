@@ -5,7 +5,7 @@ from sqlalchemy import select
 def test_adding_during_running_calculation_commits_membership_and_selected_status(client: TestClient):
     from watchlist_app.db.session import get_session_factory
     from watchlist_app.db.models.recalc import RecalcJob
-    from watchlist_app.services.watchlist_updates import jobs
+    from watchlist_app.services.recalc import jobs
     from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key
 
     watchlist_id = client.post('/api/watchlists', json={'name': 'Concurrent add'}).json()['watchlist_id']
@@ -39,10 +39,10 @@ def test_adding_during_running_calculation_commits_membership_and_selected_statu
 
 
 def test_bulk_status_is_atomic_and_global_across_lists(client: TestClient, monkeypatch):
-    from watchlist_app.api.routes.attributes import canonical_recalc_service
+    from watchlist_app.api.routes import attributes
     def forbidden(*args, **kwargs):
         raise AssertionError('Manual status must not recalculate market history')
-    monkeypatch.setattr(canonical_recalc_service, 'execute_recalc', forbidden)
+    monkeypatch.setattr(attributes, 'queue_configuration_recalculation', forbidden)
     first = client.post('/api/watchlists', json={'name': 'First status list'}).json()['watchlist_id']
     second = client.post('/api/watchlists', json={'name': 'Second status list'}).json()['watchlist_id']
     for watchlist_id in [first, second]:

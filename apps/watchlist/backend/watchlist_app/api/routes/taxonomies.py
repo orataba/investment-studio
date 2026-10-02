@@ -9,7 +9,7 @@ from watchlist_app.db.session import get_db_session
 from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
 from watchlist_app.reference_data.instrument_taxonomy import INSTRUMENT_TAXONOMY_CODE
-from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+from watchlist_app.services.recalc import lock_instrument_configuration, queue_configuration_recalculation
 from watchlist_app.services.instrument_taxonomy import (
     SUPPORTED_TAXONOMY_INSTRUMENT_TYPES,
     build_taxonomy_context,
@@ -22,7 +22,6 @@ from watchlist_app.services.instrument_taxonomy import (
 router = APIRouter()
 instrument_repository = SQLAlchemyInstrumentRepository()
 taxonomy_repository = SQLAlchemyTaxonomyRepository()
-canonical_recalc_service = CanonicalRecalcService()
 
 
 def _require_taxonomy_asset(session: Session, instrument_id: str):
@@ -79,6 +78,7 @@ def update_instrument_taxonomy_assignment(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     instrument = _require_taxonomy_asset(session, instrument_id)
+    lock_instrument_configuration(session, [instrument_id])
     node_id = str(payload.node_id or "").strip() or None
     instrument_type = str(instrument.instrument_type).strip().lower()
     if node_id is not None:
@@ -115,10 +115,9 @@ def update_instrument_taxonomy_assignment(
         source_record_id=str(current_principal().user_id or current_principal().service_id),
     )
     taxonomy_context = _taxonomy_context_for_asset(session, instrument_id=instrument_id)
-    execution = canonical_recalc_service.execute_recalc(
+    execution = queue_configuration_recalculation(
         session,
         instrument_id=instrument_id,
-        job_type="performance",
         trigger_type="taxonomy_assignment",
         trigger_ref_type="instrument_taxonomy_assignment",
         trigger_ref_id=node_id,
@@ -127,6 +126,7 @@ def update_instrument_taxonomy_assignment(
     return taxonomy_context | {
         "instrument_id": instrument_id,
         "updated": True,
-        "recalculated": True,
+        "recalculated": False,
+        "recalc_queued": True,
         "execution": execution,
     }

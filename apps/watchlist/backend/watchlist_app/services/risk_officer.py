@@ -13,7 +13,9 @@ from watchlist_app.db.models import InstrumentDetail, Watchlist, WatchlistItem
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic, RiskCase
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services.read_models import serialize_payload
+from watchlist_app.services.read_model_freshness import calculation_input_read
 from watchlist_app.services.research_workbench import external_json
+from watchlist_app.services.research_errors import ResearchInputUnavailable
 from watchlist_app.services.risk_performance import peer_context, performance_context, performance_evidence
 
 TOPIC_PREFIX = "risk-officer:"
@@ -189,6 +191,7 @@ def read_snapshot(session, **scope):
     limitations = []
     portfolio = None
     available = True
+    input_retryable = False
     if kind == "portfolio":
         try:
             portfolio = _portfolio_snapshot(identifier)
@@ -206,6 +209,7 @@ def read_snapshot(session, **scope):
                 limitations.append("组合接口未提供可用的聚合风险指标；没有根据市值权重推算风险贡献。")
         except (OSError, ValueError) as error:
             ids, name, available = [], identifier, False
+            input_retryable = isinstance(error, OSError)
             portfolio = {"available": False, "portfolio_id": identifier}
             limitations.append(f"当前组合持仓读取未完成，不能确认涉及敞口：{type(error).__name__}。")
     elif kind == "watchlist":
@@ -220,14 +224,21 @@ def read_snapshot(session, **scope):
         if record is None:
             raise ValueError("所选标的不存在。")
         ids, name = [identifier], record.instrument_name
-    workspace = risk_workspace(instrument_ids=",".join(ids), session=session)
-    instruments = sorted(workspace["instruments"], key=lambda item: item["instrument_id"])
-    states = review_states(session, instrument_ids=[item["instrument_id"] for item in instruments], for_risk=True)
-    latest_research, completed_research = states["latest"], states["last_completed"]
-    peer_scope = peer_context(session) if instruments else None
-    instrument_ids = [item["instrument_id"] for item in instruments]
-    research_inputs = _research_context_inputs(session, instrument_ids)
-    performance_inputs = performance_context(session, instrument_ids, peer_scope=peer_scope)
+    try:
+        with calculation_input_read(session, ids):
+            workspace = risk_workspace(instrument_ids=",".join(ids), session=session)
+            instruments = sorted(workspace["instruments"], key=lambda item: item["instrument_id"])
+            states = review_states(session, instrument_ids=[item["instrument_id"] for item in instruments], for_risk=True)
+            latest_research, completed_research = states["latest"], states["last_completed"]
+            peer_scope = peer_context(session) if instruments else None
+            instrument_ids = [item["instrument_id"] for item in instruments]
+            research_inputs = _research_context_inputs(session, instrument_ids)
+            performance_inputs = performance_context(session, instrument_ids, peer_scope=peer_scope)
+    except ResearchInputUnavailable as error:
+        return serialize_payload({"scope": {"kind": kind, "id": identifier, "name": name},
+            "scope_available": False, "input_retryable": True, "instrument_ids": ids,
+            "input_as_of": None, "instruments": [], "research": [], "quantitative": [], "coverage": [],
+            "portfolio": portfolio, "limitations": [*limitations, str(error)]})
     for item in instruments:
         iid = item["instrument_id"]
         latest, completed = latest_research.get(iid), completed_research.get(iid)
@@ -285,6 +296,7 @@ def read_snapshot(session, **scope):
         if amount is None or nav is None or nav <= 0:
             limitations.append("相关持仓市值或有效净值不足，未计算涉及敞口占比。")
     return serialize_payload({"scope": {"kind": kind, "id": identifier, "name": name}, "scope_available": available,
+        "input_retryable": input_retryable,
         "instrument_ids": ids, "input_as_of": max(dates, default=None), "instruments": instruments,
         "research": research, "quantitative": quantitative, "coverage": coverage,
         "portfolio": portfolio, "limitations": limitations})
@@ -397,6 +409,8 @@ def prepare_run(run_id):
         run.context_json.pop("submitted_risk_review", None)
         session.commit()
         if not snapshot["scope_available"]:
+            if snapshot.get("input_retryable"):
+                raise ResearchInputUnavailable("；".join(snapshot["limitations"]))
             raise ValueError("；".join(snapshot["limitations"]))
 
 

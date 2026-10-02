@@ -17,6 +17,23 @@ from typing import Any, Callable
 
 from zoneinfo import ZoneInfo
 
+
+class PriceHistoryUnavailable(ValueError):
+    """A source coverage failure with safe, actionable diagnostics, never a URL/body."""
+
+    def __init__(self, reason: str, symbol: str, dates=()):
+        missing = sorted({str(day) for day in dates})
+        explanations = {
+            "adjusted_price_missing": "Adjusted close is missing",
+            "retained_price_dates_missing": "Full price revision response omits retained observation dates",
+            "price_history_empty": "Full price revision capture contained no history",
+        }
+        self.details = {"reason": reason, "symbol": symbol, "missing_date_count": len(missing),
+                        "missing_dates": missing[:10]}
+        suffix = f" ({', '.join(missing[:10])}; {len(missing)} dates)" if missing else ""
+        super().__init__(f"{explanations[reason]} for {symbol}{suffix}")
+
+
 def normalize_us_eod_rows(
     body: bytes,
     *,
@@ -130,9 +147,7 @@ def normalize_us_eod_symbol_rows(
         if observation_date < start_date or observation_date > end_date:
             continue
         if observation_date not in adjusted_by_date:
-            raise ValueError(
-                f"FMP adjusted close is missing for {symbol} on {observation_date}"
-            )
+            raise PriceHistoryUnavailable("adjusted_price_missing", symbol, [observation_date])
         try:
             open_value = _finite_number(item.get("open"))
             high_value = _finite_number(item.get("high"))

@@ -1554,6 +1554,9 @@ def test_adding_equity_shared_registry_instrument_uses_listed_detail(
         assert history[-1].path_labels_json == ["美股", "信息技术"]
         assert "equity-demo" in _active_peer_instrument_ids(session)
 
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    assert drain_recalc_jobs() > 0
+
     grouped_response = client.post(
         "/api/screener/query",
         json={
@@ -1630,8 +1633,8 @@ def test_instrument_settings_roll_back_taxonomy_and_status_together(
         raise HTTPException(status_code=500, detail="recalc failed")
 
     monkeypatch.setattr(
-        attributes_route.canonical_recalc_service,
-        "execute_recalc",
+        attributes_route,
+        "queue_configuration_recalculation",
         _fail_recalc,
     )
     response = client.put(
@@ -2529,7 +2532,7 @@ def test_instrument_detail_payload_uses_daily_calculation_frequency(
     risk_response = client.get("/api/instruments/weekly-risk-fund/risk")
     assert risk_response.status_code == 200
     risk_payload = risk_response.json()
-    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v8"
+    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v9"
     assert risk_payload["calculation_frequency_profile"]["resolved_frequency"] == "daily"
     assert risk_payload["calculation_frequency_profile"]["annualization_periods_per_year"] == pytest.approx(
         52.178571,
@@ -2724,6 +2727,9 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
         )
         assert geography_response.status_code == 200
 
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    assert drain_recalc_jobs() > 0
+
     recalc_archived_peer_response = client.post(
         "/api/recalc/instruments/peer-archived/execute",
         json={
@@ -2801,7 +2807,6 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
                 "attr.peer_sample_count",
                 "attr.peer_return_1w_percentile",
                 "attr.peer_return_1m_percentile",
-                "attr.peer_annualized_return_percentile",
             ],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -2817,7 +2822,6 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     assert sxv_row["attr.peer_sample_count"] == 4
     assert sxv_row["attr.peer_return_1w_percentile"] == pytest.approx(50.0)
     assert sxv_row["attr.peer_return_1m_percentile"] == pytest.approx(50.0)
-    assert sxv_row["attr.peer_annualized_return_percentile"] is None
 
     # Moving a peer must change the target's comparison immediately, without
     # requiring a target recalc that could leave the cross-section stale.
@@ -4981,6 +4985,9 @@ def test_screener_filters_match_multi_select_attribute_values(client: TestClient
     )
     assert value_response.status_code == 200
 
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    assert drain_recalc_jobs() > 0
+
     screener = client.post(
         "/api/screener/query",
         json={
@@ -5371,7 +5378,8 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     assert fields_by_key["max_drawdown"]["label"] == "Max DD"
     assert fields_by_key["attr.current_drawdown"]["label"] == "Current DD"
     assert fields_by_key["attr.peer_return_1w_percentile"]["label"] == "1W Return Pctl"
-    assert fields_by_key["attr.peer_annualized_return_percentile"]["label"] == "Ann. Pctl"
+    for metric in ("annualized_return", "volatility", "max_drawdown", "sharpe", "calmar"):
+        assert f"attr.peer_{metric}_percentile" not in fields_by_key
 
 
 def test_watchlist_menu_catalog_is_reviewed_and_keeps_detail_fields_queryable(client: TestClient) -> None:
@@ -5469,6 +5477,9 @@ def test_universal_watchlist_grouping_contract_is_exposed_and_executable(client:
     )
     assert update_response.status_code == 200
 
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    assert drain_recalc_jobs() > 0
+
     detail_response = client.get(f"/api/watchlists/{watchlist_id}")
     assert detail_response.status_code == 200
     group_by_codes = [item["code"] for item in detail_response.json()["available_group_bys"]]
@@ -5524,6 +5535,7 @@ def test_universal_watchlist_grouping_contract_is_exposed_and_executable(client:
         json={"values": [{"attribute_key": "investment_edge_quality", "value": "清晰且可持续"}]},
     )
     assert edge_update.status_code == 200
+    assert drain_recalc_jobs() > 0
 
     fund_field = client.post(
         "/api/screener/query",
@@ -6061,6 +6073,9 @@ def test_instrument_taxonomy_assignment_updates_summary_attribute_context_and_wa
     )
     assert screener_response.status_code == 422
     assert "not available" in screener_response.json()["detail"].lower()
+
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    assert drain_recalc_jobs() > 0
 
     taxonomy_group_response = client.post(
         "/api/screener/query",

@@ -2,9 +2,10 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LanguageProvider } from '../../../packages/ui/src/i18n'
-import StudioHome, { StudioLinks } from './StudioHome'
+import StudioHome, { StudioLinks, signOut } from './StudioHome'
 import appCatalog from '../../apps.json'
-import LoginPage, { destinationAfterLogin } from './LoginPage'
+import LoginPage from './LoginPage'
+import { destinationAfterLogin } from './loginDestination'
 import { resolveWorkspaceUrl } from '../../../packages/ui/src/navigation'
 import ActivatePage from './ActivatePage'
 import AccountPage from './AccountPage'
@@ -119,8 +120,8 @@ describe('StudioHome', () => {
         origin: 'https://yunguyungu.com',
         protocol: 'https:',
         search: (
-          '?next=https://portfolio.yunguyungu.com/portfolios/3/holdings/security-1'
-          + '?as_of_date=2026-09-04&holding_line_id=line-2&detail_tab=transactions'
+          '?next=' + encodeURIComponent('https://portfolio.yunguyungu.com/portfolios/3/holdings/security-1'
+          + '?as_of_date=2026-09-04&holding_line_id=line-2&detail_tab=transactions')
         ),
       },
     })
@@ -142,5 +143,25 @@ describe('StudioHome', () => {
     })
 
     expect(destinationAfterLogin()).toBe('/')
+  })
+})
+
+
+describe('sign-out confirmation', () => {
+  it.each([503, 401])('does not navigate when session revocation returns %s', async status => {
+    const assign = vi.fn()
+    vi.stubGlobal('window', { location: { assign } })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status })))
+    await expect(signOut()).rejects.toThrow()
+    expect(assign).not.toHaveBeenCalled()
+  })
+  it('permits retry after a network failure and navigates only on successful revocation', async () => {
+    const assign = vi.fn()
+    vi.stubGlobal('window', { location: { assign } })
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(new Response(null, { status: 204 })))
+    await expect(signOut()).rejects.toThrow('offline')
+    expect(assign).not.toHaveBeenCalled()
+    await signOut()
+    expect(assign).toHaveBeenCalledWith('/login')
   })
 })

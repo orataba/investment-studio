@@ -200,8 +200,14 @@ def test_risk_instrument_pages_real_peer_evidence_cases_and_exact_samples(monkey
                 return SimpleNamespace(instrument_name=instrument_id)
             return None
 
-    monkeypatch.setattr(performance, "_taxonomy_peers", lambda *_: ([f"peer-{i}" for i in range(15)], {}, None))
-    evidence = performance.performance_evidence(RetainedSession(), "target", peer_scope={})
+    peers = [f"peer-{i}" for i in range(15)]
+    retained = RetainedSession()
+    context = performance.PerformanceEvidenceContext(frozenset({"target"}), {
+        model: {iid: retained.get(model, iid) for iid in ["target", *peers]}
+        for model in (performance.InstrumentChartReadModel, performance.InstrumentManualProfile,
+                      performance.InstrumentDetail, performance.InstrumentPerformanceReadModel)
+    }, {"target": (peers, {}, None)})
+    evidence = performance.performance_evidence(retained, "target", context=context)
     assert len(json.dumps(evidence, ensure_ascii=False, separators=(",", ":")).encode()) > 50000
     instrument = {"instrument_id": "target", "name": "同类基金", "performance_evidence": evidence}
     judgments = [{"kind": "pm_view", "source_id": f"pm-{i}", "value": {"body": "经理原始判断及其不确定性。" * 500,

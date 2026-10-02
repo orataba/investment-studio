@@ -315,7 +315,9 @@ def _public_holdings_workspace_response(
     include_details: bool,
     transactions: list[dict[str, object]],
     as_of_date: date,
+    include_position_cycles: bool = True,
 ) -> dict[str, object]:
+    workspace.pop("_forward_risk_covariance", None)
     rows = workspace.get("rows")
     row_items = rows if isinstance(rows, list) else []
     enrich_derivative_holding_risk(
@@ -323,9 +325,10 @@ def _public_holdings_workspace_response(
         transactions=transactions,
         as_of_date=as_of_date,
     )
-    _enrich_position_cycle_costs(
-        row_items, transactions=transactions, as_of_date=as_of_date,
-    )
+    if include_position_cycles:
+        _enrich_position_cycle_costs(
+            row_items, transactions=transactions, as_of_date=as_of_date,
+        )
     instrument_types = {
         str(instrument_core.get("instrument_type") or "").strip().lower()
         for row in row_items
@@ -538,6 +541,7 @@ def _materialized_holdings_workspace_response(
         series["observation_coverage"] = observation_coverage_from_dates(
             [parsed for raw in dates if (parsed := _parse_iso_date(raw)) is not None],
             source_settings=detail.get("source_settings"),
+            end_date=_parse_iso_date(workspace.get("as_of_date")),
         )
     return response
 
@@ -761,6 +765,27 @@ def holdings_workspace(
         transactions=list_transactions(resolved_portfolio_id),
         as_of_date=resolved_as_of_date,
     )
+
+
+def read_holdings_risk_workspace(portfolio_id: str, as_of_date: date | None = None, *, live_overlays: bool = True):
+    """Read only risk inputs; historical comparison needs no live task replay."""
+    portfolio, resolved_date = resolve_holdings_request(portfolio_id, as_of_date)
+
+    def project(workspace):
+        omitted = set(_HOLDINGS_CHART_FIELD_NAMES) | set(_HOLDINGS_RETURN_SERIES_FIELD_NAMES)
+        if live_overlays:
+            omitted.discard("instrument_return_series_all")  # current tail-risk input
+        return {**workspace, "rows": [{key: value for key, value in row.items() if key not in omitted}
+                                      for row in workspace.get("rows", [])]}
+
+    response = read_holdings_analysis(str(portfolio["portfolio_id"]), resolved_date, response_projection=project)
+    if live_overlays:
+        covariance = response.get("_forward_risk_covariance")
+        response = _public_holdings_workspace_response(response, include_details=True,
+            transactions=list_transactions(portfolio_id), as_of_date=resolved_date, include_position_cycles=False)
+        if covariance is not None:
+            response["_forward_risk_covariance"] = covariance
+    return response
 
 
 def read_holdings_analysis(

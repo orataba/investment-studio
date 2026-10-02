@@ -32,6 +32,8 @@ def failure_summary(exc):
     result={'error_type':kind,'error':kind}
     if isinstance(status,int):result.update(http_status=status,error=f'{kind}: HTTP {status}')
     if isinstance(exc,(FmpResponseError,FmpTransportError,PublicHttpError,CnFuturesError)):result['error']=str(exc)
+    if isinstance(exc, us_market.PriceHistoryUnavailable):
+        result.update(error=str(exc), **exc.details)
     frames = traceback.extract_tb(exc.__traceback__)
     if frames:
         frame = frames[-1]
@@ -130,9 +132,13 @@ class Collector:
     def eod(self,start,end,symbols):
         end=min(end,closed_us_date(datetime.now(UTC)))
         if symbols:
-            self.symbol_prices(symbols,start,end)
+            due = pending_revisions(self.store, dataset='us_eod_daily', symbols=symbols, end=end)
+            for symbol in symbols:
+                self.symbol_prices([symbol], history_start(self.store, 'us_eod_daily', symbol) if symbol in due else start,
+                                   end, revision_requests={symbol: due[symbol]} if symbol in due else None)
             return
         allowed=self.universe()
+        deferred = pending_revisions(self.store, dataset='us_eod_daily', symbols=allowed, end=end)
         # Provider SPY daily history supplies actual sessions, including holidays.
         response=self.fmp.get_json("historical-price-eod/full",{"symbol":"SPY","from":start.isoformat(),"to":end.isoformat()})
         _,calendar_ref=self.archive(response)
@@ -144,10 +150,18 @@ class Collector:
             clock,ref=self.archive(response)
             rows=us_market.normalize_us_eod_rows(response.body,allowed_symbols=allowed,expected_date=day,**clock)
             if not rows:raise ValueError(f"EOD bulk returned no usable rows for observed session {day}")
-            self.publish("us_eod_daily",rows,response,ref,trading_sessions_raw_ref=calendar_ref)
+            # A new split-adjusted close cannot be combined with the old history.
+            # The complete symbol rebuild below owns publication while it is due.
+            withheld = sorted({row['symbol'] for row in rows} & deferred.keys())
+            rows = [row for row in rows if row['symbol'] not in deferred]
+            self.publish("us_eod_daily",rows,response,ref,trading_sessions_raw_ref=calendar_ref,
+                         deferred_price_revision_symbols=withheld)
         coverage=json.loads((Path(__file__).parent/"providers/us_etf_coverage.json").read_text())
         direct=[item["symbol"] for item in coverage["symbols"] if item["symbol"] not in {r["symbol"] for r in self.store.latest("security_directory",limit=100000)["rows"]}]
-        if direct:self.symbol_prices(direct,start,end)
+        direct_pending = pending_revisions(self.store, dataset='us_eod_daily', symbols=direct, end=end)
+        for symbol in direct:
+            self.symbol_prices([symbol], history_start(self.store, 'us_eod_daily', symbol) if symbol in direct_pending else start,
+                               end, revision_requests={symbol: direct_pending[symbol]} if symbol in direct_pending else None)
     def reconcile_price_revisions(self, end, *, symbols=None, raw=False):
         targets = symbols if symbols is not None else sorted(self.universe())
         dataset = 'raw_eod_daily' if raw else 'us_eod_daily'
@@ -182,8 +196,10 @@ class Collector:
                 # Retain an observed overlap and fill every missed close after
                 # downtime; a rolling seven-day window alone can leave a gap.
                 begin = min(start,date.fromisoformat(latest[0]['date'])) if latest else start
-                self.symbol_prices([symbol],begin,stop,raw=True)
                 requests = pending_revisions(self.store, dataset='raw_eod_daily', symbols=[symbol], end=stop)
+                if not requests:
+                    self.symbol_prices([symbol],begin,stop,raw=True)
+                    requests = pending_revisions(self.store, dataset='raw_eod_daily', symbols=[symbol], end=stop)
                 if requests:
                     self.symbol_prices([symbol],history_start(self.store, "raw_eod_daily", symbol),stop,raw=True,revision_requests=requests)
                 results.append({'symbol':symbol,'status':'ready'})
@@ -192,44 +208,76 @@ class Collector:
         return {'status':'failed' if any(r['status']=='failed' for r in results) else 'ready','symbols':results}
 
     def symbol_prices(self,symbols,start,end,raw=False,revision_requests=None):
+        dataset = "raw_eod_daily" if raw else "us_eod_daily"
+        endpoint = "historical-price-eod/non-split-adjusted" if raw else "historical-price-eod/full"
         for symbol in symbols:
             cursor=start
-            total_rows = 0
+            chunks, source_parts, missing_dates = [], [], []
+            adjustment_changed = False
+            revision_id = (revision_requests or {}).get(symbol)
             while cursor<=end:
                 stop=min(cursor+timedelta(days=1459),end)
                 params={"symbol":symbol,"from":cursor.isoformat(),"to":stop.isoformat()}
-                full=self.fmp.get_json("historical-price-eod/non-split-adjusted" if raw else "historical-price-eod/full",params)
+                full=self.fmp.get_json(endpoint,params)
                 adjusted=self.fmp.get_json("historical-price-eod/dividend-adjusted",params)
                 clock,ref=self.archive(full);_,adjusted_ref=self.archive(adjusted)
                 clock["collected_at"]=max(full.received_at,adjusted.received_at)
+                source_parts.append({"parameters": params, "raw_ref": ref,
+                                     "adjusted_raw_ref": adjusted_ref, "observed_at": clock["collected_at"],
+                                     "full_observed_at": full.received_at, "adjusted_observed_at": adjusted.received_at})
                 # FMP's non-split-adjusted endpoint uses adj* wire names for RAW prices.
                 payload=full.payload
                 if raw:
+                    if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
+                        raise ValueError('FMP raw EOD response must contain a list of observations')
                     payload=[{**row,**{field:row.get("adj"+field.title()) for field in ("open","high","low","close")}} for row in full.payload]
                 rows=us_market.normalize_us_eod_symbol_rows(payload,adjusted.payload,expected_symbol=symbol,start_date=cursor,end_date=stop,**clock)
-                total_rows += len(rows)
-                publication = {}
                 if raw or revision_requests:
-                    prior={row['date']:row for row in self.store.query('raw_eod_daily' if raw else 'us_eod_daily',symbols=[symbol],start=cursor.isoformat(),end=stop.isoformat(),limit=100000)['rows']}
-                    if revision_requests and set(prior) - {row['date'].isoformat() for row in rows}:
-                        raise ValueError('Full price revision response omits retained observation dates')
+                    prior={row['date']:row for row in self.store.query(dataset,symbols=[symbol],start=cursor.isoformat(),end=stop.isoformat(),limit=100000)['rows']}
+                    missing = sorted(set(prior) - {row['date'].isoformat() for row in rows})
+                    missing_dates.extend(missing)
+                    if revision_id and missing:
+                        raise us_market.PriceHistoryUnavailable('retained_price_dates_missing', symbol, missing)
                 if raw:
                     if any(row['date'].isoformat() in prior and prior[row['date'].isoformat()].get('adjusted_close') is not None and row.get('adjusted_close')!=prior[row['date'].isoformat()]['adjusted_close'] for row in rows):
-                        if start > date(2000,1,3):
-                            publication['price_revision_requests'] = [{'symbol':symbol, 'effective_date':max(row['date'] for row in rows).isoformat()}]
+                        adjustment_changed = True
                 adjusted_by_date={str(r.get("date"))[:10]:r for r in adjusted.payload}
                 for row in rows:
+                    row["raw_ref"]=ref
                     row["adjusted_raw_ref"]=adjusted_ref
                     original=adjusted_by_date[row["date"].isoformat()]
                     for field in ("open","high","low"):
                         value=original.get("adj"+field.title())
                         row["adjusted_"+field]=float(value) if value is not None else None
-                if revision_requests and symbol in revision_requests and stop == end:
-                    if not total_rows:
-                        raise ValueError('Full price revision capture contained no history')
-                    publication['price_revision_completed'] = {symbol:revision_requests[symbol]}
-                self.publish("raw_eod_daily" if raw else "us_eod_daily",rows,full,ref,adjusted_raw_ref=adjusted_ref,observed_at=clock["collected_at"],**publication)
+                chunks.append(rows)
                 cursor=stop+timedelta(days=1)
+            if not source_parts:
+                continue
+            total_rows = sum(len(rows) for rows in chunks)
+            if revision_id and not total_rows:
+                raise us_market.PriceHistoryUnavailable('price_history_empty', symbol)
+            captured_at = max(part['observed_at'] for part in source_parts)
+            publication = {}
+            if adjustment_changed and not revision_id and start > history_start(self.store, dataset, symbol):
+                # Persist the obligation before starting the full rebuild, but do
+                # not publish an overlap with a different adjustment generation.
+                publication['price_revision_requests'] = [{'symbol': symbol, 'effective_date': end.isoformat()}]
+                chunks = []
+            elif revision_id:
+                publication['price_revision_completed'] = {symbol: revision_id}
+            elif adjustment_changed and missing_dates:
+                raise us_market.PriceHistoryUnavailable('retained_price_dates_missing', symbol, missing_dates)
+            for rows in chunks:
+                for row in rows:
+                    # This whole history is one observation. Keep each provider
+                    # response's collected_at, but rank all its rows together so
+                    # overlapping captures cannot interleave their generations.
+                    row.update(observed_at=captured_at, available_at=captured_at, availability_precision='capture')
+            result = self.store.ingest(dataset, chunks, source='fmp', observed_at=captured_at, details={
+                'endpoint': endpoint, 'parameters': {'symbol': symbol, 'from': start.isoformat(), 'to': end.isoformat()},
+                'observed_at': captured_at, 'response_empty': total_rows == 0,
+                'source_parts': source_parts, **publication})
+            self.results.append(result)
 
     def actions(self,start,end,symbols):
         allowed=set(symbols) if symbols else self.universe()

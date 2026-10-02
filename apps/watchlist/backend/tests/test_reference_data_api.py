@@ -21,6 +21,7 @@ def test_etf_summary_uses_reported_reference_count_not_saved_holding_rows(monkey
     instrument = SimpleNamespace(instrument_type="etf", metadata_json={})
     monkeypatch.setattr(funds, "_require_instrument", lambda *args: instrument)
     monkeypatch.setattr(funds, "_schedule_instrument_refresh", lambda *args, **kwargs: None)
+    monkeypatch.setattr(funds, "recalculation_freshness_overrides", lambda *args, **kwargs: {})
     monkeypatch.setattr(funds.read_model_repository, "get_summary", lambda *args: SimpleNamespace(payload_json={"key_stats": [{"label": "Holdings", "value": "—"}]}))
     monkeypatch.setattr(funds.attribute_repository, "get_values_for_asset", lambda *args: [])
     monkeypatch.setattr(funds.taxonomy_repository, "get_assignment", lambda *args, **kwargs: None)

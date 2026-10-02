@@ -1086,6 +1086,7 @@ def _build_instrument_trend_metrics_from_selection(
             "observation_coverage": observation_coverage_from_dates(
                 [point["date"] for point in selected_points],
                 source_settings=source_settings,
+                end_date=end_date,
             ),
         },
         "instrument_holding_return_series": (

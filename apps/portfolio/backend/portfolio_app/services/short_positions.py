@@ -6,9 +6,12 @@ Plain sales never create an unconfirmed short. Buys first cover an existing shor
 """
 from collections import defaultdict
 from copy import deepcopy
-from datetime import date
 
-from portfolio_app.services.transaction_dates import transaction_position_effective_date, transaction_sort_key, transaction_precedes_entitlement_bod
+from portfolio_app.services.transaction_dates import (
+    transaction_position_effective_date,
+    transaction_sort_key,
+    transaction_precedes_asset_cash_flow,
+)
 
 SHORT_TRANSACTION_TYPES = {"short_sell", "buy_to_cover", "short_opening_balance"}
 
@@ -44,8 +47,10 @@ def partition_security_sides(transactions, *, corporate_actions, split_quantity)
         gross = float(tx.get("gross_amount") or 0)
         fees = float(tx.get("fees") or 0)
         taxes = float(tx.get("taxes") or 0)
-        entitlement = date.fromisoformat(str(tx.get("entitlement_date") or tx["trade_date"]))
-        entitlement_held = next((balance for source, balance in reversed(side_history[position]) if transaction_precedes_entitlement_bod(source, entitlement)), 0)
+        # Expenses without an explicit historical entitlement use their actual
+        # charge time, exactly as validation and lot allocation do.
+        entitlement_held = next((balance for source, balance in reversed(side_history[position])
+                                 if transaction_precedes_asset_cash_flow(source, tx)), 0)
 
         def slice_fact(amount, target_type, *, short=False):
             ratio = amount / quantity

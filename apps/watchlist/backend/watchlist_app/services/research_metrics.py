@@ -258,12 +258,25 @@ def ewma_price_evidence(series, *, instrument_type, calendar, as_of):
 
 
 def instrument_price_risk(session, instrument_id, *, as_of):
+    from watchlist_app.services.read_model_freshness import calculation_input_read
+    from watchlist_app.services.research_errors import ResearchInputUnavailable
+
+    try:
+        with calculation_input_read(session, [instrument_id]):
+            return _read_instrument_price_risk(session, instrument_id, as_of=as_of)
+    except ResearchInputUnavailable as error:
+        return _evidence("价格波动研究", cutoff_instant(as_of), {"status": "unavailable", "limitations": [str(error)]},
+                         "Saved calculation settings must be materialized before new evidence is calculated.",
+                         instrument_id=instrument_id)
+
+
+def _read_instrument_price_risk(session, instrument_id, *, as_of):
     from investment_studio_instrument_core.db_models import Instrument
     from watchlist_app.db.models import InstrumentChartReadModel
 
     cutoff = cutoff_instant(as_of)
-    instrument = session.get(Instrument, instrument_id)
-    chart = session.get(InstrumentChartReadModel, instrument_id)
+    instrument = session.get(Instrument, instrument_id, populate_existing=True)
+    chart = session.get(InstrumentChartReadModel, instrument_id, populate_existing=True)
     if instrument is None:
         raise ValueError("Unknown registered instrument")
     clock = chart.last_recalculated_at if chart else None

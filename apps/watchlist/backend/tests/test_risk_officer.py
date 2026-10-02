@@ -339,7 +339,8 @@ def test_unavailable_portfolio_keeps_failed_input_and_does_not_become_empty_succ
     with get_session_factory()() as session:
         run, _ = service.begin_run(session, portfolio_id="p1")
         run_id = run.entry_id
-    with pytest.raises(ValueError, match="组合持仓读取未完成"):
+    from watchlist_app.services.research_errors import ResearchInputUnavailable
+    with pytest.raises(ResearchInputUnavailable, match="组合持仓读取未完成"):
         service.prepare_run(run_id)
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id)

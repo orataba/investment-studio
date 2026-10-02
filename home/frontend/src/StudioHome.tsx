@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { LanguageSelector, useLanguage } from '../../../packages/ui/src/i18n'
 import { resolveWorkspaceUrl } from '../../../packages/ui/src/navigation'
 import { appPath } from './appPath'
+import { accountRequest } from './accountApi'
 import NoticeToast from '../../../packages/ui/src/NoticeToast'
 import '../../../packages/ui/src/notice-toast.css'
 
@@ -35,10 +36,17 @@ export function StudioLinks({ apps }: { apps: StudioApp[] }) {
   )
 }
 
+export async function signOut() {
+  await accountRequest('/logout', 'POST')
+  window.location.assign(appPath('/login'))
+}
+
 export default function StudioHome() {
   const { t } = useLanguage()
   const [apps, setApps] = useState<StudioApp[] | null>(null)
   const [error, setError] = useState('')
+  const [logoutError, setLogoutError] = useState('')
+  const [signingOut, setSigningOut] = useState(false)
   const [account, setAccount] = useState<{ display_name: string, local_unrestricted?: boolean } | null>(null)
 
   useEffect(() => {
@@ -61,21 +69,29 @@ export default function StudioHome() {
   }, [])
 
   async function logout() {
-    await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
-      .catch(() => undefined)
-    window.location.assign(appPath('/login'))
+    if (signingOut) return
+    setSigningOut(true)
+    setLogoutError('')
+    try {
+      await signOut()
+    } catch {
+      setLogoutError(t('Sign-out failed. Your session may still be active. Please try again.'))
+    } finally {
+      setSigningOut(false)
+    }
   }
 
   return (
     <main className="studio-shell home-shell">
       <NoticeToast notice={error ? { id: 0, message: error, tone: 'error' } : null} onDismiss={() => setError('')} />
+      <NoticeToast notice={logoutError ? { id: 1, message: logoutError, tone: 'error' } : null} onDismiss={() => setLogoutError('')} />
       <header className="home-masthead">
         <a className="home-brand" href={appPath('/')}><strong>Investment Studio</strong></a>
         <div className="home-actions">
           <LanguageSelector />
           {account ? <>
             <a href={appPath('/account')}><span translate="no">{account.display_name}</span> · {t("Account and team")}</a>
-            {account.local_unrestricted ? <span>{t("Local unrestricted access")}</span> : <button className="home-logout" type="button" onClick={logout}>Sign out</button>}
+            {account.local_unrestricted ? <span>{t("Local unrestricted access")}</span> : <button className="home-logout" type="button" onClick={logout} disabled={signingOut}>{signingOut ? t('Signing out…') : t('Sign out')}</button>}
           </> : <a href={appPath('/login')}>{t("Sign in")}</a>}
         </div>
       </header>

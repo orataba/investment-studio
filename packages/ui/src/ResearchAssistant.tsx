@@ -170,6 +170,16 @@ export default function ResearchAssistant({
   const selected = params.get('topic') || ''
   const listId = watchlistId || params.get('watchlist') || undefined
   const pagePortfolioId = params.get('portfolio') || undefined
+  const scopeKey = JSON.stringify([instrumentId, pagePortfolioId, listId])
+  const selectionKey = JSON.stringify([scopeKey, selected])
+  const mutationContext = useRef({ scopeKey, selectionKey })
+  if (mutationContext.current.selectionKey !== selectionKey) mutationContext.current = { scopeKey, selectionKey }
+  const mounted = useRef(true)
+  const mutationPending = useRef(false)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const topicsPath = instrumentId ? `/research/topics?instrument_id=${encodeURIComponent(instrumentId)}` : '/research/topics'
   const [topics, setTopics] = useState<Topic[]>([])
   const [assets, setAssets] = useState<ResearchAsset[]>([])
@@ -312,37 +322,43 @@ export default function ResearchAssistant({
       messagesRef.current.scrollTop = messagesRef.current.scrollHeight
   }, [selected, detail?.entries.length, running])
 
-  function openConversation(topicId: string, clearQuestion = true) {
+  function openConversation(topicId: string, clearQuestion = true, clearReference = clearQuestion) {
     const next = new URLSearchParams(params)
     if (topicId) next.set('topic', topicId)
     else next.delete('topic')
     next.delete('question')
-    if (clearQuestion) setRiskReferenceParams(next)
+    if (clearReference) setRiskReferenceParams(next)
     onParamsChange(next)
     setHistoryOpen(false)
     if (clearQuestion) {
       setQuestion('')
-      setPendingReference(undefined)
     }
+    if (clearReference) setPendingReference(undefined)
     setNotice(null)
     if (!topicId) {
       setFocusIds(instrumentId ? [instrumentId] : params.get('instruments')?.split(',').filter(Boolean) || [])
       setPortfolioId(pagePortfolioId || '')
     }
   }
-  async function perform(action: () => Promise<void>) {
+  async function perform(action: (isCurrent: () => boolean, isScopeCurrent: () => boolean) => Promise<void>) {
+    if (mutationPending.current) return
+    mutationPending.current = true
+    const context = mutationContext.current
+    const isCurrent = () => mounted.current && mutationContext.current === context
+    const isScopeCurrent = () => mounted.current && mutationContext.current.scopeKey === context.scopeKey
     setBusy(true)
     setError('')
     setNotice(null)
     try {
-      await action()
+      await action(isCurrent, isScopeCurrent)
     } catch (e) {
-      setError(e instanceof Error ? e.message : '操作失败')
+      if (isCurrent()) setError(e instanceof Error ? e.message : '操作失败')
     } finally {
-      setBusy(false)
+      mutationPending.current = false
+      if (mounted.current) setBusy(false)
     }
   }
-  async function ensureConversation() {
+  async function ensureConversation(isScopeCurrent: () => boolean) {
     if (selected) {
       if (detail?.topic.topic_id !== selected || !matchingTopic(detail.topic, instrumentId, pagePortfolioId)) throw new Error('请等待当前会话读取完成。')
       return selected
@@ -353,7 +369,7 @@ export default function ResearchAssistant({
       instrument_ids: instrumentId ? [instrumentId] : focusIds,
       portfolio_id: portfolioId || null,
     })
-    setTopics((current) => [topic, ...current])
+    if (isScopeCurrent()) setTopics((current) => [topic, ...current])
     return topic.topic_id
   }
   async function send() {
@@ -370,42 +386,47 @@ export default function ResearchAssistant({
       const value = params.get(key)
       if (value !== null) pageContext[key] = value
     }
-    await perform(async () => {
-      const id = await ensureConversation()
+    await perform(async (isCurrent, isScopeCurrent) => {
+      const id = await ensureConversation(isScopeCurrent)
       await write(`/research/topics/${id}/analysis`, {
         question: message,
         watchlist_id: listId || null,
         page_context: pageContext,
       })
-      if (selected)
-        setDetail(await read<Conversation>(`/research/topics/${id}`))
-      else openConversation(id)
-      setQuestion('')
-      setPendingReference(undefined)
-      setTopics((await read<Topic[]>(topicsPath)).filter((topic) => matchingTopic(topic, instrumentId, pagePortfolioId)))
+      if (selected) {
+        const result = await read<Conversation>(`/research/topics/${id}`)
+        if (isCurrent()) setDetail(result)
+      } else if (isCurrent()) openConversation(id, false, true)
+      if (isCurrent()) {
+        setQuestion(current => current === question ? '' : current)
+        setPendingReference(current => current === pendingReference ? undefined : current)
+      }
+      const history = await read<Topic[]>(topicsPath)
+      if (isScopeCurrent()) setTopics(history.filter((topic) => matchingTopic(topic, instrumentId, pagePortfolioId)))
     })
   }
   async function changePortfolio(value: string) {
-    await perform(async () => {
+    await perform(async (isCurrent) => {
       if (detail) {
         const topic = await write<Topic>(
           `/research/topics/${selected}`,
           { ...detail.topic, portfolio_id: value || null },
           'PUT',
         )
-        setDetail({ ...detail, topic })
+        if (isCurrent()) setDetail({ ...detail, topic })
       }
-      setPortfolioId(value)
+      if (isCurrent()) setPortfolioId(value)
     })
   }
   async function attach(file: File) {
-    await perform(async () => {
-      const id = await ensureConversation()
+    await perform(async (isCurrent, isScopeCurrent) => {
+      const id = await ensureConversation(isScopeCurrent)
       await uploadTopicFile(id, file)
-      if (selected)
-        setDetail(await read<Conversation>(`/research/topics/${id}`))
-      else openConversation(id, false)
-      setNotice({ id: Date.now(), message: '材料已收录，发送问题后才会开始分析。', tone: 'success' })
+      if (selected) {
+        const result = await read<Conversation>(`/research/topics/${id}`)
+        if (isCurrent()) setDetail(result)
+      } else if (isCurrent()) openConversation(id, false)
+      if (isCurrent()) setNotice({ id: Date.now(), message: '材料已收录，发送问题后才会开始分析。', tone: 'success' })
     })
   }
   const names = Object.fromEntries(
@@ -599,11 +620,13 @@ export default function ResearchAssistant({
             className="assistant-adoption"
             onSubmit={(e) => {
               e.preventDefault()
-              void perform(async () => {
+              void perform(async (isCurrent) => {
                 await saveNote({ ...adoption, topicId: selected })
                 announcePublication?.([adoption.instrumentId])
-                setAdoption(null)
-                setNotice({ id: Date.now(), message: '已保存到投资观点，并保留原对话出处。', tone: 'success' })
+                if (isCurrent()) {
+                  setAdoption(null)
+                  setNotice({ id: Date.now(), message: '已保存到投资观点，并保留原对话出处。', tone: 'success' })
+                }
               })
             }}
           >

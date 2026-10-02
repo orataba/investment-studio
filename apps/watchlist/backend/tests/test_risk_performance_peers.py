@@ -41,7 +41,9 @@ def seed(client):
 
 
 def seed_charts():
-    # Classification updates rebuild read models; supply retained series after those API writes.
+    # Materialize saved classification before supplying retained comparison series.
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
     with get_session_factory()() as session:
         for iid in (TARGET, "peer-same", "peer-region", "peer-leaf"):
             points = [("2026-06-26", 1), ("2026-07-31", 1.01), ("2026-08-28", 1.04), ("2026-09-04", 1.05)]

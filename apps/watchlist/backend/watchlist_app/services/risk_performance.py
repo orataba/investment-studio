@@ -10,6 +10,7 @@ from watchlist_app.services.canonical_recalc import CanonicalRecalcService, _nod
 from watchlist_app.reference_data.instrument_taxonomy import INSTRUMENT_TAXONOMY_CODE
 from watchlist_app.services.instrument_resolution import LOCAL_DETAIL_INSTRUMENT_TYPES
 from watchlist_app.services.read_models import serialize_payload
+from watchlist_app.services.read_model_freshness import calculation_input_read
 from watchlist_app.services.research_workbench import compare_series
 from watchlist_app.services.shared_instrument_registry import list_shared_active_instrument_ids
 
@@ -108,6 +109,11 @@ class PerformanceEvidenceContext:
 
 
 def performance_context(session, instrument_ids, *, peer_scope=None):
+    with calculation_input_read(session, instrument_ids):
+        return _load_performance_context(session, instrument_ids, peer_scope=peer_scope)
+
+
+def _load_performance_context(session, instrument_ids, *, peer_scope=None):
     """Batch-load targets and their saved peers, including absent records.
 
     Holding these rows for the read avoids fetching a shared comparator once per
@@ -120,7 +126,7 @@ def performance_context(session, instrument_ids, *, peer_scope=None):
             return {}
         return {row.instrument_id: row for row in session.scalars(select(model)
             .where(model.instrument_id.in_(sorted(selected_ids)))
-            .options(load_only(model.instrument_id, *columns)))}
+            .options(load_only(model.instrument_id, *columns)).execution_options(populate_existing=True))}
 
     profiles = load(InstrumentManualProfile, ids, InstrumentManualProfile.nav_settings_json)
     scope = peer_scope if peer_scope is not None else peer_context(session) if ids else None
@@ -133,23 +139,26 @@ def performance_context(session, instrument_ids, *, peer_scope=None):
         comparison_ids.update(settings.get("peer_baseline_instrument_ids") or [])
         if baseline := settings.get("default_benchmark_instrument_id"):
             comparison_ids.add(baseline)
-    records = {
-        InstrumentManualProfile: profiles,
-        InstrumentChartReadModel: load(InstrumentChartReadModel, ids | comparison_ids,
-            InstrumentChartReadModel.payload_json, InstrumentChartReadModel.source_cutoff_at,
-            InstrumentChartReadModel.data_freshness_status),
-        InstrumentPerformanceReadModel: load(InstrumentPerformanceReadModel, ids,
-            InstrumentPerformanceReadModel.payload_json, InstrumentPerformanceReadModel.source_cutoff_at,
-            InstrumentPerformanceReadModel.data_freshness_status),
-        InstrumentDetail: load(InstrumentDetail, comparison_ids, InstrumentDetail.instrument_name),
-    }
-    return PerformanceEvidenceContext(ids, records, peers)
+    with calculation_input_read(session, comparison_ids - ids):
+        records = {
+            InstrumentManualProfile: profiles,
+            InstrumentChartReadModel: load(InstrumentChartReadModel, ids | comparison_ids,
+                InstrumentChartReadModel.payload_json, InstrumentChartReadModel.source_cutoff_at,
+                InstrumentChartReadModel.data_freshness_status),
+            InstrumentPerformanceReadModel: load(InstrumentPerformanceReadModel, ids,
+                InstrumentPerformanceReadModel.payload_json, InstrumentPerformanceReadModel.source_cutoff_at,
+                InstrumentPerformanceReadModel.data_freshness_status),
+            InstrumentDetail: load(InstrumentDetail, comparison_ids, InstrumentDetail.instrument_name),
+        }
+        return PerformanceEvidenceContext(ids, records, peers)
 
 
 def performance_evidence(session, instrument_id, *, peer_scope=None, context=None):
-    if context is not None and instrument_id not in context.instrument_ids:
+    if context is None:
+        context = performance_context(session, [instrument_id], peer_scope=peer_scope)
+    if instrument_id not in context.instrument_ids:
         raise ValueError("Instrument is outside this performance evidence context.")
-    get_record = context.get if context is not None else session.get
+    get_record = context.get
     chart = get_record(InstrumentChartReadModel, instrument_id)
     series = (chart.payload_json.get("research_returns") or {}) if chart else {}
     points = _points(series)
@@ -158,8 +167,7 @@ def performance_evidence(session, instrument_id, *, peer_scope=None, context=Non
     settings = (profile.nav_settings_json or {}) if profile else {}
     baseline = settings.get("default_benchmark_instrument_id")
     explicit_peers = settings.get("peer_baseline_instrument_ids") or []
-    taxonomy_peers, peer_group, peer_limitation = (context.peers[instrument_id] if context is not None else
-        _taxonomy_peers(instrument_id, peer_scope if peer_scope is not None else peer_context(session)))
+    taxonomy_peers, peer_group, peer_limitation = context.peers[instrument_id]
     peers = [*taxonomy_peers, *explicit_peers]
     limitations = []
     if not baseline and not peers:

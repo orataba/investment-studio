@@ -7,7 +7,7 @@ name = "investment-studio-identity"
 version = "1.2.7"
 description = "Shared client for Investment Studio account and execution identities"
 requires-python = ">=3.12"
-dependencies = ["urllib3>=2.7,<3.0"]
+dependencies = ["urllib3>=2.8,<3.0"]
 
 [tool.setuptools.packages.find]
 include = ["studio_identity*"]

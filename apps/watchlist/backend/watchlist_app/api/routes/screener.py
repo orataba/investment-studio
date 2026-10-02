@@ -16,6 +16,7 @@ from watchlist_app.services.research_projection import (
     build_risk_watchlist_attribute_overrides,
 )
 from watchlist_app.services.read_model_freshness import (
+    recalculation_freshness_overrides,
     latest_local_market_data_date,
     local_materialization_source_cutoff,
     local_materialization_version,
@@ -248,7 +249,10 @@ def run_screener_query(
     response = execute_watchlist_query(
         rows=rows,
         charts=charts,
-        row_overrides=identity_overrides or None,
+        row_overrides=_merge_attribute_overrides(
+            identity_overrides,
+            recalculation_freshness_overrides(session, [row.instrument_id for row in rows]),
+        ) or None,
         attribute_overrides=attribute_overrides or None,
         payload=payload_data,
         view=view,

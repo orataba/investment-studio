@@ -1,3 +1,4 @@
+import { dayDiff } from '../lib/riskReturnAlignment'
 import { CHART_SERIES_COLORS } from '../lib/chartPalette'
 import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
@@ -211,15 +212,6 @@ function addDays(date: Date, days: number) {
   const nextDate = new Date(date)
   nextDate.setDate(nextDate.getDate() + days)
   return nextDate
-}
-
-function dayDiff(left: string, right: string) {
-  const leftTime = Date.parse(`${left}T00:00:00`)
-  const rightTime = Date.parse(`${right}T00:00:00`)
-  if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) {
-    return null
-  }
-  return Math.max(0, (rightTime - leftTime) / 86_400_000)
 }
 
 function annualizationPeriodsPerYear(dateKeys: string[], observationCount = dateKeys.length, startDate?: string | null) {

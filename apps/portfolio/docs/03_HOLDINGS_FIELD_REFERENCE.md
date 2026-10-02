@@ -104,7 +104,7 @@ pending:{kind}:{posting_account}:{economic_instrument}:{currency}:{settlement_da
 
 它防止相同账户/资产/币种但不同结算边界的余额发生主键冲突。普通现金结算使用结算现金账户，红利再投资应收使用原证券账户；后者展示为 `settlement_receivable`，不会增加可用现金。`pending_status` 目前包括 `awaiting_settlement`、`settled_awaiting_position` 和 `overdue`；本币 signed amount 与 base amount 必须同时保留，base FX 不可用时本币金额仍可展示但 base aggregation 为 unavailable。
 
-Settled cash 的 instrument identity 为 `cash:{currency}`，行 identity 为 `cash:{currency}:{account_id}`。每个账户使用移动平均的 historical base-currency monetary basis：价值第一次进入账本时按 `monetary_recognition_date` 建立；pending receivable / payable / subscription bridge 转成 settled cash 时原样继承，不在 settlement date 重置。现金减少时按当时平均 basis 释放；组合内部同币种现金划转也继承来源账户 basis。`monetary unrealized FX P&L = current base value - historical monetary basis`。历史或当前 FX 不完整时对应行的汇兑损益为不可用，不以当前汇率回填历史成本。
+Settled cash 的 instrument identity 为 `cash:{currency}`，行 identity 为 `cash:{currency}:{account_id}`。每个账户使用移动平均的 historical base-currency monetary basis：价值第一次进入账本时按 `monetary_recognition_date` 建立；pending receivable / payable / subscription bridge 转成 settled cash 时原样继承，不在 settlement date 重置。现金减少时按当时平均 basis 释放；组合内部同币种现金划转按完整配对继承资产或负债的历史 basis，异号敞口相抵部分进入交易的 realized cash FX，详见 [计算规格](./01_CALCULATION_SPEC.md)。`monetary unrealized FX P&L = current base value - historical monetary basis`。历史或当前 FX 不完整时对应行的汇兑损益为不可用，不以当前汇率回填历史成本。
 
 同一现金生效日按交易时刻、创建时间及 `transaction_sequence` 重放；即使同批记录创建时间相同，先出后入与先入后出的历史汇率成本也必须分别按真实顺序核算，不能按倒序展示列表计算。
 

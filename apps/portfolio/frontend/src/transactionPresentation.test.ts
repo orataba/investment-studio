@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest'
 
-import { rankInstrumentMatches } from './components/InstrumentFilterCombobox'
-import type { SharedInstrumentRecord } from './lib/api'
 import {
   countActiveTransactionFilters,
   transactionActivityLabel,
@@ -9,52 +7,7 @@ import {
   transactionDateLabels,
 } from './lib/transactionPresentation'
 
-function instrument(
-  instrumentId: string,
-  identifier: string,
-  instrumentName: string,
-): SharedInstrumentRecord {
-  return {
-    instrument_id: instrumentId,
-    instrument_name: instrumentName,
-    instrument_type: 'public_fund',
-    currency: 'CNY',
-    exchange_code: null,
-    latest_market_data: [],
-    quote_selection_policy: {
-      trading: [],
-      valuation: [],
-      total_return: [],
-      chart: [],
-      reference: [],
-    },
-    coverage_state: 'complete',
-    broker_identifiers: [],
-    identifiers: [
-      {
-        identifier_type: 'ticker',
-        identifier_value: identifier,
-        is_primary: true,
-      },
-    ],
-  }
-}
-
 describe('transaction presentation', () => {
-  it('ranks exact and prefix identifiers ahead of name matches without rendering the full registry', () => {
-    const matches = rankInstrumentMatches(
-      [
-        instrument('name-match', 'ZZZ', '513050 allocation sleeve'),
-        instrument('prefix-match', '513050.SH', 'Overseas Internet ETF'),
-        instrument('exact-match', '513050', 'Exact identifier'),
-      ],
-      '513050',
-      2,
-    )
-
-    expect(matches.map((item) => item.instrument_id)).toEqual(['exact-match', 'prefix-match'])
-  })
-
   it('counts only populated URL filters', () => {
     expect(
       countActiveTransactionFilters({

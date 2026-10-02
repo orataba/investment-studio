@@ -306,6 +306,7 @@ Risk 与 Research 的 covariance / correlation / risk contribution 固定使用�
 - 组合计算频率只有 `daily`，不是用户设置项。Registry `source_settings.expected_frequency` 只保留 `daily` 与 `event_driven`，不能把组合降级成周频或月频。
 - 对齐规则：在所有成员有效观测日期的并集上，未发布新值的成员沿用最近有效 mark；来源更新日一次性确认自上次发布以来的变化。所有来源均无新观测的日期不进入风险样本。
 - 节假日规则：共同非交易日不生成样本；预期应更新却缺失的数据必须由 `risk_basis` 标记 incomplete，不能用 carry-forward 掩盖数据缺口。
+- Forward RC 与 Research 使用同一 `risk_alignment` 边界：将确切缺失的 expected session 加入诊断日历，即使全部成员同日缺源也不能删除该行。缺失 NAV level 及其后首个跨缺口 return 均为 unavailable；显式 `complete_case_drop` 只能删除这些未配对收益行，不能把跨多日变动当成一天收益。缺少必要 FX 的观察保留为缺失值，不先删除再 carry。来源覆盖检测到请求的 as-of 日期，包含应有而没有发布的尾部 session；已知休市和 event-driven 的合法旧 mark 保持原规则。
 - Missing-return policy：默认 `strict`。`strict` 下共同起点之前的缺失、无法取得初值或预期更新缺口均使风险/研究样本不可解；显式 `complete_case_drop` 可以从第一条完整共同收益开始，但只有这一段连续前缀属于 warm-up boundary，之后的缺口仍受比例限制。两种 policy 都必须校验 latest complete row 的日频尾部新鲜度 `5` 天；结果必须暴露 rows before / after、全部 missing rows、前置非完整行数、起点后缺失比例、latest complete date 与 trailing staleness。Research 仅在所有 active 成员的已知日频市场日历均证明 latest complete row 之后直到请求日全为休市时，以该完整行日期检验新鲜度；实际自然日差仍保留，并另披露 `return_freshness_as_of_date`。不改变请求日或回看窗口，不补休市零收益；未知日历、任一市场开市或真实缺源均不享受此例外。披露 lag 是来源可用时钟，不能从研究的观察日期 EOD 窗口再扣一次。
 - 日频 instrument 配置 `market_calendar` 时，以该日历校验 holiday vs missing：共同非交易日不生成样本；任何日历交易日缺价都进入 coverage / missing 诊断。未配置或日历无法解析时使用保守的日历日 gap threshold，不隐式填值。
 - Portfolio Risk 页的 `risk_basis` 来自 Holdings workspace，是当前 `risk_eligible=true` 非现金 modeled sleeve 的来源覆盖摘要，不是一个风险指标。`resolved_frequency` 恒为 `daily`，`window_start_date / window_end_date` 明示摘要检查的区间（当前回看 366 日）。历史摘要的 `partial` 不得阻断区间外的 Rolling Risk、Correlation 或 Production Forward RC；每项计算只检查其实际成员与所选窗口，窗口内缺源、非法期间或预期更新缺口仍须明确 unavailable。逐标的 `instrument_return_series_all.observation_coverage` 随同实际选定收益序列返回完整、未截断的 `gap_dates`、检测起止范围及 `gap_detection_basis`，供最长 24 个月与各滚动终点逐窗检查，不能用摘要中最多 20 个日期样本代替完整检查。交易日历 basis 的 gap 是确切缺失 session；未知日历的 `calendar_day_threshold` 日期标记超阈值间隔的右端，`event_driven` 不凭间隔推断应披露而未披露。
@@ -510,6 +511,7 @@ Holdings 的 monetary 部分按结算现金账户子账拆分：
 - settled 与 pending monetary row 都不具有证券 `cost_basis`、`Book Avg Cost` 或证券未实现 P&L；但两者都维护独立的 `FX Cost Basis`，用于解释货币余额的未实现汇兑损益，不能把这项 monetary basis 冒充证券 book cost；
 - monetary basis 从该价值第一次进入账本的 `monetary_recognition_date` 建立：普通买卖取现金/头寸价值首次生效日，dividend / coupon 取 entitlement date，现金先结算而头寸后确认时取 bridge 起始日。应收、应付或 subscription bridge 转成 settled cash 时必须原样继承该 basis，不能在 settlement date 重新按现汇定价；
 - settled cash 增加敞口时以上述 historical base basis 并入账户内移动平均，减少敞口时按该平均 basis 释放；同币种内部账户划转继承来源 basis，不以划转日 FX 重置。真正的 `fx_conversion` 以成交两边的实际 countervalue 建立目标币种 basis：目标币种就是 portfolio base currency 时，其单位 basis 恒为 `1`；来源币种是 base currency 时，非基准目标现金的 basis 等于实际 base consideration 除以目标金额；两边都不是 base currency 时，以成交日 source/base FX 换算实际 source consideration。`monetary unrealized FX P&L = current base value - historical monetary basis`；历史或当前 FX 缺失时失败关闭；
+- 同币 cash transfer 必须按完整配对处理成本：同号资产或负债的搬移继承被搬移余额的历史 basis；资产与负债相抵的数量 `q = min(转出前正现金, 转入前负债绝对值, 划转额)` 才确认 `realized cash FX = q × (负债平均 historical FX − 资产平均 historical FX)`。同次划转超过两端原有敞口而新形成的等额资产/负债按当日 FX 建立，不能使用旧资产和新负债混合后的单位 basis。抵销记录只归于收款腿一次，`posting_role=internal_cash_transfer_netting`；其 signed released local exposure 与 fair value 均为 0，historical basis 是两侧被抵销 basis 的和，所以不需要当前 FX 才能确定这项净实现。缺少任一历史 basis 则该实现 unavailable。无费同币划转必须同时满足 NAV 不变和 `realized FX + remaining unrealized FX` 守恒。
 - base-currency cash 的 instrument return、day return 和 volatility 为 `0`；
 - non-base cash 的 instrument return / day return 来自该现金币种兑 base currency 的 FX series；
 - pending monetary balance 不属于 settled cash、没有行级 instrument total-return series、不得进入资产协方差矩阵；其 FX 重估仍按 `PendingSettlementCurrencyGain` 单独入账，settlement 只改变余额状态，不产生第二次汇兑损益。
@@ -1467,7 +1469,7 @@ Research 历史模拟合同为 `Current-target historical simulation`：用本�
 
 每次 run 必须输出 root `solve_event` 和完整 `scope_solve_events`，用于复核每层 scope 的默认维度、实际维度、solver、RC mode、risk gap 与成员数。
 
-固定日期（pinned）只将行情、持仓及相关交易的时效性固定在数据截止日，不因该日以后的交易就自动失效；最新可用模式与最新组合日期比较。两种模式都将已保存目标快照与当前完整配置比较，当前目标、分类、资格或设置变化均使旧结果 stale。`RESEARCH_TARGET_SOLVER_VERSION=global_leaf_scalar_targets_v6` 同时进入 request、结果方法披露和 planning-state fingerprint；算法变化使工作台缓存与保存结果一起失效。缺少该方法版本或使用旧输入身份版本的 run 可继续阅读存档，但明确 stale，须重新运行才能作为当前结果，不迁移或重写旧解。当前页展示旧模拟时将未标记锚点的成立前经济历史裁出比较范围，原存档仍可审计。
+固定日期（pinned）只将行情、持仓及相关交易的时效性固定在数据截止日，不因该日以后的交易就自动失效；最新可用模式与最新组合日期比较。两种模式都将已保存目标快照与当前完整配置比较，当前目标、分类、资格或设置变化均使旧结果 stale。`RESEARCH_TARGET_SOLVER_VERSION=global_leaf_scalar_targets_v7_observed_session_coverage` 同时进入 request、结果方法披露和 planning-state fingerprint；算法变化使工作台缓存与保存结果一起失效。缺少该方法版本或使用旧输入身份版本的 run 可继续阅读存档，但明确 stale，须重新运行才能作为当前结果，不迁移或重写旧解。当前页展示旧模拟时将未标记锚点的成立前经济历史裁出比较范围，原存档仍可审计。
 
 每次 run 还必须输出 `calculation_frequency` profile，其中 requested / resolved / default 均为 `daily`，并保留源数据发布节奏计数；同时输出 missing-return policy、rows before / after、missing rows、dropped rows、latest complete date 与 trailing staleness，便于复核日频样本。
 
@@ -1575,6 +1577,8 @@ daily snapshot、holding snapshot、contribution slice 是可重建的读模型�
 - 交易、账户、共享行情或 FX 变化先写入源事实，再把受影响组合标记为 `stale`；
 - 每次 stale 标记生成新的 `refresh_request_id`，用于表示“至少需要覆盖到这次事实更新之后”；
 - 物化 payload schema 或核心计算口径改变时必须提升 `calculation_version`，让旧 read model 自动失效并重建；不能在 daily snapshot、contribution regroup 或 calculation detail 聚合中长期保留旧字段兼容逻辑。
+- 阶段收口版本包含 `observed-session-risk-short-expense-transfer-fx-netting-v1`：交易事实不变，daily/holding snapshots 与 contribution slices 从 inception 重建；`WORKSPACE_ANALYSIS_VERSION=4` 使旧 workspace projection 失效，重新发布完整覆盖元数据及同一生产协方差 artifact。Research solver 为 `global_leaf_scalar_targets_v7_observed_session_coverage`，旧已保存方案保留审计价值，当前应用前必须重新求解，不能原地改写旧模拟。该版本标记本身不表示运行环境已经完成重建。
+- risk-context 从 taxonomy 服务读取当前分类，不调用 HTTP route。相关性直接由同次生产 RC 的已物化协方差投影，不再独立估计；current 只保留 tail-risk 所需完整收益历史与实时风险观察，prior comparison 不重做实时任务、衍生品状态或 position-cycle 成本装配。协方差 artifact 属于内部可重建分析数据，不暴露成第二套客户端模型配置。
 - 组合 summary、Overview 与默认 Holdings 的 as-of 选择必须复用同一套 latest fresh complete snapshot 规则；不得在不同读路径各自实现日期兜底，也不得因浏览器日期、服务器当前日期或部分资产已更新而改变组合层窗口终点。
 - 同一组合的物化刷新串行执行；如果刷新期间又收到新的 `refresh_request_id`，当前计算结果不得把状态置为 `current` 或清空 `dirty_from`，必须继续按最新事实再计算一轮；
 - 交易变更保留最早受影响的 `dirty_from`。已有可靠前缀时，从该日前的已发布边界计算尾段，再接回累计收益和历史回撤高点；读取前缀只投影所需累计字段，不重复载入每日完整 JSON。缺少可靠种子、来源或计算口径变化时仍按完整刷新规则处理，不能为了缩短窗口跳过早期缺口。

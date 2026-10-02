@@ -61,7 +61,7 @@ def _missing_observation_dates(
 
 
 def observation_coverage_from_dates(
-    dates: list[date], *, source_settings: object,
+    dates: list[date], *, source_settings: object, end_date: date | None = None,
 ) -> dict[str, object]:
     """Describe the exact selected history, without clipping or sampling gaps.
 
@@ -76,9 +76,15 @@ def observation_coverage_from_dates(
         missing_dates, basis = _missing_observation_dates(
             ordered_dates, market_calendar=calendar,
         )
+        if ordered_dates and end_date is not None and end_date > ordered_dates[-1] and calendar:
+            sessions = _market_calendar_sessions(calendar, ordered_dates[0], end_date)
+            if sessions is not None:
+                actual = set(ordered_dates)
+                missing_dates = [day for day in sessions if day not in actual]
+                basis = f"market_calendar:{calendar}"
     return {
         "start_date": ordered_dates[0].isoformat() if ordered_dates else None,
-        "end_date": ordered_dates[-1].isoformat() if ordered_dates else None,
+        "end_date": (end_date or ordered_dates[-1]).isoformat() if ordered_dates else None,
         "gap_dates": [item.isoformat() for item in missing_dates],
         "gap_detection_basis": basis,
     }

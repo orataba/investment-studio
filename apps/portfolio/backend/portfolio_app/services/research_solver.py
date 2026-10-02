@@ -11,6 +11,8 @@ import pandas as pd
 from scipy.optimize import brentq, linprog, minimize
 
 from portfolio_app.services.annualization import annualization_eligibility
+from portfolio_app.services.risk_alignment import align_risk_navs
+from portfolio_app.services.risk_basis import observation_coverage_from_dates
 from portfolio_app.services.research_inputs import capture_current_target_configuration
 from portfolio_app.services.taxonomy_targets import resolve_taxonomy_targets
 from portfolio_app.services.calculation_frequency import (
@@ -84,7 +86,7 @@ RESEARCH_OBSERVATIONS_PER_MONTH_BY_FREQUENCY: dict[CalculationFrequency, float] 
     "daily": 20.0,
 }
 RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
-RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v6"
+RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v7_observed_session_coverage"
 RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 1e-4
 RESEARCH_COVARIANCE_PSD_TOLERANCE = 1e-10
 MISSING_RETURN_POLICY_STRICT = "strict"
@@ -373,10 +375,8 @@ def _build_instrument_nav_series(
             point_currency=point_currency,
             require_fresh_fx=retain_missing_valuations,
         )
-        if base_value is None and not retain_missing_valuations:
-            continue
         rows.append((point_date, float("nan") if base_value is None else base_value))
-    if not rows:
+    if not rows or not any(np.isfinite(value) for _, value in rows):
         raise ValueError(f"{instrument_id} does not have FX-complete market history for the requested period.")
 
     series = pd.Series({point_date: base_value for point_date, base_value in rows}, dtype="float64").sort_index()
@@ -390,6 +390,10 @@ def _build_instrument_nav_series(
         warnings.append(
             f"{instrument_id} history starts on {visible.index[0].isoformat()}, so the research window is clipped for this member."
         )
+    visible.attrs["observation_coverage"] = observation_coverage_from_dates(
+        [point_date for point_date, _, _ in selected_points],
+        source_settings=detail.get("source_settings"), end_date=end_date,
+    )
     return visible, warnings
 
 
@@ -614,7 +618,12 @@ def _clean_return_frame(returns: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
     cleaned = returns.copy()
     cleaned = cleaned.replace([np.inf, -np.inf], np.nan)
-    cleaned = cleaned.sort_index().dropna(how="all")
+    anchor = returns.attrs.get("nav_anchor_date")
+    if anchor in cleaned.index and cleaned.loc[anchor].isna().all():
+        cleaned = cleaned.drop(index=anchor)
+    # An all-member source outage is still a missing session. The alignment
+    # boundary excludes holidays before this step; never erase missing rows.
+    cleaned = cleaned.sort_index()
     return cleaned.astype("float64")
 
 
@@ -1324,22 +1333,20 @@ def _align_member_series(
         start_date=start_date,
         end_date=end_date,
     )
+    aligned_navs, aligned_returns = align_risk_navs(
+        periodic_nav_series_by_member, calendar=calendar, end_date=end_date,
+        coverage_by_key={key: series.attrs.get("observation_coverage") or {}
+                         for key, series in selected_nav_series_by_member.items()},
+    )
+    calendar = list(aligned_navs.index)
     rendered: list[MemberSeries] = []
     warnings: list[str] = []
     for member in members:
         raw_series = nav_series_by_member[(member.member_type, member.member_id)].sort_index()
         periodic_series = periodic_nav_series_by_member[(member.member_type, member.member_id)]
-        aligned = periodic_series.reindex(calendar)
-        if member.member_type == TARGET_MEMBER_INSTRUMENT:
-            aligned = (
-                periodic_series.reindex(periodic_series.index.union(calendar))
-                .sort_index()
-                .ffill()
-                .reindex(calendar)
-            )
-            # Mark-to-last bridges publication calendars, not an indefinitely
-            # stale trailing series. Keep missing tails visible to the policy.
-            aligned.loc[aligned.index > periodic_series.index[-1]] = np.nan
+        member_key = (member.member_type, member.member_id)
+        aligned = (aligned_navs[member_key] if member.member_type == TARGET_MEMBER_INSTRUMENT
+                   else periodic_series.reindex(calendar))
         first_valid_index = aligned.first_valid_index()
         if first_valid_index is None:
             raise ValueError(f"{member.label} does not have enough history for aligned research dates.")
@@ -1347,7 +1354,8 @@ def _align_member_series(
         if abs(base_value) <= 1e-12:
             raise ValueError(f"{member.label} starts with a non-positive base value.")
         normalized_nav = aligned / base_value
-        actual_returns = normalized_nav.pct_change(fill_method=None)
+        actual_returns = (aligned_returns[member_key].copy() if member.member_type == TARGET_MEMBER_INSTRUMENT
+                          else normalized_nav.pct_change(fill_method=None))
         if len(calendar) > 0:
             actual_returns.loc[calendar[0]] = np.nan
         returns = actual_returns.astype("float64")
@@ -1588,6 +1596,9 @@ def _solver_return_window(
             for member in aligned_members
         }
     )
+    # Preserve the chart's initial NAV anchor, but identify it explicitly so
+    # covariance removes only this structural row, never all-member outages.
+    frame.attrs["nav_anchor_date"] = _calendar[0]
     return frame.astype("float64")
 
 

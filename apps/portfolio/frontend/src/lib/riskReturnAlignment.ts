@@ -68,8 +68,8 @@ export function riskWindowStart(asOfDate: string, lookbackDays: number) {
 }
 
 export function dayDiff(left: string, right: string) {
-  const leftTime = Date.parse(`${left}T00:00:00`)
-  const rightTime = Date.parse(`${right}T00:00:00`)
+  const leftTime = Date.parse(`${left}T00:00:00Z`)
+  const rightTime = Date.parse(`${right}T00:00:00Z`)
   if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) {
     return null
   }
@@ -77,8 +77,8 @@ export function dayDiff(left: string, right: string) {
 }
 
 export function absoluteDayDiff(left: string, right: string) {
-  const leftTime = Date.parse(`${left}T00:00:00`)
-  const rightTime = Date.parse(`${right}T00:00:00`)
+  const leftTime = Date.parse(`${left}T00:00:00Z`)
+  const rightTime = Date.parse(`${right}T00:00:00Z`)
   if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) {
     return null
   }

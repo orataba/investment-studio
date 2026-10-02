@@ -72,6 +72,7 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-period-calculation-boundary-state-v2-fifo-acquisition-order"
     "-fcn-settlement-cashflow-recognition-v1"
     "-incremental-source-prefix-v1"
+    "-observed-session-risk-short-expense-transfer-fx-netting-v1"
 )
 
 

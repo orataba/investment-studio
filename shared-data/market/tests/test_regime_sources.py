@@ -111,11 +111,14 @@ def test_etf_dividend_rebuild_resolves_only_its_own_captures_and_preserves_pit(s
     filters = dict(symbols=["SPY"], start=params["from"], end=params["to"], batch_ids=selected)
     prior = source.store.query("raw_eod_daily", **filters, as_of="2024-02-01T10:00:02Z")["rows"]
     final = source.store.query("raw_eod_daily", **filters)["rows"]
-    assert {row["batch_id"] for row in prior} == {initial["batch_id"]}
-    assert all(row["adjusted_close"] == 50.5 for row in prior)
+    # The changed overlap is evidence for a rebuild, not a partial publication.
+    # Until that rebuild is complete, only the previous coherent history is usable.
+    assert initial["row_count"] == 0 and prior == []
+    previous = source.store.query("raw_eod_daily", symbols=["SPY"], as_of="2024-02-01T10:00:02Z")["rows"]
+    assert [row["adjusted_close"] for row in previous] == [pytest.approx(60.6)]
     assert {row["batch_id"] for row in final} == {rebuilt["batch_id"]}
     assert all(row["source_id"].startswith(f"numeric:{rebuilt['batch_id']}:") for row in final)
-    assert source.store.query("raw_eod_daily", **filters, versions=True)["total"] == 4
+    assert source.store.query("raw_eod_daily", **filters, versions=True)["total"] == 2
     assert source.store.query("raw_eod_daily", batch_ids=[])["total"] == 0
     with source.store.engine.connect() as connection:
         receipt = connection.execute(select(batches.c.details).where(batches.c.id == rebuilt["batch_id"])).scalar_one()

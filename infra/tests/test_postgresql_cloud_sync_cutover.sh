@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 export SYNC_TEST_ADMIN_URL="postgresql://${INVESTMENT_STUDIO_TEST_DB_USER:-$(id -un)}@${INVESTMENT_STUDIO_TEST_DB_HOST:-127.0.0.1}:${INVESTMENT_STUDIO_TEST_DB_PORT:-5432}/postgres"
 "${PYTHON_BIN:-$ROOT/.venv/bin/python}" - <<'PY'
-import os,sys,tempfile
+import json,os,sys,tempfile
 from pathlib import Path
 import psycopg
 from psycopg import sql
@@ -20,7 +20,11 @@ for name in ('market','documents','research'):
  staged=directory/name;staged.mkdir();(staged/'value').write_text('new')
  config['files'][name]={'local':str(dest),'remote':'/unused'}
 sync.control_services=lambda action,state: None
-sync.healthcheck=lambda cfg: (_ for _ in ()).throw(RuntimeError('simulated health failure'))
+original_write_journal=sync.write_cutover_journal
+def fail_before_workers(path, record, phase, **kwargs):
+ if phase=='writers-may-have-resumed':raise RuntimeError('simulated pre-start failure')
+ return original_write_journal(path,record,phase,**kwargs)
+sync.write_cutover_journal=fail_before_workers
 with psycopg.connect(admin,autocommit=True) as c:
  for db in (prefix,prefix+'_incoming'):
   c.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(db)))
@@ -63,13 +67,34 @@ try:
  # for a second publication; normal sync restores a fresh incoming database.
  with psycopg.connect(admin,autocommit=True) as c:
   sync.allow_connections(c,prefix+'_incoming',True)
- sync.healthcheck=lambda cfg:None
- sync.publish(config,directory,prefix+'_incoming')
+ sync.write_cutover_journal=original_write_journal
+ def start_writer(action,service_state):
+  if action=='start':
+   assert json.loads((directory/'cutover.json').read_text())['phase']=='writers-may-have-resumed'
+   with psycopg.connect(config['database_url']) as c:
+    c.execute("INSERT INTO marker VALUES ('local-write-after-start')")
+   for item in config['files'].values():(Path(item['local'])/'local-write').write_text('preserved')
+ sync.control_services=start_writer
+ sync.healthcheck=lambda cfg: (_ for _ in ()).throw(RuntimeError('simulated health failure'))
+ try:sync.publish(config,directory,prefix+'_incoming')
+ except RuntimeError as e:assert 'automatic rollback is disabled' in str(e)
+ else:raise AssertionError('health failure was not reported')
  with psycopg.connect(config['database_url']) as c:
-  assert c.execute('SELECT value FROM marker').fetchone()==('new',)
+  assert set(c.execute('SELECT value FROM marker').fetchall())=={('new',),('local-write-after-start',)}
   assert sync.local_credentials(c)==expected_credentials
- for item in config['files'].values():assert (Path(item['local'])/'value').read_text()=='new'
- print('Real PostgreSQL publish, failed-health rollback, and latest local credential retention passed')
+ with psycopg.connect(admin,autocommit=True) as c:
+  sync.allow_connections(c,prefix+'_before_snapshot',True)
+ with psycopg.connect(sync.database_url(admin,prefix+'_before_snapshot')) as c:
+  assert c.execute('SELECT value FROM marker').fetchone()==('old',)
+ for name,item in config['files'].items():
+  assert (Path(item['local'])/'value').read_text()=='new'
+  assert (Path(item['local'])/'local-write').read_text()=='preserved'
+  assert (directory/(name+'-before')/'value').read_text()=='old'
+ assert json.loads((directory/'cutover.json').read_text())['phase']=='forward-repair-required'
+ try:sync.check_unfinished_cutovers(state)
+ except RuntimeError as e:assert 'unfinished' in str(e)
+ else:raise AssertionError('unrepaired publication did not block the next sync')
+ print('Real PostgreSQL pre-start rollback, post-start write retention, and latest local credentials passed')
 finally:
  with psycopg.connect(admin,autocommit=True) as c:
   for db in (prefix,prefix+'_incoming',prefix+'_before_snapshot'):

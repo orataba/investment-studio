@@ -35,11 +35,13 @@ touch \
   "$PROJECT_ROOT/deploy/serve_spa_proxy.mjs"
 cp "$REPOSITORY_ROOT/infra/launchd/load_runtime_env.sh" \
   "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
+cp "$REPOSITORY_ROOT/infra/market_pipeline_actions.txt" "$PROJECT_ROOT/infra/market_pipeline_actions.txt"
 
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
   'printf "migrate\n" >> "$EVENT_LOG"' \
+  'printf "migrated\n" >> "$DATABASE_STATE_FILE"' \
   '[[ "${MIGRATION_FAIL:-false}" != "true" ]]' \
   > "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
 chmod +x "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
@@ -92,12 +94,14 @@ printf '%s\n' \
   '  INVESTMENT_STUDIO_PROJECT_SCHEMA_BACKUP_PATH="$backup_root/$label-test.pgdump"' \
   '  INVESTMENT_STUDIO_PROJECT_SCHEMA_MANIFEST_PATH="$backup_root/$label-test.schemas"' \
   '  : > "$INVESTMENT_STUDIO_PROJECT_SCHEMA_BACKUP_PATH"' \
+  '  cp "$DATABASE_STATE_FILE" "$INVESTMENT_STUDIO_PROJECT_SCHEMA_BACKUP_PATH"' \
   '  printf "%s\n" instrument_registry platform portfolio watchlist > "$INVESTMENT_STUDIO_PROJECT_SCHEMA_MANIFEST_PATH"' \
   '  printf "backup\n" >> "$EVENT_LOG"' \
   '}' \
   'investment_studio_restore_project_schema_backup() {' \
   '  printf "database-restore\n" >> "$EVENT_LOG"' \
-  '  [[ "${ROLLBACK_FAIL:-false}" != "true" ]]' \
+  '  [[ "${ROLLBACK_FAIL:-false}" != "true" ]] || return 1' \
+  '  cp "$2" "$DATABASE_STATE_FILE"' \
   '}' \
   > "$PROJECT_ROOT/infra/postgres/project_schema_backup.sh"
 
@@ -138,12 +142,21 @@ printf '%s\n' \
   '    for unit in "$@"; do remove_active "$unit"; done' \
   '    ;;' \
   '  start)' \
-  '    for unit in "$@"; do add_active "$unit"; done' \
+  '    for unit in "$@"; do' \
+  '      [[ "$unit" != "${SCHEDULED_START_FAIL_UNIT:-}" ]] || exit 1' \
+  '      add_active "$unit"' \
+  '      if [[ -n "${SCHEDULED_START_FAIL_UNIT:-}" ]]; then' \
+  '        grep -Fxq writers-may-have-resumed "$TMPDIR"/investment-studio-systemd-install.*/phase' \
+  '        printf "startup-write:%s\n" "$unit" >> "$DATABASE_STATE_FILE"' \
+  '      fi' \
+  '    done' \
   '    ;;' \
   '  restart)' \
+  '    grep -Fxq writers-may-have-resumed "$TMPDIR"/investment-studio-systemd-install.*/phase' \
   '    for unit in "$@"; do' \
   '      if [[ "$unit" == "${START_FAIL_UNIT:-}" ]]; then exit 1; fi' \
   '      add_active "$unit"' \
+  '      printf "startup-write:%s\n" "$unit" >> "$DATABASE_STATE_FILE"' \
   '    done' \
   '    ;;' \
   '  enable)' \
@@ -216,6 +229,7 @@ prepare_case() {
   rm -rf "$case_root"
   mkdir -p "$case_root/config/systemd/user" "$case_root/tmp" "$case_root/backups"
   : > "$case_root/events"
+  printf '%s\n' pre-install-record > "$case_root/database"
   printf '%s\n' "${ORIGINAL_ACTIVE_UNITS[@]}" > "$case_root/active"
   printf '%s\n' "${ORIGINAL_ENABLED_UNITS[@]}" > "$case_root/enabled"
   for unit in "${MANAGED_UNITS[@]}" "${RETIRED_UNITS[@]}"; do
@@ -231,6 +245,7 @@ run_case() {
   EVENT_LOG="$case_root/events" \
   SYSTEMCTL_ACTIVE_FILE="$case_root/active" \
   SYSTEMCTL_ENABLED_FILE="$case_root/enabled" \
+  DATABASE_STATE_FILE="$case_root/database" \
   HOME="$case_root/home" \
   XDG_CONFIG_HOME="$case_root/config" \
   TMPDIR="$case_root/tmp" \
@@ -240,7 +255,7 @@ run_case() {
   NODE_BIN="/usr/bin/true" \
   ENV_ROOT="$ENV_ROOT" \
   RUN_MIGRATIONS=true \
-  START_SERVICES=true \
+  START_SERVICES="${CASE_START_SERVICES:-true}" \
   HEALTH_ATTEMPTS=1 \
   INVESTMENT_STUDIO_SYSTEMD_BACKUP_ROOT="$case_root/backups" \
     "$REPOSITORY_ROOT/infra/systemd/install_app_services.sh"
@@ -261,6 +276,30 @@ assert_original_state_restored() {
       grep -Fxq "previous-unit:$unit" "$case_root/config/systemd/user/$unit"
     fi
   done
+}
+
+assert_forward_repair_preserved() {
+  local case_root="$1" unit recovery
+  test ! -s "$case_root/active"
+  if grep -q '^database-restore$' "$case_root/events"; then
+    echo "Installer discarded data written after a new worker started." >&2
+    exit 1
+  fi
+  grep -q '^migrated$' "$case_root/database"
+  grep -q '^startup-write:' "$case_root/database"
+  for unit in "${MANAGED_UNITS[@]}"; do
+    test -s "$case_root/config/systemd/user/$unit"
+    if grep -Fq 'previous-unit:' "$case_root/config/systemd/user/$unit"; then
+      echo "Forward repair restored an old unit: $unit" >&2
+      exit 1
+    fi
+  done
+  recovery="$(sed -n 's/^Recovery state retained at: //p' "$case_root/output" | tail -n 1)"
+  test -d "$recovery"
+  grep -Fxq forward-repair-required "$recovery/phase"
+  test -s "$recovery/database-backup-path"
+  test -s "$recovery/database-manifest-path"
+  grep -q 'automatic database and unit rollback is disabled' "$case_root/output"
 }
 
 SUCCESS_CASE="$TEST_ROOT/success"
@@ -313,6 +352,8 @@ if [[ $migration_status -eq 0 ]]; then
   exit 1
 fi
 assert_original_state_restored "$MIGRATION_CASE"
+grep -Fxq pre-install-record "$MIGRATION_CASE/database"
+test "$(wc -l < "$MIGRATION_CASE/database" | tr -d ' ')" -eq 1
 grep -q '^backup$' "$MIGRATION_CASE/events"
 grep -q '^migrate$' "$MIGRATION_CASE/events"
 grep -q '^database-restore$' "$MIGRATION_CASE/events"
@@ -399,18 +440,7 @@ if [[ $restart_status -eq 0 ]]; then
   echo "The systemd installer accepted an injected restart failure." >&2
   exit 1
 fi
-assert_original_state_restored "$RESTART_CASE"
-restart_line="$(grep -n 'systemctl:restart' "$RESTART_CASE/events" | head -n 1 | cut -d: -f1)"
-database_restore_line="$(grep -n '^database-restore$' "$RESTART_CASE/events" | head -n 1 | cut -d: -f1)"
-restored_api_line="$(grep -n 'systemctl:start investment-studio-home-api.service' "$RESTART_CASE/events" | tail -n 1 | cut -d: -f1)"
-restored_timer_line="$(grep -n 'systemctl:start investment-studio-market-data-refresh.timer' "$RESTART_CASE/events" | tail -n 1 | cut -d: -f1)"
-if [[ -z "$restart_line" || -z "$database_restore_line" || -z "$restored_api_line" || -z "$restored_timer_line" \
-  || "$restart_line" -ge "$database_restore_line" \
-  || "$database_restore_line" -ge "$restored_api_line" \
-  || "$restored_api_line" -ge "$restored_timer_line" ]]; then
-  echo "Systemd rollback ordering did not restore DB, API, then refresh timer." >&2
-  exit 1
-fi
+assert_forward_repair_preserved "$RESTART_CASE"
 
 ROLLBACK_CASE="$TEST_ROOT/rollback-failure"
 HEALTH_CASE="$TEST_ROOT/health-failure"
@@ -419,14 +449,26 @@ if HEALTH_FAIL=true run_case "$HEALTH_CASE" > "$HEALTH_CASE/output" 2>&1; then
   echo "The systemd installer accepted an active service with a failed HTTP health check." >&2
   exit 1
 fi
-assert_original_state_restored "$HEALTH_CASE"
-grep -q '^database-restore$' "$HEALTH_CASE/events"
+assert_forward_repair_preserved "$HEALTH_CASE"
 grep -q 'failed its readiness gate: http://127.0.0.1:8102/api/health' "$HEALTH_CASE/output"
+
+SCHEDULE_CASE="$TEST_ROOT/scheduled-start-failure"
+prepare_case "$SCHEDULE_CASE"
+if CASE_START_SERVICES=false SCHEDULED_START_FAIL_UNIT=investment-studio-market-data-refresh.timer \
+  run_case "$SCHEDULE_CASE" > "$SCHEDULE_CASE/output" 2>&1; then
+  echo "The systemd installer accepted a partial scheduled-writer start." >&2
+  exit 1
+fi
+assert_forward_repair_preserved "$SCHEDULE_CASE"
+if grep -q 'systemctl:restart' "$SCHEDULE_CASE/events"; then
+  echo "START_SERVICES=false unexpectedly restarted applications." >&2
+  exit 1
+fi
 
 prepare_case "$ROLLBACK_CASE"
 set +e
 ROLLBACK_FAIL=true \
-START_FAIL_UNIT=investment-studio-portfolio-api.service \
+MIGRATION_FAIL=true \
   run_case "$ROLLBACK_CASE" > "$ROLLBACK_CASE/output" 2>&1
 rollback_status=$?
 set -e

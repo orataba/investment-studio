@@ -32,6 +32,8 @@ prepare_case() {
     "$case_root/backups" \
     "$case_root/tmp"
   chmod 700 "$env_root" "$case_root/backups" "$case_root/tmp"
+  printf '%s\n' test.investment-studio.home-api test.investment-studio.portfolio-web > "$case_root/loaded"
+  printf '%s\n' pre-install-record > "$case_root/database"
   : > "$env_root/home.env"
   chmod 600 "$env_root/home.env"
   printf '%s\n' 'INVESTMENT_STUDIO_AUTH_MODE=local' 'INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA=instrument_data' > "$env_root/data.env"
@@ -59,6 +61,7 @@ prepare_case() {
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
     'printf "migrate\n" >> "$EVENT_LOG"' \
+    'printf "migrated\n" >> "$DATABASE_STATE_FILE"' \
     'platform_alembic_status=missing' \
     'if [[ -n "${INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL:-}" && "$INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL" == "${INVESTMENT_STUDIO_DATA_DATABASE_URL:-}" ]]; then platform_alembic_status=match; fi' \
     'printf "platform-migration-env:%s|%s\n" "$platform_alembic_status" "${INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA:-}" >> "$EVENT_LOG"' \
@@ -106,7 +109,7 @@ prepare_case() {
   printf '%s\n' \
     '#!/usr/bin/env bash' \
     'printf "health\n" >> "$EVENT_LOG"' \
-    'exit 1' \
+    '[[ "${HEALTH_FAIL:-true}" != true ]]' \
     > "$mock_bin/curl"
 
   printf '%s\n' \
@@ -134,7 +137,7 @@ prepare_case() {
     '  if [[ "$1" == "--file" ]]; then output="$2"; shift 2; else shift; fi' \
     'done' \
     '[[ -n "$output" ]]' \
-    'printf "%s\n" verified-custom-archive > "$output"' \
+    'cp "$DATABASE_STATE_FILE" "$output"' \
     'printf "backup\n" >> "$EVENT_LOG"' \
     > "$mock_bin/pg_dump"
 
@@ -146,6 +149,7 @@ prepare_case() {
     '  printf "%s\n" "1; 0 0 SCHEMA - instrument_registry owner" "2; 0 0 SCHEMA - platform owner" "3; 0 0 SCHEMA - portfolio owner" "4; 0 0 SCHEMA - watchlist owner"' \
     '  exit 0' \
     'fi' \
+    'archive="${@: -1}"' \
     'output=""' \
     'while [[ $# -gt 0 ]]; do' \
     '  if [[ "$1" == "--file" ]]; then output="$2"; shift 2; else shift; fi' \
@@ -160,18 +164,34 @@ prepare_case() {
     '  printf "%s\n" "CREATE SCHEMA instrument_registry;" "CREATE SCHEMA platform;" "CREATE SCHEMA portfolio;" "CREATE SCHEMA watchlist;" > "$output"' \
     'fi' \
     'printf "restore\n" >> "$EVENT_LOG"' \
+    'cp "$archive" "$DATABASE_STATE_FILE"' \
     > "$mock_bin/pg_restore"
 
   printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
     'printf "launchctl:%s\n" "$*" >> "$EVENT_LOG"' \
-    'if [[ "$1" == "print" ]]; then' \
-    '  case "$2" in' \
-    '    *.home-api|*.portfolio-web) exit 0 ;;' \
-    '    *) exit 1 ;;' \
-    '  esac' \
-    'fi' \
+    'case "$1" in' \
+    '  print) grep -Fxq "${2##*/}" "$LAUNCHCTL_LOADED_FILE"; exit $? ;;' \
+    '  bootout)' \
+    '    unit="${2##*/}"' \
+    '    for phase in "$TMPDIR"/investment-studio-launchd-install.*/phase; do' \
+    '      if [[ "$unit" == "${STOP_FAIL_UNIT:-}" && -f "$phase" ]]; then exit 1; fi' \
+    '    done' \
+    '    awk -v unit="$unit" '\''$0 != unit { print }'\'' "$LAUNCHCTL_LOADED_FILE" > "$LAUNCHCTL_LOADED_FILE.new"' \
+    '    mv "$LAUNCHCTL_LOADED_FILE.new" "$LAUNCHCTL_LOADED_FILE"' \
+    '    ;;' \
+    '  bootstrap)' \
+    '    unit="${3##*/}"; unit="${unit%.plist}"' \
+    '    [[ "$unit" != "${BOOTSTRAP_FAIL_UNIT:-}" ]] || exit 1' \
+    '    printf "%s\n" "$unit" >> "$LAUNCHCTL_LOADED_FILE"' \
+    '    for phase in "$TMPDIR"/investment-studio-launchd-install.*/phase; do' \
+    '      if [[ -f "$phase" ]] && grep -Fxq writers-may-have-resumed "$phase"; then' \
+    '        printf "startup-write:%s\n" "$unit" >> "$DATABASE_STATE_FILE"' \
+    '      fi' \
+    '    done' \
+    '    ;;' \
+    'esac' \
     'exit 0' \
     > "$mock_bin/launchctl"
 
@@ -209,6 +229,8 @@ run_installer() {
   NODE_BIN="$mock_bin/node" \
   NPM_BIN="$mock_bin/npm" \
   TMPDIR="$case_root/tmp" \
+  DATABASE_STATE_FILE="$case_root/database" \
+  LAUNCHCTL_LOADED_FILE="$case_root/loaded" \
     "$INSTALLER"
 }
 
@@ -220,6 +242,27 @@ assert_old_plists_restored() {
     home-web watchlist-web portfolio-web briefing-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh market-sync; do
     [[ "$(cat "$case_root/LaunchAgents/test.investment-studio.$service.plist")" == "old-$service" ]]
   done
+}
+
+assert_forward_repair_preserved() {
+  local case_root="$1" recovery
+  test ! -s "$case_root/loaded"
+  if grep -Eq '^restore$|^restore-failed$' "$case_root/events"; then
+    echo "Launchd installer attempted to discard startup writes." >&2
+    exit 1
+  fi
+  grep -q '^migrated$' "$case_root/database"
+  grep -q '^startup-write:' "$case_root/database"
+  if grep -q '^old-home-api$' "$case_root/LaunchAgents/test.investment-studio.home-api.plist"; then
+    echo "Forward repair restored old LaunchAgent definitions." >&2
+    exit 1
+  fi
+  recovery="$(sed -n 's/^Installer recovery state retained at: //p' "$case_root/output" | tail -n 1)"
+  test -d "$recovery"
+  grep -Fxq forward-repair-required "$recovery/phase"
+  test -s "$recovery/database-backup-path"
+  test -s "$recovery/database-manifest-path"
+  grep -q 'automatic database and LaunchAgent rollback is disabled' "$case_root/output"
 }
 
 PASSWORD_URL_CASE="$TEST_ROOT/password-url"
@@ -294,6 +337,8 @@ restore_line="$(grep -n '^restore$' "$EVENT_LOG" | cut -d: -f1)"
 restart_line="$(grep -n 'launchctl:bootstrap .*test.investment-studio.home-api.plist' "$EVENT_LOG" | tail -n 1 | cut -d: -f1)"
 [[ "$restore_line" -lt "$restart_line" ]]
 assert_old_plists_restored "$MIGRATION_CASE"
+grep -Fxq pre-install-record "$MIGRATION_CASE/database"
+test "$(wc -l < "$MIGRATION_CASE/database" | tr -d ' ')" -eq 1
 test -n "$(find "$MIGRATION_CASE/backups" -name '*.pgdump' -type f -print -quit)"
 test -n "$(find "$MIGRATION_CASE/backups" -name '*.pgdump.sha256' -type f -print -quit)"
 test -n "$(find "$MIGRATION_CASE/backups" -name '*.schemas.sha256' -type f -print -quit)"
@@ -370,15 +415,14 @@ fi
 grep -q '^restore$' "$EVENT_LOG"
 assert_old_plists_restored "$SNAPSHOT_REFRESH_CASE"
 
-ROLLBACK_CASE="$TEST_ROOT/rollback-failure"
-prepare_case "$ROLLBACK_CASE"
-export EVENT_LOG="$ROLLBACK_CASE/events"
-set +e
-MIGRATION_FAIL=false FAIL_ROLLBACK=true run_installer "$ROLLBACK_CASE" \
-  > "$ROLLBACK_CASE/output" 2>&1
-rollback_status=$?
-set -e
-[[ $rollback_status -eq 70 ]]
+HEALTH_CASE="$TEST_ROOT/health-failure"
+prepare_case "$HEALTH_CASE"
+export EVENT_LOG="$HEALTH_CASE/events"
+if HEALTH_FAIL=true run_installer "$HEALTH_CASE" > "$HEALTH_CASE/output" 2>&1; then
+  echo "Launchd installer accepted an injected readiness failure." >&2
+  exit 1
+fi
+assert_forward_repair_preserved "$HEALTH_CASE"
 grep -q '^migrate$' "$EVENT_LOG"
 grep -q '^catalog-refresh$' "$EVENT_LOG"
 grep -q '^audit$' "$EVENT_LOG"
@@ -392,6 +436,51 @@ for stage in backup migrate catalog-refresh watchlist-refresh snapshot-refresh a
   fi
   previous_line="$stage_line"
 done
+
+BOOTSTRAP_CASE="$TEST_ROOT/partial-bootstrap-failure"
+prepare_case "$BOOTSTRAP_CASE"
+export EVENT_LOG="$BOOTSTRAP_CASE/events"
+if BOOTSTRAP_FAIL_UNIT=test.investment-studio.portfolio-api \
+  run_installer "$BOOTSTRAP_CASE" > "$BOOTSTRAP_CASE/output" 2>&1; then
+  echo "Launchd installer accepted an injected partial bootstrap failure." >&2
+  exit 1
+fi
+assert_forward_repair_preserved "$BOOTSTRAP_CASE"
+
+STOP_CASE="$TEST_ROOT/post-start-stop-failure"
+prepare_case "$STOP_CASE"
+export EVENT_LOG="$STOP_CASE/events"
+if STOP_FAIL_UNIT=test.investment-studio.home-api \
+  run_installer "$STOP_CASE" > "$STOP_CASE/output" 2>&1; then
+  echo "Launchd installer accepted a failed stop after startup." >&2
+  exit 1
+fi
+grep -Fxq test.investment-studio.home-api "$STOP_CASE/loaded"
+grep -q '^startup-write:' "$STOP_CASE/database"
+if grep -Eq '^restore$|^restore-failed$' "$STOP_CASE/events"; then
+  echo "Launchd installer replayed a backup while a new writer remained loaded." >&2
+  exit 1
+fi
+grep -q 'Some managed writers could not be stopped; stop them manually before repair' "$STOP_CASE/output"
+grep -q 'Installer recovery state retained at:' "$STOP_CASE/output"
+
+SUCCESS_CASE="$TEST_ROOT/success"
+prepare_case "$SUCCESS_CASE"
+export EVENT_LOG="$SUCCESS_CASE/events"
+HEALTH_FAIL=false run_installer "$SUCCESS_CASE" > "$SUCCESS_CASE/output" 2>&1
+grep -q '^startup-write:' "$SUCCESS_CASE/database"
+grep -q 'Investment Studio is running at' "$SUCCESS_CASE/output"
+test -z "$(find "$SUCCESS_CASE/tmp" -name 'investment-studio-launchd-install.*' -type d -print -quit)"
+
+ROLLBACK_CASE="$TEST_ROOT/rollback-failure"
+prepare_case "$ROLLBACK_CASE"
+export EVENT_LOG="$ROLLBACK_CASE/events"
+set +e
+MIGRATION_FAIL=true FAIL_ROLLBACK=true run_installer "$ROLLBACK_CASE" \
+  > "$ROLLBACK_CASE/output" 2>&1
+rollback_status=$?
+set -e
+[[ $rollback_status -eq 70 ]]
 grep -q '^restore-failed$' "$EVENT_LOG"
 if awk 'seen && /launchctl:bootstrap/ { found=1 } /^restore-failed$/ { seen=1 } END { exit found ? 0 : 1 }' "$EVENT_LOG"; then
   echo "Previously loaded services restarted after database rollback failed." >&2
