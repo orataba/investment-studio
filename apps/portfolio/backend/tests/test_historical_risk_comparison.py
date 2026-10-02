@@ -1,7 +1,7 @@
 """Historical comparisons preserve production risk without retaining UI histories."""
 from collections import OrderedDict
 from copy import deepcopy
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -92,3 +92,58 @@ def test_risk_context_full_response_matches_full_historical_analysis(client, mon
                for row in historical[0]["rows"])
     # Revisiting the same context reuses only the compact prior-day analysis.
     assert client.get(f"/api/portfolios/{pid}/risk-context").json() == expected.json()
+
+
+def test_available_comparison_entire_projection_matches_full_history_with_signed_fx():
+    from portfolio_app.services.portfolio_risk_context import project_portfolio_risk
+    from tests.test_portfolio_risk_context import catalog
+
+    history = risk_fx_history()
+
+    def model(*, previous, include_return_series):
+        as_of = AS_OF_DATE - timedelta(days=1) if previous else AS_OF_DATE
+        rows = [
+            _holding("alpha", .5 if previous else .7, currency="HKD"),
+            _holding("beta", .6 if previous else .4, currency="USD", points=_return_points(2)),
+            monetary("cash:HKD", 200_000),
+            monetary("pending:HKD", -300_000, "pending_payable"),
+        ]
+        for row in rows:
+            row.update(
+                position_reference_id=row["instrument_core"]["instrument_id"],
+                holding_category="securities" if row["risk_eligible"] else "cash_and_settlement",
+            )
+        value = risk_model.enrich_holdings_forward_risk(
+            _workspace(rows, base_currency="USD", portfolio_id="p", portfolio_name="FX portfolio",
+                       as_of_date=as_of.isoformat(), totals={"nav": 1_000_000}, quality_warnings=[]),
+            as_of_date=as_of,
+            calculation_frequency="daily",
+            risk_policy=_risk_policy(),
+            fx_histories={history.instrument_id: history},
+            include_return_series=include_return_series,
+        )
+        assert value["forward_risk"]["status"] == "ok"
+        return value
+
+    current = model(previous=False, include_return_series=True)
+    complete_previous = model(previous=True, include_return_series=True)
+    compact_previous = model(previous=True, include_return_series=False)
+    omitted = (
+        set(holdings_workspace._HOLDINGS_CHART_FIELD_NAMES)
+        | set(holdings_workspace._HOLDINGS_RETURN_SERIES_FIELD_NAMES)
+        | set(holdings_workspace._HOLDINGS_TREND_FIELD_NAMES)
+    )
+    for row in compact_previous["rows"]:
+        for field in omitted:
+            row.pop(field, None)
+
+    expected = project_portfolio_risk(current, catalog(), complete_previous)
+    actual = project_portfolio_risk(current, catalog(), compact_previous)
+    assert actual == expected
+    comparisons = actual["comparisons"]
+    assert comparisons["status"] == "available"
+    assert len(comparisons["risk_group_changes"]) == 3
+    assert len(comparisons["correlation_changes"]) == 6
+    assert comparisons["previous_coverage"] == complete_previous["forward_risk"]["coverage"]
+    assert any(row["change_pp"] != 0 for row in comparisons["risk_group_changes"])
+    assert any(row["group_id"] == "cash_bucket:__cash__" for row in comparisons["risk_group_changes"])
