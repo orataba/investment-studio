@@ -7,19 +7,20 @@
 .research-comparison-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; }
 .research-comparison-legend span { display: inline-flex; gap: 6px; align-items: center; }
 .research-comparison-legend i { width: 8px; height: 8px; border-radius: 50%; }
-.research-chart-toggle { display: flex; border: 1px solid var(--border-color, #d8dee7); }
-.research-chart-toggle button { border: 0; background: transparent; padding: 5px 10px; font: inherit; font-size: 12px; color: var(--text-secondary, #64748b); cursor: pointer; }
-.research-chart-toggle button[aria-pressed="true"] { color: var(--text-primary, #172033); background: var(--surface-muted, #edf1f6); }
+.research-chart-toggle { display: flex; border: 1px solid var(--studio-line-strong); }
+.research-chart-toggle button { border: 0; background: transparent; padding: 5px 10px; font: inherit; font-size: 12px; color: var(--studio-muted); cursor: pointer; }
+.research-chart-toggle button[aria-pressed="true"] { color: var(--studio-accent-strong); background: var(--studio-accent-soft); }
 .research-comparison-chart svg { display: block; width: 100%; overflow: visible; margin-top: 10px; }
-.research-comparison-chart svg text { fill: var(--text-secondary, #64748b); font-size: 11px; }
-.research-comparison-gridline { stroke: var(--border-color, #e2e8f0); stroke-width: .7; }
-.research-comparison-crosshair { stroke: #94a3b8; stroke-dasharray: 3 4; stroke-width: .8; }
+.research-comparison-chart svg text { fill: var(--studio-muted); font-size: 11px; }
+.research-comparison-gridline { stroke: var(--studio-line); stroke-width: .7; }
+.research-comparison-crosshair { stroke: var(--studio-chart-axis); stroke-dasharray: 3 4; stroke-width: .8; }
 .research-comparison-readout { display: flex; flex-wrap: wrap; gap: 12px; min-height: 24px; font-size: 12px; font-variant-numeric: tabular-nums; }
-.research-comparison-readout time { color: var(--text-secondary, #64748b); }
+.research-comparison-readout > span { border-left: 3px solid; padding-left: 7px; color: var(--studio-ink); }
+.research-comparison-readout time { color: var(--studio-muted); }
 .research-performance-panel .research-metric-table { margin-top: 10px; font-size: 12px; }
 .research-performance-panel .research-metric-table th, .research-performance-panel .research-metric-table td { padding: 7px 8px; white-space: nowrap; }
 .research-performance-panel .research-metric-period-row td { font-size: 11px; }
-.research-monthly-section { margin-top: 24px; border-top: 1px solid var(--border-color, #e2e8f0); padding-top: 18px; }
+.research-monthly-section { margin-top: 24px; border-top: 1px solid var(--studio-line); padding-top: 18px; }
 .research-monthly-table { width: 100%; min-width: 1200px; table-layout: fixed; font-size: 12px; }
 .research-matrix-year-col { width: 60px; }
 .research-matrix-series-col { width: 86px; }
@@ -28,9 +29,9 @@
 .research-monthly-table thead th:nth-child(n+3), .research-monthly-table td { text-align: right; font-variant-numeric: tabular-nums; }
 .research-monthly-table tbody th[scope='row'] { font-weight: 400; text-align: left; }
 .research-monthly-table tbody th[scope='rowgroup'] { font-weight: 600; vertical-align: top; padding-top: 10px; }
-.research-monthly-table .research-matrix-annual { font-weight: 600; border-left: 1px solid var(--border-color, #e2e8f0); }
+.research-monthly-table .research-matrix-annual { font-weight: 600; border-left: 1px solid var(--studio-line); }
 .research-monthly-table .investment-studio-info-hint { margin-left: 3px; vertical-align: middle; width: 12px; height: 12px; min-width: 12px; font-size: 9px; }
-.research-monthly-table thead th { background: var(--surface-muted, #f7f9fb); }
+.research-monthly-table thead th { background: var(--studio-surface-soft); }
 .research-matrix-year + .research-matrix-year tr:first-child > * { border-top: 1px solid var(--portfolio-line-strong); }
-.research-matrix-difference { background: var(--surface-muted, #f7f9fb); }
+.research-matrix-difference { background: var(--studio-surface-soft); }
 @media (max-width: 1200px) { .research-performance-main { grid-template-columns: 1fr; } }

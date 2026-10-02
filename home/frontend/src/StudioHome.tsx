@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { LanguageSelector, useLanguage } from '../../../packages/ui/src/i18n'
 import { resolveWorkspaceUrl } from '../../../packages/ui/src/navigation'
 import { appPath } from './appPath'
-import NoticeToast, { LoadingNotice } from '../../../packages/ui/src/NoticeToast'
+import NoticeToast from '../../../packages/ui/src/NoticeToast'
 import '../../../packages/ui/src/notice-toast.css'
 
 export type StudioApp = {
@@ -19,7 +19,7 @@ export function StudioLinks({ apps }: { apps: StudioApp[] }) {
   return (
     <nav className="home-primary-links" aria-label={t('Investment workspaces')}>
       {apps.map((app, index) => (
-        <a data-workspace-link href={['watchlist', 'portfolio', 'regime', 'briefing'].includes(app.app_id)
+        <a data-workspace-link data-workspace={app.app_id} href={['watchlist', 'portfolio', 'regime', 'briefing'].includes(app.app_id)
           ? resolveWorkspaceUrl(app.url, app.app_id as 'watchlist' | 'portfolio' | 'regime' | 'briefing')
           : app.url} key={app.app_id}>
           <span className="home-link-number">{String(index + 1).padStart(2, '0')}</span>
@@ -69,7 +69,6 @@ export default function StudioHome() {
   return (
     <main className="studio-shell home-shell">
       <NoticeToast notice={error ? { id: 0, message: error, tone: 'error' } : null} onDismiss={() => setError('')} />
-      <LoadingNotice active={apps === null && !error} message={t('Loading')} />
       <header className="home-masthead">
         <a className="home-brand" href={appPath('/')}><strong>Investment Studio</strong></a>
         <div className="home-actions">
@@ -86,7 +85,7 @@ export default function StudioHome() {
         <p>Research markets, monitor assets, and manage your portfolios.</p>
       </section>
       {error ? null : apps === null ? (
-        <div className="home-links-skeleton" role="status" aria-busy="true" aria-label={t('Loading')}>{[0, 1, 2, 3].map(key => <span key={key} />)}</div>
+        <div className="home-links-skeleton" role="status" aria-label={t('Loading')}>{[0, 1, 2, 3].map(key => <span key={key} />)}</div>
       ) : apps.length === 0 ? (
         <p>No workspaces are configured.</p>
       ) : <StudioLinks apps={apps} />}

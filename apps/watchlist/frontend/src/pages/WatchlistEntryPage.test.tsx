@@ -13,12 +13,13 @@ vi.mock('../lib/api', async (original) => ({
 }))
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 
-it('shows the shared floating loader while the directory loads, without title status text', async () => {
+it('shows loading inside the directory while keeping its header outside the loading region', async () => {
   let resolve!: (lists: WatchlistRecord[]) => void
   mocks.getWatchlists.mockReturnValue(new Promise<WatchlistRecord[]>((done) => { resolve = done }))
   render(<LanguageProvider enableDomTranslation={false}><MemoryRouter><WatchlistEntryPage /></MemoryRouter></LanguageProvider>)
   const status = screen.getByRole('status')
-  expect(status.classList.contains('investment-studio-notice-toast-loading')).toBe(true)
+  expect(status.closest('.watchlist-entry-list-shell')).not.toBeNull()
+  expect(status.closest('#investment-studio-notices')).toBeNull()
   expect(within(screen.getByRole('heading', { name: 'All Watchlists' }).parentElement!).queryByText('Loading')).toBeNull()
   await act(async () => resolve([]))
   expect(screen.queryByRole('status')).toBeNull()

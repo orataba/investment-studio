@@ -5,35 +5,45 @@
     "Aptos", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif
   );
 
-  /* Restrained institutional palette shared by every workspace. */
+  /* Neutral reading surfaces; color identifies actions, series and meaning. */
   --studio-bg: #ffffff;
   --studio-surface: #ffffff;
-  --studio-surface-soft: #f8fafc;
-  --studio-surface-tint: #f1f5f9;
-  --studio-ink: #111827;
-  --studio-muted: #3f4652;
-  --studio-faint: #667085;
-  --studio-line: #e5e7eb;
-  --studio-line-strong: #cbd5e1;
-  --studio-accent: #0b66b2;
-  --studio-accent-strong: #084f8c;
-  --studio-accent-soft: #f8fafc;
-  --studio-positive: #24745b;
-  --studio-negative: #a64643;
-  --studio-warning: #94672f;
-  --studio-info: #4f6f8a;
+  --studio-surface-soft: #f6f7f6;
+  --studio-surface-tint: #eef2f0;
+  --studio-ink: #25282b;
+  --studio-muted: #60676b;
+  --studio-faint: #6c7377;
+  --studio-line: #e1e5e2;
+  --studio-line-strong: #cbd2cf;
+  --studio-accent: #087b75;
+  --studio-accent-strong: #06645f;
+  --studio-accent-soft: #eaf6f3;
+  --studio-positive: #137c63;
+  --studio-positive-strong: #075443;
+  --studio-positive-soft: #edf8f2;
+  --studio-negative: #bd4658;
+  --studio-negative-strong: #8e2e3f;
+  --studio-negative-soft: #fff0f1;
+  --studio-warning: #9b641d;
+  --studio-warning-soft: #fff7e8;
+  --studio-info: #6454a4;
+  --studio-info-soft: #f3f0fb;
+  --studio-band: var(--studio-surface-soft);
+  --studio-band-strong: var(--studio-surface-tint);
 
   /* One visual grammar for NAV, price, risk and research charts. */
   --studio-chart-primary: var(--studio-accent);
-  --studio-chart-secondary: #86545e;
-  --studio-chart-tertiary: #607080;
-  --studio-chart-grid: #e1e5e8;
-  --studio-chart-grid-strong: #c8d0d5;
-  --studio-chart-axis: #66717c;
-  --studio-chart-area: rgba(11, 102, 178, 0.09);
-  --studio-chart-band: rgba(23, 33, 43, 0.035);
-  --studio-chart-positive: #24745b;
-  --studio-chart-negative: #a64643;
+  --studio-chart-secondary: #7861b5;
+  --studio-chart-tertiary: #cf8b32;
+  --studio-chart-coral: #db725b;
+  --studio-chart-blue: #4d83b5;
+  --studio-chart-grid: #e1e5e2;
+  --studio-chart-grid-strong: #cbd2cf;
+  --studio-chart-axis: #6c7377;
+  --studio-chart-area: rgba(8, 123, 117, 0.09);
+  --studio-chart-band: rgba(37, 40, 43, 0.035);
+  --studio-chart-positive: var(--studio-positive);
+  --studio-chart-negative: var(--studio-negative);
 
   /* Existing application aliases. */
   --surface: var(--studio-surface);
@@ -142,19 +152,6 @@ textarea:focus {
 .language-switcher select:focus {
   outline: none;
   box-shadow: none;
-}
-
-.language-switcher {
-  min-height: 30px;
-  border-color: var(--studio-line-strong);
-  background: var(--studio-surface);
-}
-
-.language-switcher:hover,
-:root:not([data-input-modality='pointer']) .language-switcher:has(select:focus-visible) {
-  border-color: var(--studio-accent);
-  color: var(--studio-accent);
-  background: var(--studio-surface);
 }
 
 .inline-notice,

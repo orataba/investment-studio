@@ -932,7 +932,6 @@ export default function ResearchPage() {
       activeSection="Portfolio Optimization"
       busy={loading || runDetailLoading}
     >
-      <LoadingNotice active={actionPending === 'run'} message="投资研究分析中…" />
       <NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
       <NoticeToast notice={workspaceError ? { id: 0, tone: 'error', message: workspaceError } : null} onDismiss={() => setWorkspaceError(null)} />
       <NoticeToast notice={actionError && !settingsOpen ? { id: 0, tone: 'error', message: actionError } : null} onDismiss={() => setActionError(null)} />
@@ -957,6 +956,7 @@ export default function ResearchPage() {
                 </div>
               </div>
               <div className="research-command-actions">
+              <LoadingNotice active={actionPending === 'run'} message={zh ? '投资研究分析中…' : 'Running optimization…'} compact />
               <button type="button" className="toolbar-link" onClick={openSettings} disabled={Boolean(actionPending)}>{zh ? '优化参数' : 'Optimization Parameters'}</button>
               <button
                 type="button"
@@ -964,7 +964,7 @@ export default function ResearchPage() {
                 onClick={() => void handleRunResearch()}
                 disabled={!canEditPortfolio || !effectiveSavedTaxonomyId || Boolean(actionPending) || settingsOpen}
               >
-                {actionPending === 'run' ? 'Running...' : 'Run Optimization'}
+                Run Optimization
               </button>
               </div>
             </div>

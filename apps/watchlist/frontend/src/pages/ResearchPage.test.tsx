@@ -97,7 +97,7 @@ it('carries the selected prediction version into shared research and reports its
   const reference = { instrument_id: 'fund-a', notebook_version_id: 'notebook-1', forecast_key: 'cash-return', forecast_version_id: 'forecast-1' }
   const updated = vi.fn()
   window.addEventListener(RESEARCH_UPDATED, updated)
-  render(<MemoryRouter><InstrumentAssistantDrawer instrumentId="fund-a" question="这项预测有什么变化？" researchReference={reference} onClose={vi.fn()} /></MemoryRouter>)
+  render(<LanguageProvider enableDomTranslation={false}><MemoryRouter><InstrumentAssistantDrawer instrumentId="fund-a" question="这项预测有什么变化？" researchReference={reference} onClose={vi.fn()} /></MemoryRouter></LanguageProvider>)
   const send = await screen.findByRole('button', { name: '发送' })
   await waitFor(() => expect(send.hasAttribute('disabled')).toBe(false))
   mocks.write.mockImplementation(async (path: string) => {

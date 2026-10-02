@@ -2,19 +2,8 @@
   scrollbar-gutter: stable;
   color-scheme: light;
   font-family: var(--investment-studio-font-sans, "Aptos", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif);
-  color: #111827;
+  color: var(--studio-ink);
   background: #ffffff;
-  --studio-ink: #111827;
-  --studio-muted: #3f4652;
-  --studio-faint: #667085;
-  --studio-line: #e5e7eb;
-  --studio-line-strong: #cbd5e1;
-  --studio-band: #f8fafc;
-  --studio-band-strong: #f1f5f9;
-  --studio-accent: #0b66b2;
-  --studio-positive: #0f766e;
-  --studio-negative: #b42318;
-  --studio-warning: #92400e;
 }
 
 * {
@@ -71,28 +60,40 @@ textarea {
 .home-actions {
   display: flex;
   flex-wrap: wrap;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  max-width: 100%;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--studio-muted);
 }
 
-.home-logout {
+.home-actions > a,
+.home-actions > span,
+.home-actions .home-logout {
+  display: inline-flex;
+  align-items: center;
   height: 30px;
-  padding: 0 10px;
-  border: 1px solid var(--studio-line-strong);
+  padding: 0 6px;
+  border: 1px solid transparent;
   border-radius: 0;
   appearance: none;
   font-size: 13px;
   line-height: 1.2;
+  white-space: nowrap;
   color: var(--studio-muted);
-  background: #ffffff;
-  cursor: pointer;
+  background: transparent;
 }
 
+.home-logout { cursor: pointer; }
+
+.home-actions > a:hover,
+.home-actions > a:focus-visible,
 .home-logout:hover,
 .home-logout:focus-visible {
-  border-color: var(--studio-accent);
+  border-bottom-color: var(--studio-accent);
   color: var(--studio-accent);
+  background: var(--studio-accent-soft);
 }
 
 .home-logout:focus-visible {
@@ -308,7 +309,7 @@ textarea {
 
 .login-form input:focus {
   border-color: var(--studio-accent);
-  box-shadow: 0 0 0 3px rgba(11, 102, 178, .12);
+  box-shadow: 0 0 0 3px rgba(8, 127, 121, .12);
   outline: none;
 }
 
@@ -325,7 +326,7 @@ textarea {
 
 .login-form button:hover:not(:disabled),
 .login-form button:focus-visible {
-  background: #095795;
+  background: var(--studio-accent-strong);
 }
 
 .login-form button:focus-visible {
@@ -416,7 +417,7 @@ textarea {
 .account-shell th:first-child, .account-shell td:first-child { position: sticky; left: 0; z-index: 1; background: #fff; box-shadow: inset -1px 0 var(--studio-line); }
 .account-shell td small { display: block; color: var(--studio-muted); margin-top: 5px; }
 .account-message, .account-invitation { padding: 14px; border: 1px solid var(--studio-line-strong); overflow-wrap: anywhere; }
-.account-secret { display: block; padding: 12px; background: #eef3f7; overflow-wrap: anywhere; }
+.account-secret { display: block; padding: 12px; background: var(--studio-info-soft); overflow-wrap: anywhere; }
 .home-links-skeleton { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; min-height: 220px; }
 .home-links-skeleton > span, .account-skeleton > span { display: block; background: var(--studio-band); border: 1px solid var(--studio-line); }
 .account-skeleton { display: grid; gap: 18px; padding-top: 22px; }

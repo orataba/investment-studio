@@ -30,6 +30,6 @@ export default function GenerateEditionForm({ kind, busy, onCancel, onGenerate }
     {error && <p id="cutoff-error" className="field-error" role="alert">{copy('请选择完整、有效的日期与时间。', 'Choose a complete, valid date and time.')}</p>}
     <p className="generation-preview">{custom ? copy('有效截止时间', 'Effective cutoff') : copy('当前时间参考', 'Current time reference')}: {valid ? <><EvidenceTime value={timestamp} timezone={custom ? timezone : 'Asia/Shanghai'} /> · {custom ? timezone : 'Asia/Shanghai'}</> : '—'}<br />{copy('将创建新版本，保留已有报告。', 'Creates a new version and preserves existing editions.')}</p>
     <p>{kind === 'daily' ? copy('日报读取截止前 24 小时的资料。', 'Daily reports use evidence from the preceding 24 hours.') : copy('周报读取本周一至截止时刻的资料。', 'Weekly reports use evidence from Monday to the cutoff.')}</p>
-    <div className="form-actions"><button type="button" onClick={onCancel} disabled={busy}>{copy('取消', 'Cancel')}</button><button className="primary-button" type="submit" disabled={busy}>{busy ? copy('正在提交…', 'Submitting…') : copy('开始生成', 'Start generation')}</button></div>
+    <div className="form-actions"><button type="button" onClick={onCancel} disabled={busy}>{copy('取消', 'Cancel')}</button><button className="primary-button" type="submit" disabled={busy}><span role={busy ? 'status' : undefined}>{busy ? copy('正在提交…', 'Submitting…') : copy('开始生成', 'Start generation')}</span></button></div>
   </form>
 }

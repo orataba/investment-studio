@@ -55,12 +55,12 @@ th {
   flex: 0 0 auto;
   align-items: center;
   height: 30px;
-  padding: 0 9px;
-  gap: 8px;
-  border: 1px solid #cbd5e1;
+  padding: 0 5px;
+  gap: 6px;
+  border: 1px solid transparent;
   border-radius: 0;
   background: transparent;
-  color: #111827;
+  color: var(--studio-muted, #60676b);
   font-size: 13px;
   font-weight: 400;
   line-height: 1.2;
@@ -68,13 +68,13 @@ th {
 }
 
 .language-switcher span {
-  color: #3f4652;
+  color: inherit;
 }
 
 .language-switcher::after {
   content: '';
   position: absolute;
-  right: 10px;
+  right: 6px;
   width: 6px;
   height: 6px;
   margin-top: -3px;
@@ -85,7 +85,7 @@ th {
 }
 
 .language-switcher select {
-  min-width: 86px;
+  min-width: 78px;
   height: 28px;
   padding: 0 18px 0 0;
   border: 0;
@@ -100,11 +100,12 @@ th {
 
 .language-switcher:hover,
 :root:not([data-input-modality='pointer']) .language-switcher:has(select:focus-visible) {
-  border-color: #0b66b2;
-  color: #0b66b2;
+  border-bottom-color: var(--studio-accent, #087b75);
+  color: var(--studio-accent, #087b75);
+  background: var(--studio-accent-soft, #eaf6f3);
 }
 
 :root:not([data-input-modality='pointer']) .language-switcher:has(select:focus-visible) {
-  outline: 1px solid #0b66b2;
+  outline: 2px solid var(--studio-accent, #087b75);
   outline-offset: 2px;
 }

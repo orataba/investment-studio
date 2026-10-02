@@ -223,7 +223,6 @@ export default function WatchlistEntryPage() {
 
   return (
     <section className="terminal-page">
-      {loading ? <LoadingOverlay /> : null}
       <header className="watchlist-entry-shell">
         <div className="watchlist-breadcrumbs">
           <a data-workspace-link href={HOME_URL} className="watchlist-breadcrumb-link">
@@ -264,6 +263,7 @@ export default function WatchlistEntryPage() {
       <NoticeToast notice={notice ? { id: 0, message: notice, tone: 'success' } : null} onDismiss={() => setNotice(null)} />
 
       <section className="watchlist-entry-list-shell">
+        {loading ? <LoadingOverlay /> : null}
         <div className="watchlist-entry-grid">
           {watchlists.map((watchlist) => {
             const systemWatchlist = isSystemWatchlist(watchlist)

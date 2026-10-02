@@ -234,7 +234,7 @@ export default function InstrumentPriceChart({
               setHoverIndex(nextIndex)
             }}
           >
-            <defs><linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#287c8e" stopOpacity="0.18" /><stop offset="100%" stopColor="#287c8e" stopOpacity="0.01" /></linearGradient></defs>
+            <defs><linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="var(--studio-chart-primary)" stopOpacity="0.18" /><stop offset="100%" stopColor="var(--studio-chart-primary)" stopOpacity="0.01" /></linearGradient></defs>
             {chartGeometry.bands.map((band, index) => (
               <rect
                 key={`band-${index}`}

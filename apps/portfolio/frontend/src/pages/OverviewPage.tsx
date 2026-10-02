@@ -1,3 +1,4 @@
+import { CHART_SERIES_COLORS } from '../lib/chartPalette'
 import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
@@ -149,8 +150,6 @@ const TOP_HOLDING_COLUMN_GROUPS: Array<{ label: string; columns: TopHoldingColum
 
 const TOP_HOLDINGS_LIMIT = 10
 const DERIVATIVES_BUCKET_ID = 'derivative_bucket:__derivatives__'
-
-const DONUT_COLORS = ['#0b72d7', '#0f766e', '#64748b', '#7c3aed', '#db2777', '#14b8a6', '#475569']
 
 function primaryIdentifier(row: PortfolioHoldingRow) {
   if (!row.instrument_core) {
@@ -713,7 +712,7 @@ function StrategySleeveDonut({
                 cx="60"
                 cy="60"
                 r={radius}
-                stroke={DONUT_COLORS[index % DONUT_COLORS.length]}
+                stroke={CHART_SERIES_COLORS[index % CHART_SERIES_COLORS.length]}
                 strokeDasharray={`${slice} ${circumference - slice}`}
                 strokeDashoffset={dashOffset}
               />
@@ -728,7 +727,7 @@ function StrategySleeveDonut({
       <div className="overview-sleeve-donut-list">
         {visibleSegments.map((segment, index) => (
           <div className="overview-sleeve-donut-row" key={segment.id}>
-            <span style={{ background: DONUT_COLORS[index % DONUT_COLORS.length] }} />
+            <span style={{ background: CHART_SERIES_COLORS[index % CHART_SERIES_COLORS.length] }} />
             <div>
               <strong>{segment.label}</strong>
             </div>

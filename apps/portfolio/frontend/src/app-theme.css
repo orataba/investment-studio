@@ -423,7 +423,7 @@
 }
 
 .summary-card-warning {
-  background: #fffaf2;
+  background: var(--studio-warning-soft);
 }
 
 .portfolio-workspace-page table thead th,
@@ -438,7 +438,7 @@
 .portfolio-workspace-page table tbody tr:hover,
 .accounts-data-table tbody tr:hover,
 .taxonomy-page table tbody tr:hover {
-  background: rgba(23, 107, 120, 0.035);
+  background: var(--studio-accent-soft);
 }
 
 .holdings-filter-bar,
@@ -640,7 +640,7 @@
   border-bottom: 1px solid var(--portfolio-line-strong);
   border-left: 3px solid var(--portfolio-warning);
   border-radius: 0;
-  background: #fffaf2;
+  background: var(--studio-warning-soft);
   box-shadow: none;
 }
 
@@ -713,7 +713,7 @@
 
 .portfolio-workspace-page .portfolio-nav-drawdown-area,
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-drawdown-area {
-  fill: rgba(166, 70, 67, 0.08);
+  fill: color-mix(in srgb, var(--studio-negative) 9%, transparent);
 }
 
 .portfolio-workspace-page .portfolio-nav-line,
@@ -726,7 +726,8 @@
 }
 
 .portfolio-workspace-page .portfolio-nav-line-benchmark,
-.rolling-risk-line-benchmark {
+.rolling-risk-line-benchmark,
+.rolling-risk-point.rolling-risk-point-benchmark {
   stroke: var(--studio-chart-secondary);
   stroke-width: 1.4;
 }

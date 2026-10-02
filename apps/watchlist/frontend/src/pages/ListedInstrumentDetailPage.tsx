@@ -119,13 +119,13 @@ function getHeatmapCellStyle(value: number | null, maxAbsValue: number) {
   const normalized = Math.min(Math.abs(value) / Math.max(maxAbsValue, 1), 1)
   if (value >= 0) {
     return {
-      backgroundColor: `rgba(13, 122, 56, ${0.08 + normalized * 0.26})`,
-      color: '#0d5e31',
+      backgroundColor: `color-mix(in srgb, var(--studio-positive) ${(0.08 + normalized * 0.26) * 100}%, white)`,
+      color: 'var(--studio-positive-strong)',
     }
   }
   return {
-    backgroundColor: `rgba(175, 0, 0, ${0.08 + normalized * 0.24})`,
-    color: '#8f1d1d',
+    backgroundColor: `color-mix(in srgb, var(--studio-negative) ${(0.08 + normalized * 0.24) * 100}%, white)`,
+    color: 'var(--studio-negative-strong)',
   }
 }
 
@@ -396,8 +396,8 @@ function IndexLevelChart({ bars, crypto = false }: { bars: DisplayPriceBar[]; cr
     <svg className="listed-index-level-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={crypto ? 'Crypto spot price chart' : 'Index level chart'}>
       <defs>
         <linearGradient id="listed-index-level-gradient" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="#425d7a" stopOpacity="0.2" />
-          <stop offset="100%" stopColor="#425d7a" stopOpacity="0.02" />
+          <stop offset="0%" stopColor="var(--studio-chart-primary)" stopOpacity="0.2" />
+          <stop offset="100%" stopColor="var(--studio-chart-primary)" stopOpacity="0.02" />
         </linearGradient>
       </defs>
       {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
@@ -959,7 +959,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const zh = language === 'zh-Hans'
 
   const loadingLabel = zh ? '加载中…' : 'Loading…'
-  const sectionLoading = (label: string) => <div className="instrument-placeholder" role="status" aria-busy="true">{label} · {loadingLabel}</div>
+  const sectionLoading = (label: string) => <LoadingNotice active message={`${label} · ${loadingLabel}`} />
   const quotePending = usesCanonicalPriceSeries ? pending.chart : pending.bars
   const analysisPending = pending.chart || (!usesCanonicalPriceSeries && !canonicalCloseAnalysisBars.length && pending.bars)
   const returnsPending = usesCanonicalPriceSeries ? pending.chart : pending.performance
@@ -1040,7 +1040,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     <div className={`instrument-detail-page listed-detail-page${tab === 'investment-research' ? ' research-document-page' : ''}`}>
       {riskInstrumentId === instrumentId && <InstrumentRiskDrawer instrumentId={instrumentId} instrumentName={instrument.instrument_name} watchlistId={watchlistContext?.watchlistId} onClose={() => setRiskInstrumentId(null)} onAskAssistant={(question, researchReference) => setAssistant({ instrumentId, question, researchReference })} />}
       {assistant?.instrumentId === instrumentId && <InstrumentAssistantDrawer instrumentId={instrumentId} watchlistId={watchlistContext?.watchlistId} question={assistant.question} researchReference={assistant.researchReference} onClose={() => setAssistant(null)} />}
-      <LoadingNotice active={visibleDataLoading || settingsLoading || settingsSaving} message={settingsSaving ? (zh ? '正在保存设置…' : 'Saving settings…') : (zh ? '正在加载标的资料…' : 'Loading instrument data…')} />
       <NoticeToast notice={settingsError ? { id: 0, tone: 'error', message: settingsError } : null} onDismiss={() => setSettingsError(null)} />
       {loadErrorMessage && <RequestRecovery error={loadErrorMessage} onRetry={() => setRetryToken(value => value + 1)} busy={visibleDataLoading} />}
       <div className="instrument-detail-topbar">
@@ -1111,6 +1110,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
                 <div className="instrument-quote-source-title">Instrument Settings</div>
               </div>
               <div className="toolbar">
+                <LoadingNotice active={settingsSaving} message={zh ? '正在保存设置…' : 'Saving settings…'} compact />
                 <button type="button" disabled={settingsSaving} onClick={closeSettings}>Cancel</button>
                 <button
                   type="button"
@@ -1118,11 +1118,12 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
                   disabled={settingsSaving || settingsLoading || !attributeValues}
                   onClick={() => void saveSettings()}
                 >
-                  {settingsSaving ? 'Saving…' : 'Save'}
+                  Save
                 </button>
               </div>
             </div>
             <div className="instrument-settings-body">
+              <LoadingNotice active={settingsLoading} message={zh ? '正在加载设置…' : 'Loading settings…'} compact />
               <section className="instrument-settings-section">
                 <div className="instrument-settings-section-header">
                   <div>

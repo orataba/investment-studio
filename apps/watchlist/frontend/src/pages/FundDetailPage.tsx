@@ -2532,13 +2532,13 @@ function getHeatmapCellStyle(value: number | null, maxAbsValue: number) {
   const normalized = Math.min(Math.abs(value) / Math.max(maxAbsValue, 1), 1)
   if (value >= 0) {
     return {
-      backgroundColor: `rgba(13, 122, 56, ${0.08 + normalized * 0.26})`,
-      color: '#0d5e31',
+      backgroundColor: `color-mix(in srgb, var(--studio-positive) ${(0.08 + normalized * 0.26) * 100}%, white)`,
+      color: 'var(--studio-positive-strong)',
     }
   }
   return {
-    backgroundColor: `rgba(175, 0, 0, ${0.08 + normalized * 0.24})`,
-    color: '#8f1d1d',
+    backgroundColor: `color-mix(in srgb, var(--studio-negative) ${(0.08 + normalized * 0.24) * 100}%, white)`,
+    color: 'var(--studio-negative-strong)',
   }
 }
 
@@ -5719,9 +5719,6 @@ export default function FundDetailPage({
                 onClick={() => setActiveTab(tab)}
               >
                 {fundDetailTabLabel(fundType, tab, language, localize(language, TAB_LABELS[tab]))}
-                {tab === activeTab && activeResourceLoading ? (
-                  <span className="fund-section-loading" role="status" aria-label="Loading">…</span>
-                ) : null}
               </button>
             ))}
           </div>
@@ -5730,7 +5727,6 @@ export default function FundDetailPage({
 
         <NoticeToast notice={productFrameworkLoadError ? { id: 0, tone: 'error', message: productFrameworkLoadError } : null} onDismiss={() => setProductFrameworkLoadError(null)} />
         <NoticeToast notice={sectionError ? { id: 0, tone: 'error', message: sectionError } : null} onDismiss={() => setSectionError(null)} />
-        <LoadingNotice active={activeResourceLoading} message={language === 'zh-Hans' ? '正在加载标的资料…' : 'Loading instrument data…'} />
         <NoticeToast notice={activeResourceErrors.length && dismissedResourceError !== resourceErrorKey ? {
           id: sectionRetryToken, tone: 'error', message: <>{activeResourceErrors.join(' ')} <button type="button" onClick={() => setSectionRetryToken(current => current + 1)}>{language === 'zh-Hans' ? '重试' : 'Retry'}</button></>,
         } : null} durationMs={0} onDismiss={() => setDismissedResourceError(resourceErrorKey)} />
@@ -5878,7 +5874,7 @@ export default function FundDetailPage({
         </div>
       ) : null}
 
-      {!sectionReady && activeResourceLoading && activeTab !== 'overview' ? <div className="research-report-loading" aria-busy="true"><div className="research-loading-title" /><div className="research-loading-line" /></div> : null}
+      <LoadingNotice active={activeResourceLoading} compact={sectionReady || activeTab === 'overview'} message={language === 'zh-Hans' ? '正在加载标的资料…' : 'Loading instrument data…'} />
 
       {activeTab === 'overview' ? (
         <section className="fund-overview" aria-label={language === 'zh-Hans' ? '基金总览' : 'Fund overview'}>
@@ -5902,7 +5898,7 @@ export default function FundDetailPage({
               ].map((row) => <div key={row.label}><span>{row.label}</span><strong>{row.value == null ? '—' : formatPercent(row.value)}</strong></div>)}
             </div>
           </div>
-          {resourceReady('navSeries') ? <p className="fund-overview-date-note">{language === 'zh-Hans' ? '可用历史' : 'Available history'} {formatDate(calculationBasisSeries[0]?.date)} — {formatDate(performanceReferenceEndDate)} · {calculationFrequencyStatus}</p> : !sectionLoadErrors.navSeries ? <p className="fund-overview-date-note">Loading</p> : null}
+          {resourceReady('navSeries') ? <p className="fund-overview-date-note">{language === 'zh-Hans' ? '可用历史' : 'Available history'} {formatDate(calculationBasisSeries[0]?.date)} — {formatDate(performanceReferenceEndDate)} · {calculationFrequencyStatus}</p> : null}
           {summary.freshness.staleness_reason && <p className="fund-overview-date-note" role="status"><FreshnessNote reason={summary.freshness.staleness_reason} observationDate={performanceReferenceEndDate || unitNavDate} /></p>}
           {resourceReady('navSeries') && (navSeries.calculation_frequency_profile.gap_count > 0 || hasUnconfirmedReturnSegmentBreak) ? <p className="fund-overview-quality" role="status">{hasUnconfirmedReturnSegmentBreak
             ? (language === 'zh-Hans' ? '存在尚未确认的基金事件，完整收益历史与风险指标暂不可用。' : 'An unconfirmed fund event prevents complete return history and path risk metrics.')

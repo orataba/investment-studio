@@ -285,7 +285,7 @@
 .watchlists-table tbody tr:hover,
 .monitoring-table tbody tr:hover,
 .instrument-detail-shell table tbody tr:hover {
-  background: rgba(23, 107, 120, 0.035);
+  background: var(--studio-accent-soft);
 }
 
 .watchlists-group-row td,
@@ -502,7 +502,7 @@
 }
 
 .instrument-drawdown-area {
-  fill: rgba(166, 70, 67, 0.08);
+  fill: color-mix(in srgb, var(--studio-negative) 9%, transparent);
 }
 
 .instrument-line-path,
@@ -546,10 +546,6 @@
 
 .instrument-hover-point-drawdown {
   stroke: var(--studio-chart-negative);
-}
-
-.instrument-series-label span {
-  color: var(--studio-chart-primary);
 }
 
 .instrument-drawdown-header-value-primary {

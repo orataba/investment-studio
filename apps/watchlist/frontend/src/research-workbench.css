@@ -52,29 +52,29 @@
   background: none;
   border: none;
   border-radius: 3px;
-  color: #a87831;
+  color: var(--studio-warning);
   cursor: pointer;
 }
-.watchlist-risk-indicator-pending { color: #697c92; }
-.watchlist-risk-indicator.watchlist-risk-indicator-pending:hover { background: #eef3f8; color: #315b83; }
+.watchlist-risk-indicator-pending { color: var(--studio-info); }
+.watchlist-risk-indicator.watchlist-risk-indicator-pending:hover { background: var(--studio-info-soft); color: var(--studio-info); }
 .watchlist-risk-indicator svg {
   width: 15px;
   height: 15px;
 }
 .watchlist-risk-indicator:hover {
-  background: #f7f1e6;
-  color: #8c6125;
+  background: var(--studio-warning-soft);
+  color: var(--studio-warning);
 }
 .watchlist-risk-cell {
   border: none;
   background: none;
   font: inherit;
-  color: #687d89;
+  color: var(--studio-muted);
   padding: 0;
   cursor: pointer;
 }
 .watchlist-risk-cell:hover {
-  color: #246b66;
+  color: var(--studio-accent);
   text-decoration: underline;
 }
 .watchlist-risk-heading {
@@ -82,7 +82,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 20px 24px;
-  border-bottom: 1px solid #dfe5eb;
+  border-bottom: 1px solid var(--studio-line);
 }
 .watchlist-risk-heading h1 {
   display: flex;
@@ -93,13 +93,13 @@
   font-weight: 600;
 }
 .watchlist-risk-heading h1 svg {
-  color: #657a84;
+  color: var(--studio-info);
 }
 .watchlist-risk-heading button {
   border: 0;
   padding: 5px;
   background: none;
-  color: #657985;
+  color: var(--studio-muted);
   cursor: pointer;
 }
 .watchlist-risk-body {

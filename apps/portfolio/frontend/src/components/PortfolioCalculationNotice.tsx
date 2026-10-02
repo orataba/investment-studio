@@ -1,12 +1,14 @@
 import { getPortfolioCalculationStatus } from '../lib/api'
 import { useEffect, useState } from 'react'
-import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
+import NoticeToast, { LoadingNotice, type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 
 /** Observe the durable worker state without requesting financial calculations. */
 export default function PortfolioCalculationNotice({ portfolioId, revision }: { portfolioId: string; revision: unknown }) {
   const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
+  const [loading, setLoading] = useState(false)
   useEffect(() => {
     setNotice(null)
+    setLoading(false)
     if (!portfolioId) return
     let active = true
     let pending = false
@@ -16,9 +18,10 @@ export default function PortfolioCalculationNotice({ portfolioId, revision }: { 
       try {
         const state = await getPortfolioCalculationStatus(portfolioId, controller.signal)
         if (!active) return
+        setLoading(state.status === 'stale' || state.status === 'running')
         if (state.status === 'stale' || state.status === 'running') {
           pending = true
-          setNotice({ id: 0, tone: 'loading', message: '组合净值与持仓更新中…' })
+          setNotice(null)
           timer = setTimeout(() => { void check() }, 2000)
         } else if (state.status === 'failed') {
           setNotice({ id: Date.now(), tone: 'error', message: `净值更新未完成：${state.error_message || '请检查行情与核算状态。'}` })
@@ -28,11 +31,14 @@ export default function PortfolioCalculationNotice({ portfolioId, revision }: { 
           setNotice(null)
         }
       } catch (error) {
-        if (active && !controller.signal.aborted && pending) setNotice({ id: Date.now(), tone: 'error', message: error instanceof Error ? error.message : '无法读取更新状态。' })
+        if (active && !controller.signal.aborted) {
+          setLoading(false)
+          if (pending) setNotice({ id: Date.now(), tone: 'error', message: error instanceof Error ? error.message : '无法读取更新状态。' })
+        }
       }
     }
     void check()
     return () => { active = false; controller.abort(); if (timer) clearTimeout(timer) }
   }, [portfolioId, revision])
-  return <NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
+  return <><LoadingNotice active={loading} message="组合净值与持仓更新中…" compact /><NoticeToast notice={notice} onDismiss={() => setNotice(null)} /></>
 }

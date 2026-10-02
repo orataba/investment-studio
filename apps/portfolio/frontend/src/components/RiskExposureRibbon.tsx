@@ -1,6 +1,5 @@
+import { CHART_SERIES_COLORS } from '../lib/chartPalette'
 import { formatPercent } from '../lib/format'
-
-const SEGMENT_COLORS = ['#1f4b99', '#0b72d7', '#2a9d8f', '#64748b', '#14b8a6', '#7c3aed', '#db2777', '#475569']
 
 export type RiskExposureSegment = {
   id: string
@@ -33,7 +32,7 @@ export default function RiskExposureRibbon({ segments, ariaLabel, emptyLabel }: 
             className="risk-ribbon-segment"
             style={{
               flexGrow: segment.value,
-              background: SEGMENT_COLORS[index % SEGMENT_COLORS.length],
+              background: CHART_SERIES_COLORS[index % CHART_SERIES_COLORS.length],
             }}
           />
         ))}
@@ -44,7 +43,7 @@ export default function RiskExposureRibbon({ segments, ariaLabel, emptyLabel }: 
           <div className="risk-ribbon-legend-item" key={segment.id}>
             <span
               className="risk-ribbon-swatch"
-              style={{ background: SEGMENT_COLORS[index % SEGMENT_COLORS.length] }}
+              style={{ background: CHART_SERIES_COLORS[index % CHART_SERIES_COLORS.length] }}
             />
             <span className="risk-ribbon-label">{segment.label}</span>
             <span className="risk-ribbon-value">{segment.valueLabel ?? formatPercent(segment.value)}</span>

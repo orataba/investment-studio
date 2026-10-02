@@ -48,6 +48,7 @@ import {
   summarizeMetricAsOfDates,
 } from '../lib/watchlistMetricSemantics'
 import LoadingOverlay from '../components/LoadingOverlay'
+import WorkspaceLoadingDrawer from '../../../../../packages/ui/src/WorkspaceLoadingDrawer'
 import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
 import RenameWatchlistDialog from '../components/RenameWatchlistDialog'
 import WatchlistCreator, { watchlistCreatorLabel } from '../components/WatchlistCreator'
@@ -2636,6 +2637,12 @@ export default function WatchlistsPage() {
     setNotice(null)
   }
 
+  function closeRisk() {
+    const next = new URLSearchParams(watchlistSearchParams)
+    next.delete('risk'); next.delete('risk_instrument')
+    setWatchlistSearchParams(next)
+  }
+
   function openRisk(id?: string) {
     setSelectorMenuOpen(false)
     const next = new URLSearchParams(watchlistSearchParams)
@@ -2682,17 +2689,12 @@ export default function WatchlistsPage() {
 
   return (
     <>
-      {!error && (!rowsAreCurrent || screenerLoading) ? <LoadingOverlay /> : null}
-      {watchlistSearchParams.get('risk') === '1' && <Suspense fallback={<LoadingOverlay />}><WatchlistRiskDrawer
+      {watchlistSearchParams.get('risk') === '1' && <Suspense fallback={<WorkspaceLoadingDrawer kind="risk" onClose={closeRisk} />}><WatchlistRiskDrawer
         key={watchlistId}
         watchlistId={watchlistId}
         watchlistName={activeWatchlist?.name || '当前列表'}
         focusInstrumentId={watchlistSearchParams.get('risk_instrument') || undefined}
-        onClose={() => {
-          const next = new URLSearchParams(watchlistSearchParams)
-          next.delete('risk'); next.delete('risk_instrument')
-          setWatchlistSearchParams(next)
-        }}
+        onClose={closeRisk}
         onAskAssistant={(id, question, reference) => openAssistant(id, question, reference, true)}
         onChanged={() => setReloadToken((value) => value + 1)}
       /></Suspense>}
@@ -2703,7 +2705,6 @@ export default function WatchlistsPage() {
         setWatchlistSearchParams(next)
       }} />}
       <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
-      <LoadingNotice active={isAdding || isBatchAdding || updatingCoverage || isSearchingInstruments} message={isAdding || isBatchAdding ? (zh ? '正在添加标的…' : 'Adding instruments…') : updatingCoverage ? (zh ? '正在更新投资状态…' : 'Updating investment status…') : (zh ? '正在搜索证券…' : 'Searching securities…')} />
       <div className="watchlists-page">
       <div className="watchlists-pagehead">
         <div className="watchlists-topbar">
@@ -3149,6 +3150,7 @@ export default function WatchlistsPage() {
               onSelect={(format) => void handleDownloadCurrentView(format)}
             />
             {canWriteTeam && selectedRows.length > 0 && rowsAreCurrent && <>
+              <LoadingNotice active={updatingCoverage} message={zh ? '正在更新投资状态…' : 'Updating investment status…'} compact />
               <span title={zh ? '选择覆盖全部筛选结果，包括未展开行。投资状态在所有列表和组合间共享，并可能触发后台研究。' : 'Selection covers all filtered results, including rows not expanded. Investment status is shared across lists and portfolios and may trigger background research.'} className="watchlists-selection-count">{zh ? `已选 ${selectedRows.length} / ${searchedRows.length} 个筛选结果` : `${selectedRows.length} selected of ${searchedRows.length} filtered results`}</span>
               {(['Invested', 'Proposed'] as const).map(status => <button key={status} type="button" className="watchlists-toolbar-button" disabled={updatingCoverage}
                 onClick={async () => {
@@ -3240,6 +3242,7 @@ export default function WatchlistsPage() {
           </div>
         ) : null}
 
+        {!error && (!rowsAreCurrent || screenerLoading) ? <LoadingOverlay /> : null}
         {error && <RequestRecovery error={error} onRetry={() => { setError(null); setReloadToken(value => value + 1) }} busy={screenerLoading} />}
         {viewSaveError ? <div role="alert" className="watchlists-view-save-status">{zh ? '视图保存失败：' : 'View save failed: '}{t(viewSaveError)} <button type="button" onClick={() => void persistActiveWatchlistView({ columns: visibleColumns, groupBy: workingGroupBy, sortRules, filters: workingFilters, columnWidths })}>{zh ? '重试保存' : 'Retry save'}</button></div> : (viewSavePending || viewEdited) && <div role="status" className="watchlists-view-save-status">{zh ? '正在保存视图…' : 'Saving view…'}</div>}
         {showGroupHeaders && <p className="watchlists-aggregation-note">{zh ? '分组数值为有效成员的算术平均；n/N 为有效数/成员数，缺失值不计为零。混合指标日期时不汇总；回撤均值不等于组合回撤。' : 'Group values are arithmetic means of valid members; n/N shows valid/total members. Missing values are excluded, not zero. Mixed metric dates are not aggregated; mean drawdown is not portfolio drawdown.'}</p>}
@@ -4123,6 +4126,7 @@ export default function WatchlistsPage() {
                 {catalogErrors.map((warning) => <div key={warning}>{warning}</div>)}
               </div>}
               <div className="watchlists-registry-list">
+                <LoadingNotice active={isSearchingInstruments} message={zh ? '正在搜索证券…' : 'Searching securities…'} compact />
                 {!isSearchingInstruments
                   ? sharedInstrumentResults.map((instrument) => (
                       <button
@@ -4187,7 +4191,7 @@ export default function WatchlistsPage() {
                 title="Add identifiers from CSV, TSV, text, or Excel"
                 onClick={() => batchFileInputRef.current?.click()}
               >
-                {isBatchAdding ? 'Processing File...' : 'Add From File'}
+                <span role={isBatchAdding ? 'status' : undefined}>{isBatchAdding ? 'Processing File...' : 'Add From File'}</span>
               </button>
               <button
                 type="button"
@@ -4234,10 +4238,10 @@ export default function WatchlistsPage() {
                   }
                 }}
               >
-                {isAdding
+                <span role={isAdding ? 'status' : undefined}>{isAdding
                   ? (selectedCatalogSecurity ? (zh ? '正在登记并添加…' : 'Registering and adding…') : 'Adding...')
                   : (selectedCatalogSecurity && !selectedCatalogSecurity.existing_instrument_id
-                    ? (zh ? '登记并添加' : 'Register and add') : 'Add To Watchlist')}
+                    ? (zh ? '登记并添加' : 'Register and add') : 'Add To Watchlist')}</span>
               </button>
             </div>
           </div>

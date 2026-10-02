@@ -22,7 +22,7 @@ function metricLabel(key: string, columnLabel?: string): string | null {
   return key.includes('_') ? null : key
 }
 
-const colors = ['#2563a6', '#17776b', '#8a5b9f', '#8b6870']
+const colors = ['var(--studio-chart-primary)', 'var(--studio-chart-secondary)', 'var(--studio-chart-tertiary)', 'var(--studio-chart-coral)', 'var(--studio-chart-blue)']
 const numeric = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
 const number = (value: number) => value.toLocaleString('zh-CN', { maximumSignificantDigits: 6 })
 const axisNumber = (value: number) => value !== 0 && (Math.abs(value) < 0.0001 || Math.abs(value) >= 1e9)
@@ -72,8 +72,8 @@ function Chart({ chart, table, showTitle }: { chart: ResearchQuantChart; table: 
     {showTitle && <h4>{chart.title}</h4>}
     <div className="research-quant-plot" role="region" aria-label={chart.title} tabIndex={0}><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={chart.title}>
       <title>{chart.title}</title>
-      {yTicks.map(value => <g key={value}><line x1={left} x2={width - right} y1={y(value)} y2={y(value)} stroke="#e3e8ef" /><text x={left - 9} y={y(value) + 4} textAnchor="end">{axisNumber(value)}</text></g>)}
-      {chart.kind === 'bar' && <line x1={left} x2={width - right} y1={y(0)} y2={y(0)} stroke="#97a6b5" />}
+      {yTicks.map(value => <g key={value}><line x1={left} x2={width - right} y1={y(value)} y2={y(value)} stroke="var(--studio-chart-grid)" /><text x={left - 9} y={y(value) + 4} textAnchor="end">{axisNumber(value)}</text></g>)}
+      {chart.kind === 'bar' && <line x1={left} x2={width - right} y1={y(0)} y2={y(0)} className="research-quant-zero-axis" stroke="var(--studio-chart-axis)" />}
       {chart.series.map((series, seriesIndex) => {
         const color = colors[seriesIndex % colors.length]
         if (chart.kind === 'bar') return <g key={series.key}>{rows.map((row, index) => numeric(row[series.key]) ? <rect key={index} x={barX(index) + (seriesIndex - chart.series.length / 2) * barWidth} y={Math.min(y(0), y(row[series.key] as number))} width={barWidth * 0.85} height={Math.abs(y(row[series.key] as number) - y(0))} fill={color}><title>{String(row[chart.x_key])} · {series.label}: {number(row[series.key] as number)}</title></rect> : null)}</g>

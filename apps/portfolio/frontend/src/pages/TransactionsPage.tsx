@@ -4397,6 +4397,7 @@ export default function TransactionsPage() {
           </div>
           <div className="transaction-toolbar-actions">
             <div className="transaction-toolbar-file-actions" aria-label="Transaction files">
+              <LoadingNotice active={importingFile && !activePendingFileImport} message={fcnLabel('Checking file…', '正在检查文件…')} compact />
               <DownloadFormatMenu
                 buttonLabel="Export"
                 wrapperClassName="portfolio-download-menu"
@@ -4412,7 +4413,7 @@ export default function TransactionsPage() {
                 title="Import and check a transaction CSV or Excel file"
                 onClick={() => transactionFileInputRef.current?.click()}
               >
-                {importingFile ? 'Checking…' : 'Import'}
+                Import
               </button>
               <DownloadFormatMenu
                 buttonLabel="Template"
@@ -4669,7 +4670,6 @@ export default function TransactionsPage() {
         ) : null}
 
         <PortfolioCalculationNotice portfolioId={portfolioId} revision={transactionsWorkspace} />
-        <LoadingNotice active={submittingTransaction || importingFile} message={fcnLabel('Saving transaction…', '正在保存交易…')} />
         <NoticeToast notice={notice} onDismiss={() => setNoticeMessage(null)} />
         <NoticeToast notice={captureError && !captureAssistantOpen ? { id: 0, tone: 'error', message: captureError } : null} onDismiss={() => setCaptureError(null)} />
         <NoticeToast notice={pageError ? { id: 0, tone: 'error', message: pageError } : null} onDismiss={() => { setMetadataError(null); setLedgerError(null) }} />
@@ -7855,6 +7855,7 @@ export default function TransactionsPage() {
               </aside>
 
               <footer className="portfolio-settings-modal-actions transaction-form-footer">
+                <LoadingNotice active={submittingTransaction} message={fcnLabel('Saving transaction…', '正在保存交易…')} compact />
                 <button
                   type="button"
                   className="toolbar-link"
@@ -7873,9 +7874,7 @@ export default function TransactionsPage() {
                   className="toolbar-link button-primary"
                   disabled={!canEditPortfolio || submittingTransaction || !selectedAccount || enteredQuantityExceedsPosition || (shouldPreviewPosition && (positionPreviewLoading || Boolean(positionPreviewError)))}
                 >
-                  {submittingTransaction
-                    ? 'Saving…'
-                    : isEditingTransaction
+                  {isEditingTransaction
                       ? 'Save Correction'
                       : isPhysicalOptionOutcome
                         ? form.lifecycle_event_type === 'option_writer_assignment'

@@ -85,7 +85,7 @@ it('loads NAV independently while pending opinions remain explicitly pending and
   expect(api.library).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button', { name: '投资观点' }))
   expect(screen.queryByRole('region', { name: '投资观点时间线' })).toBeNull()
-  expect(screen.getByRole('status', { name: 'Loading' })).toBeTruthy()
+  expect(screen.getByText('正在加载标的资料…').closest('[role="status"]')).toBeTruthy()
   expect(api.research).toHaveBeenCalledOnce()
   await act(async () => finishOpinions({ ...emptyInstrumentResearchResponse(), notes: [savedOpinion('已经保存的独立观点。')] }))
   expect(await screen.findByText('已经保存的独立观点。')).toBeTruthy()
@@ -166,16 +166,17 @@ it('places the three instrument tools beside the fund title and keeps workspace 
   await waitFor(() => expect(api.taxonomy).toHaveBeenCalledOnce())
 })
 
-it('keeps section loading beside the active tab without adding an in-flow notice row', async () => {
+it('keeps section loading in the content region while retaining the instrument header', async () => {
   let resolvePerformance!: (value: unknown) => void
   api.performance.mockImplementationOnce(() => new Promise(resolve => { resolvePerformance = resolve }))
   const { container } = show('/instruments/fund-1?tab=risk')
   const title = await screen.findByRole('heading', { level: 1, name: '测试基金 TEST' })
-  const status = await screen.findByRole('status', { name: 'Loading' })
-  expect(status.closest('.instrument-detail-tab-active')).not.toBeNull()
-  expect(container.querySelector('.inline-notice[role="status"]')).toBeNull()
+  const status = (await screen.findByText('正在加载标的资料…')).closest('[role="status"]')!
+  expect(container.contains(status)).toBe(true)
+  expect(status.closest('.instrument-detail-shell')).toBeNull()
+  expect(status.closest('#investment-studio-notices')).toBeNull()
   resolvePerformance({ growth_chart_series: [], annual_returns: [], trailing_returns: [], ranking: null, peer_comparison: null, calculation_frequency_profile: null, snapshot_metadata: null })
-  await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
+  await waitFor(() => expect(screen.queryByText('正在加载标的资料…')).toBeNull())
   expect(screen.getByRole('heading', { level: 1, name: '测试基金 TEST' })).toBe(title)
 })
 

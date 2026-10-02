@@ -1,3 +1,4 @@
+import { CHART_SERIES_COLORS } from '../lib/chartPalette'
 import { Fragment, useMemo, useState } from 'react'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import type { PortfolioResearchBacktestPointRecord as Point, PortfolioResearchBacktestRecord, PortfolioResearchCurrentContextRecord } from '../lib/api'
@@ -8,7 +9,6 @@ import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTabl
 import InfoHint from './InfoHint'
 import './research-comparison.css'
 
-const COLORS = ['#16815d', '#2563eb', '#a16a21']
 type ChartLine = { label: string; points: Array<{ date: string; value: number }> }
 
 function ComparisonChart({ lines, zh, inception }: { lines: ChartLine[]; zh: boolean; inception?: string | null }) {
@@ -37,7 +37,7 @@ function ComparisonChart({ lines, zh, inception }: { lines: ChartLine[]; zh: boo
   return <div className="research-comparison-chart">
     <div className="research-comparison-chart-toolbar">
       <div className="research-comparison-legend">
-        {chartLines.map((line, index) => line.points.length ? <span key={line.label}><i style={{ background: COLORS[index] }} />{line.label}</span> : null)}
+        {chartLines.map((line, index) => line.points.length ? <span key={line.label}><i style={{ background: CHART_SERIES_COLORS[index] }} />{line.label}</span> : null)}
       </div>
       <div className="research-chart-toggle" role="group" aria-label={zh ? '图表指标' : 'Chart metric'}>
         <button type="button" aria-pressed={mode === 'growth'} onClick={() => setMode('growth')}>{zh ? '收益指数' : 'Return Index'}</button>
@@ -64,14 +64,14 @@ function ComparisonChart({ lines, zh, inception }: { lines: ChartLine[]; zh: boo
         const date = dates[Math.round((dates.length - 1) * tick / 3)]
         return <text key={tick} x={x(date)} y={bottom + 24} textAnchor={tick === 0 ? 'start' : tick === 3 ? 'end' : 'middle'}>{inception && date < inception ? inception : date}</text>
       })}
-      {chartLines.map((line, index) => <path key={line.label} d={line.points.map((point, i) => `${i ? 'L' : 'M'}${x(point.date)},${y(point.value)}`).join(' ')} fill="none" stroke={COLORS[index]} strokeWidth={2} />)}
+      {chartLines.map((line, index) => <path key={line.label} d={line.points.map((point, i) => `${i ? 'L' : 'M'}${x(point.date)},${y(point.value)}`).join(' ')} fill="none" stroke={CHART_SERIES_COLORS[index]} strokeWidth={2} />)}
       <line x1={x(selectedDate)} x2={x(selectedDate)} y1={top} y2={bottom} className="research-comparison-crosshair" />
     </svg>
     <div className="research-comparison-readout">
       <time>{inception && selectedDate < inception ? `${inception} · ${zh ? '期初锚点' : 'Opening anchor'}` : selectedDate}</time>
       {chartLines.map((line, index) => {
         const point = line.points.find((item) => item.date === selectedDate)
-        return line.points.length ? <span key={line.label} style={{ color: COLORS[index] }}>{line.label} {point ? labelValue(point.value) : '—'}</span> : null
+        return line.points.length ? <span key={line.label} style={{ borderLeftColor: CHART_SERIES_COLORS[index] }}>{line.label} {point ? labelValue(point.value) : '—'}</span> : null
       })}
     </div>
   </div>

@@ -1,14 +1,27 @@
 select.studio-workspace-switcher {
   flex: 0 1 auto;
-  width: 142px;
+  width: auto;
   max-width: 100%;
   min-width: 0;
   height: 30px;
-  padding: 3px 6px;
-  border: 1px solid var(--studio-line-strong, #cbd5e1);
+  padding: 3px 4px;
+  border: 1px solid transparent;
   border-radius: 0;
-  background: #fff;
-  color: var(--studio-ink, #111827);
+  background: transparent;
+  color: var(--studio-ink, #25282b);
   font: inherit;
   font-size: 12px;
+  cursor: pointer;
+}
+
+select.studio-workspace-switcher:hover,
+select.studio-workspace-switcher:focus-visible {
+  border-bottom-color: var(--studio-accent, #087b75);
+  color: var(--studio-accent, #087b75);
+  background: var(--studio-accent-soft, #eaf6f3);
+  box-shadow: none;
+}
+
+:root[data-input-modality='pointer'] select.studio-workspace-switcher:focus {
+  border-color: transparent;
 }

@@ -18,7 +18,7 @@
 .listed-overview-reference { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; align-items: start; }
 .listed-overview-reference > :only-child { grid-column: 1 / -1; }
 .listed-risk-metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-.listed-drawdown-line { stroke: #a63b32; stroke-width: 2; }
+.listed-drawdown-line { stroke: var(--studio-negative); stroke-width: 2; }
 .listed-overview-reference .listed-etf-profile { padding: 18px 0 0; border-top: 1px solid var(--line-strong); }
 .listed-etf-profile-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
 .listed-etf-profile h3, .listed-etf-profile h4 { margin: 0; font-size: 15px; font-weight: 500; }

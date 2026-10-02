@@ -1,6 +1,5 @@
+import { CHART_SERIES_COLORS } from './chartPalette'
 import type { PortfolioResearchBacktestSleevePointRecord as SleevePoint } from './api'
-
-const COLORS = ['#2563eb', '#16815d', '#7c3aed', '#0891b2', '#be185d', '#64748b', '#4f46e5', '#047857', '#a855f7', '#0e7490', '#9f1239', '#475569']
 
 export type SleeveChartSeries = { key: string; label: string; color: string }
 export type SleeveChartPoint = { date: string; time: number; values: Map<string, number | null> }
@@ -10,7 +9,7 @@ export function buildSleeveChartSeries(...datasets: SleevePoint[][]): SleeveChar
   const series = new Map<string, SleeveChartSeries>()
   for (const points of datasets) for (const point of points) for (const sleeve of point.sleeves) {
     const key = sleeve.top_sleeve_id ?? sleeve.top_sleeve_label
-    if (!series.has(key)) series.set(key, { key, label: sleeve.top_sleeve_label, color: COLORS[series.size % COLORS.length] })
+    if (!series.has(key)) series.set(key, { key, label: sleeve.top_sleeve_label, color: CHART_SERIES_COLORS[series.size % CHART_SERIES_COLORS.length] })
   }
   return [...series.values()]
 }

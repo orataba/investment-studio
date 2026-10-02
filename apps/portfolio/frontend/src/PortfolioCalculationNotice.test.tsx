@@ -6,14 +6,18 @@ const api = vi.hoisted(() => ({ getPortfolioCalculationStatus: vi.fn() }))
 vi.mock('./lib/api', () => api)
 afterEach(() => { vi.useRealTimers(); vi.resetAllMocks() })
 
-it('keeps the update toast until the durable calculation completes', async () => {
+it('keeps update progress in the portfolio until the durable calculation completes', async () => {
   vi.useFakeTimers()
   api.getPortfolioCalculationStatus.mockResolvedValueOnce({ status: 'running' }).mockResolvedValueOnce({ status: 'current', refreshed_to: '2026-09-29' })
-  render(<PortfolioCalculationNotice portfolioId="3" revision={1} />)
+  const { container } = render(<PortfolioCalculationNotice portfolioId="3" revision={1} />)
   await act(async () => {})
   expect(screen.getByRole('status')).toHaveTextContent('更新中')
+  expect(container).toContainElement(screen.getByRole('status'))
+  expect(document.querySelector('.investment-studio-notice-toast')).toBeNull()
   await act(async () => { vi.advanceTimersByTime(2000) })
   expect(screen.getByRole('status')).toHaveTextContent('已更新至 2026-09-29')
+  expect(container.querySelector('.investment-studio-loading')).toBeNull()
+  expect(screen.getByRole('status')).toHaveClass('investment-studio-notice-toast-success')
   expect(api.getPortfolioCalculationStatus).toHaveBeenCalledTimes(2)
 })
 

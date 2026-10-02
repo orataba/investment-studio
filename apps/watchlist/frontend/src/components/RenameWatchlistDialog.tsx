@@ -38,7 +38,6 @@ export default function RenameWatchlistDialog({ watchlist, onSaved, onCancel }: 
   }
   return <>
     <NoticeToast notice={saveError ? { id: 0, tone: 'error', message: saveError } : null} onDismiss={() => setSaveError('')} />
-    <LoadingNotice active={saving} message={zh ? '正在保存…' : 'Saving…'} />
     <div className="watchlists-modal-backdrop" onClick={close}>
     <div ref={dialogRef} className="watchlists-modal watchlists-compact-modal" role="dialog"
       aria-modal="true" aria-labelledby="rename-watchlist-title" tabIndex={-1}
@@ -56,9 +55,10 @@ export default function RenameWatchlistDialog({ watchlist, onSaved, onCancel }: 
         </label>
       </div>
       <div className="watchlists-modal-actions watchlists-modal-actions-sticky">
+        <LoadingNotice active={saving} message={zh ? '正在保存…' : 'Saving…'} compact />
         <button type="button" disabled={saving} onClick={close}>{zh ? '取消' : 'Cancel'}</button>
         <button type="submit" className="button-primary" disabled={saving || !name.trim()}>
-          {saving ? zh ? '保存中…' : 'Saving…' : zh ? '保存' : 'Save'}
+          {zh ? '保存' : 'Save'}
         </button>
       </div>
       </form>

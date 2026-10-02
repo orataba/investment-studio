@@ -76,7 +76,7 @@ describe('StudioHome', () => {
 
   it('shows a loading message before the entry list is available', () => {
     expect(renderToStaticMarkup(<LanguageProvider><StudioHome /></LanguageProvider>))
-      .toContain('aria-busy="true"')
+      .toContain('role="status" aria-label="Loading"')
   })
 
   it('renders a full login form', () => {
@@ -108,7 +108,7 @@ describe('StudioHome', () => {
     expect(page(<LoginPage />)).not.toContain('name="otp"')
     const account = page(<AccountPage />)
     expect(account).toContain(accountTitle)
-    expect(account).toContain('aria-busy="true"')
+    expect(account).toContain(`role="status" aria-label="${language === 'zh-Hans' ? '加载中' : 'Loading'}"`)
     expect(account).not.toContain('href="/login"')
   })
 

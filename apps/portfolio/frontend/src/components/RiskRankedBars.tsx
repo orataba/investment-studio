@@ -1,6 +1,5 @@
+import { CHART_SERIES_COLORS } from '../lib/chartPalette'
 import { formatPercent } from '../lib/format'
-
-const BAR_COLORS = ['#1f4b99', '#0b72d7', '#2a9d8f', '#64748b', '#14b8a6', '#7c3aed', '#db2777', '#475569']
 
 export type RiskRankedBarItem = {
   id: string
@@ -40,7 +39,7 @@ export default function RiskRankedBars({ items, ariaLabel, emptyLabel }: RiskRan
                 className="risk-ranked-bar-fill"
                 style={{
                   width: `${Math.max((item.value / maxValue) * 100, 6)}%`,
-                  background: BAR_COLORS[index % BAR_COLORS.length],
+                  background: CHART_SERIES_COLORS[index % CHART_SERIES_COLORS.length],
                 }}
               />
             </div>

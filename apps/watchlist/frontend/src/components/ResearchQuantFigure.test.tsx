@@ -45,7 +45,7 @@ it('labels every financial category and preserves negative bars on the same zero
   const bars = [...container.querySelectorAll('rect')]
   expect(bars).toHaveLength(3)
   expect(bars[2].textContent).toContain('-44.67')
-  const zeroAxis = container.querySelector('line[stroke="#97a6b5"]')!
+  const zeroAxis = container.querySelector('line.research-quant-zero-axis')!
   expect(Number(bars[2].getAttribute('y'))).toBe(Number(zeroAxis.getAttribute('y1')))
   expect(Number(bars[2].getAttribute('height'))).toBeGreaterThan(0)
 })

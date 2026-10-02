@@ -31,7 +31,7 @@ import { preloadPortfolioSection } from '../lib/preload'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import OptionOutcomePrompt from './OptionOutcomePrompt'
-import CalculationStatus from './CalculationStatus'
+import WorkspaceLoadingDrawer from '../../../../../packages/ui/src/WorkspaceLoadingDrawer'
 import { setRiskReferenceParams, type ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import { usePortfolioAccess } from './PortfolioAccessProvider'
 import PortfolioMembersSettings from './PortfolioMembersSettings'
@@ -630,7 +630,7 @@ export default function PortfolioWorkspaceLayout({
               />
             </div>
           </div>
-          <Suspense fallback={<CalculationStatus />}>
+          <Suspense fallback={<WorkspaceLoadingDrawer kind={assistantParams ? 'assistant' : 'risk'} onClose={() => { if (assistantParams) setAssistantParams(null); else setRiskDrawerOpen(false) }} />}>
             {riskDrawerOpen && resolvedPortfolioId ? <PortfolioRiskDrawer key={`risk:${resolvedPortfolioId}`} portfolioId={resolvedPortfolioId} onClose={() => setRiskDrawerOpen(false)} onAskAssistant={openAssistant} /> : null}
             {assistantParams && resolvedPortfolioId ? <PortfolioAssistantDrawer key={`assistant:${resolvedPortfolioId}:${assistantParams.toString()}`} initialParams={assistantParams} onClose={() => setAssistantParams(null)} /> : null}
           </Suspense>

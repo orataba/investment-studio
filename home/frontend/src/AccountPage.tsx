@@ -22,7 +22,8 @@ export default function AccountPage() {
   const [confirmation, setConfirmation] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
-  const [busy, setBusy] = useState(false)
+  const [busySection, setBusySection] = useState<string | null>(null)
+  const busy = busySection !== null
   const [link, setLink] = useState('')
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -38,11 +39,11 @@ export default function AccountPage() {
     setMembers(directory.members)
   }
   useEffect(() => { refresh().catch(error => setError(error.message)).finally(() => setLoading(false)) }, [])
-  async function act(work: () => Promise<void>, success = t("Saved.")) {
-    setBusy(true); setError(''); setNotice(null)
+  async function act(work: () => Promise<void>, success = t("Saved."), section = 'team') {
+    setBusySection(section); setError(''); setNotice(null)
     try { await work(); setNotice({ id: Date.now(), message: success, tone: 'success' }) }
     catch (error) { setError((error as Error).message) }
-    finally { setBusy(false) }
+    finally { setBusySection(null) }
   }
   function leave() { window.location.assign(appPath('/login')) }
   async function invite(event: FormEvent<HTMLFormElement>) {
@@ -57,30 +58,32 @@ export default function AccountPage() {
     <h1>{t("Account and team")}</h1>
     <NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
     <NoticeToast notice={error ? { id: 0, message: error, tone: 'error' } : null} onDismiss={() => setError('')} />
-    <LoadingNotice active={loading || busy} message={t(busy ? 'Saving…' : 'Loading')} />
-    {loading ? <div className="account-skeleton" role="status" aria-label={t('Loading')} aria-busy="true"><span /><span /><span /></div> : !account ? <p><a href={appPath('/login')}>{t("Sign in")}</a></p> : <>
+    {loading ? <div className="account-skeleton" role="status" aria-label={t('Loading')}><span /><span /><span /></div> : !account ? <p><a href={appPath('/login')}>{t("Sign in")}</a></p> : <>
       <p><span translate="no">{account.team_name}</span> · {t(roleName[account.team_role])}{account.is_team_owner ? ` · ${t('Team owner')}` : ''}</p>
       {account.local_unrestricted ? <p translate="no">{t('Local access records new activity as {name}. No sign-in is required.', { name: account.display_name })}</p> : null}
       <nav className="account-page-nav" aria-label={t("Account sections")}><a href="#profile">{t("Profile")}</a>{!account.local_unrestricted && <a href="#security">{t("Security")}</a>}<a href="#team">{t("Team members")}</a>{account.is_team_owner && !account.local_unrestricted && <a href="#ownership">{t("Transfer team ownership")}</a>}</nav>
       <section id="profile" className="account-section"><div className="account-section-heading"><h2>{t("Profile")}</h2><InfoHint label={t("About your profile")} detail={t("Changing your username or display name preserves your research authorship and portfolio access.")} /></div>
-        <form className="account-form" onSubmit={event => { event.preventDefault(); void act(async () => { await accountRequest('/profile', 'PATCH', { username, display_name: displayName }); await refresh() }) }}>
+        <form className="account-form" onSubmit={event => { event.preventDefault(); void act(async () => { await accountRequest('/profile', 'PATCH', { username, display_name: displayName }); await refresh() }, undefined, 'profile') }}>
           <label>{t("Username")}<input required autoComplete="username" maxLength={128} pattern="[A-Za-z0-9_.@+\-]+" value={username} onChange={event => setUsername(event.target.value)} /></label>
           <label>{t("Display name")}<input required maxLength={200} value={displayName} onChange={event => setDisplayName(event.target.value)} /></label>
           <button className="account-submit" disabled={busy}>{t("Save profile")}</button>
+          <LoadingNotice active={busySection === 'profile'} message={t('Saving…')} compact />
         </form>
       </section>
       {!account.local_unrestricted ? <section id="security" className="account-section"><h2>{t("Security")}</h2>
         <form className="account-form" onSubmit={event => { event.preventDefault(); void act(async () => {
           if (newPassword !== confirmation) throw new Error(t("The passwords do not match."))
           await accountRequest('/password', 'POST', { password: newPassword }); leave()
-        }) }}>
+        }, undefined, 'security') }}>
           <label>{t("New password (at least 8 characters)")}<input required type="password" autoComplete="new-password" minLength={8} maxLength={256} value={newPassword} onChange={event => setNewPassword(event.target.value)} /></label>
           <label>{t("Confirm password")}<input required type="password" autoComplete="new-password" minLength={8} maxLength={256} value={confirmation} onChange={event => setConfirmation(event.target.value)} /></label>
           <button className="account-submit" disabled={busy}>{t("Change password and sign out devices")}</button>
         </form>
-        <button type="button" disabled={busy} onClick={() => void act(async () => { await accountRequest('/logout-all', 'POST'); leave() })}>{t("Sign out of all devices")}</button>
+        <button type="button" disabled={busy} onClick={() => void act(async () => { await accountRequest('/logout-all', 'POST'); leave() }, undefined, 'security')}>{t("Sign out of all devices")}</button>
+        <LoadingNotice active={busySection === 'security'} message={t('Saving…')} compact />
       </section> : null}
       <section id="team" className="account-section"><div className="account-section-heading"><h2>{t("Team members")}</h2><InfoHint label={t("Team and portfolio permissions")} detail={t("Research is shared with the team and retains personal authorship. Each portfolio grants access separately; new members do not receive portfolio access automatically.")} /></div>
+        <LoadingNotice active={busySection === 'team'} message={t('Saving…')} compact />
         <HorizontalTableScroll className="account-table-wrap"><table><thead><tr><th>{t("Member")}</th><th>{t("Team role")}</th><th>{t("Status")}</th>{account.team_role === 'admin' ? <th>{t("Manage")}</th> : null}</tr></thead><tbody>
           {members.map(member => <tr key={member.user_id}><td><span translate="no">{member.display_name}</span><small><span translate="no">{member.username || t("Chosen during activation")}</span>{member.is_team_owner ? ` · ${t('Owner')}` : ''}</small></td><td>
             {account.team_role === 'admin' && !member.is_team_owner ? <select aria-label={t('Team role for {name}', { name: member.display_name })} disabled={busy} value={member.role} onChange={event => void act(async () => { await accountRequest(`/members/${member.user_id}`, 'PATCH', { role: event.target.value }); await refresh() })}><RoleOptions /></select> : t(roleName[member.role])}
@@ -99,7 +102,8 @@ export default function AccountPage() {
         {account.is_team_owner && !account.local_unrestricted ? <div id="ownership" className="account-form account-ownership"><h3>{t("Transfer team ownership")}</h3><p>{t("Confirm with your current password. Your research authorship and portfolio permissions will remain unchanged.")}</p>
           <label>{t("Current password")}<input type="password" autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} /></label>
           <select aria-label={t("New team owner")} value={successor} onChange={event => setSuccessor(event.target.value)}><option value="">{t("Choose the new owner")}</option>{members.filter(member => member.status === 'active' && member.user_id !== account.user_id).map(member => <option key={member.user_id} value={member.user_id} translate="no">{member.display_name}</option>)}</select>
-          <button disabled={busy || !successor || !currentPassword} onClick={() => void act(async () => { await accountRequest('/team/transfer', 'POST', { user_id: successor, password: currentPassword }); await refresh() })}>{t("Transfer ownership")}</button>
+          <button disabled={busy || !successor || !currentPassword} onClick={() => void act(async () => { await accountRequest('/team/transfer', 'POST', { user_id: successor, password: currentPassword }); await refresh() }, undefined, 'ownership')}>{t("Transfer ownership")}</button>
+          <LoadingNotice active={busySection === 'ownership'} message={t('Saving…')} compact />
         </div> : null}
       </section>
     </>}

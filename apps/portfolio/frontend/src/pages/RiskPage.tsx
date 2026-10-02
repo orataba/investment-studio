@@ -1368,9 +1368,9 @@ function heatmapCellStyle(value: number | null | undefined, maxAbs: number): CSS
   }
   const intensity = Math.min(1, Math.max(0.08, Math.abs(value) / maxAbs))
   if (value < 0) {
-    return { backgroundColor: `rgba(185, 28, 28, ${0.06 + intensity * 0.24})` }
+    return { backgroundColor: `color-mix(in srgb, var(--studio-chart-secondary) ${(0.06 + intensity * 0.24) * 100}%, white)` }
   }
-  return { backgroundColor: `rgba(15, 76, 129, ${0.06 + intensity * 0.24})` }
+  return { backgroundColor: `color-mix(in srgb, var(--studio-chart-primary) ${(0.06 + intensity * 0.24) * 100}%, white)` }
 }
 
 function formatCorrelation(value: number | null | undefined) {

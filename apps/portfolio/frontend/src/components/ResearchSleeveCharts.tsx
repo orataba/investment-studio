@@ -115,7 +115,7 @@ function SleeveChart({ points, series, kind, domain, zh }: {
       </svg>
       <div className="research-sleeve-readout" id={readoutId} aria-live="polite">
         <time dateTime={selected.date}>{selected.date}</time>
-        {ownSeries.map((item) => <span key={item.key} style={{ color: item.color }}>{sleeveLabel(item, zh)} {formatPercent(selected.values.get(item.key))}</span>)}
+        {ownSeries.map((item) => <span key={item.key} style={{ borderLeftColor: item.color }}>{sleeveLabel(item, zh)} {formatPercent(selected.values.get(item.key))}</span>)}
       </div>
     </> : <div className="empty-state">{zh ? '暂无图表数据。' : 'No chart data.'}</div>}
   </section>
