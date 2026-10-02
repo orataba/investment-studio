@@ -77,8 +77,39 @@ def test_partial_initial_stop_restores_the_complete_service_manifest(cutover, mo
     assert_original(config, directory, databases, connections)
 
 
-def test_partial_replacement_stop_does_not_skip_data_or_service_recovery(cutover, monkeypatch):
+@pytest.mark.parametrize("failure_point", ["start", "health"])
+def test_post_start_failure_preserves_new_database_files_and_writes(cutover, monkeypatch, failure_point):
     config, directory, databases, connections = cutover
+    actions = []
+
+    def control(action, state):
+        actions.append((action, state.name))
+        if action == 'start':
+            assert json.loads((directory / 'cutover.json').read_text())['phase'] == 'writers-may-have-resumed'
+            databases['studio'] = 'cloud plus new local write'
+            for item in config['files'].values():
+                (Path(item['local']) / 'new-local-write').write_text('preserved')
+            if failure_point == 'start':
+                raise RuntimeError('partial start')
+
+    monkeypatch.setattr(sync, 'control_services', control)
+    monkeypatch.setattr(sync, 'healthcheck', lambda config: (_ for _ in ()).throw(RuntimeError('unhealthy')))
+    with pytest.raises(RuntimeError, match='automatic rollback is disabled'):
+        sync.publish(config, directory, 'incoming')
+    assert actions == [('stop', 'services.txt'), ('start', 'services.txt'), ('stop', 'failed-services.txt')]
+    assert databases == {'studio_before_snapshot': 'original', 'studio': 'cloud plus new local write'}
+    assert connections['studio'] is True
+    for name, item in config['files'].items():
+        assert (Path(item['local']) / 'value').read_text() == 'cloud'
+        assert (Path(item['local']) / 'new-local-write').read_text() == 'preserved'
+        assert (directory / (name + '-before') / 'value').read_text() == 'original'
+    assert json.loads((directory / 'cutover.json').read_text())['phase'] == 'forward-repair-required'
+    with pytest.raises(RuntimeError, match='unfinished.*cutover.json'):
+        sync.check_unfinished_cutovers(directory.parent)
+
+
+def test_failed_replacement_stop_keeps_forward_repair_boundary(cutover, monkeypatch):
+    config, directory, databases, _ = cutover
     actions = []
 
     def control(action, state):
@@ -90,17 +121,27 @@ def test_partial_replacement_stop_does_not_skip_data_or_service_recovery(cutover
     monkeypatch.setattr(sync, 'healthcheck', lambda config: (_ for _ in ()).throw(RuntimeError('unhealthy')))
     with pytest.raises(RuntimeError, match='partial replacement stop'):
         sync.publish(config, directory, 'incoming')
-    assert actions[-1] == ('start', 'services.txt')
-    assert_original(config, directory, databases, connections)
+    assert actions[-1] == ('stop', 'failed-services.txt')
+    assert databases['studio'] == 'cloud'
+    journal = json.loads((directory / 'cutover.json').read_text())
+    assert journal['phase'] == 'forward-repair-required'
+    assert 'partial replacement stop' in journal['recovery_errors'][0]
 
 
 def test_failed_original_service_recovery_blocks_following_sync(cutover, monkeypatch):
-    config, directory, databases, connections = cutover
+    config, directory, databases, _ = cutover
+    original_write = sync.write_cutover_journal
+
+    def fail_before_start(path, record, phase, **kwargs):
+        if phase == 'switching_files':
+            raise RuntimeError('pre-start failure')
+        return original_write(path, record, phase, **kwargs)
 
     def control(action, state):
         if action == 'start':
             raise RuntimeError('one service unavailable')
 
+    monkeypatch.setattr(sync, 'write_cutover_journal', fail_before_start)
     monkeypatch.setattr(sync, 'control_services', control)
     with pytest.raises(RuntimeError, match='original service'):
         sync.publish(config, directory, 'incoming')
@@ -110,6 +151,24 @@ def test_failed_original_service_recovery_blocks_following_sync(cutover, monkeyp
     assert 'original service' in journal['recovery_errors'][-1]
     with pytest.raises(RuntimeError, match='unfinished.*cutover.json'):
         sync.check_unfinished_cutovers(directory.parent)
+
+
+def test_failed_writer_boundary_persistence_rolls_back_before_start(cutover, monkeypatch):
+    config, directory, databases, connections = cutover
+    original_write = sync.write_cutover_journal
+    actions = []
+
+    def fail_boundary(path, record, phase, **kwargs):
+        if phase == 'writers-may-have-resumed':
+            raise OSError('journal unavailable')
+        return original_write(path, record, phase, **kwargs)
+
+    monkeypatch.setattr(sync, 'write_cutover_journal', fail_boundary)
+    monkeypatch.setattr(sync, 'control_services', lambda action, state: actions.append((action, state.name)))
+    with pytest.raises(OSError, match='journal unavailable'):
+        sync.publish(config, directory, 'incoming')
+    assert actions == [('stop', 'services.txt'), ('stop', 'failed-services.txt'), ('start', 'services.txt')]
+    assert_original(config, directory, databases, connections)
 
 
 def test_pending_cutover_is_blocked_before_download_even_when_not_due(cutover, monkeypatch):

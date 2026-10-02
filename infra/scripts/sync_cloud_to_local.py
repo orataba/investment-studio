@@ -447,6 +447,7 @@ def publish(config, directory, stage_name):
     write_cutover_journal(journal, record, "stopping_services")
     moved = []
     database_moved = False
+    writers_may_have_resumed = False
     print("Switching local services to the verified snapshot", flush=True)
     try:
         control_services("stop", service_state)
@@ -471,12 +472,33 @@ def publish(config, directory, stage_name):
                 destination.rename(previous)
             moved.append((destination, previous, directory / name))
             (directory / name).rename(destination)
-        write_cutover_journal(journal, record, "starting_services")
+        # RunAtLoad can write during bootstrap, before service control or the
+        # health check returns. Persist this boundary before the first attempt.
+        write_cutover_journal(journal, record, "writers-may-have-resumed")
+        writers_may_have_resumed = True
         control_services("start", service_state)
         healthcheck(config)
         write_cutover_journal(journal, record, "published")
     except BaseException as failure:
         recovery_errors = []
+        if writers_may_have_resumed:
+            # Restoring the previous snapshot now could discard local writes
+            # committed by even a partially started replacement service.
+            try:
+                control_services("stop", directory / "failed-services.txt")
+            except Exception as error:
+                recovery_errors.append(f"Could not stop every replacement service: {error}")
+            try:
+                write_cutover_journal(journal, record, "forward-repair-required",
+                                      failure=str(failure), recovery_errors=recovery_errors)
+            except Exception as error:
+                recovery_errors.append(f"Could not update recovery journal: {error}")
+            detail = f" Recovery details: {'; '.join(recovery_errors)}." if recovery_errors else ""
+            raise RuntimeError(
+                f"Snapshot switch failed after new workers may have written data: {failure}. "
+                f"New database and files retained; automatic rollback is disabled. "
+                f"Repair forward before another sync. Journal: {journal}.{detail}"
+            ) from failure
         data_restored = True
         try:
             write_cutover_journal(journal, record, "rolling_back", failure=str(failure))
