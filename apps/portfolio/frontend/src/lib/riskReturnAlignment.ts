@@ -14,6 +14,7 @@ export type ReturnObservationCoverage = {
 }
 
 export type GroupReturnSeries = {
+  isCashExposure?: boolean
   groupKey: string
   groupLabel: string
   returnsByDate: Map<string, number>

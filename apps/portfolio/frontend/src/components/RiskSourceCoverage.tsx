@@ -12,11 +12,12 @@ export default function RiskSourceCoverage({ workspace }: { workspace: HoldingsW
   // Complete source dates are authoritative. A truncated diagnostic sample
   // cannot establish that all gaps are outside this model's window.
   const gaps = (workspace.risk_basis?.gap_details ?? []).flatMap((gap) => {
-    const row = workspace.rows.find((item) => item.instrument_core?.instrument_id === gap.instrument_id)
-    const completeDates = row?.instrument_return_series_all?.observation_coverage?.gap_dates
+    const row = workspace.rows.find((item) => item.instrument_core?.instrument_id === gap.instrument_id
+      || item.risk_return_series?.source_instrument_ids.includes(gap.instrument_id))
+    const completeDates = row?.risk_return_series?.observation_coverage?.gap_dates
       ?? (gap.gap_count === gap.gap_date_sample.length ? gap.gap_date_sample : null)
     if (!start || !completeDates) return [gap]
-    const selectedPeriods = (row?.instrument_return_series_all?.points ?? [])
+    const selectedPeriods = (row?.risk_return_series?.points ?? [])
       .filter((point) => point.date > start && point.date <= workspace.as_of_date)
     // A source gap before the window boundary still matters when an included
     // return spans it. Match returnWindowInputIssues' actual-period check.

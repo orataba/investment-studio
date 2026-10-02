@@ -200,7 +200,7 @@ def test_forward_risk_uses_total_nav_weights_and_discloses_derivative_exclusion(
     )
 
     assert result["forward_risk"]["status"] == "ok"
-    assert result["forward_risk"]["modeled_weight_basis"] == "total_nav_zero_return_cash_and_derivatives"
+    assert result["forward_risk"]["modeled_weight_basis"] == "total_nav_base_currency_market_and_monetary_exposures"
     assert result["forward_risk"]["coverage_ratio"] == pytest.approx(0.4)
     assert result["forward_risk"]["excluded_carrying_value"] == pytest.approx(600_000.0)
     assert result["forward_risk"]["excluded_rows"][0]["instrument_id"] is None

@@ -580,14 +580,17 @@ Holdings 可以展示 quote-derived instrument market trend 指标，作为扫�
 
 Holdings `Forward RC` 是当前正式风险持仓的组合级 forward risk contribution：
 
-- 只对 active formal `risk_eligible=true` ordinary positions 建立协方差矩阵；衍生品不参与，行级 `forward_risk_share`、contribution 和 modeled volatility 留空，状态为 `excluded`。base-currency cash/pending monetary rows 可以标记 `modeled_zero`；non-base monetary exposure 在没有 FX total-return series 时仍为 unavailable；
+- 对 active formal `risk_eligible=true` ordinary positions 及非零外币 cash/pending monetary exposure 建立同一个组合本位币协方差矩阵。衍生品不参与，行级 `forward_risk_share`、contribution 和 modeled volatility 留空，状态为 `excluded`。base-currency cash/pending monetary rows 标记 `modeled_zero`；外币 monetary row 的本币价值路径为常数，组合币种收益来自历史 FX，负现金／待付款保留负权重，不因 accounting `risk_eligible=false` 丢弃汇率风险；
 - `risk_eligible` 由真实证券／合约身份、持仓类型、实际估值 basis、完整估值覆盖和价格派生；分类缺失或目标变更不影响这一资格，收益窗口与 FX 覆盖再由风险模型验证；
-- event-valued asset 或 derivative liability 的存在不阻断 eligible market sleeve 的 covariance。输出必须同时披露 `modeled_net_exposure`、`modeled_gross_exposure`、`excluded_carrying_value`、`excluded_liability`、`cash_unallocated_exposure`、coverage ratio 与逐行 `excluded_rows`；衍生品以 `N/A / excluded` 表达，不用 0 冒充风险判断；
-- 权重使用 eligible row 的 signed base exposure 除以 total NAV；衍生品与 base-currency monetary rows 不进 covariance、收益视为 0。risk-share 分母是同一个 total-portfolio variance，不是 instrument 自身风险或 group-local denominator；
+- event-valued asset 或 derivative liability 的存在不阻断 eligible market sleeve 的 covariance。输出必须同时披露 `modeled_net_exposure`、`modeled_gross_exposure`、`excluded_carrying_value`、`excluded_liability`、`cash_unallocated_exposure`、coverage ratio 与逐行 `excluded_rows`；modeled exposure 包含外币 monetary exposure，cash_unallocated 仅保留未纳入 FX covariance 的本位币 monetary balance；衍生品以 `N/A / excluded` 表达，不用 0 冒充风险判断；
+- 权重使用 modeled row 的 signed base exposure 除以 total NAV；衍生品与 base-currency monetary rows 不进 covariance。risk-share 分母是同一个 modeled-sleeve variance，以 total NAV 为权重分母，不是 instrument 自身风险或 group-local denominator；衍生品排除仍须披露，不能把未建模衍生品称为实际零风险；
+- 外币证券的同一期收益为 `(1 + native_return) × FX_end / FX_start - 1`，FX 单位为 base/local；使用规范直接、倒数或 USD 交叉路径，不能以固定汇率、仅终点汇率或相加近似替代。价格和每条 FX leg 先按原来源日历对齐到共同日期，再计算本位币财富路径；本地市场休市但 FX 有观察的日期仍产生汇率收益。缺失预期价格或任一 FX leg 使相邻收益不可用，合法休市 carry 保留原来源日期；
+- 风险读取输出独立 `risk_return_series`，声明组合币种、原收益币种、FX source instrument ids 和组成来源的 observation coverage；所有 aligned period 保留，缺失 value 为 null，不能删点后跨缺口复利。`instrument_return_series_all` 及标的 Return / Vol / Chart 保持原本币语义。Forward RC、风险页面的当前篮子风险／相关性和 Research 使用同一组合币种对齐规则；
+- FX histories 截止请求 as-of date；持久 workspace 的输入代次包括 FX market-data/calculation watermarks。逻辑升级失效并重算派生 workspace，Research solver version 同步升级，使旧算法运行可读但不再标记 current；不修改交易、原行情、账本或 NAV 事实；
 - covariance model、lookback、calculation frequency、missing-return policy 与 contribution mode 必须来自组合级 `Production Risk Model`；
 - 窗口固定锚在请求的 holdings as-of date；较早的 latest observation 只能触发 trailing-staleness 诊断，不能把整个 lookback window 一起向前移动；
 - 每个 leaf return 必须有合法且与其他成员一致的 period start/end；taxonomy group 的 Forward RC 只加总 leaf `forward_risk_share` 和 contribution，不重新估计 group covariance；
-- 若没有任何 eligible risky holding，或任一 eligible member 缺少完整收益窗口、base-currency return、权重、共同 period identity 或正的组合 variance，Forward RC 进入 `unavailable`，无法建模的非零普通证券敞口必须使结果不可用，不得用短窗口、0 return、pairwise covariance 或现金归一化兜底；
+- 若没有任何可建模市场敞口（包括外币 monetary），或任一 modeled member 缺少完整收益窗口、base-currency return、权重、共同 period identity 或正的组合 variance，Forward RC 进入 `unavailable`，无法建模的非零普通证券敞口必须使结果不可用，不得用短窗口、0 return、pairwise covariance 或现金归一化兜底；
 - Holdings 普通证券的 `Vol 1M / 3M / 6M / 1Y` 仍是标的自身 trailing sample volatility 观测列，不受 Production Risk Model 的 lookback 或 covariance model 影响，也不能替代 Forward RC；衍生品固定为 `N/A / excluded`。
 
 Holdings group rows 不是后端 period-performance group：
@@ -1349,7 +1352,7 @@ $$
 
 `abs` 必须使用数学上的精确绝对值；不得为了数值平滑给零贡献项注入 epsilon，否则 0 contribution 会被伪造为非零 risk share。
 
-Holdings / Risk 的 covariance matrix 只包含实际估值与模型合同满足 `risk_eligible=true` 的 leaf rows，但每个 leaf 的 `w_i = signed market_value_base_i / total NAV`，所以权重和可以小于 1；excluded derivative capital、base-currency cash 与 pending settlement 不增加矩阵维度，数学上等价于 0-return members。Non-base monetary exposure 只有具备 FX return series 才能作为风险因子，否则结果 unavailable。Research 对一次选中的整个研究范围使用一份叶证券 covariance，层级 scope 只是聚合口径；资金约束处理 cash/derivative weights，不把事件型衍生品加入 covariance。
+Holdings / Risk 的 covariance matrix 包含实际估值与模型合同满足 `risk_eligible=true` 的证券 leaf rows，以及具有历史 FX 的外币 cash/pending rows；每个 leaf 的 `w_i = signed market_value_base_i / total NAV`，所以权重和可以小于 1；excluded derivative capital 与 base-currency cash/pending settlement 不增加矩阵维度，数学上等价于 0-return members。Non-base monetary exposure 只有具备 FX return series 才能作为风险因子，否则结果 unavailable。Research 对一次选中的整个研究范围使用一份叶证券 covariance，层级 scope 只是聚合口径；资金约束处理 cash/derivative weights，不把事件型衍生品加入 covariance。
 
 解释：
 
@@ -1395,7 +1398,7 @@ $$
 默认规则：
 
 - `risk share` 基于参与风险计算的头寸权重；
-- Holdings / Risk covariance 使用 `risk_eligible=true` 的 signed base exposure 除以 total NAV；它输出包含 base-currency cash 与衍生品 0-return capital 稀释的 total-portfolio forward volatility 与 risk share；
+- Holdings / Risk covariance 使用合资格证券与外币 monetary rows 的 signed base exposure 除以 total NAV；它输出包含 base-currency cash 与衍生品 0-return capital 稀释的 total-portfolio forward volatility 与 risk share；
 - total NAV、modeled/excluded exposure、cash 和 coverage ratio 必须与 modeled result 一起披露，使用户可以看到可观测市场风险覆盖多少资产负债表；
 - base-currency 现金、待交收和衍生品不进入 covariance matrix，但在权重向量中等价于 0-return capital；non-base monetary exposure 必须有 FX total-return series，否则整个组合结果 unavailable。
 

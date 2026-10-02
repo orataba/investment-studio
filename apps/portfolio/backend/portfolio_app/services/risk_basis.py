@@ -14,6 +14,15 @@ from portfolio_app.services.market_data import market_calendar_sessions as _mark
 _EXPECTED_MAX_GAP_DAYS = 4
 
 
+def observation_source_settings(detail: dict[str, object]) -> dict[str, object]:
+    """Use the declared source schedule, then the instrument's exchange calendar."""
+    settings = detail.get("source_settings")
+    settings = dict(settings) if isinstance(settings, dict) else {}
+    if not settings.get("market_calendar") and detail.get("exchange_code"):
+        settings["market_calendar"] = detail["exchange_code"]
+    return settings
+
+
 def _source_schedule(
     source_settings: object,
 ) -> tuple[str | None, bool]:
@@ -106,7 +115,7 @@ def calculation_frequency_profile_for_instruments(
             observation_dates_by_instrument[instrument_id] = (
                 selected_observation_dates_from_detail(detail, end_date=end_date)
             )
-            source_settings_by_instrument[instrument_id] = detail.get("source_settings")
+            source_settings_by_instrument[instrument_id] = observation_source_settings(detail)
     return calculation_frequency_profile_from_observation_dates(
         normalized_instrument_ids,
         observation_dates_by_instrument=observation_dates_by_instrument,

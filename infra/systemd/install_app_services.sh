@@ -265,12 +265,21 @@ while IFS= read -r market_action; do
   REFRESH_TIMER_UNITS+=("$UNIT_PREFIX-market-$market_action.timer")
 done < "$PROJECT_ROOT/infra/market_pipeline_actions.txt"
 RETIRED_UNITS=("$UNIT_PREFIX-us-reference-data-refresh.timer" "$UNIT_PREFIX-us-reference-data-refresh.service")
+# These nonempty scopes also work with Bash 3's nounset handling of arrays.
+UNIT_STATE_UNITS=("${MANAGED_UNITS[@]}" "${RETIRED_UNITS[@]}")
+ACTIVE_RESTORE_UNITS=("${MANAGED_UNITS[@]}" "${REFRESH_SERVICE_UNITS[@]}" "${REFRESH_TIMER_UNITS[@]}" "${RETIRED_UNITS[@]}")
 WRITER_UNITS=(
   "${REFRESH_TIMER_UNITS[@]}"
   "${REFRESH_SERVICE_UNITS[@]}"
   "${MANAGED_UNITS[@]}"
   "${RETIRED_UNITS[@]}"
 )
+# Application-only failure cleanup owns eight apps, not independent collectors.
+if [[ "$RUN_MIGRATIONS" != "true" ]]; then
+  UNIT_STATE_UNITS=("${MANAGED_UNITS[@]}")
+  ACTIVE_RESTORE_UNITS=("${MANAGED_UNITS[@]}")
+  WRITER_UNITS=("${MANAGED_UNITS[@]}")
+fi
 
 state_captured=false
 backup_created=false
@@ -381,7 +390,7 @@ capture_previous_state() {
       printf '%s\n' "$unit" >> "$ACTIVE_STATE_FILE"
     fi
   done
-  for unit in "${MANAGED_UNITS[@]}" "${RETIRED_UNITS[@]}"; do
+  for unit in "${UNIT_STATE_UNITS[@]}"; do
     target_file="$USER_SYSTEMD_DIR/$unit"
     enabled_state="$(systemctl --user is-enabled "$unit" 2>/dev/null || true)"
     case "$enabled_state" in
@@ -459,7 +468,7 @@ restore_unit_files_and_enablement() {
 restore_previous_active_units() {
   local unit restore_failed=false
   ensure_writer_units_stopped || return 1
-  for unit in "${MANAGED_UNITS[@]}" "${REFRESH_SERVICE_UNITS[@]}" "${REFRESH_TIMER_UNITS[@]}" "${RETIRED_UNITS[@]}"; do
+  for unit in "${ACTIVE_RESTORE_UNITS[@]}"; do
     if ! grep -Fxq "$unit" "$ACTIVE_STATE_FILE"; then
       continue
     fi
@@ -479,17 +488,19 @@ publish_staged_units() {
   local unit target_file temporary_file
   mkdir -p "$USER_SYSTEMD_DIR"
   units_published=true
-  for unit in "${RETIRED_UNITS[@]}"; do
-    systemctl --user stop "$unit" >/dev/null 2>&1 || true
-    if systemctl --user is-active --quiet "$unit"; then
-      echo "Retired reference job remained active: $unit" >&2
-      return 1
-    fi
-    if [[ -f "$USER_SYSTEMD_DIR/$unit" ]]; then
-      systemctl --user disable "$unit" >/dev/null
-      rm -f "$USER_SYSTEMD_DIR/$unit"
-    fi
-  done
+  if [[ "$RUN_MIGRATIONS" == "true" ]]; then
+    for unit in "${RETIRED_UNITS[@]}"; do
+      systemctl --user stop "$unit" >/dev/null 2>&1 || true
+      if systemctl --user is-active --quiet "$unit"; then
+        echo "Retired reference job remained active: $unit" >&2
+        return 1
+      fi
+      if [[ -f "$USER_SYSTEMD_DIR/$unit" ]]; then
+        systemctl --user disable "$unit" >/dev/null
+        rm -f "$USER_SYSTEMD_DIR/$unit"
+      fi
+    done
+  fi
   for unit in "${MANAGED_UNITS[@]}"; do
     target_file="$USER_SYSTEMD_DIR/$unit"
     temporary_file="$USER_SYSTEMD_DIR/.$unit.install.$$"

@@ -31,3 +31,9 @@ export function holdingDayChangeExportValue(
 ) {
   return holdingDayChangeUnavailable(row) ? 'N/A' : value ?? null
 }
+
+export function holdingForwardRiskShare(row: PortfolioHoldingRow): number | null {
+  if (row.forward_risk_status === 'modeled_zero' || row.forward_risk_status === 'no_exposure') return 0
+  return row.forward_risk_status === 'ok' && typeof row.forward_risk_share === 'number' && Number.isFinite(row.forward_risk_share)
+    ? row.forward_risk_share : null
+}

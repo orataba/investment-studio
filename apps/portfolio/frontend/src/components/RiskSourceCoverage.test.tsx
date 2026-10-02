@@ -8,7 +8,7 @@ function workspace(gapCount: number, dates: string[], completeDates?: string[]) 
   const value = holdingsWorkspaceFixture({
     as_of_date: '2026-09-30',
     rows: [holdingFixture({ instrument_core: instrumentFixture({ instrument_id: 'fund', instrument_name: 'Test Fund' }),
-      instrument_return_series_all: completeDates ? { points: [], observation_coverage: {
+      risk_return_series: completeDates ? { currency: 'USD', source_instrument_ids: [], points: [], observation_coverage: {
         start_date: '2025-01-01', end_date: '2026-09-30', gap_dates: completeDates, gap_detection_basis: 'calendar',
       } } : null,
     })],
@@ -35,7 +35,7 @@ describe('source coverage relevance', () => {
   })
   it('retains a pre-boundary source gap crossed by a return used inside the window', () => {
     const value = workspace(2, ['2026-08-27', '2026-08-29'], ['2026-08-27', '2026-08-29'])
-    value.rows[0].instrument_return_series_all!.points = [
+    value.rows[0].risk_return_series!.points = [
       { date: '2026-09-01', start_date: '2026-08-28', value: 0.01 },
     ]
     render(<LanguageProvider enableDomTranslation={false}><RiskSourceCoverage workspace={value} /></LanguageProvider>)

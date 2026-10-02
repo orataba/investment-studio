@@ -160,6 +160,7 @@ printf '%s\n' \
   '    done' \
   '    ;;' \
   '  enable)' \
+  '    if [[ "${ENABLE_FAIL_ONCE:-false}" == "true" && ! -e "$EVENT_LOG.enable-failed" ]]; then touch "$EVENT_LOG.enable-failed"; exit 1; fi' \
   '    [[ "${1:-}" == "--runtime" ]] && shift' \
   '    for unit in "$@"; do add_enabled "$unit"; done' \
   '    ;;' \
@@ -254,7 +255,7 @@ run_case() {
   PYTHON_BIN="$(command -v python3)" \
   NODE_BIN="/usr/bin/true" \
   ENV_ROOT="$ENV_ROOT" \
-  RUN_MIGRATIONS=true \
+  RUN_MIGRATIONS="${CASE_RUN_MIGRATIONS:-true}" \
   START_SERVICES="${CASE_START_SERVICES:-true}" \
   HEALTH_ATTEMPTS=1 \
   INVESTMENT_STUDIO_SYSTEMD_BACKUP_ROOT="$case_root/backups" \
@@ -479,5 +480,62 @@ fi
 test ! -s "$ROLLBACK_CASE/active"
 grep -q 'Automatic recovery failed; managed writers remain stopped.' "$ROLLBACK_CASE/output"
 grep -q 'Recovery state retained at:' "$ROLLBACK_CASE/output"
+
+assert_independent_schedules_untouched() {
+  local case_root="$1" unit
+  if grep -Eq '^systemctl:(stop|start|restart|enable|disable|mask) .*investment-studio-(market|.*reference|briefing-(daily|weekly))' "$case_root/events"; then
+    echo "Application-only installation changed an independent scheduled writer." >&2
+    exit 1
+  fi
+  for unit in "${ORIGINAL_ACTIVE_UNITS[@]}"; do
+    [[ "$unit" == investment-studio-home-api.service ]] && continue
+    grep -Fxq "$unit" "$case_root/active"
+  done
+  for unit in "${RETIRED_UNITS[@]}"; do
+    grep -Fxq "previous-unit:$unit" "$case_root/config/systemd/user/$unit"
+  done
+  if grep -Eq '^(backup|migrate|database-restore|catalog-refresh|watchlist-refresh|snapshot-refresh|audit)$' "$case_root/events"; then
+    echo "Application-only installation mutated or backed up the database." >&2
+    exit 1
+  fi
+}
+
+APP_ONLY_CASE="$TEST_ROOT/app-only-success"
+prepare_case "$APP_ONLY_CASE"
+CASE_RUN_MIGRATIONS=false CASE_START_SERVICES=false run_case "$APP_ONLY_CASE" > "$APP_ONLY_CASE/output" 2>&1
+assert_independent_schedules_untouched "$APP_ONLY_CASE"
+diff -u <(printf '%s\n' "${ORIGINAL_ACTIVE_UNITS[@]}" | sort) <(sort "$APP_ONLY_CASE/active")
+grep -Fxq pre-install-record "$APP_ONLY_CASE/database"
+
+APP_ONLY_FAILURE="$TEST_ROOT/app-only-publish-failure"
+prepare_case "$APP_ONLY_FAILURE"
+if CASE_RUN_MIGRATIONS=false CASE_START_SERVICES=false ENABLE_FAIL_ONCE=true   run_case "$APP_ONLY_FAILURE" > "$APP_ONLY_FAILURE/output" 2>&1; then
+  echo "Application-only installation accepted a unit publication failure." >&2
+  exit 1
+fi
+assert_independent_schedules_untouched "$APP_ONLY_FAILURE"
+assert_original_state_restored "$APP_ONLY_FAILURE"
+grep -Fxq pre-install-record "$APP_ONLY_FAILURE/database"
+
+APP_ONLY_START_FAILURE="$TEST_ROOT/app-only-start-failure"
+prepare_case "$APP_ONLY_START_FAILURE"
+if CASE_RUN_MIGRATIONS=false START_FAIL_UNIT=investment-studio-portfolio-api.service   run_case "$APP_ONLY_START_FAILURE" > "$APP_ONLY_START_FAILURE/output" 2>&1; then
+  echo "Application-only installation accepted a partial app startup failure." >&2
+  exit 1
+fi
+assert_independent_schedules_untouched "$APP_ONLY_START_FAILURE"
+for unit in "${MANAGED_UNITS[@]}"; do
+  if grep -Fxq "$unit" "$APP_ONLY_START_FAILURE/active"; then
+    echo "Failed application-only startup left an app writer active." >&2
+    exit 1
+  fi
+  test -s "$APP_ONLY_START_FAILURE/config/systemd/user/$unit"
+  if grep -Fq 'previous-unit:' "$APP_ONLY_START_FAILURE/config/systemd/user/$unit"; then
+    echo "Application-only forward repair restored an old application unit." >&2
+    exit 1
+  fi
+done
+grep -q '^startup-write:' "$APP_ONLY_START_FAILURE/database"
+grep -q 'automatic database and unit rollback is disabled' "$APP_ONLY_START_FAILURE/output"
 
 echo "systemd app install transaction and fail-closed rollback test passed."

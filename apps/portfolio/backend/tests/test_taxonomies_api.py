@@ -77,6 +77,7 @@ def test_market_profile_enrichment_reuses_one_registry_batch(monkeypatch):
     enriched, risk_basis = taxonomies_routes._enrich_universe_market_profiles(
         records,
         as_of_date=date(2026, 8, 25),
+        base_currency="CNY",
     )
 
     assert batch_calls == [["fund-a", "fund-b"]]

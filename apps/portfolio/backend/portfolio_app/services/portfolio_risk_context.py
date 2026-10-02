@@ -191,7 +191,7 @@ def _groups(workspace, catalog, taxonomy_id=None):
             limitations.append(f"{core.get('instrument_name') or hid}缺少本币市值。")
         elif group["market_value_base"] is not None:
             group["market_value_base"] += value
-        if row.get("risk_eligible"):
+        if row.get("risk_eligible") or row.get("forward_risk_status") == "ok":
             group["_has_risk_member"] = True
             share, contribution = _number(row.get("forward_risk_share")), _number(row.get("forward_contribution_to_variance"))
             if zero_exposure:

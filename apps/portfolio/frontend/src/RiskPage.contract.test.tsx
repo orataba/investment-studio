@@ -44,7 +44,7 @@ const returnPoints = Array.from({ length: 110 }, (_, index) => {
 })
 
 const riskHolding = holdingFixture({
-  instrument_return_series_all: {
+  risk_return_series: { currency: 'USD', source_instrument_ids: [],
     first_return_start_date: isoDateDaysBefore(110),
     points: returnPoints,
   },
@@ -66,7 +66,7 @@ function betaHolding(returnSeriesPoints = betaReturnPoints) {
     market_value: 200,
     market_value_base: 200,
     allocation: 0.2,
-    instrument_return_series_all: {
+    risk_return_series: { currency: 'USD', source_instrument_ids: [],
       first_return_start_date: isoDateDaysBefore(110),
       points: returnSeriesPoints,
     },
@@ -200,7 +200,7 @@ const taxonomyCatalog = {
       status: 'active',
       instrument_trend_basis: 'total_return_nav',
       instrument_risk_frequency: 'daily',
-      instrument_return_series_all: riskHolding.instrument_return_series_all,
+      risk_return_series: riskHolding.risk_return_series,
     },
   ],
   target_sets: [
@@ -282,7 +282,7 @@ function taxonomyCatalogWithFullUniverse() {
         status: 'active',
         instrument_trend_basis: 'total_return_nav',
         instrument_risk_frequency: 'daily',
-        instrument_return_series_all: {
+        risk_return_series: { currency: 'USD', source_instrument_ids: [],
           first_return_start_date: isoDateDaysBefore(110),
           points: betaReturnPoints,
         },
@@ -658,7 +658,7 @@ describe('Risk rendered page contract', () => {
     expect(within(liquidityCard as HTMLElement).getByText('$200.00')).toBeInTheDocument()
     expect(liquidityCard).toHaveAttribute(
       'title',
-      'Signed carrying amount of cash and pending settlements outside the covariance model.',
+      'Signed carrying amount of base-currency cash and pending settlements with zero currency risk. Foreign-currency monetary exposure is included in the model when historical FX coverage is complete.',
     )
   })
 
@@ -715,7 +715,7 @@ describe('Risk rendered page contract', () => {
             quantity: 10,
             allocation: null,
             market_value_base: null,
-            instrument_return_series_all: riskHolding.instrument_return_series_all,
+            risk_return_series: riskHolding.risk_return_series,
           }),
         ],
       }),
@@ -733,7 +733,7 @@ describe('Risk rendered page contract', () => {
       ...fullUniverseCatalog,
       instrument_universe: fullUniverseCatalog.instrument_universe.map((record) =>
         record.instrument_id === 'asset-2'
-          ? { ...record, instrument_return_series_all: null }
+          ? { ...record, risk_return_series: null }
           : record,
       ),
     })
@@ -991,11 +991,39 @@ describe('Risk rendered page contract', () => {
     expect(await screen.findByRole('img', { name: 'Annualized Volatility' })).toBeInTheDocument()
   })
 
+  it.each([[-0.1, true], [-0.3, false]])('keeps foreign monetary exposures in the cash correlation group (payable %s)', async (payableWeight, available) => {
+    const workspace = twoHoldingWorkspace()
+    const monetary = (line_id: string, allocation: number, currency: string) => holdingFixture({
+      line_id, allocation, market_value_base: allocation * 1000,
+      holding_category: 'cash_and_settlement', holding_kind: allocation > 0 ? 'settled_cash' : 'settlement_payable',
+      instrument_core: instrumentFixture({ instrument_id: `cash:${currency}`, instrument_name: line_id, instrument_type: 'cash', currency }),
+      risk_eligible: false, risk_return_series: riskHolding.risk_return_series,
+    })
+    workspace.rows.push(monetary('cash:account-a', 0.3, 'HKD'), monetary('pending:account-a', payableWeight, 'EUR'))
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(workspace)
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ ...taxonomyCatalog,
+      taxonomy_assignments: [...taxonomyCatalog.taxonomy_assignments,
+        { ...taxonomyCatalog.taxonomy_assignments[0], assignment_id: 'beta-assignment', target_entity_id: 'asset-2' }],
+    })
+    renderRiskPage()
+    const scope = await screen.findByRole('combobox', { name: 'Matrix scope' })
+    await userEvent.setup().selectOptions(scope, await within(scope).findByRole('option', { name: 'Taxonomy: Top Level' }))
+    const region = screen.getByRole('region', { name: 'Correlation analysis' })
+    if (available) {
+      expect(await within(region).findByRole('table')).toBeInTheDocument()
+      expect(within(region).getAllByText('Cash & settlement FX').length).toBeGreaterThan(0)
+      expect(within(region).queryByText('Unassigned')).not.toBeInTheDocument()
+    } else {
+      expect(await findCorrelationUnavailable()).toHaveTextContent('signed exposures have zero net weight')
+      expect(within(region).queryByRole('table')).not.toBeInTheDocument()
+    }
+  })
+
   it('compares assets in a leaf classification without inheriting an out-of-scope currency failure', async () => {
     const workspace = twoHoldingWorkspace()
     workspace.rows.push(holdingFixture({ line_id: 'holding:gamma', allocation: 0.1,
       instrument_core: instrumentFixture({ instrument_id: 'gamma', instrument_name: 'Gamma', currency: 'HKD' }),
-      instrument_return_series_all: null }))
+      risk_return_series: null }))
     apiMocks.getHoldingsWorkspace.mockResolvedValue(workspace)
     apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ ...taxonomyCatalog,
       taxonomy_nodes: [...taxonomyCatalog.taxonomy_nodes, { ...taxonomyCatalog.taxonomy_nodes[0], taxonomy_node_id: 'other', node_name: 'Other' }],
@@ -1016,7 +1044,7 @@ describe('Risk rendered page contract', () => {
     const workspace = twoHoldingWorkspace()
     workspace.rows.push(holdingFixture({ line_id: 'holding:closed', quantity: 0, allocation: 0, market_value_base: 0,
       instrument_core: instrumentFixture({ instrument_id: 'closed', instrument_name: 'Closed Position' }),
-      instrument_return_series_all: null }))
+      risk_return_series: null }))
     apiMocks.getHoldingsWorkspace.mockResolvedValue(workspace)
     apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ ...taxonomyCatalog,
       taxonomy_assignments: [...taxonomyCatalog.taxonomy_assignments,
@@ -1052,6 +1080,24 @@ describe('Risk rendered page contract', () => {
     await user.click(await screen.findByRole('button', { name: /Second Benchmark/ }))
     await waitFor(() => expect(apiMocks.getPortfolioInstrumentPriceChart).toHaveBeenCalledTimes(2))
     expect(document.querySelector('.rolling-risk-line-benchmark')).toBeNull()
+  })
+
+  it('compares historical base-currency returns for foreign securities in holdings and full-universe scopes', async () => {
+    const workspace = twoHoldingWorkspace()
+    workspace.rows[0].instrument_core!.currency = 'HKD'
+    workspace.rows[0].instrument_return_series_all = { points: returnPoints.map((point) => ({ ...point, value: 0.9 })) }
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(workspace)
+    const catalog = taxonomyCatalogWithFullUniverse()
+    catalog.instrument_universe[0].instrument_ref!.currency = 'HKD'
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue(catalog)
+    renderRiskPage()
+    const scope = await screen.findByRole('combobox', { name: 'Matrix scope' })
+    const region = screen.getByRole('region', { name: 'Correlation analysis' })
+    await waitFor(() => expect(within(region).queryByRole('status')).not.toBeInTheDocument())
+    expect(within(region).getByRole('table')).toBeInTheDocument()
+    await userEvent.setup().selectOptions(scope, '__full_universe__')
+    await waitFor(() => expect(within(region).getByRole('table')).toBeInTheDocument())
+    expect(region).not.toHaveTextContent('HKD versus USD')
   })
 
 })

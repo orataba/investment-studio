@@ -117,7 +117,7 @@ describe('Canonical taxonomy risk contribution aggregation', () => {
         coverage_ratio: 1,
         excluded_rows: [],
         calculation_frequency: 'daily',
-        modeled_weight_basis: 'total_nav_zero_return_cash_and_derivatives',
+        modeled_weight_basis: 'total_nav_base_currency_market_and_monetary_exposures',
         portfolio_variance: 0.01,
         portfolio_volatility: 0.1,
         observation_count: 61,
@@ -177,12 +177,12 @@ describe('Canonical taxonomy risk contribution aggregation', () => {
     expect(result.errors).toEqual(['Strict return coverage is stale by 8 days.'])
   })
 
-  it('rejects a partial modeled contribution total instead of renormalizing it', () => {
+  it('requires every modeled security contribution instead of trusting an accounting eligibility flag', () => {
     const workspace = holdingsWorkspaceFixture({
       rows: [
         canonicalHolding('alpha', 0.2, 0.2, 0.002),
         canonicalHolding('beta', 0.3, 0.3, 0.003),
-        canonicalHolding('gamma', 0.5, 0.5, 0.005, false),
+        { ...canonicalHolding('gamma', 0.5, 0.5, 0.005, false), forward_risk_status: 'unavailable', forward_risk_share: null },
       ],
       forward_risk: {
         status: 'ok',
@@ -197,7 +197,7 @@ describe('Canonical taxonomy risk contribution aggregation', () => {
         coverage_ratio: 1,
         excluded_rows: [],
         calculation_frequency: 'daily',
-        modeled_weight_basis: 'total_nav_zero_return_cash_and_derivatives',
+        modeled_weight_basis: 'total_nav_base_currency_market_and_monetary_exposures',
         portfolio_variance: 0.01,
         portfolio_volatility: 0.1,
         observation_count: 61,
@@ -213,7 +213,20 @@ describe('Canonical taxonomy risk contribution aggregation', () => {
 
     expect(result.value).toEqual([])
     expect(result.errors).toEqual([
-      'Production forward risk shares must aggregate to 100% before taxonomy grouping; got 50.00%.',
+      'Production forward risk contribution is missing for gamma.',
     ])
   })
+  it('includes foreign cash and payable RC in the existing system cash bucket', () => {
+    const monetary = (id: string, weight: number, share: number) => ({
+      ...canonicalHolding(id, weight, share, share * 0.01, false),
+      holding_category: 'cash_and_settlement' as const, holding_kind: weight > 0 ? 'settled_cash' : 'settlement_payable',
+      instrument_core: instrumentFixture({ instrument_id: 'cash:HKD', instrument_type: 'cash', currency: 'HKD' }),
+    })
+    const workspace = holdingsWorkspaceFixture({ rows: [canonicalHolding('alpha', 0.8, 0.7, 0.007), monetary('cash:a', 0.3, 0.4), monetary('pending:a', -0.1, -0.1)] })
+    const result = buildCanonicalTaxonomyRiskContributionRows({ holdingsWorkspace: workspace, catalog, taxonomy, referenceDate: workspace.as_of_date })
+    expect(result.errors).toEqual([])
+    expect(result.value.find((row) => row.groupKey === 'cash_bucket:__cash__')).toEqual(expect.objectContaining({ riskShare: 0.30000000000000004, weight: 0.19999999999999998, contributionToVariance: 0.003 }))
+    expect(result.value.some((row) => row.groupKey.startsWith('unassigned:'))).toBe(false)
+  })
+
 })

@@ -11,12 +11,14 @@ from tests.test_research_review_regressions import risk_budget_state
 
 
 def run_history(monkeypatch, *, state=None, inception="2026-01-02", securities=None,
-                cash=0.0, lookback=90, scope=None, cash_yield=0.0, min_observations=15):
+                cash=0.0, lookback=90, scope=None, cash_yield=0.0, min_observations=15,
+                initial_currency="CNY"):
     state = state or risk_budget_state()
     statement = stub_inception_statement(
         monkeypatch, solver, day=inception,
         securities={"a": 60.0, "b": 40.0} if securities is None else securities,
         cash=cash,
+        currency=initial_currency,
     )
     monkeypatch.setattr(solver, "get_portfolio", lambda _: {"inception_date": inception, "base_currency": "CNY"})
     configuration = {
@@ -32,6 +34,21 @@ def run_history(monkeypatch, *, state=None, inception="2026-01-02", securities=N
                            "parameters": {"min_observations": min_observations}}, _state=state,
     )["backtest"]
     return result, state, statement
+
+
+def usd_cny_fx_history(state, rates, *, unavailable_dates=()):
+    """Actual canonical components shared by inception valuation and the path."""
+    state.direct_fx_instruments[("USD", "CNY")] = "fx-usd-cny"
+    state.instrument_detail_cache["fx-usd-cny"] = {
+        "instrument_id": "fx-usd-cny", "instrument_type": "fx", "currency": "CNY",
+        "source_settings": {"expected_frequency": "daily", "market_calendar": "24/5"},
+        "market_data": [
+            {"as_of_date": day, "value": value, "metric_family": "fx", "quote_basis": "spot",
+             "currency": "CNY", "price_unit": "rate", "price_scale": 1,
+             "status": "unavailable" if day in unavailable_dates else "complete"}
+            for day, value in rates.items()
+        ],
+    }
 
 
 def test_risk_warmup_keeps_actual_initial_holding_returns_and_no_initial_acquisition_cost(monkeypatch):
@@ -135,12 +152,18 @@ def test_adjusted_history_cannot_borrow_raw_close_for_inception_anchor(monkeypat
     assert "inception-anchored return history" in result["point_in_time_coverage"]["unavailable_reason"]
 
 
-def test_missing_expected_exchange_session_stops_reliable_prefix(monkeypatch):
+@pytest.mark.parametrize("currency", ["CNY", "USD"])
+def test_missing_expected_exchange_session_stops_reliable_prefix(monkeypatch, currency):
     state = replace(risk_budget_state(), as_of_date=date(2026, 1, 8))
     detail = state.instrument_detail_cache["a"]
     detail["exchange_code"] = "XNYS"
+    detail["currency"] = currency
     detail["market_data"] = [row for row in detail["market_data"] if row["as_of_date"] != "2026-01-05"]
-    result, _, _ = run_history(monkeypatch, state=state, securities={"a": 100.0})
+    for point in detail["market_data"]:
+        point["currency"] = currency
+    if currency == "USD":
+        usd_cny_fx_history(state, {day: 7.0 for day in ("2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08")})
+    result, _, _ = run_history(monkeypatch, state=state, securities={"a": 100.0}, initial_currency=currency)
     assert len(result["points"]) == 1
     assert "2026-01-05 holding valuation is unavailable" in result["point_in_time_coverage"]["unavailable_reason"]
 
@@ -183,19 +206,20 @@ def test_invalid_target_observation_cannot_be_an_execution_price():
 
 
 def test_inception_anchor_uses_inception_fx_even_when_asset_market_was_closed(monkeypatch):
-    state = replace(risk_budget_state(), as_of_date=date(2026, 1, 5))
+    state = replace(risk_budget_state(), as_of_date=date(2026, 1, 20))
     detail = state.instrument_detail_cache["a"]
     detail["exchange_code"] = "XNYS"
+    detail["source_settings"] = {"expected_frequency": "daily", "market_calendar": "XNYS"}
     detail["currency"] = "USD"
     detail["market_data"] = [
         {**detail["market_data"][0], "as_of_date": day, "value": 100.0, "currency": "USD"}
-        for day in ("2026-01-02", "2026-01-05")
+        for day in ("2026-01-16", "2026-01-20")
     ]
-    rates = {date(2026, 1, 2): 7.0, date(2026, 1, 4): 7.5, date(2026, 1, 5): 8.0}
-    def convert(state, *, point_date, value, point_currency, require_fresh_fx=False):
-        return value * rates[point_date] if point_currency == "USD" else value
-    monkeypatch.setattr(solver, "_convert_price_to_base", convert)
-    result, _, _ = run_history(monkeypatch, state=state, inception="2026-01-04", securities={"a": 100.0})
+    # MLK Day closes XNYS, while the registered weekday FX source is observed.
+    usd_cny_fx_history(state, {"2026-01-16": 7.0, "2026-01-19": 7.5, "2026-01-20": 8.0})
+    result, _, _ = run_history(monkeypatch, state=state, inception="2026-01-19",
+                               securities={"a": 100.0}, initial_currency="USD")
+    assert result["points"][0]["date"] == "2026-01-19"
     assert result["points"][-1]["value"] == pytest.approx(8.0 / 7.5)
 
 
@@ -211,19 +235,18 @@ def test_derivative_lifecycle_without_shared_quote_does_not_publish_stale_securi
     assert result["points"][-1]["value"] == pytest.approx(1.105)
 
 
-@pytest.mark.parametrize("missing_fx", [False, True])
-def test_held_security_fx_gap_stops_prefix_without_restarting(monkeypatch, missing_fx):
+@pytest.mark.parametrize("unavailable_fx_point", [False, True])
+def test_held_security_fx_gap_stops_prefix_without_restarting(monkeypatch, unavailable_fx_point):
     state = replace(risk_budget_state(), as_of_date=date(2026, 1, 8))
     detail = state.instrument_detail_cache["a"]
     detail["currency"] = "USD"
     for point in detail["market_data"]:
         point["currency"] = "USD"
-    def resolve_fx(*, as_of_date, **kwargs):
-        if as_of_date == date(2026, 1, 6):
-            return None if missing_fx else {"rate": 7.0, "stale": True}
-        return {"rate": 7.0, "stale": False}
-    monkeypatch.setattr(solver.valuation_fx, "resolve_fx_rate_on", resolve_fx)
-    result, _, _ = run_history(monkeypatch, state=state, securities={"a": 100.0})
+    rates = {day: 7.0 for day in ("2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08")}
+    if not unavailable_fx_point:
+        del rates["2026-01-06"]
+    usd_cny_fx_history(state, rates, unavailable_dates={"2026-01-06"} if unavailable_fx_point else ())
+    result, _, _ = run_history(monkeypatch, state=state, securities={"a": 100.0}, initial_currency="USD")
     assert result["points"][-1]["date"] == "2026-01-05"
     assert "2026-01-06 holding valuation is unavailable" in result["point_in_time_coverage"]["unavailable_reason"]
     assert result["point_in_time_coverage"]["status"] == "partial"
