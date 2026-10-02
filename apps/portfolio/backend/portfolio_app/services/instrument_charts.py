@@ -1077,18 +1077,12 @@ def _build_instrument_trend_metrics_from_selection(
             as_of_date=as_of_date,
             calculation_frequency=calculation_frequency,
         ),
-        "instrument_return_series_all": {
-            **_return_series_payload(
-                selected_points,
-                calculation_frequency=calculation_frequency,
-                final_date=end_date,
-            ),
-            "observation_coverage": observation_coverage_from_dates(
-                [point["date"] for point in selected_points],
-                source_settings=source_settings,
-                end_date=end_date,
-            ),
-        },
+        "instrument_return_series_all": _full_return_series_payload(
+            selected_points,
+            end_date=end_date,
+            calculation_frequency=calculation_frequency,
+            source_settings=source_settings,
+        ),
         "instrument_holding_return_series": (
             _return_series_payload(
                 holding_points,
@@ -1103,6 +1097,47 @@ def _build_instrument_trend_metrics_from_selection(
         "instrument_holding_max_drawdown": _max_drawdown(holding_points) if holding_start_date else None,
         "instrument_holding_start_date": holding_start_date.isoformat() if holding_start_date else None,
     }
+
+
+def _full_return_series_payload(
+    selected_points: list[dict[str, object]],
+    *,
+    end_date: date,
+    calculation_frequency: CalculationFrequency,
+    source_settings: object,
+) -> dict[str, object]:
+    return {
+        **_return_series_payload(
+            selected_points,
+            calculation_frequency=calculation_frequency,
+            final_date=end_date,
+        ),
+        "observation_coverage": observation_coverage_from_dates(
+            [point["date"] for point in selected_points],
+            source_settings=source_settings,
+            end_date=end_date,
+        ),
+    }
+
+
+def build_instrument_risk_return_series_from_detail(
+    detail: dict[str, object],
+    *,
+    as_of_date: date,
+    calculation_frequency: CalculationFrequency = "daily",
+) -> dict[str, object]:
+    """Use the identical full native risk history without rendering holdings charts."""
+    selection = _select_total_return_series(detail, as_of_date=as_of_date)
+    points = list(selection.points)
+    if not points:
+        return _empty_return_series_payload()
+    last_date = points[-1].get("date")
+    return _full_return_series_payload(
+        points,
+        end_date=last_date if isinstance(last_date, date) else as_of_date,
+        calculation_frequency=calculation_frequency,
+        source_settings=observation_source_settings(detail),
+    )
 
 
 def build_instrument_trend_metrics(

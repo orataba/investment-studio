@@ -353,6 +353,7 @@ def _daily_mark_to_last_return_matrix(
     active: list[tuple[str, dict[str, object], pd.Series, dict[date, date]]],
     *, as_of_date: date, base_currency: str,
     fx_histories: dict[str, RiskFxHistory] | None = None,
+    include_return_series: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, dict[date, date]]]:
     nav_by_key: dict[str, pd.Series] = {}
     for key, _row, series, period_starts in active:
@@ -384,8 +385,9 @@ def _daily_mark_to_last_return_matrix(
                          for key, row, _series, _starts in active},
         coverage_by_key=source_coverage, fx_histories=fx_histories,
     )
-    for key, row, _series, _starts in active:
-        row["risk_return_series"] = risk_return_series_payload(navs[key], returns[key], metadata[key])
+    if include_return_series:
+        for key, row, _series, _starts in active:
+            row["risk_return_series"] = risk_return_series_payload(navs[key], returns[key], metadata[key])
     aligned_period_starts: dict[str, dict[date, date]] = {
         key: {} for key in nav_by_key
     }
@@ -446,6 +448,7 @@ def enrich_holdings_forward_risk(
     calculation_frequency: CalculationFrequency,
     risk_policy: dict[str, object],
     fx_histories: dict[str, RiskFxHistory] | None = None,
+    include_return_series: bool = True,
 ) -> dict[str, object]:
     workspace.pop("_forward_risk_covariance", None)
     rows = workspace.get("rows")
@@ -610,6 +613,7 @@ def enrich_holdings_forward_risk(
     try:
         returns, period_starts_by_key = _daily_mark_to_last_return_matrix(
             active, as_of_date=as_of_date, base_currency=base_currency, fx_histories=fx_histories,
+            include_return_series=include_return_series,
         )
     except ValueError as error:
         for _key, row, _series, _starts in active:

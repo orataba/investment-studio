@@ -113,10 +113,13 @@ def get_cached_holdings_analytics_workspace(
     taxonomy_configuration_version: int,
     builder: Callable[[], T],
     response_projection: Callable[[T], T] | None = None,
+    risk_comparison: bool = False,
 ) -> T:
     value = _get_cached_portfolio_value(
         portfolio_id,
-        surface="holdings_analytics",
+        # A historical comparison does not consume UI histories. Its compact
+        # result must never satisfy a full holdings request under the same key.
+        surface="holdings_risk_comparison" if risk_comparison else "holdings_analytics",
         args=holdings_analysis_args(as_of_date, risk_policy, taxonomy_configuration_version),
         builder=builder,
     )
