@@ -19,7 +19,7 @@ describe('risk window explanations', () => {
     render(<LanguageProvider enableDomTranslation={false}><RiskWindowDiagnostics diagnostics={diagnostics} /></LanguageProvider>)
     expect(screen.getByRole('status')).toHaveTextContent('缺少 2026-06-10 附近的有效起始观测')
     expect(screen.getByLabelText('分析样本')).toHaveTextContent('观测日期数 58')
-    expect(screen.getByLabelText('分析样本')).toHaveTextContent('2026-06-23')
+    expect(screen.getByRole('button', { name: /样本日期:/ })).toHaveAccessibleName('样本日期: 来源区间 2026-06-23 → 2026-09-10')
     expect(screen.getByLabelText('分析样本')).not.toHaveTextContent('2026-06-22')
     await userEvent.click(screen.getByText('查看原因与影响标的'))
     expect(screen.queryByText(/Risk window lacks/)).not.toBeInTheDocument()

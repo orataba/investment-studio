@@ -26,9 +26,10 @@
   margin-top: 4px;
 }
 .assistant-title {
+  --info-hint-inline-gap: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 .assistant-title h1 { margin-bottom: 4px; }
 .assistant-title > span { font-size: 12px; color: var(--studio-muted); }

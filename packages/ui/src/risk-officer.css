@@ -44,7 +44,7 @@
 .risk-officer button:disabled { opacity: .5; cursor: default; }
 .risk-officer button:focus-visible,
 .risk-officer summary:focus-visible { outline: 2px solid #315d68; outline-offset: 3px; }
-.risk-officer-title { display: flex; align-items: center; gap: 8px; }
+.risk-officer-title { display: flex; align-items: center; gap: 6px; --info-hint-inline-gap: 0; }
 .risk-officer p { margin: 7px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .risk-officer .risk-officer-muted,
 .risk-officer-conclusion-heading time { color: #70808c; font-size: 12px; }

@@ -470,8 +470,8 @@ const SYSTEM_VALUE_LABELS: Record<string, LocalizedText> = {
   cautious: { en: 'Cautious', zh: '谨慎' },
   current: { en: 'Current', zh: '当前' },
   exited: { en: 'Exited', zh: '退出' },
-  fresh: { en: 'Fresh', zh: '新鲜' },
-  'high conviction': { en: 'High Conviction', zh: '高置信' },
+  fresh: { en: 'Fresh', zh: '时效正常' },
+  'high conviction': { en: 'High Conviction', zh: '高度确信' },
   invested: { en: 'Invested', zh: '在投' },
   partial: { en: 'Partial', zh: '部分' },
   paused: { en: 'Paused', zh: '暂停' },
@@ -479,7 +479,7 @@ const SYSTEM_VALUE_LABELS: Record<string, LocalizedText> = {
   pending_recalc: { en: 'Pending Recalc', zh: '待重算' },
   positive: { en: 'Positive', zh: '积极' },
   proposed: { en: 'Proposed', zh: '拟投' },
-  stale: { en: 'Stale', zh: '过期' },
+  stale: { en: 'Stale', zh: '已过时' },
   unrated: { en: 'Unrated', zh: '未评级' },
   unavailable: { en: 'Unavailable', zh: '不可用' },
   uploaded: { en: 'Uploaded', zh: '已上传' },
@@ -1020,12 +1020,12 @@ function filterBenchmarkOptions(options: InstrumentLibraryItem[], search: string
 
 function formatTimelineNoteImportance(importance: InstrumentResearchNote['importance']) {
   if (importance === 'high') {
-    return 'High'
+    return 'High importance'
   }
   if (importance === 'low') {
-    return 'Low'
+    return 'Low importance'
   }
-  return 'Medium'
+  return 'Medium importance'
 }
 
 function getNumber(value: unknown) {
@@ -5310,7 +5310,7 @@ export default function FundDetailPage({
             {hasBenchmarkSelection && (
               <div className="instrument-benchmark-status">
                 {benchmarkLoading ? <span role="status" aria-label="Loading">…</span>
-                  : <InfoHint label={language === 'zh-Hans' ? '基准比较口径' : 'Benchmark comparison basis'} detail={statusText} tone={benchmarkHasIssue ? 'warning' : 'info'} />}
+                  : <InfoHint label={language === 'zh-Hans' ? '基准比较口径' : 'Benchmark comparison basis'} detail={statusText} kind={benchmarkHasIssue ? 'attention' : 'explanation'} />}
               </div>
             )}
             {showBenchmarkResults ? (
@@ -6314,7 +6314,7 @@ export default function FundDetailPage({
                                   key={note.note_id}
                                   className="instrument-chart-tooltip-row instrument-chart-tooltip-row-note"
                                 >
-                                  <span className="instrument-chart-tooltip-series-label">
+                                  <span className="instrument-chart-tooltip-series-label" translate={note.title || note.summary ? 'no' : undefined}>
                                     <i className="instrument-chart-tooltip-swatch" />
                                     {note.title || note.summary || 'Research note'}
                                   </span>

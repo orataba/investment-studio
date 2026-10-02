@@ -314,6 +314,10 @@ Risk 与 Research 的 covariance / correlation / risk contribution 固定使用�
 - Risk 页 Rolling Risk 是窗口内 sample volatility / sample Sharpe 展示层，默认“实际组合”，另可显式选择“当前持仓回溯”。实际组合只读取 Performance 发布的 `daily_series.market_risk_daily_return`，纳入 `market_risk_return_observation_eligible=true` 且对应期间 coverage complete 的观测；不使用 `daily_twr`，不把没有新市场观测的周末 carry 0 加入样本。每个滚动窗口独立检查其实际期间的覆盖与连续性，旧窗口外的断链状态不能永久阻断后续完整样本。年化与 Performance 一致：样本方差分母为 `N - 1`，年化密度为 `N / 窗口实际 EOD 起止跨度 × 365.25`；funded BOD 的首日市场收益保留，计时锚点与展示的首个真实收益日期分别记录，不把锚点描述为成立前的实际历史。
 - 当前持仓回溯固定 holdings as-of 的 total-NAV 当前权重合成历史收益，各滚动终点按所选 lookback 检查所有 active members 在该窗口内完全相同的 dates 与 `(period_start, period_end)` identity，并检查完整来源缺口；不能把全历史检查结果当作每个窗口的门禁，也不能先取交集、剔除成员或填 0 后静默计算。此视角保留按实际收益观测密度年化的 sample estimator，基准也按自身可用序列计算；实际组合请求失败不得阻断当前持仓回溯或其他 Risk 视图。Rolling 不提供 EWMA / shrinkage 等 covariance model 选择。无效终点保留为空值以断开曲线，单个合法估计值仍展示，基准比较只使用相同日期。凡是用于 risk-budget drift、rebalance trigger、Research solve 或 Holdings Forward RC 的 RC 相关指标，必须使用组合级 `Production Risk Model`，不能在不同页面各自硬编码 decay、shrinkage、lookback 或 contribution mode。
 - Risk 页 Correlation Matrix 是窗口内 sample correlation 展示层，只受 lookback、calculation frequency、coverage 和 scope 影响；当前持仓与全部标的逐资产比较，叶分类比较其中的资产，非叶分类比较直接子分类的当前权重篮子。先确定所选成员，再检查该窗口的来源、币种与共同期间；范围外资产的问题不阻断所选分类，范围内成员不得丢弃。至少两个成员才能比较，常数收益导致相关系数不可定义，与缺历史分别说明。分类资料始终读取当前配置；行情 profile 和历史收益窗口按所选观察截止日截断，该日期只改变当前篮子的回溯窗口，不代表当时的分类或实际持仓。矩阵与滚动披露请求窗口、真实样本日期、观测数及受影响资产/日期。不提供 EWMA、vol shrinkage 或 correlation shrinkage 方法选择。EWMA / shrinkage 是 forward covariance 估计模型，应保留在 Production Risk Model 驱动的 Current Drift risk gap、Research solve 和 Holdings Forward RC 中。
+- 相关性“广泛上升”是所选篮子的探索性观察，不是生产风险模型或自动风险事项。它固定采用 1 个月样本，不随矩阵的展示窗口变化：先计算截止日的当期矩阵与紧邻前期矩阵，再使用当期之前连续 12 个完整月度矩阵作为参照，得到 12 个平均相关性及 11 个相邻月度变化。因此完整判断至少需要 13 个连续月度窗口；当前与前期可计算而参照历史不足时，仍保留描述值，不生成关注标记。参照不使用当前样本或截止日之后的观察，也不跳过有缺口的历史月份以凑满数量。
+- 上述观察的 `level` 为全部不重复对象对的有符号 Pearson 相关系数算术平均，`change` 为当期减前期，`breadth` 为相关系数上升的对象对数除以全部对象对数；不包括对角线，也不按持仓权重加权对象对。分类篮子内部仍沿用当前成员及当前权重。至少有 3 个对象，且严格超过半数对象对上升、平均变化为正、当期 level 与 change 分别超过各自参照样本的 `Q3 + 1.5 × (Q3 - Q1)` 时，才显示关注。四分位数按排序后的 `(N - 1) × p` 位置线性插值；任一参照分布无可辨别离散度时不生成关注。浮点比较仅使用 `Number.EPSILON × 4 × (N + P)` 的算术精度容差，其中 `N` 为所比较月度窗口的最大观察数、`P` 为对象对数；它覆盖观察/对象对求和及差值误差，不是最小经济变化阈值。该上围栏来自 [NIST 的探索性箱线图方法](https://www.itl.nist.gov/div898/handbook/eda/section3/boxplot.htm)，12 个月是明确披露的产品参照期，不代表已验证的金融报警阈值或统计样本充分性。
+- 每个月度矩阵继承相同的成员、币种、来源覆盖及完整共同样本检查；相邻窗口还要求当期首条收益的起始日不早于前期最后收益的结束日，防止按结束日期分窗但重复使用跨窗收益期间。缺失成员、日期/期间错位、来源缺口、常数收益或跨窗期间重叠均不靠填零、删对象或两两取不同样本补齐。关注仅在浏览器按所选日期与当前篮子重算，不写入共享风险事项，不改变 Production Risk Model、生产波动率、RC、预算偏离或研究求解。
+- 广泛上升提示只说明相关性相对自身历史出现值得复核的变化；对象对及相邻月度变化并不独立，不能据此宣称统计显著、未来损失或危机将发生。负相关减弱也可能触发；方向相反的对象对变化可能在有符号平均中抵消，单个局部结构变化不属于此筛选目标。历史离散度很低但非零时，幅度很小的变化也可能超过上围栏；界面应同时呈现实际水平、变化及广度，不能将关注标记解释成高风险级别。风险判断仍需结合组合波动、跌幅、敞口及其他证据。
 - Risk 页 instrument-scope planning taxonomy 的 Current Drift 用 Securities、Derivatives 与 Accounts workspace 的 `derived_cash_balance_base + pending_settlement_base` 合成当前 NAV；deposit 与 securities account 的现金、待交收都必须计入，证券账户的 position market value 只通过 Holdings 进入一次。Securities 按 taxonomy 顶层节点汇总；Derivatives 固定汇总到 `derivative_bucket:__derivatives__`，现金与待交收固定汇总到 `cash_bucket:__cash__`，两者都不读取 taxonomy assignment。Holdings 中为对账而展示的 settled-cash 与 pending-monetary rows 不得再次计入。
 - Base-currency cash 和事件记账型衍生品资本在组合风险聚合中按 0 return 处理；衍生品行自身没有可观测波动率或 Forward RC，仍显示 `N/A / excluded`。Non-base cash 需要 FX total-return series；非本币资产的本地币种 total return 也不能直接与 base-currency returns 拼接。在显式产出 base-currency total-return series 之前，Forward RC、Rolling Risk 与 Correlation 都必须 fail closed。若组合没有任何可建模市场资产，组合风险为 unavailable，不把纯现金/衍生品组合报告成实际波动率 0。
 - Risk benchmark 只有在 return semantics 已确认为 `total_return` 或 `price_return` 且 currency 与 portfolio base currency 一致时才参与 rolling comparison。`price_return` 可以作为探索性比较，但必须提示分红口径差异；unknown semantics、raw-currency 或 unavailable coverage 不输出相对风险曲线。
@@ -1288,6 +1292,8 @@ $$
 
 ### 10.2 Covariance-based portfolio risk
 
+风险页分类摘要沿用同一生产模型的叶证券结果：分类有符号波动率贡献 `Σ contribution_to_variance_i / portfolio_volatility`，以百分点展示，只有组合波动率有限且为正时可用；这不是分类单独持有的波动率。风险贡献份额仍遵守下述 `signed / abs` 配置，不能把绝对值份额替代有符号方差贡献。
+
 给定权重向量 `w` 和协方差矩阵 `\Sigma`：
 
 $$
@@ -1528,7 +1534,7 @@ $$
 
 ### 11.5 当前持仓历史模拟 VaR / ES
 
-Risk 页“当前持仓历史情景”使用当前 signed 基准货币敞口重放真实历史证券总回报及同步 FX 冲击；不对运营账本的 NAV 收益直接取分位数，不以组合成立日截断标的历史。默认请求最长回看三年、95% 置信度，可选一/三/五年及 95%/99%。回看值为 `365 / 1095 / 1825` 个自然日，以响应中的请求起止日期为准；请求长度不代表已经取得同等长度的共同样本。
+Risk 页“历史情景损失”使用当前 signed 基准货币敞口重放真实历史证券总回报及同步 FX 冲击；不对运营账本的 NAV 收益直接取分位数，不以组合成立日截断标的历史。默认请求最长回看三年、95% 置信度，可选一/三/五年及 95%/99%。回看值为 `365 / 1095 / 1825` 个自然日，以响应中的请求起止日期为准；请求长度不代表已经取得同等长度的共同样本。
 
 对每个共同历史区间，证券基准货币冲击为 `(1 + local_return) × (1 + fx_return) − 1`，包含交叉项；同币种证券只用本地收益，外币现金和待结算只用 FX。情景损失为各当前市值乘以冲击之和取负。基准货币现金不产生市场冲击。FCN/Option 不做日频重估，明确列为未建模；缺失数据和周频基金不会默认为零风险。
 

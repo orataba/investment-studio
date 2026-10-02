@@ -44,7 +44,7 @@ export default function FcnLifecyclePanel({ portfolioId, positionReferenceId, as
         <article className="fcn-lifecycle-contract" key={lifecycle.derivative_contract_id}>
           <div className="portfolio-security-section-head">
             <h3><Link translate="no" to={`${buildPortfolioHoldingDetailPath(portfolioId, lifecycle.derivative_contract_id)}?as_of_date=${asOfDate}`}>{lifecycle.contract_name}</Link></h3>
-            <span>{t(lifecycle.contract_status === 'closed' ? 'Closed' : 'Open')} · {lifecycle.currency}</span>
+            <span>{t(lifecycle.contract_status === 'closed' ? 'Closed' : 'Outstanding')} · {lifecycle.currency}</span>
           </div>
           <dl className="derivative-risk-facts">
             {([

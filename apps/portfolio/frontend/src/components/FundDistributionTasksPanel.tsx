@@ -173,7 +173,7 @@ export default function FundDistributionTasksPanel({
   }
 
   const controls = <span className="fund-distribution-tasks-controls">
-    <InfoHint label={t('Fund distribution reviews')} detail={hintDetails} tone={error || orderedTasks.length ? 'warning' : 'info'} />
+    <InfoHint label={t('Fund distribution reviews')} detail={hintDetails} kind={error || orderedTasks.length ? 'attention' : 'explanation'} />
     <button ref={reviewTriggerRef} type="button" className="fund-distribution-review-toggle" aria-expanded={open} aria-controls={open ? reviewId : undefined} onClick={() => setOpen((value) => !value)}>
       {reviewLabel}{!loading && orderedTasks.length ? ` (${orderedTasks.length})` : ''}
     </button>

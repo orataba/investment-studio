@@ -44,10 +44,10 @@ export default function ResearchSolutionTree({ run }: { run: PortfolioResearchRu
       <table className="transactions-table research-solution-table" aria-label={zh ? '研究求解树表' : 'Research solution tree'}>
         <colgroup><col style={{ width: '30%' }} /><col style={{ width: '10%' }} /><col style={{ width: '10%' }} /><col style={{ width: '13%' }} /><col style={{ width: '11%' }} /><col style={{ width: '11%' }} /><col style={{ width: '15%' }} /></colgroup>
         <thead><tr><th>{zh ? '分类 / 标的' : 'Category / Instrument'}</th>
-          <th>{zh ? '目标风险贡献' : 'Target RC'}</th><th>{zh ? '求解风险贡献' : 'Solved RC'} <InfoHint label={zh ? '风险贡献口径' : 'Risk contribution basis'} detail={riskDetail} /></th>
-          <th>{zh ? '账面金额' : 'Carrying Amount'}{amountLabel}{!tree.base_currency ? <> <InfoHint label={zh ? '报告币种未保存' : 'Reporting currency not recorded'} detail={zh ? '此存档未保存报告币种；账面及调仓金额按原始数值展示，未换算。' : 'This archive did not record its reporting currency. Carrying and rebalance amounts show their original numeric values without conversion.'} /></> : null}</th>
+          <th>{zh ? '目标风险贡献' : 'Target RC'}</th><th>{zh ? '求解风险贡献' : 'Solved RC'}<InfoHint label={zh ? '风险贡献口径' : 'Risk contribution basis'} detail={riskDetail} /></th>
+          <th>{zh ? '账面金额' : 'Carrying Amount'}{amountLabel}{!tree.base_currency ? <><InfoHint kind="attention" label={zh ? '报告币种未保存' : 'Reporting currency not recorded'} detail={zh ? '此存档未保存报告币种；账面及调仓金额按原始数值展示，未换算。' : 'This archive did not record its reporting currency. Carrying and rebalance amounts show their original numeric values without conversion.'} /></> : null}</th>
           <th>{zh ? '当前权重' : 'Current Weight'}</th>
-          <th>{zh ? '目标权重' : 'Target Weight'} <InfoHint label={zh ? '权重口径' : 'Weight basis'} detail={capitalDetail} /></th><th>{zh ? '调仓金额' : 'Rebalance amount'}{amountLabel}</th></tr></thead>
+          <th>{zh ? '目标权重' : 'Target Weight'}<InfoHint label={zh ? '权重口径' : 'Weight basis'} detail={capitalDetail} /></th><th>{zh ? '调仓金额' : 'Rebalance amount'}{amountLabel}</th></tr></thead>
         <tbody>{rows.map((row) => {
           const constraint = solutionConstraintLabel(row, zh)
           const children = parentIds.has(row.row_id)

@@ -260,7 +260,7 @@ body:has(.research-aside-backdrop) { overflow: hidden; }
 .research-event-filters button[aria-pressed="true"] { border-bottom: 2px solid var(--accent); color: var(--accent); }
 .research-event-filters button:hover, .research-event-filters button:focus-visible { border-color: var(--accent); }
 /* A date gutter keeps progress scannable while evidence opens beside the report. */
-.research-section-title, .research-judgment-heading { display: flex; align-items: center; gap: 9px; }
+.research-section-title, .research-judgment-heading { display: flex; align-items: center; gap: 6px; --info-hint-inline-gap: 0; }
 .research-judgment-heading h3 { margin: 0; }
 .research-judgment-heading > time { margin-left: auto; color: var(--muted); font-size: 11px; }
 .research-event-timeline { margin-top: 22px; }
@@ -275,7 +275,7 @@ body:has(.research-aside-backdrop) { overflow: hidden; }
 .research-event-day:last-child .research-event-card:last-child { border-bottom: 0; }
 .research-event-title-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px 14px; margin-bottom: 10px; }
 .research-event-title-row h4 { margin: 0; font-size: 16px; font-weight: 500; line-height: 1.7; }
-.research-event-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.research-event-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; --info-hint-inline-gap: 0; }
 .research-status-tag { display: inline-flex; align-items: center; white-space: nowrap; min-height: 19px; padding: 0 6px; border: 1px solid var(--line, #dce3eb); color: var(--muted); font-size: 10px; line-height: 18px; border-radius: 3px; }
 .research-status-tag.active { border-color: transparent; background: var(--studio-info-soft); color: var(--studio-info); }
 .research-status-tag.warning { border-color: transparent; background: var(--studio-negative-soft); color: var(--studio-negative); }

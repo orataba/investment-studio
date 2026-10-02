@@ -1,3 +1,4 @@
+import InfoHint from './InfoHint'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import type { RiskWindowDiagnostics as WindowDiagnostics } from '../lib/riskWindowData'
 
@@ -54,12 +55,14 @@ export default function RiskWindowDiagnostics({ diagnostics }: { diagnostics: Wi
     <div className="risk-window-sample" aria-label={zh ? '分析样本' : 'Analysis sample'}>
       <span>{zh ? '观察窗口' : 'Observation window'} {diagnostics.windowStartDate} → {diagnostics.asOfDate}</span>
       <span>{available ? (zh ? '有效样本' : 'Valid observations') : (zh ? '观测日期数' : 'Observed dates')} {observationCount}</span>
-      {observedStartDate && observedEndDate ? <span>{available ? (zh ? '实际样本' : 'Actual sample') : (zh ? '来源区间' : 'Source range')} {observedStartDate} → {observedEndDate}</span> : null}
+      {observedStartDate && observedEndDate ? <InfoHint label={zh ? '样本日期' : 'Sample dates'} detail={
+        `${available ? (zh ? '实际样本' : 'Actual sample') : (zh ? '来源区间' : 'Source range')} ${observedStartDate} → ${observedEndDate}`
+      } /> : null}
     </div>
     {diagnostics.status === 'unavailable' ? <div className="risk-window-unavailable" role="status">
       <span>{observationCount < requiredObservationCount
         ? zh ? `所选窗口至少需要 ${requiredObservationCount} 个有效观测，目前窗口内有 ${observationCount} 个观测日期。` : `This window requires ${requiredObservationCount} valid observations; ${observationCount} dates were observed.`
-        : issues[0] ? riskDiagnosticMessage(issues[0].coverageReason, zh, t)
+        : issues[0] ? <>{!['portfolio', 'realized-portfolio', 'scope'].includes(issues[0].memberKey) ? <><span translate="no">{issues[0].memberLabel}</span>{zh ? '：' : ': '}</> : null}{riskDiagnosticMessage(issues[0].coverageReason, zh, t)}</>
           : zh ? '所选范围暂无法计算此项指标。' : 'This metric is unavailable for the selected scope.'}</span>
       {issues.length ? <details>
         <summary>{zh ? '查看原因与影响标的' : 'View reasons and affected instruments'}</summary>

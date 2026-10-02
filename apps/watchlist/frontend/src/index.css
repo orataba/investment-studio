@@ -1879,6 +1879,7 @@ th {
 }
 
 .watchlists-field-item {
+  --info-hint-inline-gap: 0;
   display: flex;
   gap: 6px;
   align-items: center;

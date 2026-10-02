@@ -1685,7 +1685,7 @@ export default function OverviewPage() {
                         <InfoHint
                           label="Benchmark comparison"
                           detail={benchmarkComparisonDetail}
-                          tone={benchmarkGuard?.mode === 'canonical' ? 'info' : 'warning'}
+                          kind={benchmarkGuard?.mode === 'canonical' ? 'explanation' : 'attention'}
                         />
                       ) : null}
                       {performanceWorkspace?.summary.as_of_clamp_reason ? (
@@ -1694,7 +1694,7 @@ export default function OverviewPage() {
                           detail={`Performance shown through ${
                             performanceWorkspace.summary.effective_end_date ?? performanceWorkspace.summary.end_date ?? '—'
                           }. ${performanceWorkspace.summary.as_of_clamp_reason}`}
-                          tone="warning"
+                          kind="attention"
                         />
                       ) : null}
                       <QualityWarningsNotice
@@ -1749,7 +1749,7 @@ export default function OverviewPage() {
                                     <InfoHint
                                       label="Operational performance basis"
                                       detail={operationalPerformanceDetail}
-                                      tone="warning"
+                                      kind="attention"
                                     />
                                   ) : null}
                                 </span>

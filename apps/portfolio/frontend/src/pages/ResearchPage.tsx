@@ -1113,7 +1113,7 @@ export default function ResearchPage() {
                     </label>
                   ) : null}
                   <div className="research-freeze-field" ref={frozenMenuRef}>
-                    <span>{zh ? '不交易分类' : 'No-trade Sleeves'} <InfoHint label={zh ? '不交易分类' : 'No-trade Sleeves'} detail={zh ? '保持当前持仓不交易；已纳入模型的证券仍参与协方差与风险贡献计算。' : 'No-trade fixes the current holding; modeled securities remain in covariance and risk contribution.'} /></span>
+                    <span>{zh ? '不交易分类' : 'No-trade Sleeves'}<InfoHint label={zh ? '不交易分类' : 'No-trade Sleeves'} detail={zh ? '保持当前持仓不交易；已纳入模型的证券仍参与协方差与风险贡献计算。' : 'No-trade fixes the current holding; modeled securities remain in covariance and risk contribution.'} /></span>
                     <button
                       type="button"
                       className="research-freeze-trigger"
@@ -1503,7 +1503,7 @@ export default function ResearchPage() {
                           <td>{formatMaybePercent(backtest?.total_turnover)}</td>
                         </tr>
                         <tr>
-                          <th>{zh ? '累计成本比例' : 'Cumulative Cost Ratio'} <InfoHint label={zh ? '成本口径' : 'Cost basis'} detail={zh ? '累计交易成本占回测期初 NAV 的比例。' : 'Cumulative trading costs divided by the simulation’s initial NAV.'} /></th>
+                          <th>{zh ? '累计成本比例' : 'Cumulative Cost Ratio'}<InfoHint label={zh ? '成本口径' : 'Cost basis'} detail={zh ? '累计交易成本占回测期初 NAV 的比例。' : 'Cumulative trading costs divided by the simulation’s initial NAV.'} /></th>
                           <td>{formatMaybePercent(backtest?.total_cost)}</td>
                         </tr>
                         <tr>
@@ -1527,12 +1527,12 @@ export default function ResearchPage() {
                           <th>Decision</th>
                           <th>Execution</th>
                           <th>Config</th>
-                          <th>{zh ? '买入比例' : 'Buy Ratio'} <InfoHint label={zh ? '成交比例口径' : 'Trade ratio basis'} detail={zh ? '买入、卖出金额分别除以调仓前 NAV。' : 'Buy and sell amounts each divided by NAV before the rebalance.'} /></th>
+                          <th>{zh ? '买入比例' : 'Buy Ratio'}<InfoHint label={zh ? '成交比例口径' : 'Trade ratio basis'} detail={zh ? '买入、卖出金额分别除以调仓前 NAV。' : 'Buy and sell amounts each divided by NAV before the rebalance.'} /></th>
                           <th>{zh ? '卖出比例' : 'Sell Ratio'}</th>
-                          <th>{zh ? '衍生品权重' : 'Derivative Weight'} <InfoHint label={zh ? '权重口径' : 'Weight basis'} detail={zh ? '衍生品保持原账面金额；衍生品和现金权重均以执行后、已扣费的 NAV 为分母。' : 'Derivative carrying capital is held fixed. Derivative and cash weights use NAV after execution and costs.'} /></th>
+                          <th>{zh ? '衍生品权重' : 'Derivative Weight'}<InfoHint label={zh ? '权重口径' : 'Weight basis'} detail={zh ? '衍生品保持原账面金额；衍生品和现金权重均以执行后、已扣费的 NAV 为分母。' : 'Derivative carrying capital is held fixed. Derivative and cash weights use NAV after execution and costs.'} /></th>
                           <th>{zh ? '现金目标权重' : 'Target Cash Weight'}</th>
                           <th>{zh ? '单边换手率' : 'One-way Turnover'}</th>
-                          <th>{zh ? '成本比例' : 'Cost Ratio'} <InfoHint label={zh ? '成本口径' : 'Cost basis'} detail={zh ? '本次交易成本占回测期初 NAV 的比例。' : 'This execution’s trading costs divided by the simulation’s initial NAV.'} /></th>
+                          <th>{zh ? '成本比例' : 'Cost Ratio'}<InfoHint label={zh ? '成本口径' : 'Cost basis'} detail={zh ? '本次交易成本占回测期初 NAV 的比例。' : 'This execution’s trading costs divided by the simulation’s initial NAV.'} /></th>
                         </tr>
                       </thead>
                       <tbody>

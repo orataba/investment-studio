@@ -269,7 +269,7 @@ export default function OptionOutcomePrompt({
   }
 
   if (!actions.length && !open) {
-    return error ? <InfoHint label="Option action check failed" detail={error} tone="warning" /> : null
+    return error ? <InfoHint label="Option action check failed" detail={error} kind="attention" /> : null
   }
 
   return (
@@ -361,7 +361,6 @@ export default function OptionOutcomePrompt({
                           <InfoHint
                             label="Physical settlement"
                             detail="Stock quantity and strike cash are derived from the contract; physical delivery uses accounts in the strike currency."
-                            tone="warning"
                           />
                         ) : null}
                       </strong>

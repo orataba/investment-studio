@@ -5,11 +5,12 @@ import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import InfoHint from './InfoHint'
 import QualityWarningsNotice from './QualityWarningsNotice'
 
-it('uses the same exclamation and anchored explanation for hover, focus and click', async () => {
+it('uses a question mark and the same anchored explanation for hover, focus and click', async () => {
   const user = userEvent.setup()
   const { container } = render(<section><h2>Performance</h2><InfoHint label="Return basis" detail="Uses the selected period." /><button>Outside</button></section>)
   const hint = screen.getByRole('button', { name: 'Return basis: Uses the selected period.' })
-  expect(hint).toHaveTextContent('!')
+  expect(hint).toHaveTextContent('?')
+  expect(hint).toHaveClass('investment-studio-info-hint-explanation')
   expect(hint).not.toHaveAttribute('title')
   expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
   await user.hover(hint)
@@ -43,9 +44,10 @@ it('uses the same exclamation and anchored explanation for hover, focus and clic
 })
 
 it('opens from a touch click and closes on outside pointerdown', () => {
-  render(<><InfoHint label="Settlement" detail="Review the confirmation." tone="warning" /><button>Outside</button></>)
+  render(<><InfoHint label="Settlement" detail="Review the confirmation." kind="attention" /><button>Outside</button></>)
   const hint = screen.getByRole('button', { name: /Settlement:/ })
   expect(hint).toHaveTextContent('!')
+  expect(hint).toHaveClass('investment-studio-info-hint-attention')
   fireEvent.pointerEnter(hint, { pointerType: 'touch' })
   expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
   fireEvent.click(hint)

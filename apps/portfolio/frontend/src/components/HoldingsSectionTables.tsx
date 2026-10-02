@@ -483,7 +483,7 @@ function optionRiskLabel(state: string) {
     case 'quote_unavailable':
       return 'Quote unavailable'
     case 'open':
-      return 'Open'
+      return 'Open position'
     default:
       return formatLabel(state)
   }
@@ -504,7 +504,7 @@ function fcnRiskLabel(state: string) {
     case 'matured':
       return 'Maturity recorded'
     case 'open':
-      return 'Open'
+      return 'Outstanding'
     default:
       return formatLabel(state)
   }

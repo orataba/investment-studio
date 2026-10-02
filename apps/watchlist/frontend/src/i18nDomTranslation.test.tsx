@@ -106,4 +106,33 @@ describe('DOM translation context', () => {
       expect(screen.getByText('Close', { selector: 'span' })).toBeTruthy()
     })
   })
+
+  it('keeps financial states, explanations and original content distinct across language switches', async () => {
+    render(<LanguageProvider>
+      <LanguageSelector />
+      <button>Open</button>
+      <span>Outstanding</span><span>Open position</span>
+      <span>Portfolio</span><span>Exposure</span><span>Instrument Type</span>
+      <span>High</span><span>High importance</span><span>Fresh</span>
+      <p>Keep one active lifecycle state. Research View and manual rating belong to the research profile.</p>
+      <p translate="no">Portfolio · Price · High · 原始研究观点</p>
+      <select aria-label="Conviction" defaultValue="high conviction"><option value="high conviction">High Conviction</option></select>
+    </LanguageProvider>)
+    for (let round = 0; round < 2; round += 1) {
+      fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+      await waitFor(() => expect(screen.getByText('存续中')).toBeTruthy())
+      expect(screen.getByRole('button', { name: '打开' })).toBeTruthy()
+      for (const label of ['未平仓头寸', '组合', '敞口', '标的类型', '最高价', '重要性高', '时效正常']) {
+        expect(screen.getByText(label)).toBeTruthy()
+      }
+      expect(screen.getByText('仅保留一个当前有效的投资状态；研究观点和人工评级在研究资料中维护。')).toBeTruthy()
+      expect(screen.getByRole('option', { name: '高度确信' })).toBeTruthy()
+      expect((screen.getAllByRole('combobox')[1] as HTMLSelectElement).value).toBe('high conviction')
+      expect(screen.getByText('Portfolio · Price · High · 原始研究观点')).toBeTruthy()
+      fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+      await waitFor(() => expect(screen.getByText('Outstanding')).toBeTruthy())
+      expect(screen.getByText('High importance')).toBeTruthy()
+      expect(screen.getByRole('option', { name: 'High Conviction' })).toBeTruthy()
+    }
+  })
 })

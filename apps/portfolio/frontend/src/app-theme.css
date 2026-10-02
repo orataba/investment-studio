@@ -906,18 +906,6 @@
   color: var(--portfolio-muted);
   white-space: nowrap;
 }
-.risk-matrix-identity-detail { margin: 0 0 8px; min-height: 20px; font-size: 13px; }
-.risk-matrix-identity { border: 0; padding: 0; background: transparent; font: inherit; color: var(--portfolio-accent); white-space: nowrap; }
-.risk-matrix-legend { margin: 12px 0; font-size: 13px; }
-.risk-matrix-legend summary { cursor: pointer; color: var(--portfolio-accent); }
-.risk-matrix-legend li { margin-top: 6px; }
-.risk-covariance-table .risk-matrix-value-col,
-.risk-covariance-table th.risk-matrix-column-header,
-.risk-covariance-table td.risk-heatmap-cell { width: 100px; min-width: 100px; max-width: none; }
-.risk-covariance-table .risk-matrix-label-col,
-.risk-covariance-table th.risk-matrix-corner,
-.risk-covariance-table th.risk-matrix-row-header { width: 180px; min-width: 180px; max-width: none; }
-.risk-covariance-table th.risk-matrix-column-header { height: auto; padding: 10px 8px; }
 .research-run-unavailable { margin: 8px 0; color: var(--portfolio-muted); font-size: 13px; }
 @media (max-width: 900px) {
   .portfolio-selector-row { display: none; }

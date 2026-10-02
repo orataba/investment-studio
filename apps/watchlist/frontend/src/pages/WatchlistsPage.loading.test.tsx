@@ -451,7 +451,7 @@ describe('WatchlistsPage loading', () => {
     expect(within(dialog).queryByText('Fund NAV, market price, or index level as applicable.')).toBeNull()
     const quoteHelp = within(dialog).getByRole('button', { name: 'Latest price / NAV: Fund NAV, market price, or index level as applicable.' })
     expect(quoteHelp.getAttribute('title')).toBeNull()
-    expect(quoteHelp.textContent).toBe('!')
+    expect(quoteHelp.textContent).toBe('?')
     fireEvent.pointerEnter(quoteHelp, { pointerType: 'mouse' })
     const explanation = screen.getByRole('tooltip')
     expect(explanation.textContent).toContain('Fund NAV, market price, or index level as applicable.')

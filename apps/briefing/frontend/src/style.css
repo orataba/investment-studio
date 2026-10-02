@@ -114,14 +114,14 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; line-heig
 
 @media (max-width: 640px) { .briefing-shell { padding: 16px 14px 40px; } .briefing-masthead { flex-wrap: wrap; } }
 
-.section-heading, .generation-actions, .source-heading-text { display: flex; align-items: center; gap: 8px; }
+.section-heading, .generation-actions, .source-heading-text { display: flex; align-items: center; gap: 6px; --info-hint-inline-gap: 0; }
 .section-heading { min-width: 0; }
 .section-heading > h2 { margin-bottom: 0; }
 .report-section > .section-heading { margin-bottom: 20px; }
 .report-section .section-heading h2 { margin-bottom: 0; }
 .source-heading-text { align-items: baseline; min-width: 0; }
 .source-heading-text h2 { overflow-wrap: anywhere; }
-.edition-header .eyebrow { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.edition-header .eyebrow { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; --info-hint-inline-gap: 0; }
 .edition-skeleton { padding-top: 2px; }
 .edition-skeleton-header, .edition-skeleton-facts, .edition-skeleton-section span { display: block; background: var(--studio-surface-soft); }
 .edition-skeleton-header { width: 55%; height: 32px; margin: 24px 0; }

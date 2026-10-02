@@ -1,3 +1,4 @@
+import type { CorrelationRiskObservation } from './CorrelationObservation'
 import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
 import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
 import WorkspaceSwitcher from '../../../../../packages/ui/src/WorkspaceSwitcher'
@@ -51,6 +52,7 @@ type PortfolioWorkspaceLayoutProps = {
   children: React.ReactNode
   controls?: React.ReactNode
   busy?: boolean
+  correlationObservation?: CorrelationRiskObservation
 }
 
 type PortfolioSelectorOption = {
@@ -91,6 +93,7 @@ export default function PortfolioWorkspaceLayout({
   children,
   controls,
   busy = false,
+  correlationObservation,
 }: PortfolioWorkspaceLayoutProps) {
   const { language } = useLanguage()
   const access = usePortfolioAccess()
@@ -631,7 +634,7 @@ export default function PortfolioWorkspaceLayout({
             </div>
           </div>
           <Suspense fallback={<WorkspaceLoadingDrawer kind={assistantParams ? 'assistant' : 'risk'} onClose={() => { if (assistantParams) setAssistantParams(null); else setRiskDrawerOpen(false) }} />}>
-            {riskDrawerOpen && resolvedPortfolioId ? <PortfolioRiskDrawer key={`risk:${resolvedPortfolioId}`} portfolioId={resolvedPortfolioId} onClose={() => setRiskDrawerOpen(false)} onAskAssistant={openAssistant} /> : null}
+            {riskDrawerOpen && resolvedPortfolioId ? <PortfolioRiskDrawer key={`risk:${resolvedPortfolioId}`} portfolioId={resolvedPortfolioId} correlationObservation={correlationObservation} onClose={() => setRiskDrawerOpen(false)} onAskAssistant={openAssistant} /> : null}
             {assistantParams && resolvedPortfolioId ? <PortfolioAssistantDrawer key={`assistant:${resolvedPortfolioId}:${assistantParams.toString()}`} initialParams={assistantParams} onClose={() => setAssistantParams(null)} /> : null}
           </Suspense>
           {riskSettingsOpen ? (

@@ -20,5 +20,5 @@ export default function QualityWarningsNotice({
       ? 'Data quality warning'
       : `Data quality warnings (${visibleWarnings.length})`
 
-  return <InfoHint label={warningLabel} detail={visibleWarnings} tone="warning" />
+  return<InfoHint label={warningLabel} detail={visibleWarnings} kind="attention" />
 }

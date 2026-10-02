@@ -369,7 +369,7 @@ describe('Risk rendered page contract', () => {
     const concentration = await screen.findByRole('region', { name: 'Concentration' })
     expect(await within(concentration).findByRole('table')).toHaveTextContent('90.00%')
     expect(within(concentration).getByRole('table')).toHaveTextContent('Over limit')
-    expect(within(concentration).getByText('Options not modeled · no stock delivery scenario')).toBeInTheDocument()
+    expect(within(concentration).getByRole('button', { name: /Concentration basis:/ })).toHaveAccessibleName(expect.stringContaining('Option exposure is not modeled'))
     expect(within(concentration).getByLabelText('Concentration as of date')).toHaveValue('2026-07-10')
     expect(apiMocks.getConcentration).toHaveBeenCalledExactlyOnceWith('3', '2026-07-10')
     expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledExactlyOnceWith('3', { include_details: true }, expect.any(AbortSignal))
@@ -402,9 +402,22 @@ describe('Risk rendered page contract', () => {
         expect(screen.getByLabelText('Matrix as of')).toHaveValue(historicalDate)
         const sample = within(screen.getByRole('region', { name: 'Correlation analysis' })).getByLabelText('Analysis sample')
         expect(sample).toHaveTextContent('Observation window 2026-06-10 → 2026-07-10')
-        expect(sample).toHaveTextContent('Actual sample 2026-06-11 → 2026-07-10')
+        expect(within(sample).getByRole('button', { name: /Sample dates:/ })).toHaveAccessibleName('Sample dates: Actual sample 2026-06-11 → 2026-07-10')
       })
     } finally { observer.disconnect() }
+  })
+
+  it('moves the historical matrix through observed dates with the timeline and keeps full names', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(twoHoldingWorkspace())
+    renderRiskPage()
+    const slider = await screen.findByRole('slider', { name: 'Correlation history timeline' })
+    const index = Number(slider.getAttribute('max')) - 5
+    fireEvent.change(slider, { target: { value: String(index) } })
+    expect(screen.getByLabelText('Matrix as of')).toHaveValue(isoDateDaysBefore(5))
+    const matrix = within(screen.getByRole('region', { name: 'Correlation analysis' }))
+    expect(matrix.getAllByRole('button', { name: 'Alpha Fund' })[0]).toHaveTextContent('Alpha Fund')
+    expect(matrix.queryByText('All matrix names')).not.toBeInTheDocument()
+    expect(matrix.getByLabelText('Analysis sample')).toHaveTextContent(isoDateDaysBefore(5))
   })
 
   it('changes the matrix observation cutoff and explains dates outside available history', async () => {
@@ -540,7 +553,7 @@ describe('Risk rendered page contract', () => {
     expect(result.value.statusLabel).toBe('Daily risk basis')
   })
 
-  it('discloses historical provider gaps without marking every risk window unavailable', async () => {
+  it('omits known source gaps outside the model window without marking current risk unavailable', async () => {
     const workspace = twoHoldingWorkspace()
     workspace.risk_basis = {
       ...workspace.risk_basis!,
@@ -554,7 +567,8 @@ describe('Risk rendered page contract', () => {
 
     renderRiskPage()
 
-    expect(await screen.findByText(/Historical source coverage/)).toBeInTheDocument()
+    await screen.findByText('Current Holdings Risk')
+    expect(screen.queryByText(/Historical source coverage/)).not.toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 

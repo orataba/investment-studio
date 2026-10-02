@@ -1,3 +1,4 @@
+import CorrelationObservation, { type CorrelationRiskObservation } from './CorrelationObservation'
 import WorkspaceSkeleton from '../../../../../packages/ui/src/WorkspaceSkeleton'
 import { useEffect, useState } from 'react'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
@@ -8,8 +9,9 @@ import PortfolioInstrumentRisk from './PortfolioInstrumentRisk'
 import type { ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import './portfolio-risk-drawer.css'
 
-export default function PortfolioRiskDrawer({ portfolioId, onClose, onAskAssistant }: {
+export default function PortfolioRiskDrawer({ portfolioId, onClose, onAskAssistant, correlationObservation }: {
   portfolioId: string
+  correlationObservation?: CorrelationRiskObservation
   onClose: () => void
   onAskAssistant: (instrumentId: string, question: string, reference?: ResearchAssistantReference) => void
 }) {
@@ -40,6 +42,7 @@ export default function PortfolioRiskDrawer({ portfolioId, onClose, onAskAssista
         <button type="button" onClick={onClose} aria-label={zh ? '关闭风险提示' : 'Close risk alerts'}>{zh ? '关闭' : 'Close'}</button>
       </header>
       <div className="portfolio-risk-body">
+        {correlationObservation ? <CorrelationObservation {...correlationObservation} alertOnly /> : null}
         {error ? <p role="alert">{error}</p> : workspace
           ? <PortfolioInstrumentRisk portfolioId={portfolioId} workspace={workspace} onAskAssistant={onAskAssistant} />
           : <WorkspaceSkeleton />}

@@ -21,6 +21,6 @@ export default function FreshnessNote({ reason, observationDate }: { reason: str
     ? reason.replace(/Latest observation is \d+ calendar days old;/, `Latest observation is ${age} calendar days old;`)
     : reason
   return <>{language === 'zh-Hans' && age != null
-    ? `最新观察日 ${observationDate}；截至 ${referenceDate} UTC 已过去 ${age} 个日历日。${/calendar days old;/.test(reason) ? '数据新鲜度超出允许范围。' : t(currentReason)}`
+    ? `最新观察日 ${observationDate}；截至 ${referenceDate} UTC 已过去 ${age} 个自然日。${/calendar days old;/.test(reason) ? '数据更新滞后，已超过允许天数。' : t(currentReason)}`
     : <>{t(currentReason)}{age != null && ` Observation: ${observationDate}; as of ${referenceDate} UTC (${age} calendar days).`}</>}</>
 }

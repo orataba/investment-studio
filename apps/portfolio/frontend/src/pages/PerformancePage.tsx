@@ -1517,7 +1517,7 @@ function MetricGrid({ rows }: { rows: PerformanceMetricRow[] }) {
                         <InfoHint
                           label={`${row.metric} availability`}
                           detail={row.reliabilityNote}
-                          tone="warning"
+                          kind="attention"
                         />
                       ) : null}
                     </span>
@@ -2950,7 +2950,7 @@ function PerformancePage() {
             <InfoHint
               label="Benchmark comparison"
               detail={benchmarkComparisonDetail}
-              tone={benchmarkGuard?.mode === 'canonical' ? 'info' : 'warning'}
+              kind={benchmarkGuard?.mode === 'canonical' ? 'explanation' : 'attention'}
             />
           ) : null}
           {summary?.as_of_clamp_reason ? (
@@ -2959,7 +2959,7 @@ function PerformancePage() {
               detail={`Performance requested through ${summary.requested_end_date ?? effectiveEndDate}; reliable results end on ${
                 summary.effective_end_date ?? summary.end_date ?? '—'
               } (${performanceUnavailableReason(summary.as_of_clamp_reason)}).`}
-              tone="warning"
+              kind="attention"
             />
           ) : null}
           <QualityWarningsNotice warnings={summary?.quality_warnings} />
@@ -2992,7 +2992,7 @@ function PerformancePage() {
                   <InfoHint
                     label="Performance details"
                     detail={performancePanelDetail}
-                    tone={performanceIsOperational ? 'warning' : 'info'}
+                    kind={performanceIsOperational ? 'attention' : 'explanation'}
                   />
                 </div>
               </div>
@@ -3012,7 +3012,7 @@ function PerformancePage() {
                     <InfoHint
                       label="Calculation details"
                       detail={calculationPanelDetail}
-                      tone={realizedRiskEstimateLowSample && showsRealizedRiskEstimate ? 'warning' : 'info'}
+                      kind={realizedRiskEstimateLowSample && showsRealizedRiskEstimate ? 'attention' : 'explanation'}
                     />
                   </div>
                   <div className="performance-calculation-actions">

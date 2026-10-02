@@ -22,6 +22,8 @@
   text-transform: none;
   letter-spacing: 0;
   margin: 0;
+  /* Text cells need their own spacing; flex label groups provide the same gap. */
+  margin-inline-start: var(--info-hint-inline-gap, 6px);
   padding: 0;
   background: var(--info-hint-background, var(--studio-info-soft, #f3f0fb));
   box-shadow: none;
@@ -78,7 +80,7 @@
 .investment-studio-info-popup p, .investment-studio-info-popup ul { margin: 6px 0 0; }
 .investment-studio-info-popup ul { padding-left: 18px; }
 
-.investment-studio-info-hint-warning {
+.investment-studio-info-hint-attention {
   --info-hint-border: var(--studio-warning, #9b641d);
   --info-hint-color: var(--studio-warning, #9b641d);
   --info-hint-background: var(--studio-warning-soft, #fff7e8);

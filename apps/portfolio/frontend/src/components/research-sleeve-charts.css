@@ -7,7 +7,7 @@
   border-top: 1px solid var(--studio-line);
 }
 .research-sleeve-chart { min-width: 0; }
-.research-sleeve-heading { display: flex; align-items: center; gap: 7px; margin-bottom: 12px; }
+.research-sleeve-heading { display: flex; align-items: center; gap: 6px; --info-hint-inline-gap: 0; margin-bottom: 12px; }
 .research-sleeve-heading .panel-title { margin: 0; }
 .research-sleeve-backtest-label { color: var(--studio-muted); font-size: 12px; margin-left: auto; }
 .research-sleeve-legend { display: flex; flex-wrap: wrap; gap: 7px 16px; font-size: 12px; min-height: 20px; }

@@ -55,7 +55,7 @@ const FUND_TAB_LABELS: Record<
     performance: { en: 'Performance Metrics', zh: '绩效指标' },
     archive: { en: 'Fund Archive', zh: '基金档案' },
     price: { en: 'Fees', zh: '费用' },
-    exposure: { en: 'Portfolio', zh: '持仓' },
+    exposure: { en: 'Holdings', zh: '持仓' },
     people: { en: 'Management', zh: '管理团队' },
   },
   private_fund: {

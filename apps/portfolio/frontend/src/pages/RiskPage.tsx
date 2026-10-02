@@ -1,6 +1,6 @@
 import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useParams, useSearchParams } from 'react-router'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 
@@ -15,6 +15,10 @@ import PortfolioTailRiskPanel from '../components/PortfolioTailRiskPanel'
 import InfoHint from '../components/InfoHint'
 import RiskWindowDiagnostics from '../components/RiskWindowDiagnostics'
 import RiskSourceCoverage from '../components/RiskSourceCoverage'
+import RiskDateTimeline from '../components/RiskDateTimeline'
+import CorrelationMatrixView from '../components/CorrelationMatrixView'
+import CorrelationObservation from '../components/CorrelationObservation'
+import { buildCorrelationHistory } from '../lib/correlationHistory'
 import RollingRiskMetricChart, {
   type RiskChartDisplayStyle,
 } from '../components/RollingRiskMetricChart'
@@ -53,7 +57,6 @@ import {
 import {
   buildCorrelationMatrix,
   correlationCoverageIssue,
-  type CorrelationMatrix,
   type CorrelationMatrixCoverageIssue,
   type CorrelationMatrixScope,
 } from '../lib/riskCorrelation'
@@ -116,7 +119,6 @@ type RiskContributionRow = {
   groupKey: string
   groupLabel: string
   weight: number | null
-  annualizedVolatility: number | null
   riskShare: number | null
   contributionToVariance: number | null
   observationCount: number
@@ -1007,7 +1009,6 @@ export function buildCanonicalTaxonomyRiskContributionRows({
         groupKey,
         groupLabel,
         weight: 0,
-        annualizedVolatility: null,
         riskShare: 0,
         contributionToVariance: 0,
         observationCount: forwardRisk.observation_count ?? 0,
@@ -1362,24 +1363,6 @@ function combineTargetGapRows(
     })
 }
 
-function heatmapCellStyle(value: number | null | undefined, maxAbs: number): CSSProperties {
-  if (value == null || Number.isNaN(value) || maxAbs <= 0) {
-    return {}
-  }
-  const intensity = Math.min(1, Math.max(0.08, Math.abs(value) / maxAbs))
-  if (value < 0) {
-    return { backgroundColor: `color-mix(in srgb, var(--studio-chart-secondary) ${(0.06 + intensity * 0.24) * 100}%, white)` }
-  }
-  return { backgroundColor: `color-mix(in srgb, var(--studio-chart-primary) ${(0.06 + intensity * 0.24) * 100}%, white)` }
-}
-
-function formatCorrelation(value: number | null | undefined) {
-  if (value == null || Number.isNaN(value)) {
-    return '—'
-  }
-  return formatNumber(value, 2)
-}
-
 function taxonomyScopeOptions(
   taxonomy: PortfolioTaxonomyRecord | null,
   catalog: PortfolioTaxonomyCatalogResponse | null,
@@ -1521,32 +1504,12 @@ function RiskSettingsMenu<TSettings extends RiskWindowSettingsState>({
   )
 }
 
-function RiskDateTimeline({ dates, value, onChange, label }: {
-  dates: string[]; value: string; onChange: (value: string) => void; label: string
-}) {
-  const { language } = useLanguage()
-  const zh = language === 'zh-Hans'
-  const [draft, setDraft] = useState(value)
-  useEffect(() => setDraft(value), [value])
-  if (!dates.length) return null
-  const invalid = Boolean(draft && !dates.includes(draft))
-  return <div className="risk-date-selector">
-    <label>
-      <span>{zh ? '历史观察截止日' : 'Historical observation cutoff'}</span>
-      <input type="date" value={draft} min={dates[0]} max={dates[dates.length - 1]} aria-label={label} aria-invalid={invalid}
-        onChange={(event) => { const next = event.target.value; setDraft(next); if (dates.includes(next)) onChange(next) }} />
-    </label>
-    <button type="button" className="secondary-button" onClick={() => { const latest = dates[dates.length - 1]; setDraft(latest); onChange(latest) }}>{zh ? '最新' : 'Latest'}</button>
-    {invalid ? <span role="status">{zh ? '该日没有收益观察，请选择范围内已有观察的日期。' : 'No return observation exists on this date. Choose an observed date within the available range.'}</span> : null}
-  </div>
-}
-
 export default function RiskPage() {
   const { portfolioId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const concentrationDate = searchParams.get('concentration_date') || undefined
   const { hash } = useLocation()
-  const { language } = useLanguage()
+  const { language, t } = useLanguage()
   const zh = language === 'zh-Hans'
   const [holdingsWorkspace, setHoldingsWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
   const [accountsWorkspace, setAccountsWorkspace] = useState<PortfolioAccountsWorkspaceResponse | null>(null)
@@ -1576,7 +1539,6 @@ export default function RiskPage() {
   const rollingError = rollingBasis === 'realized' ? realizedError : null
   const [rollingSettings, setRollingSettings] = useState<RollingRiskSettingsState>(() => loadRiskPageSettings().rolling)
   const [matrixSettings, setMatrixSettings] = useState<RiskWindowSettingsState>(() => loadRiskPageSettings().matrix)
-  const [activeMatrixKey, setActiveMatrixKey] = useState<string | null>(null)
   const [matrixScopeNodeId, setMatrixScopeNodeId] = useState(MATRIX_SCOPE_CURRENT_HOLDINGS)
   const [matrixAsOfDate, setMatrixAsOfDate] = useState('')
 
@@ -1798,12 +1760,13 @@ export default function RiskPage() {
       productionRiskPolicyParametersKey,
     ],
   )
-  const productionRiskDescription = `${windowLabel(productionRiskSettings.lookbackDays)} ${riskModelLabel(
-    productionRiskSettings.modelId,
-  )}; ${formatLabel(productionRiskSettings.contributionMode)} RC; ${formatLabel(
-    productionRiskPolicy?.missing_return_policy ?? 'strict',
-  )}`
-  const productionRiskMeta = `Production Risk Model; ${productionRiskDescription}`
+  const productionRiskDescription = [
+    zh ? t(`Period ${windowLabel(productionRiskSettings.lookbackDays)}`) : windowLabel(productionRiskSettings.lookbackDays),
+    t(riskModelLabel(productionRiskSettings.modelId)),
+    t(productionRiskSettings.contributionMode === 'abs' ? 'Absolute RC' : 'Signed RC'),
+    t(formatLabel(productionRiskPolicy?.missing_return_policy ?? 'strict')),
+  ].join(' · ')
+  const productionRiskMeta = `${t('Production Risk Model')} · ${productionRiskDescription}`
   const riskBasisFinalDate = holdingsWorkspace?.as_of_date ?? riskWindowEndDate
   const rawInstrumentReturnSeriesResult = useMemo(
     () => buildCurrentInstrumentReturnSeries(holdingsWorkspace),
@@ -1911,10 +1874,11 @@ export default function RiskPage() {
       },
       ...matrixTaxonomyScopeOptions.map((option) => ({
         ...option,
+        label: option.value === '' ? t('Top Level') : option.label,
         kind: 'taxonomy' as const,
       })),
     ],
-    [matrixTaxonomyScopeOptions],
+    [matrixTaxonomyScopeOptions, t],
   )
   const matrixTaxonomyScopeNodeId = matrixUsesTaxonomy ? matrixScopeNodeId : ''
   useEffect(() => {
@@ -1943,7 +1907,7 @@ export default function RiskPage() {
     }
   }, [currentHoldingsMatrixScope, matrixTaxonomy, holdingsWorkspace?.rows, matrixTaxonomyScopeNodeId, taxonomyCatalog])
   const selectedMatrixScopeDescription = matrixUsesTaxonomy && !matrixScopeIsLeaf
-    ? (zh ? '比较所选分类下各直接子分类的当前权重篮子。' : 'Compare current-weight baskets for the direct child classifications.')
+    ? (zh ? '以当前分类与权重回看各子分类的历史相关性。' : 'Historical correlations of child classifications at current weights.')
     : (zh ? '比较所选范围内各资产的本位币收益。' : 'Compare base-currency returns of the assets in the selected scope.')
   const matrixTaxonomySeriesResult = useMemo(
     () =>
@@ -2022,9 +1986,9 @@ export default function RiskPage() {
   const riskAsOfSelectionDates = useMemo(
     () =>
       [...new Set(selectedMatrixScope.series.flatMap((item) => [...item.returnsByDate.keys()]))]
-        .filter(Boolean)
+        .filter((date) => Boolean(date) && date <= riskBasisFinalDate)
         .sort(),
-    [selectedMatrixScope.series],
+    [selectedMatrixScope.series, riskBasisFinalDate],
   )
   const effectiveMatrixAsOfDate =
     matrixAsOfDate || riskAsOfSelectionDates[riskAsOfSelectionDates.length - 1] || riskBasisFinalDate
@@ -2047,6 +2011,12 @@ export default function RiskPage() {
       ),
     [effectiveMatrixAsOfDate, matrixRiskFrequency.frequency, matrixSettings.lookbackDays, selectedMatrixScope],
   )
+  const correlationObservation = useMemo(() => ({
+    scopeLabel: matrixScopeNodeId === MATRIX_SCOPE_CURRENT_HOLDINGS ? t('Current Holdings')
+      : matrixScopeNodeId === MATRIX_SCOPE_FULL_UNIVERSE ? t('Full Universe')
+        : matrixScopeOptions.find((option) => option.value === matrixScopeNodeId)?.label ?? '',
+    observation: buildCorrelationHistory(selectedMatrixScope, effectiveMatrixAsOfDate),
+  }), [selectedMatrixScope, effectiveMatrixAsOfDate, matrixScopeOptions, matrixScopeNodeId, t])
   const selectedMatrixEmptyLabel = matrixUsesTaxonomy && !matrixTaxonomy ? 'No taxonomy.' : 'No matrix.'
   const topLevelRiskContributionResult = useMemo(
     () =>
@@ -2171,7 +2141,7 @@ export default function RiskPage() {
     : 'Coverage unavailable'
   const riskCoverage = holdingsWorkspace?.risk_coverage_summary ?? null
   const grossCarryingAmountDetail = zh
-    ? '按标的净额化账面金额取绝对值后加总；不是账户级证券 gross、FCN 本金或期权 delta 等经济敞口。'
+    ? '先汇总每个标的的账面净额，再取绝对值加总。这不同于账户层面的证券总敞口、FCN 名义本金或经 Delta 调整的期权敞口。'
     : 'Sum of absolute carrying amounts after netting each instrument. This is not account-level security gross exposure, FCN principal, or option delta exposure.'
   const excludedExposure = riskCoverage
     ? riskCoverage.excluded_carrying_value + riskCoverage.excluded_liability
@@ -2201,78 +2171,6 @@ export default function RiskPage() {
         {uniqueErrors.map((error, index) => (
           <div key={`${index}:${error}`}>{error}</div>
         ))}
-      </div>
-    )
-  }
-
-  function renderCorrelationMatrix(matrix: CorrelationMatrix, emptyLabel: string) {
-    if (!matrix.groups.length) {
-      return <div className="price-chart-empty">{emptyLabel}</div>
-    }
-    const identities = new Map(matrix.groups.map((group, index) => {
-      const core = holdingsWorkspace?.rows.find((row) => row.instrument_core?.instrument_id === group.key)?.instrument_core
-        ?? fullUniverseCatalog?.instrument_universe.find((record) => record.instrument_id === group.key)?.instrument_ref
-      const code = core?.identifiers.find((identifier) => identifier.is_primary)?.identifier_value
-      return [group.key, code || (group.label.length <= 10 ? group.label : `#${index + 1}`)]
-    }))
-    for (const label of new Set(identities.values())) {
-      if (matrix.groups.filter((group) => identities.get(group.key) === label).length > 1) {
-        matrix.groups.forEach((group, index) => {
-          if (identities.get(group.key) === label) identities.set(group.key, `${label} #${index + 1}`)
-        })
-      }
-    }
-    const selectedIdentity = matrix.groups.find((group) => group.key === activeMatrixKey)
-    const matrixMinWidth = 180 + matrix.groups.length * 100
-
-    return (
-      <div>
-      <p className="risk-matrix-identity-detail" aria-live="polite">{selectedIdentity
-        ? `${identities.get(selectedIdentity.key)} · ${selectedIdentity.label}`
-        : (zh ? '选择或聚焦行列标题查看完整名称。' : 'Select or focus a row or column label to read its full name.')}</p>
-      <HorizontalTableScroll className="risk-matrix-scroll risk-covariance-scroll" aria-label={zh ? '相关矩阵' : 'Correlation matrix'}>
-        <table className="risk-heatmap-table risk-covariance-table" style={{ minWidth: `${matrixMinWidth}px` }}>
-          <colgroup>
-            <col className="risk-matrix-label-col" />
-            {matrix.groups.map((group) => (
-              <col key={group.key} className="risk-matrix-value-col" />
-            ))}
-          </colgroup>
-          <thead>
-            <tr>
-              <th className="risk-matrix-corner">Group</th>
-              {matrix.groups.map((group) => (
-                <th className="risk-matrix-column-header" key={group.key} title={`${group.label}; weight ${formatPercent(group.weight)}`}>
-                  <button type="button" className="risk-matrix-identity" translate="no" aria-label={group.label} onFocus={() => setActiveMatrixKey(group.key)} onClick={() => setActiveMatrixKey(group.key)}>{identities.get(group.key)}</button>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {matrix.groups.map((rowGroup, rowIndex) => (
-              <tr key={rowGroup.key}>
-                <th className="risk-matrix-row-header" title={`${rowGroup.label}; ${rowGroup.observationCount} return observations`}>
-                  <button type="button" className="risk-matrix-identity" translate="no" aria-label={rowGroup.label} onFocus={() => setActiveMatrixKey(rowGroup.key)} onClick={() => setActiveMatrixKey(rowGroup.key)}>{identities.get(rowGroup.key)}</button>
-                </th>
-                {matrix.groups.map((columnGroup, columnIndex) => {
-                  const cell = matrix.cells[rowIndex]?.[columnIndex]
-                  return (
-                    <td
-                      key={`${rowGroup.key}:${columnGroup.key}`}
-                      className="risk-heatmap-cell"
-                      style={heatmapCellStyle(cell?.value, matrix.maxAbs)}
-                      title={`${rowGroup.label} x ${columnGroup.label}; ${cell?.observationCount ?? 0} paired observations`}
-                    >
-                      {formatCorrelation(cell?.value)}
-                    </td>
-                  )
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </HorizontalTableScroll>
-      <details className="risk-matrix-legend"><summary>{zh ? '全部对象名称' : 'All matrix names'}</summary><ul>{matrix.groups.map((group) => <li key={group.key} translate="no">{identities.get(group.key)} · <span>{group.label}</span></li>)}</ul></details>
       </div>
     )
   }
@@ -2319,6 +2217,7 @@ export default function RiskPage() {
   return (
     <PortfolioWorkspaceLayout
       activeSection="Risk"
+      correlationObservation={correlationObservation}
       busy={workspaceLoading || benchmarkLoading}
     >
       <section className="portfolio-detail-surface risk-page-surface">
@@ -2363,6 +2262,7 @@ export default function RiskPage() {
                   </label>
                 </> : null}
               </div>
+              {holdingsWorkspace.forward_risk?.status !== 'ok' ? renderRiskErrors(holdingsWorkspace.forward_risk?.errors ?? []) : null}
               <div className="portfolio-summary-strip risk-health-strip">
                 <article
                   className={
@@ -2449,62 +2349,39 @@ export default function RiskPage() {
                   </strong>
                 </article>
               </div>
-              <RiskSourceCoverage workspace={holdingsWorkspace} />
-              {riskCoverage?.excluded_rows.length ? (
-                <HorizontalTableScroll className="table-shell risk-scope-table-shell">
-                  <table className="transactions-table risk-scope-table">
-                    <thead>
-                      <tr>
-                        <th>Excluded Holding</th>
-                        <th>Category</th>
-                        <th>Reason</th>
-                        <th className="performance-cell-number">Carrying Amount</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {riskCoverage.excluded_rows.map((row) => (
-                        <tr key={row.line_id ?? `${row.instrument_id}:${row.holding_category}`}>
-                          <td translate="no">{row.instrument_name ?? row.instrument_id ?? row.line_id ?? 'N/A'}</td>
-                          <td>{formatLabel(row.holding_category)}</td>
-                          <td>{row.exclusion_reason ?? 'No exclusion reason recorded.'}</td>
-                          <td className="performance-cell-number">
-                            {formatCurrency(row.exposure_base, holdingsWorkspace.base_currency)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </HorizontalTableScroll>
-              ) : null}
               {topLevelRiskContributionRows.length ? (
-                <details className="risk-contribution-details">
-                  <summary>{zh ? '分类风险贡献' : 'Scoped Risk Contribution'} · {topLevelRiskContributionRows.length}</summary>
+                <div className="risk-contribution-section">
+                  <div className="risk-contribution-heading portfolio-title-with-hint">{zh ? '分类风险贡献' : 'Risk contribution by category'}<InfoHint
+                    label={zh ? '分类风险贡献口径' : 'Category risk contribution basis'} detail={zh
+                      ? '沿用当前持仓的同一风险模型，汇总各分类对组合的风险贡献。波动率贡献 = 分类方差贡献 ÷ 组合波动率，以百分点表示；保留正负号，负值表示降低组合波动率。它不是该分类单独持有时的波动率，也不是未来损失预测。风险贡献占比遵循组合设置中的有符号或绝对值口径。'
+                      : 'Uses the same current-holdings risk model. Volatility contribution equals category variance contribution divided by portfolio volatility, in percentage points. Negative values indicate a diversifying contribution. This is not standalone category volatility or a forecast of losses. Risk shares follow the portfolio’s signed or absolute contribution setting.'} /></div>
                   <HorizontalTableScroll className="table-shell risk-scope-table-shell">
                     <table className="transactions-table risk-scope-table">
                       <thead>
                         <tr>
-                          <th>Sleeve</th>
+                          <th>{zh ? '分类' : 'Category'}</th>
                           <th className="performance-cell-number"><span>Modeled Weight</span><InfoHint
                             label={zh ? '建模权重口径' : 'Modeled weight basis'}
                             detail={zh ? '纳入风险模型的证券净账面金额占组合 NAV 的比例，不在建模子集内重新归一。' : 'Signed carrying amount of modeled securities divided by full portfolio NAV, without renormalizing within the modeled subset.'}
                           /></th>
                           <th className="performance-cell-number">Forward RC</th>
-                          <th className="performance-cell-number">Observations</th>
+                          <th className="performance-cell-number">{zh ? '波动率贡献（百分点）' : 'Volatility contribution (pp)'}</th>
                         </tr>
                       </thead>
                       <tbody>
                         {topLevelRiskContributionRows.map((row) => (
                           <tr key={row.groupKey}>
-                            <td>{row.groupLabel}</td>
+                            <td translate="no">{row.groupKey === `unassigned:${matrixTaxonomy?.taxonomy_id}` ? t('Unassigned') : row.groupLabel}</td>
                             <td className="performance-cell-number">{formatPercent(row.weight)}</td>
                             <td className="performance-cell-number">{formatPercent(row.riskShare)}</td>
-                            <td className="performance-cell-number">{formatNumber(row.observationCount, 0)}</td>
+                            <td className="performance-cell-number">{holdingsWorkspace.forward_risk?.portfolio_volatility != null && holdingsWorkspace.forward_risk.portfolio_volatility > 0 && row.contributionToVariance != null
+                              ? formatNumber(row.contributionToVariance / holdingsWorkspace.forward_risk.portfolio_volatility * 100, 2) : '—'}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </HorizontalTableScroll>
-                </details>
+                </div>
               ) : null}
             </section>
             <ConcentrationPanel key={`${portfolioId}:${concentrationDate || holdingsWorkspace.as_of_date}`} portfolioId={portfolioId} asOfDate={concentrationDate || holdingsWorkspace.as_of_date} onAsOfDateChange={date => {
@@ -2556,7 +2433,7 @@ export default function RiskPage() {
                       <InfoHint
                         label="Benchmark comparison"
                         detail={benchmarkBasisAssessment.message}
-                        tone="warning"
+                        kind="attention"
                       />
                     </>
                   ) : null}
@@ -2600,7 +2477,7 @@ export default function RiskPage() {
                 />
               </div>
             </section>
-            <section className="portfolio-section-block" aria-label="Correlation analysis">
+            <section className="portfolio-section-block" aria-label={zh ? '相关性分析' : 'Correlation analysis'}>
               <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar risk-matrix-toolbar">
                 <div className="risk-toolbar-primary risk-matrix-toolbar-primary">
                   <div>
@@ -2615,8 +2492,8 @@ export default function RiskPage() {
                         aria-label="Matrix scope"
                       >
                         {matrixScopeOptions.map((option) => (
-                          <option key={option.value || 'taxonomy-root'} value={option.value}>
-                            {option.kind === 'taxonomy' ? `Taxonomy: ${option.label}` : option.label}
+                          <option key={option.value || 'taxonomy-root'} value={option.value} translate={option.kind === 'taxonomy' ? 'no' : undefined}>
+                            {option.kind === 'taxonomy' ? `${zh ? '分类' : 'Taxonomy'}: ${option.label}` : option.label}
                           </option>
                         ))}
                       </select>
@@ -2632,11 +2509,12 @@ export default function RiskPage() {
                 </div>
               </div>
               {fullUniverseLoading ? (
-                <CalculationStatus label={zh ? '加载全域历史' : 'Loading Full Universe history'} />
+                <CalculationStatus label={zh ? '正在加载全部标的历史' : 'Loading Full Universe history'} />
               ) : fullUniverseError && matrixUsesFullUniverse ? (
                 <div className="inline-notice inline-notice-error" role="alert">{fullUniverseError}</div>
               ) : (
                 <>
+                  <div className="risk-matrix-history-controls">
                   <RiskDateTimeline
                     dates={riskAsOfSelectionDates}
                     value={effectiveMatrixAsOfDate}
@@ -2644,10 +2522,12 @@ export default function RiskPage() {
                     label="Matrix as of"
                   />
                   <RiskWindowDiagnostics diagnostics={selectedCorrelationMatrixResult.diagnostics} />
+                  </div>
+                  <CorrelationObservation {...correlationObservation} />
                   <div className="risk-correlation-stack">
                     <div className="risk-matrix-panel">
                       {!selectedCorrelationMatrixResult.issues.length
-                        ? renderCorrelationMatrix(selectedCorrelationMatrixResult.matrix, selectedMatrixEmptyLabel)
+                        ? <CorrelationMatrixView matrix={selectedCorrelationMatrixResult.matrix} emptyLabel={selectedMatrixEmptyLabel} />
                         : null}
                     </div>
                   </div>
@@ -2661,7 +2541,7 @@ export default function RiskPage() {
                   <div>
                     <div className="panel-title portfolio-title-with-hint"><span>Current Drift</span>
                       <InfoHint label={zh ? '目标偏移风险口径' : 'Target drift risk basis'} detail={zh
-                        ? '风险贡献使用统一的生产模型，切换分类只改变贡献分组。即使当前未持有，已配置目标仍会显示。'
+                        ? '各分类沿用同一当前风险模型；切换分类只改变汇总方式。即使当前未持有，已设置的目标仍会显示。'
                         : 'Risk contributions use the same production model for all taxonomies. Switching taxonomy regroups those contributions. Configured targets remain visible even without current holdings.'} />
                     </div>
                     <div
@@ -2684,6 +2564,33 @@ export default function RiskPage() {
                 </div>
               </section>
             ) : null}
+              {riskCoverage?.excluded_rows.length ? (
+                <details className="risk-model-exclusions"><summary>{zh ? '未纳入模型的持仓' : 'Holdings outside the model'} · {riskCoverage.excluded_rows.length}</summary><HorizontalTableScroll className="table-shell risk-scope-table-shell">
+                  <table className="transactions-table risk-scope-table">
+                    <thead>
+                      <tr>
+                        <th>Excluded Holding</th>
+                        <th>Category</th>
+                        <th>Reason</th>
+                        <th className="performance-cell-number">Carrying Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {riskCoverage.excluded_rows.map((row) => (
+                        <tr key={row.line_id ?? `${row.instrument_id}:${row.holding_category}`}>
+                          <td translate="no">{row.instrument_name ?? row.instrument_id ?? row.line_id ?? 'N/A'}</td>
+                          <td>{formatLabel(row.holding_category)}</td>
+                          <td>{row.exclusion_reason ?? 'No exclusion reason recorded.'}</td>
+                          <td className="performance-cell-number">
+                            {formatCurrency(row.exposure_base, holdingsWorkspace.base_currency)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </HorizontalTableScroll></details>
+              ) : null}
+            <RiskSourceCoverage workspace={holdingsWorkspace} />
           </div>
         ) : null}
       </section>

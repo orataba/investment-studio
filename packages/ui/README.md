@@ -32,7 +32,7 @@
 - `WorkspaceLoadingDrawer`
   风险／研究抽屉代码尚未加载时保持原抽屉位置、关闭操作与焦点交接，避免局部加载反馈推移页面导航。
 - `InfoHint` / `info-hint.css`
-  标题或指标旁的 16px 正圆叹号：悬停、聚焦和点击显示同一份锚定说明，点击可固定，Escape / 外点关闭，不改变页面布局或打开模态窗口。Portfolio、Watchlist、Briefing 共用；Regime 以原生页面实现相同交互。
+  标题或指标旁的 16px 正圆提示：默认 `kind="explanation"` 使用紫色问号说明定义、口径和方法；`kind="attention"` 使用琥珀色叹号标注需要关注的数据限制或待处理事项。实际风险事项继续使用 `WorkspaceToolIcon` 的盾牌标记和风险面板，三者不混用。提示与相邻文字保持 6px 间距；普通行内内容由组件提供左侧间距，已有 flex 布局的标题组设置 `gap: 6px; --info-hint-inline-gap: 0`，避免双重间距。悬停、聚焦和点击显示同一份锚定说明，点击可固定，Escape / 外点关闭，不改变页面布局或打开模态窗口。Portfolio、Watchlist、Briefing 共用；Regime 以原生页面实现相同交互。
 - `DownloadFormatMenu` / `tableExport`
   下载格式选择与表格导出基础能力。
 - `HorizontalTableScroll` / `useHorizontalTablePan`

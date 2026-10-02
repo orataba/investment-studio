@@ -223,7 +223,7 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
       {(view?.updated_at || brief?.updated_at) && <p className="sector-research-note">判断更新 <time title={view?.updated_at || brief?.updated_at || undefined} dateTime={view?.updated_at || brief?.updated_at || undefined}>{dateLabel(view?.updated_at || brief?.updated_at)}</time></p>}
       {view?.coverage_status === 'limited' && <p className="sector-research-limitation">已保存的研究部分可用，未覆盖部分不能据此判断。</p>}
       {view?.coverage_status === 'not_established' && <p className="sector-research-limitation">研究基线尚未建立，不能据此作出判断。</p>}
-      {view?.coverage_note && <InfoHint label="研究覆盖说明" detail={view.coverage_note} tone={view.coverage_status === 'limited' ? 'warning' : 'info'} />}
+      {view?.coverage_note && <InfoHint label="研究覆盖说明" detail={view.coverage_note} kind={view.coverage_status === 'limited' || view.coverage_status === 'not_established' ? 'attention' : 'explanation'} />}
       {!view && brief && <p className="sector-research-note">沿用历史研究摘要；当前机会与风险尚未形成结构化认识。</p>}
     </div>
   }

@@ -100,7 +100,7 @@ it('loads the report index once while selecting the latest readable edition and 
     window.dispatchEvent(new PopStateEvent('popstate'))
   })
   await screen.findByRole('heading', { name: '央行继续观察就业' })
-  expect(screen.getByRole('heading', { name: '历史期刊' }).closest('aside')?.getAttribute('aria-busy')).toBe('false')
+  expect(screen.getByRole('heading', { name: '历史简报' }).closest('aside')?.getAttribute('aria-busy')).toBe('false')
   expect(fetch.mock.calls.filter(([url]) => url.includes('/reports?'))).toHaveLength(1)
 })
 
@@ -285,7 +285,7 @@ it('shows a discovery quota failure separately from missing collection records',
   page(<App />)
   await screen.findAllByText('X @a16z')
   expect(screen.getByText('来源服务额度不足，未取得本轮资料。')).toBeTruthy()
-  expect(screen.getByText(/发现：失败.*采集：未保留记录/)).toBeTruthy()
+  expect(screen.getByText(/检索：失败.*采集：未保留记录/)).toBeTruthy()
 })
 
 

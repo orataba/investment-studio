@@ -150,7 +150,7 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
   const reference: ResearchReference = { instrument_id: instrumentId, notebook_version_id: notebook.version_id }
   return <>
     {(view || brief) && mode !== 'records' && <section className={`research-notebook-current${compact ? ' research-current-brief' : ''}`} aria-label={historical ? '当时投资判断' : compact ? '当前机会与风险' : '当前投资判断'}>
-      <div className="research-judgment-heading"><h3>{historical ? '当时投资判断' : compact ? '当前机会与风险' : '当前投资判断'}</h3>{compact && view?.coverage_note && <InfoHint label="研究覆盖说明" detail={view.coverage_note} tone={view.coverage_status === 'limited' ? 'warning' : 'info'} />}<time dateTime={view?.updated_at || brief?.updated_at || undefined}>{dateLabel(view?.updated_at || brief?.updated_at)}</time></div>
+      <div className="research-judgment-heading"><h3>{historical ? '当时投资判断' : compact ? '当前机会与风险' : '当前投资判断'}</h3>{compact && view?.coverage_note && <InfoHint label="研究覆盖说明" detail={view.coverage_note} kind={view.coverage_status === 'limited' || view.coverage_status === 'not_established' ? 'attention' : 'explanation'} />}<time dateTime={view?.updated_at || brief?.updated_at || undefined}>{dateLabel(view?.updated_at || brief?.updated_at)}</time></div>
       {brief && !compact && <div className="research-decision-brief" aria-label="投资建议">
         <p className="research-current-direction" translate="no">{brief.recommendation}</p>
         {brief.rationale && <p className="research-decision-rationale" translate="no">{brief.rationale}</p>}

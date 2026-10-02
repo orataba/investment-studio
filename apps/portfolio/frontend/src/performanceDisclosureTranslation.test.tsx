@@ -5,6 +5,36 @@ import { LANGUAGE_STORAGE_KEY, LanguageProvider, LanguageSelector } from '../../
 import InfoHint from './components/InfoHint'
 import QualityWarningsNotice from './components/QualityWarningsNotice'
 
+it('translates risk input errors while retaining instrument names and model values', async () => {
+  window.localStorage.setItem(LANGUAGE_STORAGE_KEY, 'zh-Hans')
+  const messages = [
+    'Current risk requires a return currency for Price.',
+    'Current risk requires a current portfolio weight for Portfolio.',
+    'Current risk requires full-history return series for Risk.',
+    'Current risk requires base-currency total returns; Price is USD while the portfolio base currency is CNY.',
+    'Production forward risk contribution is missing for Price.',
+    'Production forward risk contribution is missing current weight for Portfolio.',
+    'Production forward risk shares cannot be normalized for the modeled risk sleeve; got 0.00%.',
+    'Production forward risk shares must aggregate to 100% before taxonomy grouping; got 94.50%.',
+    'SAA risk target gap is missing current risk share for Risk.',
+  ]
+  render(<LanguageProvider><LanguageSelector />{messages.map(message => <p key={message}>{message}</p>)}</LanguageProvider>)
+  const translated = [
+    '缺少 Price 的收益币种，无法计算当前风险。',
+    '缺少 Portfolio 的当前组合权重，无法计算当前风险。',
+    '缺少 Risk 的完整历史收益序列，无法计算当前风险。',
+    '当前风险计算需要以组合本位币 CNY 表示的总回报；Price 的收益币种为 USD。',
+    '当前模型缺少 Price 的前瞻风险贡献。',
+    '缺少 Portfolio 的当前权重，无法计算前瞻风险贡献。',
+    '当前模型的风险贡献占比合计为 0.00%，无法归一化。',
+    '分类汇总前，风险贡献占比应合计为 100%；当前合计为 94.50%。',
+    '缺少 Risk 的当前风险贡献占比，无法比较 SAA 风险目标。',
+  ]
+  await waitFor(() => translated.forEach(message => expect(screen.getByText(message)).toBeVisible()))
+  fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+  await waitFor(() => messages.forEach(message => expect(screen.getByText(message)).toBeVisible()))
+})
+
 it('shows the blocking market-data date and required prices or FX in Chinese', async () => {
   window.localStorage.setItem(LANGUAGE_STORAGE_KEY, 'zh-Hans')
   render(<LanguageProvider>
@@ -24,7 +54,7 @@ it('shows the blocking market-data date and required prices or FX in Chinese', a
   </LanguageProvider>)
   await userEvent.click(screen.getByRole('button', { name: /Data quality warning|数据质量提示/ }))
   await waitFor(() => {
-    expect(screen.getByText('组合经营回报（账面估值）')).toBeVisible()
+    expect(screen.getByText('组合账面收益')).toBeVisible()
     expect(screen.getByText('收益贡献（算术）')).toBeVisible()
     expect(screen.getByText('收益贡献（复利链接）')).toBeVisible()
     expect(screen.getByText('各组复利链接贡献合计 = 期间 TWR；组内明细合计 = 所属分组贡献。')).toBeVisible()
@@ -41,13 +71,13 @@ it('shows the blocking market-data date and required prices or FX in Chinese', a
 
 it('translates a labeled multi-sentence explanation without losing its full-message mapping', async () => {
   const detail = 'Operational return is used for NAV reconciliation because event-valued assets and obligations remain on carrying basis. Market Risk Watch uses a separate return chain that models derivatives and base-currency cash at zero return; benchmark overlays are therefore hidden from this TWR chart.'
-  const translated = '按事件估值的资产与义务仍采用账面口径，因此净值核对使用运营收益。市场风险监控使用独立收益链，衍生品及本位币现金按零收益建模，所以此时间加权收益图不叠加基准。'
+  const translated = '按事件估值的资产与负债仍使用账面价值，因此净值核对使用账面估值收益。市场风险监控使用独立收益序列，衍生品及本位币现金按零收益建模，所以此时间加权收益图不叠加基准。'
   window.localStorage.setItem(LANGUAGE_STORAGE_KEY, 'zh-Hans')
   render(<LanguageProvider>
     <LanguageSelector />
     <InfoHint label="Operational performance basis" detail={detail} />
   </LanguageProvider>)
-  const hint = await screen.findByRole('button', { name: `运营业绩口径：${translated}` })
+  const hint = await screen.findByRole('button', { name: `账面收益计算口径：${translated}` })
   fireEvent.click(hint)
   await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent(translated))
 

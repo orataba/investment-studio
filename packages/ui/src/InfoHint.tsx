@@ -5,10 +5,10 @@ import './info-hint.css'
 type InfoHintProps = {
   label: string
   detail: string | readonly string[]
-  tone?: 'info' | 'warning'
+  kind?: 'explanation' | 'attention'
 }
 
-export default function InfoHint({ label, detail, tone = 'info' }: InfoHintProps) {
+export default function InfoHint({ label, detail, kind = 'explanation' }: InfoHintProps) {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState<{ left: number; top: number; maxHeight?: number }>({ left: 0, top: 0 })
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -106,7 +106,7 @@ export default function InfoHint({ label, detail, tone = 'info' }: InfoHintProps
       <button
         ref={triggerRef}
         type="button"
-        className={`investment-studio-info-hint investment-studio-info-hint-${tone}`}
+        className={`investment-studio-info-hint investment-studio-info-hint-${kind}`}
         aria-label={`${label}: ${text}`}
         aria-expanded={open}
         aria-controls={open ? popupId : undefined}
@@ -132,7 +132,7 @@ export default function InfoHint({ label, detail, tone = 'info' }: InfoHintProps
           }
         }}
       >
-        <span aria-hidden="true">!</span>
+        <span aria-hidden="true">{kind === 'attention' ? '!' : '?'}</span>
       </button>
       {open && createPortal(
         <div ref={popupRef} id={popupId} className="investment-studio-info-popup" role="tooltip" style={position} onPointerEnter={reveal} onPointerLeave={leave} onClick={(event) => event.stopPropagation()}>

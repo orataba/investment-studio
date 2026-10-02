@@ -83,7 +83,7 @@
 .taxonomy-reminder-toggle input { width: auto; min-height: 0; }
 .taxonomy-add-instrument { display: grid; grid-template-columns: minmax(250px, 2fr) minmax(180px, 1fr) auto; align-items: end; gap: 12px; margin-top: 16px; padding: 16px 0 4px; border-top: 1px solid var(--portfolio-line); }
 .taxonomy-add-instrument > label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--portfolio-muted); }
-.taxonomy-add-instrument > label > span { display: inline-flex; align-items: center; gap: 6px; min-height: 16px; }
+.taxonomy-add-instrument > label > span { display: inline-flex; align-items: center; gap: 6px; --info-hint-inline-gap: 0; min-height: 16px; }
 .taxonomy-page-table .taxonomy-add-instrument input[type='search'],
 .taxonomy-page-table .taxonomy-add-instrument select {
   box-sizing: border-box;
@@ -116,7 +116,7 @@
   width: 100%;
   max-width: 100%;
 }
-.research-taxonomy-field > span { display: flex; align-items: center; gap: 4px; }
+.research-taxonomy-field > span { display: flex; align-items: center; gap: 6px; --info-hint-inline-gap: 0; }
 .research-taxonomy-choice select {
   width: 100%;
 }
