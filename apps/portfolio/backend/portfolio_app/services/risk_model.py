@@ -14,6 +14,9 @@ from portfolio_app.services.holdings_market_profile import (
     is_cash_holding_instrument_id,
     is_pending_monetary_holding,
 )
+from portfolio_app.services.risk_currency import (
+    RiskFxHistory, align_base_currency_navs, risk_return_series_payload,
+)
 from portfolio_app.services.research_solver import (
     RESEARCH_COVARIANCE_MODEL_ID,
     RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
@@ -348,10 +351,13 @@ def _validate_aligned_return_periods(
 
 def _daily_mark_to_last_return_matrix(
     active: list[tuple[str, dict[str, object], pd.Series, dict[date, date]]],
-    *, as_of_date: date | None = None,
+    *, as_of_date: date, base_currency: str,
+    fx_histories: dict[str, RiskFxHistory] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, dict[date, date]]]:
     nav_by_key: dict[str, pd.Series] = {}
     for key, _row, series, period_starts in active:
+        if series.empty:  # Foreign monetary exposure has constant native wealth.
+            continue
         ordered = series.sort_index()
         first_end_date = pd.Timestamp(ordered.index[0]).date()
         growth = 1.0
@@ -361,10 +367,25 @@ def _daily_mark_to_last_return_matrix(
             nav_points[pd.Timestamp(raw_end_date).date()] = growth
         nav_by_key[key] = pd.Series(nav_points, dtype="float64").sort_index()
 
-    from portfolio_app.services.risk_alignment import align_risk_navs
-    _, returns = align_risk_navs(nav_by_key, end_date=as_of_date,
-        coverage_by_key={key: (row.get("instrument_return_series_all") or {}).get("observation_coverage") or {}
-                         for key, row, _series, _starts in active})
+    native_starts = [series.index[0] for series in nav_by_key.values()]
+    fx_starts = [history.levels.index[0] for history in (fx_histories or {}).values() if not history.levels.empty]
+    monetary_start = min(native_starts or fx_starts or [as_of_date])
+    source_coverage = {}
+    for key, row, series, _starts in active:
+        if series.empty:
+            nav_by_key[key] = pd.Series({monetary_start: 1.0}, dtype="float64")
+            source_coverage[key] = {"gap_dates": [], "gap_detection_basis": "event_driven"}
+        else:
+            source_coverage[key] = (row.get("instrument_return_series_all") or {}).get("observation_coverage") or {}
+    nav_by_key = {key: nav_by_key[key] for key, _row, _series, _starts in active}
+    navs, returns, metadata = align_base_currency_navs(
+        nav_by_key, end_date=as_of_date, base_currency=base_currency,
+        currency_by_key={key: str((row.get("instrument_core") or {}).get("currency") or "")
+                         for key, row, _series, _starts in active},
+        coverage_by_key=source_coverage, fx_histories=fx_histories,
+    )
+    for key, row, _series, _starts in active:
+        row["risk_return_series"] = risk_return_series_payload(navs[key], returns[key], metadata[key])
     aligned_period_starts: dict[str, dict[date, date]] = {
         key: {} for key in nav_by_key
     }
@@ -424,6 +445,7 @@ def enrich_holdings_forward_risk(
     as_of_date: date,
     calculation_frequency: CalculationFrequency,
     risk_policy: dict[str, object],
+    fx_histories: dict[str, RiskFxHistory] | None = None,
 ) -> dict[str, object]:
     workspace.pop("_forward_risk_covariance", None)
     rows = workspace.get("rows")
@@ -463,6 +485,7 @@ def enrich_holdings_forward_risk(
     for index, raw_row in enumerate(rows):
         if not isinstance(raw_row, dict):
             continue
+        raw_row["risk_return_series"] = None
         instrument_core = raw_row.get("instrument_core") if isinstance(raw_row.get("instrument_core"), dict) else {}
         instrument_currency = str(instrument_core.get("currency") or "").strip().upper()
         market_value = _safe_float(raw_row.get("market_value_base"))
@@ -484,6 +507,11 @@ def enrich_holdings_forward_risk(
         is_base_currency_monetary = not has_exposure or (
             base_currency and instrument_currency == base_currency
         )
+        if (is_cash or is_pending) and has_exposure and not is_base_currency_monetary and fx_histories:
+            # Currency risk belongs to the signed monetary exposure, regardless
+            # of its accounting/price-profile eligibility flag.
+            active.append((_row_key(raw_row, index), raw_row, pd.Series(dtype="float64"), {}))
+            continue
         if raw_row.get("risk_eligible") is not True:
             if is_derivative:
                 _clear_forward_risk_fields(raw_row, status="excluded")
@@ -541,7 +569,7 @@ def enrich_holdings_forward_risk(
             _clear_forward_risk_fields(raw_row)
             errors.append(f"Forward RC requires a return currency for {_row_label(raw_row)}.")
             continue
-        if instrument_currency != base_currency:
+        if instrument_currency != base_currency and not fx_histories:
             _clear_forward_risk_fields(raw_row)
             errors.append(
                 f"Forward RC requires base-currency total returns; {_row_label(raw_row)} is "
@@ -579,7 +607,18 @@ def enrich_holdings_forward_risk(
         }
         return workspace
 
-    returns, period_starts_by_key = _daily_mark_to_last_return_matrix(active, as_of_date=as_of_date)
+    try:
+        returns, period_starts_by_key = _daily_mark_to_last_return_matrix(
+            active, as_of_date=as_of_date, base_currency=base_currency, fx_histories=fx_histories,
+        )
+    except ValueError as error:
+        for _key, row, _series, _starts in active:
+            _clear_forward_risk_fields(row)
+        workspace["forward_risk"] = {
+            "status": "unavailable", "errors": [str(error)], "risk_model": snapshot,
+            **coverage_disclosure,
+        }
+        return workspace
     labels_by_key = {key: _row_label(row) for key, row, _series, _starts in active}
     modeled_exposures = np.asarray(
         [
@@ -671,7 +710,7 @@ def enrich_holdings_forward_risk(
         "portfolio_volatility": sqrt(variance),
         "observation_count": int(len(coverage.returns)),
         "coverage": coverage_snapshot,
-        "modeled_weight_basis": "total_nav_zero_return_cash_and_derivatives",
+        "modeled_weight_basis": "total_nav_base_currency_market_and_monetary_exposures",
         **coverage_disclosure,
     }
     # Retain the exact fitted model in the source-bound analytics projection.

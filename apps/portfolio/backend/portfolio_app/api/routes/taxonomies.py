@@ -56,6 +56,9 @@ from portfolio_app.services.portfolio_store import (
     upsert_portfolio_instrument_universe_record,
 )
 from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
+from portfolio_app.services.risk_fx_sources import (
+    base_currency_risk_profiles, risk_fx_histories_from_details, risk_fx_instrument_ids,
+)
 
 
 router = APIRouter()
@@ -91,6 +94,7 @@ def _enrich_universe_market_profiles(
     records: list[dict[str, object]],
     *,
     as_of_date: date,
+    base_currency: str,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     instrument_ids = [
         str(record.get("instrument_id") or "").strip()
@@ -100,6 +104,13 @@ def _enrich_universe_market_profiles(
         and not _universe_record_is_cash(record)
     ]
     instrument_details = get_registry_instrument_details(instrument_ids)
+    currencies = {str((detail or {}).get("currency") or "") for detail in instrument_details.values()}
+    fx_ids = risk_fx_instrument_ids(currencies, base_currency)
+    fx_details = get_registry_instrument_details(fx_ids) if fx_ids else {}
+    fx_histories = risk_fx_histories_from_details(fx_details, end_date=as_of_date)
+    risk_profiles = base_currency_risk_profiles(
+        instrument_details, base_currency=base_currency, end_date=as_of_date, fx_histories=fx_histories,
+    )
     risk_basis_profile = calculation_frequency_profile_for_instruments(
         instrument_ids,
         end_date=as_of_date,
@@ -127,6 +138,7 @@ def _enrich_universe_market_profiles(
             enriched["instrument_trend_basis"] = profile.get("instrument_trend_basis")
             enriched["instrument_risk_frequency"] = profile.get("instrument_risk_frequency")
             enriched["instrument_return_series_all"] = profile.get("instrument_return_series_all")
+            enriched["risk_return_series"] = risk_profiles.get(instrument_id)
         enriched_records.append(enriched)
     return enriched_records, risk_basis_profile
 
@@ -161,6 +173,7 @@ def get_portfolio_taxonomies(
             universe_records, risk_basis_profile = _enrich_universe_market_profiles(
                 universe_records,
                 as_of_date=resolved_as_of_date,
+                base_currency=str(portfolio.get("base_currency") or ""),
             )
         except InstrumentRegistryError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error

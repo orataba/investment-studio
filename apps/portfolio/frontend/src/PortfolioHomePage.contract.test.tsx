@@ -507,6 +507,25 @@ describe('Holdings rendered page contract', () => {
     expect(screen.queryByText('Portfolio Total (USD)')).not.toBeInTheDocument()
   })
 
+  it('shows foreign cash and negative settlement forward risk contributions and their subtotal', async () => {
+    const monetary = (line_id: string, allocation: number, share: number) => cashHolding({
+      line_id, holding_kind: allocation > 0 ? 'settled_cash' : 'settlement_payable',
+      instrument_core: instrumentFixture({ instrument_id: 'cash:HKD', instrument_name: line_id, instrument_type: 'cash', currency: 'HKD' }),
+      allocation, market_value_base: allocation * 1000,
+      forward_risk_status: 'ok', forward_risk_share: share,
+    })
+    renderHoldings(holdingsWorkspaceFixture({ rows: [monetary('cash:account-a', 0.3, 0.4), monetary('pending:account-a', -0.1, -0.1)] }))
+    await waitForHoldings()
+    const table = screen.getByRole('table', { name: 'Cash and settlement holdings' })
+    const headers = within(table).getAllByRole('columnheader')
+    const riskColumn = headers.findIndex((cell) => cell.textContent === 'Forward RC')
+    expect(riskColumn).toBeGreaterThan(-1)
+    const rows = table.querySelectorAll('tbody tr')
+    expect(within(rows[0] as HTMLElement).getAllByRole('cell')[riskColumn]).toHaveTextContent('40.00%')
+    expect(within(rows[1] as HTMLElement).getAllByRole('cell')[riskColumn]).toHaveTextContent('-10.00%')
+    expect(within(rows[2] as HTMLElement).getAllByRole('cell')[riskColumn]).toHaveTextContent('30.00%')
+  })
+
   it('keeps operational alerts visible when their holding category is empty', async () => {
     renderHoldings(
       holdingsWorkspaceFixture({

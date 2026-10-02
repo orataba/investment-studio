@@ -14,7 +14,7 @@ import {
 } from '../lib/format'
 import type { HoldingsWorkspaceResponse, PortfolioHoldingRow } from '../lib/api'
 import { baseAmountForRow } from '../lib/holdingAmounts'
-import { isOptionObligationHolding } from '../lib/holdingPresentation'
+import { holdingForwardRiskShare, isOptionObligationHolding } from '../lib/holdingPresentation'
 import { buildPortfolioHoldingDetailPath } from '../lib/navigation'
 import { useHorizontalTablePan } from '../../../../../packages/ui/src/useHorizontalTablePan'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
@@ -115,6 +115,7 @@ export const HOLDINGS_SECTION_COLUMN_KEYS: HoldingsSectionVisibleColumns = {
     'fx_cost_basis_base',
     'monetary_fx_pnl_base',
     'weight',
+    'forward_risk_share',
     'settlement_date',
     'pending_until_date',
     'related_instrument',
@@ -164,6 +165,7 @@ export const DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS: HoldingsSectionVisibleCol
     'fx_cost_basis_base',
     'monetary_fx_pnl_base',
     'weight',
+    'forward_risk_share',
     'settlement_date',
     'pending_until_date',
     'related_instrument',
@@ -1174,6 +1176,12 @@ export default function HoldingsSectionTables({
       render: (row) => formatPercent(row.allocation),
     },
     {
+      key: 'forward_risk_share',
+      label: 'Forward RC',
+      align: 'right',
+      render: (row) => formatPercent(holdingForwardRiskShare(row)),
+    },
+    {
       key: 'settlement_date',
       label: 'Settlement Date',
       align: 'center',
@@ -1334,6 +1342,7 @@ export default function HoldingsSectionTables({
                 workspace.base_currency,
               ),
               weight: formatPercent(sumComplete(cashRows, (row) => row.allocation)),
+              forward_risk_share: formatPercent(sumComplete(cashRows, holdingForwardRiskShare)),
             }}
             onSelectHolding={onSelectHolding}
           />

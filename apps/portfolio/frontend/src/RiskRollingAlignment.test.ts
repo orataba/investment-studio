@@ -22,7 +22,7 @@ function secondHolding(
     allocation: 0.5,
     market_value: 500,
     market_value_base: 500,
-    instrument_return_series_all: {
+    risk_return_series: { currency: 'USD', source_instrument_ids: [],
       first_return_start_date: points[0]?.start_date ?? null,
       points,
     },
@@ -39,7 +39,7 @@ function workspace(
         allocation: 0.5,
         market_value: 500,
         market_value_base: 500,
-        instrument_return_series_all: {
+        risk_return_series: { currency: 'USD', source_instrument_ids: [],
           first_return_start_date: alphaPoints[0].start_date,
           points: alphaPoints,
         },

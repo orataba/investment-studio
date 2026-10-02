@@ -232,7 +232,7 @@ export function holdingsWorkspaceFixture(
       coverage_ratio: 0.8,
       excluded_rows: [],
       calculation_frequency: 'daily',
-      modeled_weight_basis: 'total_nav_zero_return_cash_and_derivatives',
+      modeled_weight_basis: 'total_nav_base_currency_market_and_monetary_exposures',
       portfolio_variance: 0.01,
       portfolio_volatility: 0.1,
       observation_count: 61,

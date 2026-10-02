@@ -25,6 +25,7 @@ from portfolio_app.services.instrument_charts import (
 from portfolio_app.services.risk_basis import (
     calculation_frequency_profile_for_instruments,
     observation_coverage_from_dates,
+    observation_source_settings,
 )
 from portfolio_app.services.workspace_cache import (
     get_cached_materialized_holdings_workspace,
@@ -59,6 +60,7 @@ from portfolio_app.services.portfolio_store import (
     list_transactions,
 )
 from portfolio_app.services.risk_model import enrich_holdings_forward_risk, get_portfolio_risk_policy
+from portfolio_app.services.risk_fx_sources import risk_fx_histories_from_details, risk_fx_instrument_ids
 
 _HOLDINGS_TREND_FIELD_NAMES = (
     "instrument_trend_as_of_date",
@@ -90,6 +92,7 @@ _HOLDINGS_TREND_FIELD_NAMES = (
     "instrument_holding_start_date",
 )
 _HOLDINGS_RETURN_SERIES_FIELD_NAMES = (
+    "risk_return_series",
     "instrument_return_series_1m",
     "instrument_return_series_3m",
     "instrument_return_series_6m",
@@ -103,7 +106,7 @@ _HOLDINGS_CHART_FIELD_NAMES = tuple(
 _COMPACT_HOLDINGS_SPARKLINE_POINT_LIMIT = 24
 _EVENT_VALUATION_BASES = frozenset({"carried_cost", "premium_liability"})
 _CASH_MODEL_EXCLUSION_REASON = (
-    "Cash and settlement exposure is disclosed outside covariance risk."
+    "Cash and settlement have no native security return; foreign-currency balances carry modeled FX risk."
 )
 _DERIVATIVE_MODEL_EXCLUSION_REASON = (
     "Derivative contracts are recorded operationally and excluded from market analytics."
@@ -208,7 +211,15 @@ def _enrich_holdings_model_coverage(workspace: dict[str, object]) -> dict[str, o
             })
             continue
         if is_cash_or_settlement:
-            cash_unallocated_exposure += exposure
+            currency = str(core.get("currency") or "").strip().upper()
+            base_currency = str(workspace.get("base_currency") or "").strip().upper()
+            if currency and base_currency and currency != base_currency:
+                # Monetary balances retain their accounting classification,
+                # but their signed FX exposure belongs to the market model.
+                modeled_net_exposure += exposure
+                modeled_gross_exposure += abs(exposure)
+            else:
+                cash_unallocated_exposure += exposure
         elif row["risk_eligible"]:
             modeled_net_exposure += exposure
             modeled_gross_exposure += abs(exposure)
@@ -241,6 +252,30 @@ def _enrich_holdings_model_coverage(workspace: dict[str, object]) -> dict[str, o
         "excluded_rows": excluded_rows,
     }
     return workspace
+
+
+def _calculate_holdings_forward_risk(
+    workspace: dict[str, object], *, as_of_date: date,
+    calculation_frequency: CalculationFrequency, risk_policy: dict[str, object],
+    instrument_details: dict[str, dict[str, object] | None],
+) -> dict[str, object]:
+    currencies = {
+        str((row.get("instrument_core") or {}).get("currency") or "")
+        for row in workspace.get("rows", [])
+        if not _holding_is_derivative(row) and abs(_safe_float(row.get("market_value_base")) or 0.0) > 1e-9
+    }
+    fx_ids = risk_fx_instrument_ids(currencies, str(workspace.get("base_currency") or ""))
+    missing = [instrument_id for instrument_id in fx_ids if instrument_id not in instrument_details]
+    if missing:
+        instrument_details.update(get_registry_instrument_details(missing))
+    return enrich_holdings_forward_risk(
+        workspace, as_of_date=as_of_date, calculation_frequency=calculation_frequency,
+        risk_policy=risk_policy,
+        fx_histories=risk_fx_histories_from_details(
+            {instrument_id: instrument_details.get(instrument_id) for instrument_id in fx_ids},
+            end_date=as_of_date,
+        ),
+    )
 
 
 def _compact_sparkline_points(value: object) -> list[object]:
@@ -532,7 +567,7 @@ def _materialized_holdings_workspace_response(
     # Annotate already-published histories without rebuilding the ledger.
     for row in response.get("rows", []):
         series = row.get("instrument_return_series_all")
-        if not isinstance(series, dict) or "observation_coverage" in series:
+        if not isinstance(series, dict):
             continue
         instrument_id = (row.get("instrument_core") or {}).get("instrument_id")
         detail = instrument_details.get(instrument_id) or {}
@@ -540,7 +575,7 @@ def _materialized_holdings_workspace_response(
         dates.extend(point.get("date") for point in series.get("points", []))
         series["observation_coverage"] = observation_coverage_from_dates(
             [parsed for raw in dates if (parsed := _parse_iso_date(raw)) is not None],
-            source_settings=detail.get("source_settings"),
+            source_settings=observation_source_settings(detail),
             end_date=_parse_iso_date(workspace.get("as_of_date")),
         )
     return response
@@ -872,11 +907,12 @@ def _build_holdings_analytics_workspace(
                     instrument_details=instrument_details,
                 )
                 covered_response = _enrich_holdings_model_coverage(response)
-                enriched_response = enrich_holdings_forward_risk(
+                enriched_response = _calculate_holdings_forward_risk(
                     covered_response,
                     as_of_date=resolved_as_of_date,
                     calculation_frequency=calculation_frequency,
                     risk_policy=risk_policy or {},
+                    instrument_details=instrument_details,
                 )
                 return enriched_response
             accounts = list_accounts(resolved_portfolio_id)
@@ -902,11 +938,12 @@ def _build_holdings_analytics_workspace(
                 include_details=include_details,
             )
             covered_response = _enrich_holdings_model_coverage(response)
-            enriched_response = enrich_holdings_forward_risk(
+            enriched_response = _calculate_holdings_forward_risk(
                 covered_response,
                 as_of_date=resolved_as_of_date,
                 calculation_frequency=calculation_frequency,
                 risk_policy=risk_policy or {},
+                instrument_details=instrument_details,
             )
             return enriched_response
         except InstrumentRegistryError as error:
@@ -1222,11 +1259,12 @@ def _build_holdings_analytics_workspace(
         },
     }
     covered_response = _enrich_holdings_model_coverage(response)
-    enriched_response = enrich_holdings_forward_risk(
+    enriched_response = _calculate_holdings_forward_risk(
         covered_response,
         as_of_date=resolved_as_of_date,
         calculation_frequency=calculation_frequency,
         risk_policy=risk_policy or {},
+        instrument_details=instrument_details,
     )
     return enriched_response
 

@@ -1761,6 +1761,7 @@ class PortfolioInstrumentUniverseRecord(BaseModel):
     instrument_trend_basis: str | None = None
     instrument_risk_frequency: PortfolioCalculationFrequency | None = None
     instrument_return_series_all: dict[str, object] | None = None
+    risk_return_series: dict[str, object] | None = None
 
 
 class PortfolioInstrumentUniverseCreateRequest(BaseModel):

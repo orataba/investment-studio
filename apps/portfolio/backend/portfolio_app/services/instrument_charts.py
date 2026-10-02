@@ -16,7 +16,7 @@ from portfolio_app.services.market_data import (
     market_calendar_sessions,
     resolve_quote_series,
 )
-from portfolio_app.services.risk_basis import observation_coverage_from_dates
+from portfolio_app.services.risk_basis import observation_coverage_from_dates, observation_source_settings
 
 SUPPORTED_CHART_RANGE_KEYS: tuple[str, ...] = ("1m", "3m", "6m", "ytd", "1y", "all")
 HOLDINGS_PRICE_CHART_RANGE_KEYS: tuple[str, ...] = ("1m", "3m", "6m", "1y")
@@ -959,7 +959,7 @@ def build_instrument_trend_metrics_from_detail(
         as_of_date=as_of_date,
         holding_start_date=holding_start_date,
         calculation_frequency=calculation_frequency,
-        source_settings=detail.get("source_settings"),
+        source_settings=observation_source_settings(detail),
     )
 
 
@@ -1359,7 +1359,7 @@ def build_instrument_holdings_market_profile_from_detail(
             as_of_date=as_of_date,
             holding_start_date=holding_start_date,
             calculation_frequency=calculation_frequency,
-            source_settings=detail.get("source_settings"),
+            source_settings=observation_source_settings(detail),
         ),
     }
 

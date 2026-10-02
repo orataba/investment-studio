@@ -24,7 +24,7 @@ Portfolio 和 Watchlist 各自实现自己的读路径，不导入对方服务�
 - 未显式指定日期时，Holdings 使用 latest fresh complete snapshot；不能把部分资产已经更新的更晚日期当作组合 `as_of_date`。
 - 行级 `Carrying Amount (Local)` 与带 `(Local)` 的成本、盈亏字段使用标的本币；报告币种账面金额、带 `(Base)` 的字段及所有可加总金额使用组合 base currency；账面金额表头与导出显示具体币种。对 event-valued asset 和 option obligation，`market_value(_base)` 只是 signed operational NAV amount，不代表 fair value。
 - 普通非现金市值为 `quantity × selected valuation quote × price_scale`；再用 `as_of_date` FX 转为 base currency。FCN/长期权在没有可靠 fair value 时使用 `valuation_basis=carried_cost`，written option 使用 `valuation_basis=premium_liability` 和负的 NAV amount；两者的 `fair_value` 及 quote identity 均为空。现金市值为 settled cash amount。
-- 行级 `Current Weight（当前权重） = market_value_base / portfolio NAV`，其中 NAV 包含 pending settlement，option obligation 因而使用负权重。行级 Return / Risk 只允许 `risk_eligible=true` 的 market-valued positions 参与；pending settlement、event-valued asset 和 written liability 都不能被伪造成有自身收益序列的持仓。组合聚合风险另以 total NAV 为分母，将 base-currency monetary rows 与衍生品资本按 0 return 处理。
+- 行级 `Current Weight（当前权重） = market_value_base / portfolio NAV`，其中 NAV 包含 pending settlement，option obligation 因而使用负权重。标的自身 Return / Vol 只允许 `risk_eligible=true` 的 market-valued positions 参与；pending settlement、event-valued asset 和 written liability 都不能被伪造成有自身收益序列的持仓。Forward RC 与组合聚合风险以 total NAV 为分母，外币 cash/pending rows 使用历史 FX 收益与 signed base exposure；base-currency monetary rows 与衍生品资本按 0 return 处理，后者仍明确为未建模。
 - 缺少唯一且合法的 valuation quote、价格单位/scale 或必要 FX 时，依赖它的字段为不可用，不用图表点或 0 补齐。来源日历确认的休市可以沿用前一有效点并保留 source date；应更新的行情或 FX 缺失时，日度估值链在首个缺口停止。默认 Holdings 使用此前最后完整快照并披露实际日期，缺口补齐并重算前不能从后续报价重新建立连续估值链。
 - 唯一的普通持仓初始估值例外是首次买入份额确认日：无正式价格时，按当日买入总 gross / 总 quantity 对所有账户和 lots 一致估值。`valuation_basis=transaction_price`、`quote_status=transaction-price` 与来源交易 IDs 明确披露，正式 quote identity 和日涨跌留空；费用仍进入损益。后续只有已确认休市可沿用，已有持仓加仓和下一交易日缺价不适用此例外；非现金交付与期权实物交付关联的股票腿也不适用。
 
@@ -128,7 +128,7 @@ Workspace API 的 `operational_summary` 保留 open short-option contract count�
 - 批次页支持开放／已关闭筛选；卖方期权展示义务批次与平仓记录。已退出持仓仍使用批次原币，不能在当前 holding 缺失时误标为组合本位币。拆股后的持有起点保留 acquisition date，成本延续可在事件和批次中追溯。
 - 「收入与事件」展示已确认的分红、票息、合约结果和已应用份额变更，按权益／经济日期筛选，并单列结算日期。来源公告的预计权益与已入账收入分开；分配核对状态明确为当前状态，不声称是历史快照。
 
-CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出各自独立的标题与表头，不再把异质字段压进带 `Category` 的统一 schema，也不重复导出组合总计。Securities、FCN 和 Options 跟随各自当前视图的可见字段；Cash & Settlement 导出固定字段并包含 FX cost basis 与未实现 FX P&L。Securities 额外跟随当前筛选、排序和可选 Group。价格路径、收益、未实现盈亏和回撤的不适用值导出为 `N/A`；衍生品的 Vol / Forward RC 同样导出 `N/A`，只有明确 modeled-zero 的 monetary risk 输出数值 `0`。
+CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出各自独立的标题与表头，不再把异质字段压进带 `Category` 的统一 schema，也不重复导出组合总计。Securities、FCN 和 Options 跟随各自当前视图的可见字段；Cash & Settlement 导出固定字段并包含 FX cost basis、未实现 FX P&L 和 Forward RC；外币余额的 Forward RC 与明细／小计使用同一组合模型。Securities 额外跟随当前筛选、排序和可选 Group。价格路径、收益、未实现盈亏和回撤的不适用值导出为 `N/A`；衍生品的 Vol / Forward RC 同样导出 `N/A`，只有明确 modeled-zero 的 monetary risk 输出数值 `0`。
 
 ## 3. Securities 可配置字段与聚合字典
 
@@ -214,11 +214,11 @@ CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 
 
 ### 4.3 Forward RC
 
-所有 eligible 市场成员必须来自同一个完整 Production Risk Model 和同一 leaf covariance matrix，权重为 signed base exposure / total NAV。`risk_eligible` 由正式证券身份、持仓类型、实际 `market_quote` 估值、完整覆盖和可用价格派生；页面所选分类、assignment 和目标不控制实际持仓风险。未分类或零目标的持仓仍参与能够支持的风险计算。窗口从 holdings as-of date 按自然月回看；eligible member return 的 start/end period identity 必须完全一致，strict 与 complete-case policy 都校验尾部新鲜度。group / subtotal 只能加总成员相对于同一 total-portfolio variance 的 risk share；不能先合成 group return 再运行 shrinkage，也不能在每个 group 内另建局部分母。`abs` mode 使用精确绝对贡献，零贡献保持为零。
+所有 eligible 证券及有非零敞口的外币 cash/pending 成员必须来自同一个完整 Production Risk Model 和同一 leaf covariance matrix，权重为 signed base exposure / total NAV。`risk_eligible` 由正式证券身份、持仓类型、实际 `market_quote` 估值、完整覆盖和可用价格派生；页面所选分类、assignment 和目标不控制实际持仓风险。未分类或零目标的持仓仍参与能够支持的风险计算。窗口从 holdings as-of date 按自然月回看；eligible member return 的 start/end period identity 必须完全一致，strict 与 complete-case policy 都校验尾部新鲜度。group / subtotal 只能加总成员相对于同一 total-portfolio variance 的 risk share；不能先合成 group return 再运行 shrinkage，也不能在每个 group 内另建局部分母。`abs` mode 使用精确绝对贡献，零贡献保持为零。
 
 行级 `modeling_status` 明确区分 `eligible`（可交给风险模型验证收益窗口）、`unavailable`（缺少可用估值／身份）、`unsupported`（当前不支持的衍生品模型）和 `cash_or_settlement`；`exclusion_reason` 为系统生成的实际原因，`excluded_rows` 保留相同状态。风险覆盖 payload 不携带分类政策／配置版本，也没有独立子组合 TWR 占位字段。
 
-Event-valued asset 和 derivative liability 不进入 covariance matrix，行级 `forward_risk_share`、contribution 与 modeled volatility 留空，状态为 `excluded`。Holdings `risk_coverage_summary` 和 Forward-risk summary 必须返回 `model_name=Market risk model`、total NAV、`modeled_net_exposure`、`modeled_gross_exposure`、`excluded_carrying_value`、`excluded_liability`、`cash_unallocated_exposure`、coverage ratio 和 `excluded_rows`。没有 eligible risky holding、total NAV 无效、存在无法建模的非本币 monetary 或估值不可用的普通证券敞口，或者 eligible member 的 return/FX/period identity/weight/variance 不完整时，整个 forward risk 失败关闭。modeled-zero monetary row 的行级贡献可以明确为 0，但它本身不能使纯现金组合得到可观测组合风险。
+Event-valued asset 和 derivative liability 不进入 covariance matrix，行级 `forward_risk_share`、contribution 与 modeled volatility 留空，状态为 `excluded`。Holdings `risk_coverage_summary` 和 Forward-risk summary 必须返回 `model_name=Market risk model`、total NAV、`modeled_net_exposure`、`modeled_gross_exposure`、`excluded_carrying_value`、`excluded_liability`、`cash_unallocated_exposure`、coverage ratio 和 `excluded_rows`。没有可建模证券或外币 monetary 敞口、total NAV 无效、存在无法建模的非本币 monetary 或估值不可用的普通证券敞口，或者 eligible member 的 return/FX/period identity/weight/variance 不完整时，整个 forward risk 失败关闭。modeled-zero monetary row 的行级贡献可以明确为 0，但它本身不能使纯本位币现金组合得到可观测组合风险；纯外币现金在历史 FX 完整且组合方差为正时可以建模。
 
 ## 5. 不可用与排查顺序
 

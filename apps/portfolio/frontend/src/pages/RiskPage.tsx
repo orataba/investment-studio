@@ -33,6 +33,7 @@ import {
   getPortfolioInstruments,
   getPortfolioTaxonomyCatalog,
   type HoldingsWorkspaceResponse,
+  type RiskReturnSeries,
   type InstrumentCore,
   type PortfolioAccountsWorkspaceResponse,
   type PortfolioPerformanceResponse,
@@ -363,21 +364,23 @@ function isPendingMonetaryHoldingRow(row: HoldingsWorkspaceResponse['rows'][numb
   )
 }
 
-function isRiskBearingHoldingRow(row: HoldingsRow): row is MarketInstrumentHoldingRow {
-  return (
-    row.instrument_core !== null &&
-    row.risk_eligible === true &&
-    !isCashHoldingRow(row) &&
-    !isPendingMonetaryHoldingRow(row)
-  )
+function isMonetaryRiskRow(row: HoldingsRow) {
+  return isCashHoldingRow(row) || isPendingMonetaryHoldingRow(row)
 }
 
-function isActiveRiskBearingHoldingRow(row: HoldingsRow): row is MarketInstrumentHoldingRow {
-  return isRiskBearingHoldingRow(row) && (
-    Math.abs(finiteNumber(row.quantity) ?? 0) > 1e-9 ||
-    Math.abs(finiteNumber(row.allocation) ?? 0) > 1e-9 ||
-    Math.abs(finiteNumber(row.market_value_base) ?? 0) > 1e-9
-  )
+function holdingRiskMemberKey(row: MarketInstrumentHoldingRow) {
+  return isMonetaryRiskRow(row) ? row.line_id : row.instrument_core.instrument_id
+}
+
+function isRiskBearingHoldingRow(row: HoldingsRow, baseCurrency: string): row is MarketInstrumentHoldingRow {
+  return row.instrument_core !== null && row.holding_category !== 'derivatives'
+    && (!isMonetaryRiskRow(row) || row.instrument_core.currency.trim().toUpperCase() !== baseCurrency.trim().toUpperCase())
+}
+
+function hasHoldingRiskExposure(row: HoldingsRow) {
+  return Math.abs(finiteNumber(row.quantity) ?? 0) > 1e-9
+    || Math.abs(finiteNumber(row.allocation) ?? 0) > 1e-9
+    || Math.abs(finiteNumber(row.market_value_base) ?? 0) > 1e-9
 }
 
 function isNonCashPositionHoldingRow(row: HoldingsRow): row is MarketInstrumentHoldingRow {
@@ -401,8 +404,8 @@ function isCashUniverseInstrument(record: PortfolioTaxonomyCatalogResponse['inst
   )
 }
 
-function missingGapCoverageReason(profile: HoldingsWorkspaceResponse['risk_basis'] | null, memberKey: string, coverage: ReturnObservationCoverage | undefined) {
-  return !coverage && profile?.gap_instrument_ids?.includes(memberKey)
+function missingGapCoverageReason(profile: HoldingsWorkspaceResponse['risk_basis'] | null, memberKey: string, coverage: ReturnObservationCoverage | undefined, sourceIds: string[] = []) {
+  return !coverage && [memberKey, ...sourceIds].some((id) => profile?.gap_instrument_ids?.includes(id))
     ? 'Complete source-gap dates are missing for this member; its selected window cannot be verified.' : null
 }
 
@@ -416,7 +419,7 @@ function returnPointsToGroupSeries({
 }: {
   groupKey: string
   groupLabel: string
-  returnPoints: ReturnPoint[]
+  returnPoints: RiskReturnSeries['points']
   asOfDate: string
   latestWeight: number
   observationCoverage?: ReturnObservationCoverage
@@ -446,7 +449,9 @@ function returnPointsToGroupSeries({
     endingWeightByDate,
     latestWeight,
     observationCount: returnsByDate.size,
-    inputPoints: returnPoints,
+    // Preserve missing periods as invalid input; never coerce null to zero or
+    // reconnect observations on either side of a missing FX/source level.
+    inputPoints: returnPoints.map((point) => ({ ...point, value: finiteNumber(point.value) ?? Number.NaN })),
     observationCoverage,
   } satisfies GroupReturnSeries
 }
@@ -466,37 +471,12 @@ export function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWo
     return riskFail('Current risk requires the portfolio base currency.', [] satisfies GroupReturnSeries[])
   }
   holdingsWorkspace.rows.forEach((row) => {
-    const currentWeight = finiteNumber(row.allocation)
-    const currentValueBase = finiteNumber(row.market_value_base)
-    const quantity = finiteNumber(row.quantity)
-    const hasExposure =
-      Math.abs(currentWeight ?? 0) > 1e-9 ||
-      Math.abs(currentValueBase ?? 0) > 1e-9 ||
-      Math.abs(quantity ?? 0) > 1e-9
-    if (!hasExposure) {
-      return
-    }
-    const rowCurrency = (row.derivative_contract?.currency || row.instrument_core?.currency || '')
-      .trim()
-      .toUpperCase()
-    if (
-      (isCashHoldingRow(row) || isPendingMonetaryHoldingRow(row)) &&
-      rowCurrency !== baseCurrency
-    ) {
-      errors.push(
-        `Current risk requires an FX total-return series for non-base monetary exposure ${holdingRiskLabel(row)} (${rowCurrency || 'unknown'} versus ${baseCurrency}).`,
-      )
-    } else if (
-      row.holding_category === 'securities' &&
-      row.risk_eligible !== true
-    ) {
-      errors.push(
-        `Current risk cannot treat unmodeled market exposure ${holdingRiskLabel(row)} as zero risk.`,
-      )
+    if (hasHoldingRiskExposure(row) && row.holding_category !== 'derivatives' && !row.instrument_core) {
+      errors.push(`Current risk requires an instrument identity for ${holdingRiskLabel(row)}.`)
     }
   })
   const series = holdingsWorkspace.rows
-    .filter((row) => isRiskBearingHoldingRow(row))
+    .filter((row): row is MarketInstrumentHoldingRow => isRiskBearingHoldingRow(row, baseCurrency))
     .map((row): GroupReturnSeries | null => {
       const currentWeight = finiteNumber(row.allocation)
       const currentValueBase = finiteNumber(row.market_value_base)
@@ -509,9 +489,9 @@ export function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWo
         return null
       }
       const label = holdingRiskLabel(row)
-      const returnCurrency = row.instrument_core.currency.trim().toUpperCase()
+      const returnCurrency = row.risk_return_series?.currency.trim().toUpperCase() ?? ''
       if (!returnCurrency) {
-        errors.push(`Current risk requires a return currency for ${label}.`)
+        errors.push(`Current risk requires a base-currency risk return series for ${label}.`)
         return null
       }
       if (returnCurrency !== baseCurrency) {
@@ -524,21 +504,21 @@ export function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWo
         errors.push(`Current risk requires a current portfolio weight for ${label}.`)
         return null
       }
-      const gapCoverageReason = missingGapCoverageReason(holdingsWorkspace.risk_basis, row.instrument_core.instrument_id, row.instrument_return_series_all?.observation_coverage)
+      const gapCoverageReason = missingGapCoverageReason(holdingsWorkspace.risk_basis, row.instrument_core.instrument_id, row.risk_return_series?.observation_coverage, row.risk_return_series?.source_instrument_ids)
       if (gapCoverageReason) errors.push(`${label}: ${gapCoverageReason}`)
       const series = returnPointsToGroupSeries({
-        groupKey: row.instrument_core.instrument_id,
+        groupKey: holdingRiskMemberKey(row),
         groupLabel: label,
-        returnPoints: row.instrument_return_series_all?.points ?? [],
+        returnPoints: row.risk_return_series?.points ?? [],
         asOfDate,
         latestWeight: currentWeight,
-        observationCoverage: row.instrument_return_series_all?.observation_coverage,
+        observationCoverage: row.risk_return_series?.observation_coverage,
       })
       if (!series) {
         errors.push(`Current risk requires full-history return series for ${label}.`)
         return null
       }
-      return series
+      return { ...series, isCashExposure: isMonetaryRiskRow(row) }
     })
     .filter((item): item is GroupReturnSeries => item !== null)
     .sort((left, right) => {
@@ -587,10 +567,10 @@ function buildCurrentHoldingsMatrixScope(
   }
   const baseCurrency = holdingsWorkspace.base_currency.trim().toUpperCase()
   const issues: CorrelationMatrixCoverageIssue[] = []
-  const rows = holdingsWorkspace.rows.filter(isActiveRiskBearingHoldingRow)
+  const rows = holdingsWorkspace.rows.filter((row): row is MarketInstrumentHoldingRow => isRiskBearingHoldingRow(row, baseCurrency) && hasHoldingRiskExposure(row))
   const seenMembers = new Set<string>()
   const series = rows.flatMap((row): GroupReturnSeries[] => {
-    const memberKey = row.instrument_core.instrument_id
+    const memberKey = holdingRiskMemberKey(row)
     const memberLabel = holdingRiskLabel(row)
     if (!memberKey || seenMembers.has(memberKey)) {
       issues.push(
@@ -606,7 +586,7 @@ function buildCurrentHoldingsMatrixScope(
       return []
     }
     seenMembers.add(memberKey)
-    const returnCurrency = row.instrument_core.currency.trim().toUpperCase()
+    const returnCurrency = row.risk_return_series?.currency.trim().toUpperCase() ?? ''
     if (!baseCurrency || !returnCurrency || returnCurrency !== baseCurrency) {
       issues.push(
         correlationCoverageIssue({
@@ -629,7 +609,7 @@ function buildCurrentHoldingsMatrixScope(
         }),
       )
     }
-    const returnPoints = row.instrument_return_series_all?.points ?? []
+    const returnPoints = row.risk_return_series?.points ?? []
     if (!returnPoints.length) {
       issues.push(
         correlationCoverageIssue({
@@ -643,7 +623,7 @@ function buildCurrentHoldingsMatrixScope(
       )
       return []
     }
-    const gapCoverageReason = missingGapCoverageReason(holdingsWorkspace.risk_basis, memberKey, row.instrument_return_series_all?.observation_coverage)
+    const gapCoverageReason = missingGapCoverageReason(holdingsWorkspace.risk_basis, row.instrument_core.instrument_id, row.risk_return_series?.observation_coverage, row.risk_return_series?.source_instrument_ids)
     if (gapCoverageReason) issues.push(windowIssue(memberKey, memberLabel, 'missing_series', gapCoverageReason))
     const memberSeries = returnPointsToGroupSeries({
       groupKey: memberKey,
@@ -651,7 +631,7 @@ function buildCurrentHoldingsMatrixScope(
       returnPoints,
       asOfDate,
       latestWeight: currentWeight ?? 0,
-      observationCoverage: row.instrument_return_series_all?.observation_coverage,
+      observationCoverage: row.risk_return_series?.observation_coverage,
     })
     if (!memberSeries) {
       issues.push(
@@ -664,7 +644,7 @@ function buildCurrentHoldingsMatrixScope(
       )
       return []
     }
-    return [memberSeries]
+    return [{ ...memberSeries, isCashExposure: isMonetaryRiskRow(row) }]
   })
   return { memberCount: rows.length, series, issues }
 }
@@ -713,7 +693,7 @@ function buildFullUniverseMatrixScope({
 
   const currentWeightByInstrumentId = new Map<string, number>()
   holdingsWorkspace.rows
-    .filter((row) => isRiskBearingHoldingRow(row))
+    .filter((row): row is MarketInstrumentHoldingRow => isRiskBearingHoldingRow(row, baseCurrency))
     .forEach((row) => {
       const currentWeight = finiteNumber(row.allocation)
       if (currentWeight != null) {
@@ -753,19 +733,7 @@ function buildFullUniverseMatrixScope({
         )
         return []
       }
-      const returnCurrency = instrument.currency.trim().toUpperCase()
-      if (!baseCurrency || !returnCurrency || returnCurrency !== baseCurrency) {
-        issues.push(
-          correlationCoverageIssue({
-            memberKey,
-            memberLabel,
-            reason: 'scope_unavailable',
-            coverageReason: `Correlation requires base-currency total returns (${returnCurrency || 'unknown'} versus ${baseCurrency || 'unknown'}).`,
-          }),
-        )
-        return []
-      }
-      const returnPoints = record.instrument_return_series_all?.points ?? []
+      const returnPoints = record.risk_return_series?.points ?? []
       if (!returnPoints.length) {
         issues.push(
           correlationCoverageIssue({
@@ -777,7 +745,19 @@ function buildFullUniverseMatrixScope({
         )
         return []
       }
-      const gapCoverageReason = missingGapCoverageReason(catalog.risk_basis, memberKey, record.instrument_return_series_all?.observation_coverage)
+      const returnCurrency = record.risk_return_series?.currency.trim().toUpperCase() ?? ''
+      if (!baseCurrency || !returnCurrency || returnCurrency !== baseCurrency) {
+        issues.push(
+          correlationCoverageIssue({
+            memberKey,
+            memberLabel,
+            reason: 'scope_unavailable',
+            coverageReason: `Correlation requires base-currency total returns (${returnCurrency || 'unknown'} versus ${baseCurrency || 'unknown'}).`,
+          }),
+        )
+        return []
+      }
+      const gapCoverageReason = missingGapCoverageReason(catalog.risk_basis, memberKey, record.risk_return_series?.observation_coverage, record.risk_return_series?.source_instrument_ids)
       if (gapCoverageReason) issues.push(windowIssue(memberKey, memberLabel, 'missing_series', gapCoverageReason))
       const memberSeries = returnPointsToGroupSeries({
         groupKey: memberKey,
@@ -785,7 +765,7 @@ function buildFullUniverseMatrixScope({
         returnPoints,
         asOfDate: matrixAsOfDate,
         latestWeight: currentWeightByInstrumentId.get(memberKey) ?? 0,
-        observationCoverage: record.instrument_return_series_all?.observation_coverage,
+        observationCoverage: record.risk_return_series?.observation_coverage,
       })
       if (!memberSeries) {
         issues.push(
@@ -861,6 +841,15 @@ function buildCurrentTaxonomyReturnSeries({
     if (Math.abs(item.latestWeight ?? 0) <= 1e-9) {
       return
     }
+    if (item.isCashExposure) {
+      if (!scopeNodeId) {
+        const key = `cash_bucket:${SYSTEM_CASH_TARGET_MEMBER_ID}`
+        const current = membersByGroup.get(key) ?? { label: 'Cash & settlement FX', members: [] }
+        current.members.push(item)
+        membersByGroup.set(key, current)
+      }
+      return
+    }
     const assignmentResult = resolveActiveAssignment(
       catalog,
       taxonomy.taxonomy_id,
@@ -895,7 +884,9 @@ function buildCurrentTaxonomyReturnSeries({
     .map(([groupKey, group]): GroupReturnSeries | null => {
       const members = group.members.filter((item) => Math.abs(item.latestWeight ?? 0) > 1e-9)
       const groupWeight = members.reduce((total, item) => total + (item.latestWeight ?? 0), 0)
-      if (!members.length || Math.abs(groupWeight) <= 1e-9) {
+      if (!members.length) return null
+      if (Math.abs(groupWeight) <= 1e-9) {
+        errors.push(`${group.label}: Group correlation is unavailable because signed exposures have zero net weight.`)
         return null
       }
       const commonDates = commonReturnDateKeys(members)
@@ -933,7 +924,7 @@ function buildCurrentTaxonomyReturnSeries({
       return weightDelta || left.groupLabel.localeCompare(right.groupLabel)
     })
 
-  return riskOk(taxonomySeries)
+  return errors.length ? riskFail(errors, [] satisfies GroupReturnSeries[]) : riskOk(taxonomySeries)
 }
 
 export function buildCanonicalTaxonomyRiskContributionRows({
@@ -966,7 +957,7 @@ export function buildCanonicalTaxonomyRiskContributionRows({
   const grouped = new Map<string, RiskContributionRow>()
   const errors: string[] = []
   holdingsWorkspace.rows
-    .filter(isRiskBearingHoldingRow)
+    .filter((row): row is MarketInstrumentHoldingRow => isRiskBearingHoldingRow(row, holdingsWorkspace.base_currency))
     .filter((row) => {
       return (
         Math.abs(finiteNumber(row.allocation) ?? 0) > 1e-9 ||
@@ -987,7 +978,8 @@ export function buildCanonicalTaxonomyRiskContributionRows({
         errors.push(`Production forward risk contribution is missing current weight for ${label}.`)
         return
       }
-      const assignmentResult = resolveActiveAssignment(
+      const monetary = isMonetaryRiskRow(row)
+      const assignmentResult = monetary ? { assignment: null, error: null } : resolveActiveAssignment(
         catalog,
         taxonomy.taxonomy_id,
         'instrument',
@@ -1003,8 +995,8 @@ export function buildCanonicalTaxonomyRiskContributionRows({
         nodeById,
         '',
       )
-      const groupKey = topLevelNode?.taxonomy_node_id ?? `unassigned:${taxonomy.taxonomy_id}`
-      const groupLabel = topLevelNode?.node_name ?? 'Unassigned'
+      const groupKey = monetary ? `cash_bucket:${SYSTEM_CASH_TARGET_MEMBER_ID}` : topLevelNode?.taxonomy_node_id ?? `unassigned:${taxonomy.taxonomy_id}`
+      const groupLabel = monetary ? 'Cash & settlement FX' : topLevelNode?.node_name ?? 'Unassigned'
       const current = grouped.get(groupKey) ?? {
         groupKey,
         groupLabel,
@@ -1289,7 +1281,7 @@ export function riskTargetComparisonErrors(
   if (taxonomyId && contributions.some((row) => row.groupKey === `unassigned:${taxonomyId}`)) {
     errors.push('Portfolio risk targets cannot be compared while modeled holdings remain unclassified. The classified subset is not renormalized.')
   }
-  if (workspace?.rows.some((row) => isSecurityHoldingRow(row) && row.risk_eligible !== true && (
+  if (workspace?.rows.some((row) => isSecurityHoldingRow(row) && row.forward_risk_status !== 'ok' && (
     Math.abs(finiteNumber(row.quantity) ?? 0) > 1e-9 ||
     Math.abs(finiteNumber(row.market_value_base) ?? 0) > 1e-9 ||
     Math.abs(finiteNumber(row.allocation) ?? 0) > 1e-9
@@ -1894,8 +1886,8 @@ export default function RiskPage() {
     const selected = new Set<string>()
     const selectionIssues: CorrelationMatrixCoverageIssue[] = []
     for (const row of holdingsWorkspace?.rows ?? []) {
-      if (!isActiveRiskBearingHoldingRow(row)) continue
-      const memberKey = row.instrument_core.instrument_id
+      if (!isRiskBearingHoldingRow(row, holdingsWorkspace?.base_currency ?? '') || !hasHoldingRiskExposure(row) || isMonetaryRiskRow(row)) continue
+      const memberKey = holdingRiskMemberKey(row)
       const matches = taxonomyCatalog.taxonomy_assignments.filter((assignment) => assignment.taxonomy_id === matrixTaxonomy.taxonomy_id && assignment.target_scope === 'instrument' && assignment.target_entity_id === memberKey && assignment.status === 'active')
       if (!matches.some((assignment) => resolveScopedTaxonomyNode(assignment.taxonomy_node_id, nodeById, matrixTaxonomyScopeNodeId))) continue
       selected.add(memberKey)
@@ -1905,7 +1897,7 @@ export default function RiskPage() {
       series: currentHoldingsMatrixScope.series.filter((item) => selected.has(item.groupKey)),
       issues: [...currentHoldingsMatrixScope.issues.filter((issue) => selected.has(issue.memberKey) || issue.memberKey === 'current-holdings'), ...selectionIssues],
     }
-  }, [currentHoldingsMatrixScope, matrixTaxonomy, holdingsWorkspace?.rows, matrixTaxonomyScopeNodeId, taxonomyCatalog])
+  }, [currentHoldingsMatrixScope, matrixTaxonomy, holdingsWorkspace?.rows, holdingsWorkspace?.base_currency, matrixTaxonomyScopeNodeId, taxonomyCatalog])
   const selectedMatrixScopeDescription = matrixUsesTaxonomy && !matrixScopeIsLeaf
     ? (zh ? '以当前分类与权重回看各子分类的历史相关性。' : 'Historical correlations of child classifications at current weights.')
     : (zh ? '比较所选范围内各资产的本位币收益。' : 'Compare base-currency returns of the assets in the selected scope.')
@@ -2092,7 +2084,7 @@ export default function RiskPage() {
   const riskTargetGapErrors = [...saaRiskGapResult.errors, ...taaRiskGapResult.errors]
   const concentrationMetrics = useMemo(() => {
     const activeRows = (holdingsWorkspace?.rows ?? []).filter((row) => {
-      if (!isRiskBearingHoldingRow(row)) {
+      if (!isSecurityHoldingRow(row) || row.risk_eligible !== true) {
         return false
       }
       return (
@@ -2331,7 +2323,7 @@ export default function RiskPage() {
                     </strong>
                   </article>
                 ) : null}
-                <article className="summary-card" title="Signed carrying amount of cash and pending settlements outside the covariance model.">
+                <article className="summary-card" title="Signed carrying amount of base-currency cash and pending settlements with zero currency risk. Foreign-currency monetary exposure is included in the model when historical FX coverage is complete.">
                   <span className="summary-card-label">Cash & Settlement</span>
                   <strong className="summary-card-value">
                     {riskCoverage

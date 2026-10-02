@@ -33,11 +33,14 @@ def align_risk_navs(
         gap_dates_by_key[key] = gaps
         dates.update(day for day in gaps if day >= first)
     index = sorted(day for day in dates if first <= day <= last)
-    aligned_by_key, threshold_ends = {}, {}
+    aligned_by_key, threshold_ends, invalid_return_ends = {}, {}, {}
     for key, series in nav_by_key.items():
         series = series.sort_index()
         coverage = coverage_by_key.get(key) or {}
         basis = str(coverage.get("gap_detection_basis") or "")
+        invalid_return_ends[key] = {
+            date.fromisoformat(str(day)[:10]) for day in coverage.get("invalid_return_dates", [])
+        }
         full_index = sorted(set(series.index).union(index))
         aligned = series.reindex(full_index).ffill()
         # Explicit NaN includes missing required FX; it must not become carry.
@@ -54,12 +57,23 @@ def align_risk_navs(
             if stop is not None:
                 mask &= aligned.index < stop
             aligned.loc[mask] = np.nan
-        if not (basis.startswith("market_calendar:") or basis == "event_driven"):
+        legal_carry = basis.startswith("market_calendar:") or basis == "event_driven"
+        if basis == "base_currency_components":
+            components = coverage.get("component_coverage") or {}
+            covered_through = coverage.get("end_date")
+            legal_carry = bool(components) and bool(covered_through) and str(covered_through)[:10] >= last.isoformat() and all(
+                str(component.get("gap_detection_basis") or "").startswith("market_calendar:")
+                or component.get("gap_detection_basis") == "event_driven"
+                for component in components.values()
+            )
+        if not legal_carry:
             # Unknown schedules cannot authorize an indefinitely missing tail.
             aligned.loc[aligned.index > series.index[-1]] = np.nan
         aligned_by_key[key] = aligned.reindex(index)
     navs = pd.DataFrame(aligned_by_key, index=index)
     returns = navs.pct_change(fill_method=None)
     for key, ends in threshold_ends.items():
+        returns.loc[returns.index.isin(ends), key] = np.nan
+    for key, ends in invalid_return_ends.items():
         returns.loc[returns.index.isin(ends), key] = np.nan
     return navs, returns

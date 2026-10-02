@@ -58,6 +58,7 @@ import { baseAmountForRow, normalizedCurrency } from '../lib/holdingAmounts'
 import { useHorizontalTablePan } from '../../../../../packages/ui/src/useHorizontalTablePan'
 import {
   holdingUsesEventValuation,
+  holdingForwardRiskShare,
   isOptionObligationHolding,
 } from '../lib/holdingPresentation'
 import { buildPortfolioHoldingDetailPath } from '../lib/navigation'
@@ -3267,6 +3268,7 @@ export default function PortfolioHomePage() {
         `FX Cost Basis (${workspace.base_currency})`,
         `Unrealized FX P&L (${workspace.base_currency})`,
         'Current Weight',
+        'Forward RC',
         'Settlement Date',
         'Pending Until',
         'Related Instrument',
@@ -3284,6 +3286,7 @@ export default function PortfolioHomePage() {
         row.cost_basis_historical_base,
         row.unrealized_fx_pnl_base,
         row.allocation,
+        holdingForwardRiskShare(row),
         row.settlement_date,
         row.pending_until_date,
         row.economic_instrument_ref?.instrument_name ?? row.economic_instrument_id,

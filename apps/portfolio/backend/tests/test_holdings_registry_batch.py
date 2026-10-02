@@ -368,7 +368,7 @@ def test_snapshot_holding_aggregation_preserves_accounts_and_earliest_holding_pr
     assert incomplete[0]["cost_basis_fx_coverage_status"] == "unavailable"
 
 
-def test_materialized_holdings_uses_one_bulk_detail_map(client, monkeypatch) -> None:
+def test_materialized_holdings_reuses_bulk_details_and_loads_required_fx_once(client, monkeypatch) -> None:
     snapshot_response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert snapshot_response.status_code == 200
 
@@ -409,8 +409,9 @@ def test_materialized_holdings_uses_one_bulk_detail_map(client, monkeypatch) -> 
 
     assert response.status_code == 200
     payload = response.json()
-    assert len(bulk_calls) == 1
+    assert len(bulk_calls) == 2
     assert set(bulk_calls[0]) == _noncash_instrument_ids(payload)
+    assert set(bulk_calls[1]) == {"fx-usd-hkd", "fx-usd-cny"}
     assert all(row.get("price_chart_6m") is not None for row in payload["rows"])
 
 
@@ -1122,7 +1123,8 @@ def test_fallback_holdings_reuses_bulk_details_for_frequency_valuation_and_chart
     assert response.status_code == 200
     payload = response.json()
     held_instrument_ids = _noncash_instrument_ids(payload)
-    assert len(bulk_calls) == 1
+    assert len(bulk_calls) == 2
     assert set(bulk_calls[0]) == held_instrument_ids
+    assert set(bulk_calls[1]) == {"fx-usd-hkd", "fx-usd-cny"}
     assert held_instrument_ids.isdisjoint(singleton_calls)
     assert all(row.get("price_chart_6m") is not None for row in payload["rows"])

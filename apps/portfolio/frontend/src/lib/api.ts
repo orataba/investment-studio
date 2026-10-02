@@ -170,6 +170,13 @@ export type HoldingReturnSeries = {
   }
 }
 
+export type RiskReturnSeries = Omit<HoldingReturnSeries, 'points'> & {
+  points: Array<Omit<ReturnSeriesPoint, 'value'> & { value: number | null }>
+  currency: string
+  source_currency?: string | null
+  source_instrument_ids: string[]
+}
+
 export type PortfolioInstrumentChartRangeKey = '1m' | '3m' | '6m' | 'ytd' | '1y' | 'all'
 export type PortfolioReturnSemantics = 'unknown' | 'price_return' | 'total_return'
 
@@ -462,7 +469,7 @@ export type PortfolioForwardRiskSummary = {
   coverage_ratio: number | null
   excluded_rows: PortfolioRiskCoverageExcludedRow[]
   calculation_frequency: PortfolioCalculationFrequency
-  modeled_weight_basis?: 'total_nav_zero_return_cash_and_derivatives'
+  modeled_weight_basis?: 'total_nav_base_currency_market_and_monetary_exposures'
   risk_model?: PortfolioRiskPolicyRecord | null
   portfolio_variance?: number | null
   portfolio_volatility?: number | null
@@ -837,6 +844,7 @@ export type PortfolioHoldingRow = {
   instrument_return_series_6m?: HoldingReturnSeries | null
   instrument_return_series_1y?: HoldingReturnSeries | null
   instrument_return_series_all?: HoldingReturnSeries | null
+  risk_return_series?: RiskReturnSeries | null
   instrument_holding_return_series?: HoldingReturnSeries | null
   instrument_current_drawdown?: number | null
   instrument_max_drawdown?: number | null
@@ -1219,6 +1227,7 @@ export type PortfolioInstrumentUniverseRecord = {
   instrument_trend_basis?: string | null
   instrument_risk_frequency?: PortfolioCalculationFrequency | null
   instrument_return_series_all?: HoldingReturnSeries | null
+  risk_return_series?: RiskReturnSeries | null
 }
 
 export type PortfolioTargetResolutionStatus = 'complete' | 'missing' | 'invalid'

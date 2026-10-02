@@ -12,7 +12,9 @@ from scipy.optimize import brentq, linprog, minimize
 
 from portfolio_app.services.annualization import annualization_eligibility
 from portfolio_app.services.risk_alignment import align_risk_navs
-from portfolio_app.services.risk_basis import observation_coverage_from_dates
+from portfolio_app.services.risk_currency import align_base_currency_navs
+from portfolio_app.services.risk_fx_sources import risk_fx_histories_from_details, risk_fx_instrument_ids
+from portfolio_app.services.risk_basis import observation_coverage_from_dates, observation_source_settings
 from portfolio_app.services.research_inputs import capture_current_target_configuration
 from portfolio_app.services.taxonomy_targets import resolve_taxonomy_targets
 from portfolio_app.services.calculation_frequency import (
@@ -86,7 +88,7 @@ RESEARCH_OBSERVATIONS_PER_MONTH_BY_FREQUENCY: dict[CalculationFrequency, float] 
     "daily": 20.0,
 }
 RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
-RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v7_observed_session_coverage"
+RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v8_base_currency_components"
 RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 1e-4
 RESEARCH_COVARIANCE_PSD_TOLERANCE = 1e-10
 MISSING_RETURN_POLICY_STRICT = "strict"
@@ -366,20 +368,39 @@ def _build_instrument_nav_series(
     if not selected_points:
         raise ValueError(f"{instrument_id} does not have usable market history for the requested period.")
 
-    rows: list[tuple[date, float]] = []
-    for point_date, point_value, point_currency in selected_points:
-        base_value = _convert_price_to_base(
-            state,
-            point_date=point_date,
-            value=point_value,
-            point_currency=point_currency,
-            require_fresh_fx=retain_missing_valuations,
+    # Match quote freshness and historical replay: a declared exchange remains
+    # a known observation calendar when no source-specific override is stored.
+    # This must precede FX union alignment, which otherwise fills its missing
+    # sessions before replay can distinguish them from exchange holidays.
+    coverage = observation_coverage_from_dates(
+        [point_date for point_date, _, _ in selected_points],
+        source_settings=observation_source_settings(detail), end_date=end_date,
+    )
+    source_currency = valuation_fx.required_currency(selected_points[0][2], field_name="market-data currency")
+    if source_currency != state.base_currency:
+        fx_ids = risk_fx_instrument_ids({source_currency}, state.base_currency)
+        fx_histories = risk_fx_histories_from_details(
+            {iid: _instrument_detail(state, iid) for iid in fx_ids}, end_date=end_date,
         )
-        rows.append((point_date, float("nan") if base_value is None else base_value))
-    if not rows or not any(np.isfinite(value) for _, value in rows):
+        native = pd.Series({day: value for day, value, _ in selected_points}, dtype="float64").sort_index()
+        navs, _returns, metadata = align_base_currency_navs(
+            {instrument_id: native}, currency_by_key={instrument_id: source_currency},
+            coverage_by_key={instrument_id: coverage}, base_currency=state.base_currency,
+            fx_histories=fx_histories, end_date=end_date,
+        )
+        series = navs[instrument_id]
+        coverage = metadata[instrument_id]["observation_coverage"]
+    else:
+        rows: list[tuple[date, float]] = []
+        for point_date, point_value, point_currency in selected_points:
+            base_value = _convert_price_to_base(
+                state, point_date=point_date, value=point_value,
+                point_currency=point_currency, require_fresh_fx=retain_missing_valuations,
+            )
+            rows.append((point_date, float("nan") if base_value is None else base_value))
+        series = pd.Series(dict(rows), dtype="float64").sort_index()
+    if series.empty or not np.isfinite(series).any():
         raise ValueError(f"{instrument_id} does not have FX-complete market history for the requested period.")
-
-    series = pd.Series({point_date: base_value for point_date, base_value in rows}, dtype="float64").sort_index()
     anchor = series.loc[series.index <= start_date].tail(1)
     visible = pd.concat([anchor, series.loc[(series.index > start_date) & (series.index <= end_date)]])
     if visible.empty:
@@ -390,10 +411,7 @@ def _build_instrument_nav_series(
         warnings.append(
             f"{instrument_id} history starts on {visible.index[0].isoformat()}, so the research window is clipped for this member."
         )
-    visible.attrs["observation_coverage"] = observation_coverage_from_dates(
-        [point_date for point_date, _, _ in selected_points],
-        source_settings=detail.get("source_settings"), end_date=end_date,
-    )
+    visible.attrs["observation_coverage"] = coverage
     return visible, warnings
 
 
