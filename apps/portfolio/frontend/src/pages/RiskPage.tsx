@@ -347,6 +347,13 @@ type HoldingsRow = HoldingsWorkspaceResponse['rows'][number]
 type MarketInstrumentHoldingRow = HoldingsRow & { instrument_core: InstrumentCore }
 
 function holdingRiskLabel(row: HoldingsRow) {
+  if (isMonetaryRiskRow(row)) {
+    const account = row.account_ids?.length
+      ? `${row.account_ids.join(', ')}${isPendingMonetaryHoldingRow(row) ? ` · ${row.line_id}` : ''}`
+      : row.position_reference_id || row.line_id
+    const side = (row.market_value_base ?? 0) < 0 ? 'Liability' : 'Asset'
+    return `${row.instrument_core?.currency || 'Cash'} · ${side} · ${row.cash_purpose || row.holding_kind || 'cash'} · ${account}`
+  }
   return row.instrument_core?.instrument_name || row.derivative_contract?.contract_name || row.position_reference_id || row.line_id
 }
 

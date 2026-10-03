@@ -212,13 +212,13 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
   const currentVersion = archivedNotebook?.version_id || archivedNotebook?.run_id
   const previousNotebooks = archivedDossier?.notebook_history?.filter((item) => (item.version_id || item.notebook?.version_id || item.run_id) !== currentVersion) || []
   if (!dossier) return <div className={`research-report-loading research-report-loading-${variant}`} aria-busy={!error}>
-    {error ? <p role="alert">研究档案暂时无法读取：{error}</p> : <><p role="status" className="sector-research-note">Loading</p><div className="research-loading-title" /><div className="research-loading-line" /><div className="research-loading-line" /><div className="research-loading-line short" /></>}
+    {error ? <p role="alert">研究档案暂时无法读取：{error} <button type="button" onClick={() => setRefresh(value => value + 1)}>重试读取</button></p> : <><p role="status" className="sector-research-note">Loading</p><div className="research-loading-title" /><div className="research-loading-line" /><div className="research-loading-line" /><div className="research-loading-line short" /></>}
   </div>
   if (variant === 'summary') {
     const view = notebook?.investment_view
     const brief = notebook?.decision_brief?.needs_review ? undefined : notebook?.decision_brief
     return <div className="research-dossier-panel research-dossier-summary">
-      {error && <p role="alert">研究档案暂时无法读取：{error}</p>}
+      {error && <p role="alert">研究档案暂时无法读取：{error} <button type="button" onClick={() => setRefresh(value => value + 1)}>重试读取</button></p>}
       <p className="research-summary-direction" translate={view?.direction || brief?.recommendation ? "no" : undefined}>{view ? view.direction || '当前总结尚待补充。' : brief?.recommendation || '研究基线尚未建立，尚不能判断机会与风险。'}</p>
       {(view?.updated_at || brief?.updated_at) && <p className="sector-research-note">判断更新 <time title={view?.updated_at || brief?.updated_at || undefined} dateTime={view?.updated_at || brief?.updated_at || undefined}>{dateLabel(view?.updated_at || brief?.updated_at)}</time></p>}
       {view?.coverage_status === 'limited' && <p className="sector-research-limitation">已保存的研究部分可用，未覆盖部分不能据此判断。</p>}
@@ -231,7 +231,7 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
     <nav className="research-reading-nav" aria-label="研究报告目录">
       <a href={`#research-summary-${instrumentId}`}><span>01</span> 机会与风险</a><a href={`#research-events-${instrumentId}`}><span>02</span> 重要进展</a><a href={`#research-tracking-${instrumentId}`}><span>03</span> 重点主题</a><a href={`#research-quant-${instrumentId}`}><span>04</span> 量化观察</a>
     </nav>
-    {error && <p role="alert">研究档案暂时无法读取：{error}</p>}
+    {error && <p role="alert">研究档案暂时无法读取：{error} <button type="button" onClick={() => setRefresh(value => value + 1)}>重试读取</button></p>}
     <div id={`research-summary-${instrumentId}`} className="research-report-summary">{notebook?.investment_view || notebook?.decision_brief ? <InvestmentResearchState mode="view" compact instrumentId={instrumentId} notebook={notebook} sources={ids => <SourceList instrumentId={instrumentId} versionId={notebook.version_id} sources={selectedSources(ids)} />} onAskAssistant={ask} /> : <section aria-label="当前机会与风险"><h2>当前机会与风险</h2><p className="research-empty-judgment">研究基线尚未建立，尚不能判断机会与风险。可通过“更新研究”建立初始认识。</p></section>}</div>
       <div className="research-monitoring-grid" aria-label="事件与持续主题">
       <div id={`research-events-${instrumentId}`} className="research-report-events"><ResearchRecentEvents instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={ask} themeNames={themeNames} /></div>

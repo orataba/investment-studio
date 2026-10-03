@@ -656,8 +656,25 @@ def enrich_holdings_forward_risk(
             period_starts_by_key=period_starts_by_key,
             labels_by_key=labels_by_key,
         )
-        covariance = estimate_covariance(
-            returns,
+        # Fit economic factors, not account representations. Shrinking duplicate
+        # FX columns independently invents diversification between identical
+        # cash assets/payables. Map the fitted factor covariance back to rows so
+        # signed account contributions still reconcile to the same total risk.
+        representative_by_factor: dict[tuple[str, str], str] = {}
+        row_factor_keys: list[str] = []
+        for key, row, _series, _starts in active:
+            core = row.get("instrument_core") or {}
+            factor = (
+                ("fx", str(core.get("currency") or "").upper())
+                if _holding_row_is_cash(row) or is_pending_monetary_holding(row)
+                else ("instrument", str(core.get("instrument_id") or key))
+            )
+            representative = representative_by_factor.setdefault(factor, key)
+            if not returns[key].equals(returns[representative]):
+                raise ValueError(f"Inconsistent return histories for economic factor {factor[1]}.")
+            row_factor_keys.append(representative)
+        factor_covariance = estimate_covariance(
+            returns[list(representative_by_factor.values())],
             model_id=str(snapshot["covariance_model_id"]),
             lookback_days=int(snapshot["lookback_days"]),
             parameters=parameters,
@@ -665,7 +682,7 @@ def enrich_holdings_forward_risk(
             calculation_frequency=calculation_frequency,
             as_of_date=as_of_date,
         )
-        covariance_matrix = covariance.to_numpy(dtype="float64")
+        covariance_matrix = factor_covariance.loc[row_factor_keys, row_factor_keys].to_numpy(dtype="float64")
         marginal = covariance_matrix @ weights
         signed_contributions = weights * marginal
         variance = float(weights @ marginal)

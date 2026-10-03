@@ -192,3 +192,57 @@ def test_composite_carry_on_closed_weekend_requires_all_source_calendars_and_cut
         coverage_by_key={"asset": expired}, calendar=[*days, saturday], end_date=saturday)
     assert pd.isna(beyond.at[saturday, "asset"])
 
+
+
+@pytest.mark.parametrize('model', ['sample_covariance', 'ewma_covariance', 'ewma_vol_shrinkage_corr_covariance'])
+@pytest.mark.parametrize('exposures', [[150_000, -50_000], [200_000, -70_000, -30_000]])
+@pytest.mark.parametrize('another_currency', [False, True])
+def test_economic_fx_factor_is_invariant_to_signed_account_splits(model, exposures, another_currency):
+    history = risk_fx_history()
+    histories = {history.instrument_id: history}
+    other = []
+    if another_currency:
+        euro = fx('USD', 'EUR', values=[.9 * (1 + .006 * np.cos(i)) for i in range(len(history.levels))], days=list(history.levels.index))
+        histories[euro.instrument_id] = euro
+        row = monetary('cash:EUR', 50_000)
+        row['instrument_core']['currency'] = 'EUR'
+        other.append(row)
+    def evaluate(rows):
+        return enrich_holdings_forward_risk(_workspace(rows + deepcopy(other), base_currency='USD'),
+            as_of_date=AS_OF_DATE, calculation_frequency='daily',
+            risk_policy=_risk_policy(covariance_model_id=model), fx_histories=histories)
+    whole = evaluate([monetary('cash:HKD:whole', 100_000)])
+    split = evaluate([monetary(f'cash:HKD:{i}', exposure) for i, exposure in enumerate(exposures)])
+    assert whole['forward_risk']['status'] == split['forward_risk']['status'] == 'ok'
+    assert split['forward_risk']['portfolio_variance'] == pytest.approx(whole['forward_risk']['portfolio_variance'])
+    assert sum(row['forward_risk_share'] for row in split['rows']) == pytest.approx(1)
+    for row, exposure in zip(split['rows'], exposures):
+        assert row['forward_risk_share'] == pytest.approx(whole['rows'][0]['forward_risk_share'] * exposure / 100_000)
+    covariance = split['_forward_risk_covariance']['values']
+    assert covariance[0][1] == covariance[0][0] == covariance[1][1]
+
+
+@pytest.mark.parametrize('model', ['sample_covariance', 'ewma_covariance', 'ewma_vol_shrinkage_corr_covariance'])
+def test_fully_offset_fx_accounts_do_not_invent_positive_risk(model):
+    history = risk_fx_history()
+    rows = [monetary('cash:HKD:asset', 100_000), monetary('cash:HKD:debt', -100_000)]
+    result = enrich_holdings_forward_risk(_workspace(rows, base_currency='USD'),
+        as_of_date=AS_OF_DATE, calculation_frequency='daily',
+        risk_policy=_risk_policy(covariance_model_id=model), fx_histories={history.instrument_id: history})
+    assert result['forward_risk']['status'] == 'unavailable'  # A zero-variance RC denominator is undefined.
+    assert all(row['forward_risk_share'] is None for row in rows)
+
+
+@pytest.mark.parametrize('model', ['sample_covariance', 'ewma_covariance', 'ewma_vol_shrinkage_corr_covariance'])
+def test_offset_fx_accounts_do_not_change_other_economic_factor_risk(model):
+    history = risk_fx_history()
+    def evaluate(rows):
+        return enrich_holdings_forward_risk(_workspace(rows, base_currency='USD'),
+            as_of_date=AS_OF_DATE, calculation_frequency='daily',
+            risk_policy=_risk_policy(covariance_model_id=model), fx_histories={history.instrument_id: history})
+    other_rows = [_holding('asset-a', .6, currency='USD'), _holding('asset-b', .4, currency='USD', points=_return_points(.7))]
+    whole = evaluate(deepcopy(other_rows))
+    split = evaluate(deepcopy(other_rows) + [monetary('cash:HKD:asset', 100_000), monetary('cash:HKD:debt', -100_000)])
+    assert split['forward_risk']['status'] == 'ok'
+    assert split['forward_risk']['portfolio_variance'] == pytest.approx(whole['forward_risk']['portfolio_variance'])
+    assert split['rows'][2]['forward_risk_share'] + split['rows'][3]['forward_risk_share'] == pytest.approx(0, abs=1e-12)

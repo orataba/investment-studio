@@ -5,7 +5,7 @@ from math import isfinite
 
 from portfolio_app.services.taxonomy_targets import resolve_taxonomy_targets
 
-SOLUTION_TREE_SCHEMA_VERSION = 2
+SOLUTION_TREE_SCHEMA_VERSION = 3
 
 
 def _number(value):
@@ -81,6 +81,7 @@ def _global_risk_targets(detail, configuration, scope_id):
 
 
 def build_research_solution_tree(detail: dict, request: dict, *, valuation: dict | None = None) -> dict | None:
+    evidence = (valuation or {}).get("valuation_evidence") or (detail.get("solution_tree") or {}).get("valuation_evidence")
     groups = detail.get("solved_result_groups") or []
     if not groups:
         return None
@@ -215,8 +216,13 @@ def build_research_solution_tree(detail: dict, request: dict, *, valuation: dict
             if child["parent_row_id"] == row["row_id"]:
                 visit(child)
     visit(root)
+    if not evidence or evidence.get("status") != "canonical":
+        for row in ordered:
+            if row["execution_status"] == "ready":
+                row["execution_status"] = "manual_review_required"
+                row["execution_note"] = (evidence or {}).get("note") or "This archive did not record valuation eligibility or reference-price dates. Execution readiness cannot be established."
     return {"schema_version": SOLUTION_TREE_SCHEMA_VERSION, "as_of_date": request.get("as_of_date"), "base_currency": base_currency,
-            "portfolio_nav": nav, "risk_attribution_scope": risk_scope,
+            "portfolio_nav": nav, "risk_attribution_scope": risk_scope, "valuation_evidence": evidence,
             "capital_weight_basis": "portfolio_nav" if denominator is not None else "saved_scope",
             "hierarchy_status": "complete" if taxonomy else "recorded_groups_only",
             "configuration_captured_at": configuration.get("captured_at"),

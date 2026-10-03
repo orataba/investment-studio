@@ -1,7 +1,10 @@
 import WorkspaceSkeleton from './WorkspaceSkeleton'
 import InfoHint from './InfoHint'
 import { useEffect, useRef, useState } from 'react'
-import type { RiskRequest } from './instrumentRisk'
+import type { RiskRequest, RiskCaseHistory } from './instrumentRisk'
+import { researchStamp } from './ResearchRunStatus'
+import ConfirmDialog from './ConfirmDialog'
+import RiskChangeAudit from './RiskChangeAudit'
 import { resolveWorkspaceUrl } from './navigation'
 import './risk-officer.css'
 
@@ -21,6 +24,7 @@ export type RiskOfficerReview = {
     completed_at: string
     input_as_of: string | null
     summary: string
+    case_changes?: RiskCaseHistory[]
     review_note?: string
     priorities: Array<{ title: string; analysis: string; instrument_ids: string[]; holding_ids?: string[]; case_ids: string[]; source_ids?: string[]; next_watch: string }>
     evidence_sources?: Record<string, { title: string; detail_path?: string | null; start_date?: string | null; end_date?: string | null; currency?: string | null; frequency?: string | null }>
@@ -32,7 +36,6 @@ export type RiskOfficerReview = {
 
 type Props = { canRun?: boolean; request: RiskRequest; scopeQuery: string; refreshToken?: number; onCompleted?: () => void }
 const running = (status: RunStatus | undefined) => status === 'queued' || status === 'running'
-const completedTime = (value: string) => new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
 const frequencyLabels: Record<string, string> = { daily: '日度', weekly: '周度', monthly: '月度' }
 const portfolioHref = (path: string | null | undefined) => path?.startsWith('/portfolios/')
   ? `${resolveWorkspaceUrl(import.meta.env.VITE_PORTFOLIO_URL, 'portfolio')}${path}` : undefined
@@ -41,6 +44,7 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
   const [data, setData] = useState<RiskOfficerReview | null>(null)
   const [error, setError] = useState('')
   const [posting, setPosting] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const [pending, setPending] = useState<StartedRun | null>(null)
   const [refresh, setRefresh] = useState(0)
   const observedRun = useRef<string | null>(null)
@@ -147,10 +151,16 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
   return <section className="risk-officer" aria-label="风险研判">
     <header className="risk-officer-heading">
       <div><div className="risk-officer-title"><h2>风险研判</h2>{data && <InfoHint label="风控输入" detail={`研究上报 ${data.counts.research} · 量化触发 ${data.counts.quantitative} · 监测受限 ${data.counts.coverage}。输入截至 ${data.input_as_of?.slice(0, 10) || '尚无输入日期'}。`} />}</div>{data && <p translate="no">{data.scope.name}</p>}</div>
-      <button type="button" disabled={!canRun || !data?.available || busy} onClick={() => void update()}>
+      <button type="button" disabled={!canRun || !data?.available || busy || Boolean(error)} onClick={() => data?.scope.kind === 'portfolio' ? void update() : setConfirming(true)}>
         {busy ? '研判进行中…' : '更新研判'}
       </button>
     </header>
+    {confirming && data && <ConfirmDialog open title="更新共享风险研判" confirmLabel="确认更新研判" confirmTone="primary" busy={posting}
+      onCancel={() => setConfirming(false)} onConfirm={() => { setConfirming(false); void update() }} description={<>
+      <p>本次将总结所选范围，并可能更新以下标的的共享研究风险记录：待复核、已研判待核证、有效、解除或不成立。其他列表与组合读取同一份风险记录。</p>
+      <ul>{data.instruments.map((instrument) => <li key={instrument.instrument_id} translate="no">{instrument.name}</li>)}</ul>
+      <p>列表名称包含 QA 或测试不代表数据隔离；本次不修改实际持仓或交易。</p>
+    </>} />}
     {!data && !error && <WorkspaceSkeleton />}
     {data && <>
       {!data.available && <p className="risk-officer-warning" role="status">风险研判服务不可用，暂时无法更新。</p>}
@@ -161,11 +171,18 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
       {!completed && !busy && <p className="risk-officer-muted">尚未研判。点击“更新研判”发起首次研判。</p>}
       {completed && <section className="risk-officer-conclusion" aria-label="最近完成的研判">
         <div className="risk-officer-conclusion-heading"><h3>最近完成的研判</h3>
-          <time dateTime={completed.completed_at}>{completedTime(completed.completed_at)}</time>
+          <time title={completed.completed_at} dateTime={completed.completed_at}>{researchStamp(completed.completed_at)}</time>
         </div>
         {completed.stale && <p className="risk-officer-warning">输入版本已有变化，请更新研判。</p>}
         {completed.stale === null && <p className="risk-officer-warning">尚未核对已有结论的当前输入，请更新研判。原结论与依据仍保留。</p>}
         <p className="risk-officer-summary" translate="no">{completed.summary}</p>
+        {completed.case_changes && <details><summary>本次共享风险变更</summary>
+          <p><span>任务编号</span> <code translate="no">{completed.run_id}</code></p>
+          {completed.case_changes.length ? <ul>{completed.case_changes.map((change, index) => <li key={index}>
+            <span translate="no">{change.title || change.case_id}</span>
+            <RiskChangeAudit change={change} />
+          </li>)}</ul> : <p>本次未改变共享风险记录。</p>}
+        </details>}
         {completed.review_note && <InfoHint label="研判复核说明" detail={completed.review_note} />}
         {completed.priorities.length > 0 && <>
           <ol className="risk-officer-priorities" aria-label="优先事项">{completed.priorities.slice(0, 3).map(renderPriority)}</ol>
@@ -178,7 +195,7 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
         <ul>{limitations.map((limitation) => <li key={limitation} translate="no">{limitation}</li>)}</ul>
       </details>}
     </>}
-    {error && <p className="risk-officer-error" role="alert">{error}</p>}
+    {error && <div className="risk-officer-error" role="alert"><p>{error}</p><p>状态暂时无法读取，尚未确认任务停止。刷新状态不会发起新研判。</p><button type="button" onClick={() => setRefresh(value => value + 1)}>刷新状态</button></div>}
   </section>
 }
 

@@ -1419,6 +1419,7 @@ function PositionRow({
   portfolioId: string
   position: PortfolioAccountPositionRecord
 }) {
+  const { t } = useLanguage()
   const eventValued = holdingUsesEventValuation(position)
   const unrealizedPnl =
     !eventValued && position.market_value != null && position.cost_basis != null
@@ -1443,6 +1444,8 @@ function PositionRow({
           <span>{formatNumber(position.quantity, 2)}</span>
           <span>
             {position.last_price != null ? formatUnitPrice(position.last_price, position.currency) : 'No price'}
+            {position.quote_date ? <small> · {position.quote_date}</small> : null}
+            {position.valuation_note ? <small className="holding-secondary">{t(position.valuation_note)}</small> : null}
           </span>
         </div>
       </td>

@@ -23,6 +23,8 @@
   Portfolio 与 Watchlist 共用的小型价格/NAV 趋势图，统一表格内 chart 列的渲染、空态、颜色与尺寸。
 - `ConfirmDialog` / `useModalDialog` / `modalStack`
   跨 app 的确认弹窗、焦点管理和嵌套弹窗栈。
+- `RiskOfficerPanel` / `InstrumentRiskPanel` / `RiskChangeAudit`
+  Watchlist 与 Portfolio 共用风险工作面。团队范围手动研判先说明共享对象和可能状态变化；组合判断不改团队风险。状态读取失败保留已知任务并只读恢复，完成与变更时间统一 UTC；风险变更从同一留存收据展示发起人、任务、范围及前后状态，不推断旧记录的未知归属。
 - `RequestRecovery`
   统一账号或业务读取失败时保留当前目标，并提供本地化的重试、首页和请求诊断编号。暂时依赖失败不推断为退出登录；原有会话明确失效时仍卸载受保护内容。
 - `NoticeToast`

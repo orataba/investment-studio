@@ -524,7 +524,11 @@ def apply_result(session, run, payload):
     from watchlist_app.services.risk_workspace_projection import case_summary_rows
     bound_version = run.context_json.get("risk_input_version")
     before = {row["case_id"]: row for row in case_summary_rows(session, {case.instrument_id for case, _ in assessed})}
+    case_changes = []
+    actor = {key: run.context_json.get("research_actor", {}).get(key) for key in ("user_id", "display_name", "kind", "service_id")}
     for case, assessment in assessed:
+        previous = {"status": case.status, "trigger_active": case.trigger_active,
+                    "risk_assessment": (case.evidence_json or {}).get("risk_assessment")}
         timestamp = datetime.now(UTC)
         value = {**assessment.model_dump(), "reviewed_at": timestamp.isoformat(), "run_id": run.entry_id}
         case.evidence_json = {**case.evidence_json,
@@ -536,9 +540,15 @@ def apply_result(session, run, payload):
             case.trigger_active = assessment.status == "active"
             case.status = "open" if case.trigger_active else "resolved"
             case.resolved_at = None if case.trigger_active else timestamp
-        case.history_json = [*(case.history_json or []), {"at": timestamp.isoformat(),
+        change = {"case_id": case.case_id, "instrument_id": case.instrument_id, "title": case.title,
+            "at": timestamp.isoformat(), "run_id": run.entry_id, "actor": actor, "scope": snapshot["scope"],
+            "before": previous, "after": {"status": case.status, "trigger_active": case.trigger_active,
+                "risk_assessment": case.evidence_json["risk_assessment"]}}
+        case_changes.append(change)
+        case.history_json = [*(case.history_json or []), {**change,
             "action": "risk_assessed", "detail": assessment.reason, "risk_assessment": value}]
     saved = result.model_dump()
+    saved["case_changes"] = case_changes
     saved["limitations"] = list(dict.fromkeys([*snapshot["limitations"], *saved["limitations"]]))
     if bound_version and assessed:
         session.flush()

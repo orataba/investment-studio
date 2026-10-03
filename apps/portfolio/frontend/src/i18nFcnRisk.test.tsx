@@ -38,6 +38,22 @@ it('distinguishes capital weights from carrying amounts in both languages', asyn
   await waitFor(() => labels.forEach(([en]) => expect(screen.getByText(en)).toBeInTheDocument()))
 })
 
+it('translates reference-price eligibility and amendment guidance in both languages', async () => {
+  const labels = [
+    ['Confirmed terms and audit evidence', '已确认条款与审计依据'],
+    ['Identify the confirmed source and why these terms need correction.', '请说明已确认的资料来源，以及需要修订这些条款的原因。'],
+    ['Carried at transaction cost; no observed market quote.', '按交易成本列账；暂无可观察市场报价。'],
+    ['Market quote unavailable; quantity and book cost remain confirmed ledger facts.', '市场报价不可用；数量和账面成本仍为已确认账本事实。'],
+    ['Initial purchase price; no independent market quote.', '初始买入价格；没有独立市场报价。'],
+    ['Latest eligible market quote on or before the valuation date.', '估值日或之前最近的合格市场报价。'],
+  ]
+  render(<LanguageProvider><LanguageSelector />{labels.map(([en]) => <p key={en}>{en}</p>)}</LanguageProvider>)
+  fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+  await waitFor(() => labels.forEach(([, zh]) => expect(screen.getByText(zh)).toBeInTheDocument()))
+  fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+  await waitFor(() => labels.forEach(([en]) => expect(screen.getByText(en)).toBeInTheDocument()))
+})
+
 it('translates risk exclusions and FX requirements while preserving security names', async () => {
   const source = 'Current risk cannot treat unmodeled market exposure PDD Holdings Inc. as zero risk. · Forward RC requires an FX total-return series for non-base monetary exposure Cash (USD) (USD versus HKD).'
   render(<LanguageProvider><LanguageSelector /><span title={source}>Daily risk basis</span></LanguageProvider>)

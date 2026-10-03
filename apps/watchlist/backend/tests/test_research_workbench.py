@@ -439,3 +439,72 @@ def test_topic_history_surfaces_active_run_without_retained_private_evidence(cli
         session.commit()
     assert next(row for row in client.get('/api/research/topics').json()
                 if row['topic_id'] == topic['topic_id'])['active_run'] is None
+
+
+def test_unavailable_valuation_keeps_confirmed_quantities_cost_and_native_cash(monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+    from watchlist_app.services import research_workbench
+    from watchlist_app.services.research_errors import ResearchInputUnavailable
+    calls = []
+    def external(service, path):
+        assert service == 'portfolio'
+        parsed = urlsplit(path)
+        query = parse_qs(parsed.query)
+        calls.append(parsed.path)
+        assert query['as_of_date'] == ['2026-08-31']
+        if parsed.path == '/workspace/holdings':
+            raise ResearchInputUnavailable('Missing valuation')
+        if parsed.path == '/portfolios/portfolio-a/positions':
+            assert query['include_valuation'] == ['false']
+            return {'positions': [{'instrument_id': 'aapl', 'quantity': 60, 'cost_basis': 603, 'currency': 'USD'}]}
+        if parsed.path == '/portfolios/portfolio-a/accounts/workspace':
+            assert query['include_valuation'] == ['false']
+            return {'accounts': [{'account': {'account_id': 'cash-usd', 'currency': 'USD'},
+                                  'derived_cash_balance': 14224, 'pending_settlement': 0,
+                                  'net_asset_value': 99999}]}
+        raise AssertionError(path)
+    monkeypatch.setattr(research_workbench, 'external_json', external)
+    page = {'as_of_date': '2026-08-31', 'tab': 'risk', 'account_id': 'cash-usd'}
+    evidence = research_workbench.portfolio_page_evidence('portfolio-a', page)
+    assert evidence['valuation_status'] == 'unavailable'
+    assert evidence['ledger_positions'] == [{'instrument_id': 'aapl', 'quantity': 60, 'cost_basis': 603, 'currency': 'USD'}]
+    assert evidence['ledger_accounts'] == [{'account': {'account_id': 'cash-usd', 'currency': 'USD'}, 'settled_cash': 14224, 'pending_settlement': 0}]
+    assert evidence['as_of_date'] == '2026-08-31' and evidence['page_scope'] == page
+    assert evidence['ledger_errors'] == {}
+    assert 'portfolio_nav' not in evidence and 'net_asset_value' not in evidence['ledger_accounts'][0]
+    assert 'current NAV' in evidence['ledger_note']
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize('blocked_path', ['/workspace/holdings', '/positions', '/accounts/workspace'])
+def test_portfolio_ledger_recovery_preserves_authorization_failures(monkeypatch, blocked_path):
+    from fastapi import HTTPException
+    from watchlist_app.services import research_workbench
+    from watchlist_app.services.research_errors import ResearchInputUnavailable
+    def external(_service, path):
+        if path.split('?')[0].endswith(blocked_path):
+            raise HTTPException(404, 'Portfolio inaccessible')
+        if path.startswith('/workspace/holdings'):
+            raise ResearchInputUnavailable('Valuation unavailable')
+        return {'positions': [], 'accounts': []}
+    monkeypatch.setattr(research_workbench, 'external_json', external)
+    with pytest.raises(HTTPException) as failure:
+        research_workbench.portfolio_page_evidence('portfolio-a', {'as_of_date': '2026-08-31'})
+    assert failure.value.status_code == 404
+
+
+def test_ledger_part_failure_remains_explicit_without_erasing_other_facts(monkeypatch):
+    from watchlist_app.services import research_workbench
+    from watchlist_app.services.research_errors import ResearchInputUnavailable
+    def external(_service, path):
+        if path.startswith('/workspace/holdings'):
+            raise ResearchInputUnavailable('Valuation unavailable')
+        if '/positions?' in path:
+            raise ResearchInputUnavailable('Position ledger unavailable')
+        return {'accounts': [{'account': {'currency': 'USD'}, 'derived_cash_balance': 14224}]}
+    monkeypatch.setattr(research_workbench, 'external_json', external)
+    evidence = research_workbench.portfolio_page_evidence('portfolio-a', {'as_of_date': '2026-08-31'})
+    assert 'ledger_positions' not in evidence
+    assert evidence['ledger_errors'] == {'ledger_positions': 'Position ledger unavailable'}
+    assert evidence['ledger_accounts'][0]['settled_cash'] == 14224
+    assert evidence['valuation_status'] == 'unavailable'

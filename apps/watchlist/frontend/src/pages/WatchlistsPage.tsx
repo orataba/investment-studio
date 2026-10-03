@@ -2349,7 +2349,9 @@ export default function WatchlistsPage() {
       setWatchlistDetail(detail)
       setWatchlistDetailOwnerId(targetWatchlistId)
       const nextId =
-        nextViewId || detail.default_view_id || detail.views[0]?.view_id || activeViewId || ''
+        [nextViewId, activeViewIdRef.current, detail.default_view_id].find(
+          (id) => id && detail.views.some((view) => view.view_id === id),
+        ) || detail.views[0]?.view_id || ''
       setActiveViewId(nextId)
     } catch (loadError) {
       if (activeWatchlistIdRef.current === targetWatchlistId) {
@@ -2785,6 +2787,15 @@ export default function WatchlistsPage() {
           </div>
         </div>
 
+        <div className="watchlists-compact-switch">
+          <label><span className="sr-only">{zh ? '切换关注列表' : 'Switch watchlist'}</span>
+            <select value={watchlistId} onChange={(event) => navigate(buildWatchlistPath(event.target.value))}>
+              {watchlists.map((list) => <option key={list.watchlist_id} value={list.watchlist_id}>{list.name}</option>)}
+            </select>
+          </label>
+          <Link to="/watchlists">{zh ? '所有列表' : 'All watchlists'}</Link>
+          <button type="button" disabled={!canWriteTeam} onClick={() => { resetCreateWatchlistForm(); setModalKind('create-watchlist') }}>{zh ? '新建' : 'Create'}</button>
+        </div>
         <div className="watchlists-switch-row">
           <Link to="/watchlists" className="watchlist-switcher-chip watchlist-switcher-chip-inactive watchlist-switcher-chip-home">
             <span className="watchlist-switcher-home-icon" aria-hidden="true">

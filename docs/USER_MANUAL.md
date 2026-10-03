@@ -259,7 +259,7 @@ Transactions 是组合事实入口。新增时先选 `Security`、`FCN`、`Optio
 - Security：`buy`、`sell`、`dividend`、`dividend_reinvestment`、`return_of_capital`、`fee`、`tax`、`transfer_out`、`transfer_in`、`opening_balance`。买卖需要 Security 账户、instrument、quantity、price、gross amount 和同币种结算现金账户；卖出和转出还会校验可用持仓。
 - FCN：`entry`、`early_exit`、`coupon`、`knock_in_close`、`knock_out_close`、`maturity_close`、`fee`、`tax`、`opening_balance`。所有动作使用 FCN 账户和本地合约；结束结果直接作为 FCN 动作选择，不再填写单独的事件类别。
 - Option：`buy_to_open`、`sell_to_close`、`sell_to_open`、`buy_to_close`、`expire_long`、`cash_settle_long`、`expire_written`、`cash_settle_written`、`fee`、`tax`、`opening_balance`。所有动作使用 Option 账户和本地合约，并明确区分多头与空头方向；`Long Option Opening Balance` 只表示多头。
-- Cash & Operations：`deposit`、`withdrawal`、`interest`、`fx_conversion`、`fee`、`tax`、`transfer_out`、`transfer_in`、`opening_balance`。Cash 动作不关联 instrument 或衍生品合约；换汇还需目标现金账户、counter amount 和 fx rate。
+- Cash & Operations：`deposit`、`withdrawal`、`interest`、`fx_conversion`、`fee`、`tax`、`transfer_out`、`transfer_in`、`opening_balance`。Cash 动作不关联 instrument 或衍生品合约；换汇选择目标现金账户，填写实际付出和实际收到的原币金额，汇率由双方金额自动计算。金额是交易事实，不用展示时舍入的汇率反推改写金额。
 
 FCN 与期权使用 Portfolio 本地合约，不从 共享资产列表中选择一个“衍生品资产”：
 
@@ -517,3 +517,11 @@ SAA 证券向量应逐项完整且合计 100%。TAA 整层空白时继承该层�
 不要删除已有历史事实来修正展示。需要更正时，优先按业务规则修改原交易、补录冲销或维护正确行情；不确定时先记录问题，不直接操作正式数据。
 
 导出结果适合会议沟通、数据复核和阶段性留档。投资判断仍需结合数据来源、覆盖期、缺失提示、人工研究和风险约束。
+
+## 读取估值与条件分析
+
+- Holdings 暂无可靠估值时，先读页面持续提示和“已确认账本”的数量、成本及原币现金；重试只重新读取估值，不重复记账。账本视图不是当前 NAV。
+- Taxonomies 的 Held/Former 依实际数量判断；报价缺失不代表已退出，数量无法读取时显示待确认。
+- Portfolio 抬头的 `1D` 是显示估值日的单日投资损益和剔除资金流的收益。Overview 的 Value 是绘制首末净值变化，可能包含入金出金；TWR 才使用资金流调整的收益边界。
+- Optimization 当前从参考输入重算金额，不直接读取已发布估值，因此显示“条件测算”，不能直接用于执行。结果旁可展开参考价格、日期与来源，导出保留同样限制；旧结果不从当前行情补造原运行证据。
+- 风险页同币种现金账户共享实际汇率因子，账户拆分不产生分散化；债务贡献可以为负，净风险完全抵销时百分比贡献不可定义。

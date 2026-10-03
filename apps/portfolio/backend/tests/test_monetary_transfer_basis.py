@@ -50,7 +50,12 @@ def test_transfer_preserves_value_and_fx_bridge(source, target, amount, source_b
     if realized:
         assert len(impacts) == 1
         assert impacts[0]["transaction_id"] == "in"
-        assert impacts[0]["local_exposure_released"] == impacts[0]["fair_value_base"] == 0
+        netted = min(max(source, 0), max(-target, 0), amount)
+        assert impacts[0]["local_exposure_released"] == netted
+        assert impacts[0]["source_cost_basis_base"] == pytest.approx(netted * .9)
+        assert impacts[0]["liability_cost_basis_base"] == pytest.approx(netted * 1.2)
+        assert impacts[0]["fair_value_base"] == 0  # Equal asset/debt fair values cancel.
+        assert impacts[0]["liability_cost_basis_base"] - impacts[0]["source_cost_basis_base"] == pytest.approx(realized)
 
 
 @pytest.mark.parametrize("missing_day", [1, 2])

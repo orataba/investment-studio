@@ -2993,8 +2993,17 @@ export default function FundDetailPage({
       }
     }
 
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Escape' || !quoteChartMenuRef.current?.contains(document.activeElement)) return
+      setOpenQuoteChartMenu(null)
+      quoteChartMenuRef.current?.querySelector<HTMLButtonElement>('.instrument-chart-settings-trigger')?.focus()
+    }
     document.addEventListener('pointerdown', handlePointerDown)
-    return () => document.removeEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
   }, [])
 
   useEffect(() => {
@@ -3843,8 +3852,15 @@ export default function FundDetailPage({
     start: requestedChartWindow.start || fundReturnWindow?.anchorDate || '',
     end: requestedChartWindow.end || fundReturnWindow?.endDate || '',
   }
-  const drawdownSeries = buildDrawdownSeries(visibleNavSeries)
-  const benchmarkDrawdownSeries = buildDrawdownSeries(benchmarkVisibleNavSeries)
+  const hasUnconfirmedReturnSegmentBreak =
+    navSeries.return_series_status === 'partial' && navSeries.return_segment_breaks.length > 0
+  const fundPathRiskAvailable = calculationBasisSeries.length >= 2 &&
+    navSeries.calculation_frequency_profile.gap_count === 0 && !hasUnconfirmedReturnSegmentBreak
+  const benchmarkPathRiskAvailable = benchmarkCalculationSeries.length >= 2 &&
+    benchmarkNavSeries?.calculation_frequency_profile.gap_count === 0 &&
+    !benchmarkNavSeries.return_segment_breaks.length
+  const drawdownSeries = fundPathRiskAvailable ? buildDrawdownSeries(visibleNavSeries) : []
+  const benchmarkDrawdownSeries = benchmarkPathRiskAvailable ? buildDrawdownSeries(benchmarkVisibleNavSeries) : []
   const chartCumulativeReturn = chartNavSeries[chartNavSeries.length - 1]?.value ?? null
   const chartBenchmarkCumulativeReturn =
     chartBenchmarkSeries[chartBenchmarkSeries.length - 1]?.value ?? null
@@ -3926,8 +3942,6 @@ export default function FundDetailPage({
   const benchmarkHasIssue = Boolean(benchmarkLoadError || benchmarkCurrencyUnavailable || benchmarkBasisUnavailable || benchmarkCalculationUnavailable)
   const latestReturnSegmentBreak =
     navSeries.return_segment_breaks[navSeries.return_segment_breaks.length - 1]
-  const hasUnconfirmedReturnSegmentBreak =
-    navSeries.return_series_status === 'partial' && navSeries.return_segment_breaks.length > 0
   const quoteBasisOptions = [
     activeQuoteBasis,
     ...availableQuoteBases.filter((basis) => basis !== activeQuoteBasis),
@@ -4740,11 +4754,6 @@ export default function FundDetailPage({
       ? commonObservationDateWindow(calculationBasisSeries, benchmarkCalculationSeries)
       : null
   const comparisonReferenceEndDate = comparisonReferenceWindow?.end || null
-  const fundPathRiskAvailable = calculationBasisSeries.length >= 2 &&
-    navSeries.calculation_frequency_profile.gap_count === 0 && !hasUnconfirmedReturnSegmentBreak
-  const benchmarkPathRiskAvailable = benchmarkCalculationSeries.length >= 2 &&
-    benchmarkNavSeries?.calculation_frequency_profile.gap_count === 0 &&
-    !benchmarkNavSeries.return_segment_breaks.length
   const performancePeriodSnapshots = PERFORMANCE_METRIC_PERIODS.map((period) => {
     const fundWindow = getAnchoredWindow(calculationBasisSeries, period.key, performanceReferenceEndDate)
     const comparisonWindowSpec =
@@ -5886,7 +5895,7 @@ export default function FundDetailPage({
                 { label: language === 'zh-Hans' ? '今年以来' : 'YTD', value: latestYtdReturn },
                 { label: language === 'zh-Hans' ? '可用历史年化收益' : 'Annualized over available history', value: lifetimePerformanceSnapshot.annualizedReturn },
                 { label: language === 'zh-Hans' ? '当前回撤' : 'Current drawdown', value: currentDrawdownValue },
-              ].map((row) => <div key={row.label}><span>{row.label}</span><strong>{row.value == null ? '—' : formatPercent(row.value)}</strong></div>)}
+              ].map((row) => <div key={row.label}><span>{row.label}</span><strong>{!resourceReady('navSeries') ? (language === 'zh-Hans' ? sectionLoadErrors.navSeries ? '读取失败' : '加载中…' : sectionLoadErrors.navSeries ? 'Load failed' : 'Loading…') : row.value == null ? '—' : formatPercent(row.value)}</strong></div>)}
             </div>
           </div>
           {resourceReady('navSeries') ? <p className="fund-overview-date-note">{language === 'zh-Hans' ? '可用历史' : 'Available history'} {formatDate(calculationBasisSeries[0]?.date)} — {formatDate(performanceReferenceEndDate)} · {calculationFrequencyStatus}</p> : null}
@@ -6009,6 +6018,7 @@ export default function FundDetailPage({
                                 : 'instrument-chart-settings-trigger'
                             }
                             aria-label="Chart settings"
+                            aria-expanded={openQuoteChartMenu === 'settings'}
                             onClick={() =>
                               setOpenQuoteChartMenu((current) => (current === 'settings' ? null : 'settings'))
                             }
@@ -6413,7 +6423,8 @@ export default function FundDetailPage({
                       </div>
                     ) : null}
 
-                    {showDrawdownPanel ? (
+                    {showDrawdownPanel && !fundPathRiskAvailable && <p className="fund-overview-quality" role="status">{language === 'zh-Hans' ? '回撤图不可用：净值路径存在缺口或未确认的分段，端点收益仍按可用数据展示。' : 'Drawdown chart unavailable: the NAV path has gaps or unconfirmed segments. Endpoint returns remain available.'}</p>}
+                    {showDrawdownPanel && fundPathRiskAvailable ? (
                       <div className="instrument-drawdown-shell">
                         <div className="instrument-drawdown-header">
                           <span>Drawdown</span>

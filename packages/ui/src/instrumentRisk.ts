@@ -38,6 +38,14 @@ export type RiskAsset = {
     manually_edited?: boolean
   }
 }
+export type RiskCaseHistory = {
+  at: string; action?: string; detail?: string; case_id?: string; title?: string; run_id?: string
+  actor?: { user_id?: string | null; display_name?: string | null; kind?: string | null; service_id?: string | null }
+  scope?: { kind: string; id: string; name: string }
+  before?: { status: string; trigger_active: boolean; risk_assessment?: unknown }
+  after?: { status: string; trigger_active: boolean; risk_assessment?: unknown }
+  risk_assessment?: RiskAssessment
+}
 export type RiskCase = {
   case_id: string
   instrument_id: string
@@ -52,7 +60,7 @@ export type RiskCase = {
   updated_at: string
   follow_up_date: string | null
   evidence_json: Record<string, unknown>
-  history_json?: Array<{ at: string; action: string; detail: string }>
+  history_json?: RiskCaseHistory[]
   history_count?: number
   detail_available?: boolean
 }

@@ -413,3 +413,39 @@ it('excludes since-inception metrics from peer ranking and permits median-only s
   const volatilityRow = screen.getByRole('cell', { name: 'Ann. Volatility' }).closest('tr')!
   expect(volatilityRow.lastElementChild?.textContent).toBe('—')
 })
+
+
+it('closes chart settings from an internal control and trigger with Escape and restores focus', async () => {
+  show('/instruments/fund-1?tab=performance&currency=CNY')
+  const trigger = await screen.findByRole('button', { name: 'Chart settings' })
+  fireEvent.click(trigger)
+  expect(trigger.getAttribute('aria-expanded')).toBe('true')
+  const menu = trigger.closest('.instrument-chart-settings-menu')!
+  const control = menu.querySelectorAll<HTMLButtonElement>('button')[1]
+  control.focus()
+  fireEvent.keyDown(control, { key: 'Escape' })
+  expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  expect(document.activeElement).toBe(trigger)
+  fireEvent.click(trigger)
+  fireEvent.keyDown(trigger, { key: 'Escape' })
+  expect(trigger.getAttribute('aria-expanded')).toBe('false')
+})
+
+it('withholds the drawdown plot for calendar gaps without suppressing endpoint returns', async () => {
+  const nav = await api.nav()
+  api.nav.mockResolvedValue({ ...nav, calculation_frequency_profile: { ...nav.calculation_frequency_profile, gap_count: 8 } })
+  const { container } = show('/instruments/fund-1?tab=performance&currency=CNY')
+  expect(await screen.findByText(/回撤图不可用/)).toBeTruthy()
+  expect(container.querySelector('.instrument-drawdown-chart')).toBeNull()
+  expect(container.querySelector('.instrument-line-chart')).toBeTruthy()
+  expect(container.querySelector('.instrument-series-legend')?.textContent).toContain('4.00%')
+})
+
+
+it('distinguishes overview metrics still loading from missing values', async () => {
+  api.nav.mockImplementation(() => new Promise(() => {}))
+  const { container } = show('/instruments/fund-1?currency=CNY')
+  await screen.findByRole('heading', { name: '测试基金 TEST' })
+  expect(container.querySelector('.fund-overview-key-metrics')?.textContent).toContain('加载中…')
+  expect(container.querySelector('.fund-overview-key-metrics')?.textContent).not.toContain('—')
+})

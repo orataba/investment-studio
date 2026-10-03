@@ -88,7 +88,7 @@ RESEARCH_OBSERVATIONS_PER_MONTH_BY_FREQUENCY: dict[CalculationFrequency, float] 
     "daily": 20.0,
 }
 RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
-RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v8_base_currency_components"
+RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v9_valuation_evidence"
 RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 1e-4
 RESEARCH_COVARIANCE_PSD_TOLERANCE = 1e-10
 MISSING_RETURN_POLICY_STRICT = "strict"
@@ -2420,7 +2420,25 @@ def _current_scope_actuals(
                 or abs(monetary_value_base) > 1e-9
             ):
                 cash_value_by_account[account_id] = monetary_value_base
+        price_inputs = [{
+            "instrument_id": str(position.get("instrument_id") or ""),
+            "label": (position.get("instrument_ref") or {}).get("instrument_name") or position.get("instrument_id"),
+            "quantity": position.get("quantity"), "price": position.get("last_price"),
+            "currency": position.get("currency"), "quote_date": str(position.get("quote_as_of_date") or "")[:10] or None,
+            "quote_status": position.get("quote_status"), "quote_basis": position.get("quote_basis"),
+            "provider": position.get("quote_provider"), "market_value_base": position.get("market_value_base"),
+        } for position in statement.get("positions") or [] if position.get("instrument_id")]
+        valuation_evidence = {
+            "status": "conditional",
+            "as_of_date": as_of_date.isoformat(),
+            # This solve recomputes a statement from the selected reference
+            # inputs; the existence of a published NAV does not establish that
+            # these exact prices and amounts came from that published snapshot.
+            "note": "Conditional analysis only: amounts are recomputed from the reference prices below, not read from a published portfolio valuation. Review price, FX and portfolio valuation before execution.",
+            "prices": price_inputs,
+        }
         state.current_valuation_cache[cache_key] = {
+            "valuation_evidence": valuation_evidence,
             "position_value_by_instrument": dict(position_value_by_instrument),
             "cash_value_by_account": dict(cash_value_by_account),
             "excluded_derivative_contract_ids": sorted(

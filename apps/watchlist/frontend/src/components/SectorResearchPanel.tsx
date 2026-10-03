@@ -124,7 +124,7 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
     {variant !== 'summary' && canWrite && !busy && <ResearchScopeNotice instrumentId={instrumentId} />}
     {review && (busy || review.status === 'failed') && <ResearchRunStatus runId={review.run_id} status={review.status} createdAt={review.created_at || review.checked_at} completedAt={review.completed_at} execution={review.execution} error={review.runtime_error} shared />}
     {data && (!data.available || data.research_enabled === false) && <p className="sector-research-limitation">{data.message || '研究所需来源暂不可用，已保存的研究仍可查看。'}</p>}
-    {error && <p role="alert">研究更新状态暂时无法读取：{error}</p>}
+    {error && <div role="alert"><p>研究更新状态暂时无法读取：{error}</p><p>状态查询失败不代表任务停止；刷新状态只读取原任务，不会重新提交研究。</p></div>}
     {sectors.filter(sector => sector.latest_review?.status === 'failed').map(sector => <div key={sector.instrument_id} className="sector-research-attempt sector-research-limitation" role="status">
       <span>{busy ? '上次更新未完成' : '最近一次更新未完成'} · <time dateTime={sector.latest_review!.checked_at || undefined}>{time(sector.latest_review!.checked_at)}</time></span>
       {sector.latest_review!.summary && <p>{sector.latest_review!.summary}</p>}

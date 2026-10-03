@@ -212,7 +212,7 @@ def test_cached_tree_projection_upgrades_without_mutating_the_saved_run():
         research_run_id="saved", portfolio_id="p", job_type="portfolio_research", status="completed", requested_at=None,
         started_at=None, finished_at=None, as_of_date=date(2026, 6, 30), lookback_days=90, requested_by=None, headline=None, error_message=None)
     result = _serialize_run_row(record, {"t": "Saved taxonomy"})
-    assert result["detail"]["solution_tree"]["schema_version"] == 2
+    assert result["detail"]["solution_tree"]["schema_version"] == 3
     assert result["detail"]["solution_tree"]["rows"][0]["current_weight"] == 1
     assert result["detail"]["solution_tree"]["rows"][0]["solved_risk_share"] == 1
     assert detail == saved
@@ -226,7 +226,7 @@ def test_current_solve_includes_written_option_liability_in_nav_and_keeps_it_fro
     monkeypatch.setattr(solver, "list_transactions", lambda _: [])
     monkeypatch.setattr(solver, "list_portfolio_instrument_universe", lambda _: [])
     monkeypatch.setattr(solver, "build_holdings_report", lambda *args, **kwargs: {
-        "positions": [*[{"instrument_id": key, "market_value_base": value} for key, value in [("x", 200), ("y", 300), ("z", 300)]],
+        "positions": [*[{"instrument_id": key, "market_value_base": value, "quantity": 2, "last_price": value / 2, "currency": "USD", "quote_as_of_date": "2026-06-29", "quote_provider": "source-provider", "quote_basis": "close", "quote_status": "complete"} for key, value in [("x", 200), ("y", 300), ("z", 300)]],
                       {"holding_kind": "option_obligation", "derivative_contract_id": "written-option", "derivative_contract": {"contract_type": "option"}, "market_value_base": -50}],
         "derivative_liability_base": 50, "open_option_obligation_count": 1, "total_nav_base": 1000})
     monkeypatch.setattr(solver, "build_account_workspace", lambda *args, **kwargs: {"accounts": [{
@@ -236,6 +236,9 @@ def test_current_solve_includes_written_option_liability_in_nav_and_keeps_it_fro
         gross_exposure=None, target_volatility=None, max_gross_exposure=None, _state=state,
         risk_model_config={"covariance_model_id": "sample_covariance", "parameters": {"min_observations": 2}})
     assert result["solution_valuation"]["portfolio_nav"] == 1000
+    assert result["solution_valuation"]["valuation_evidence"]["status"] == "conditional"
+    price = result["solution_valuation"]["valuation_evidence"]["prices"][0]
+    assert (price["price"], price["quote_date"], price["provider"]) == (100, "2026-06-29", "source-provider")
     actual = {row["member_id"]: row for row in result["actual_rows"]}
     assert actual["__derivatives__"]["current_value_base"] == -50
     assert actual["__derivatives__"]["current_weight"] == -.05
@@ -245,3 +248,25 @@ def test_current_solve_includes_written_option_liability_in_nav_and_keeps_it_fro
     assert rows["__derivatives__"]["target_value_base"] == -50
     assert rows["__derivatives__"]["trade_constraint"] == "no_trade"
     assert sum(rows[key]["target_value_base"] for key in ("x", "y", "z")) == pytest.approx(1050)
+
+
+def test_conditional_price_evidence_is_frozen_and_rebalance_requires_review():
+    detail, request, valuation = saved_result()
+    valuation["valuation_evidence"] = {"status": "conditional", "as_of_date": "2026-10-02", "note": "No complete published valuation", "prices": [{"instrument_id": "x", "price": 330.32, "quote_date": "2026-10-01"}]}
+    result = build_research_solution_tree(detail, request, valuation=valuation)
+    assert result["valuation_evidence"] == valuation["valuation_evidence"]
+    assert result["portfolio_nav"] == 1000
+    assert all(row["execution_status"] != "ready" for row in result["rows"])
+    assert next(row for row in result["rows"] if row["row_kind"] == "derivatives")["execution_status"] == "no_trade"
+    assert ResearchSolutionTreeRecord.model_validate(result).valuation_evidence["prices"][0]["quote_date"] == "2026-10-01"
+
+
+def test_archive_without_price_eligibility_does_not_expose_ready_trades():
+    detail, request, _ = saved_result()
+    result = build_research_solution_tree(detail, request)
+    assert result["valuation_evidence"] is None
+    assert all(row["execution_status"] != "ready" for row in result["rows"])
+    stock = next(row for row in result["rows"] if row["member_id"] == "x")
+    assert "cannot be established" in stock["execution_note"]
+    assert stock["rebalance_value_base"] == 20
+    assert next(row for row in result["rows"] if row["row_kind"] == "derivatives")["execution_status"] == "no_trade"

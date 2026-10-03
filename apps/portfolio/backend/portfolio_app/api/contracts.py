@@ -3,7 +3,7 @@ from __future__ import annotations
 from portfolio_app.api.concentration_contracts import ConcentrationSettingsUpdate
 from portfolio_app.api.research_solution_contracts import ResearchSolutionTreeRecord
 
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 from datetime import date, time
 from typing import Literal
 
@@ -211,6 +211,23 @@ QUANTITY_SOURCE_QUANTUM = Decimal("0.000000000001")
 PRICE_SOURCE_QUANTUM = Decimal("0.000000000001")
 AMOUNT_SOURCE_QUANTUM = Decimal("0.00000001")
 AMOUNT_CONTRACT_EPSILON = Decimal("0.000001")
+
+
+def implied_conversion_rate(source_amount: Decimal, target_amount: Decimal) -> Decimal:
+    """Amounts are cash facts; the stored rate is their rounded quotient."""
+    with localcontext() as context:
+        context.prec = 60
+        return (target_amount / source_amount).quantize(PRICE_SOURCE_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+def conversion_rate_matches_amounts(source_amount: Decimal, target_amount: Decimal, rate: Decimal) -> bool:
+    # Either the amount or the rate can be the rounded observation. Accept
+    # only their declared decimal quanta, never a magnitude-based tolerance.
+    with localcontext() as context:
+        context.prec = 60
+        return rate == implied_conversion_rate(source_amount, target_amount) or (
+            source_amount * rate
+        ).quantize(AMOUNT_SOURCE_QUANTUM, rounding=ROUND_HALF_UP) == target_amount
 
 
 def _to_decimal(value: object) -> Decimal | None:
@@ -871,6 +888,8 @@ class AccountPositionRecord(BaseModel):
     derivative_contract: DerivativeContractRecord | None = None
     quantity: float
     cost_basis: float | None = None
+    quote_date: str | None = None
+    valuation_note: str | None = None
     last_price: float | None = None
     market_value: float | None = None
     carrying_value: float | None = None
@@ -1176,6 +1195,9 @@ class TransactionCashFxImpact(BaseModel):
     recognition_date: date | None = None
     recognition_fx_rate_to_base: float | None = None
     local_exposure_released: float
+    source_account_id: str | None = None
+    source_cost_basis_base: float | None = None
+    liability_cost_basis_base: float | None = None
     historical_cost_basis_base: float | None = None
     fair_value_base: float | None = None
     realized_cash_fx_pnl_base: float | None = None
@@ -3997,8 +4019,10 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("FX conversion requires counterparty_account_id.")
             if self.counter_amount is None or self.counter_amount <= 0:
                 raise ValueError("FX conversion requires positive counter_amount.")
-            if self.fx_rate is None or self.fx_rate <= 0:
-                raise ValueError("FX conversion requires positive fx_rate.")
+            if self.fx_rate is None:
+                self.fx_rate = implied_conversion_rate(self.gross_amount, self.counter_amount)
+            if self.fx_rate <= 0 or self.fx_rate >= Decimal("1e16"):
+                raise ValueError("FX conversion implied rate is outside supported rate precision.")
             if self.fees != 0 or self.taxes != 0:
                 raise ValueError("FX conversion must not carry fees or taxes.")
 

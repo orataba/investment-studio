@@ -61,6 +61,9 @@ describe('base-currency risk payload boundary', () => {
     expect(result.value.map((item) => [item.groupKey, item.latestWeight, item.isCashExposure])).toEqual([
       ['cash:account-a', 0.3, true], ['pending:account-a', -0.1, true],
     ])
+    expect(result.value[0].groupLabel).toContain('HKD · Asset · settled_cash')
+    expect(result.value[1].groupLabel).toContain('HKD · Liability · settlement_payable')
+    expect(result.value[0].groupLabel).not.toEqual(result.value[1].groupLabel)
     rows[1].risk_return_series = null
     expect(buildCurrentInstrumentReturnSeries(holdingsWorkspaceFixture({ rows })).value).toEqual([])
   })

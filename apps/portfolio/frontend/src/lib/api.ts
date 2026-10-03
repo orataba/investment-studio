@@ -750,6 +750,7 @@ export type PortfolioContributionReportResponse = {
 }
 
 export type PortfolioHoldingRow = {
+  account_names?: string[]
   line_id: string
   holding_category: PortfolioHoldingCategory
   holding_kind?:
@@ -2124,6 +2125,8 @@ export type PortfolioAccountPositionRecord = {
   derivative_contract: PortfolioDerivativeContractRecord | null
   quantity: number
   cost_basis?: number | null
+  quote_date?: string | null
+  valuation_note?: string | null
   last_price?: number | null
   market_value?: number | null
   carrying_value: number | null
@@ -2475,6 +2478,9 @@ export type PortfolioTransactionWorkspaceResponse = {
     recognition_date: string | null
     recognition_fx_rate_to_base: number | null
     local_exposure_released: number
+    source_account_id?: string | null
+    source_cost_basis_base?: number | null
+    liability_cost_basis_base?: number | null
     historical_cost_basis_base: number | null
     fair_value_base: number | null
     realized_cash_fx_pnl_base: number | null
@@ -2733,9 +2739,9 @@ export type PortfolioTransactionCreatePayload = {
   derivative_contract?: PortfolioDerivativeContractCreate | null
   quantity?: number | null
   price?: number | null
-  gross_amount: number
-  counter_amount?: number | null
-  fx_rate?: number | null
+  gross_amount: number | string
+  counter_amount?: number | string | null
+  fx_rate?: number | string | null
   fees?: number
   fee_components?: Array<{ category: PortfolioFeeCategory; amount: number | string }>
   fee_category?: PortfolioFeeCategory
@@ -3457,8 +3463,8 @@ export function updatePortfolioAccount(
   )
 }
 
-export function getPortfolioAccountsWorkspace(portfolioId: string, accountId?: string, signal?: AbortSignal) {
-  const query = accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''
+export function getPortfolioAccountsWorkspace(portfolioId: string, accountId?: string, signal?: AbortSignal, asOfDate?: string, includeValuation = true) {
+  const query = buildQuery({ account_id: accountId, as_of_date: asOfDate, include_valuation: includeValuation ? undefined : 'false' })
   return fetchJson<PortfolioAccountsWorkspaceResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/accounts/workspace${query}`,
@@ -3499,10 +3505,11 @@ export function getPortfolioTransactionPositionPreview(
   )
 }
 
-export function getPortfolioPositions(portfolioId: string) {
+export function getPortfolioPositions(portfolioId: string, asOfDate?: string, signal?: AbortSignal, includeValuation = true) {
   return fetchJson<PortfolioPositionListResponse>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/positions`,
+    `/api/portfolios/${portfolioId}/positions${buildQuery({ as_of_date: asOfDate, include_valuation: includeValuation ? undefined : 'false' })}`,
+    { signal },
   )
 }
 

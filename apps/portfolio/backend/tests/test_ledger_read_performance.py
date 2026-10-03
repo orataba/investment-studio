@@ -613,3 +613,30 @@ def test_accounts_workspace_http_contract_preserves_option_obligations(
     payload = response.json()
     assert payload["selected_account_id"] == account["account_id"]
     assert payload["option_obligations"] == [obligation]
+
+
+def test_ledger_only_reads_keep_quantity_cost_and_native_cash_without_price_or_fx_sources(monkeypatch):
+    def no_market(*args, **kwargs):
+        pytest.fail("ledger-only reads must not request price or FX data")
+    monkeypatch.setattr(ledger, "get_registry_instrument_details", no_market)
+    monkeypatch.setattr(ledger, "get_registry_instrument_detail", no_market)
+    monkeypatch.setattr(valuation_fx, "HistoricalFxInstruments", no_market)
+    monkeypatch.setattr(ledger, "list_registry_corporate_actions", lambda *args, **kwargs: [])
+    buy = _buy("buy", "equity-a", transaction_sequence=2, quantity=60, gross_amount=603)
+    buy["settlement_cash_account_id"] = "cash"
+    accounts = [_account(), {**_account("cash"), "account_type": "deposit_account", "account_category": "cash"}]
+    deposit = {**buy, "transaction_id": "deposit", "transaction_sequence": 1, "transaction_type": "deposit",
+               "account_id": "cash", "settlement_cash_account_id": None, "instrument_id": None, "instrument_ref": None, "quantity": None, "gross_amount": 14827}
+    future = {**buy, "transaction_id": "future", "transaction_sequence": 3, "trade_date": "2026-04-20", "trade_at": "2026-04-20T10:00:00Z", "settlement_date": "2026-04-20"}
+    arguments = dict(as_of_date=date(2026, 4, 15))
+    positions = ledger.build_portfolio_positions("portfolio", accounts, [deposit, buy, future], resolve_pricing=False, **arguments)
+    assert positions[0]["quantity"] == 60
+    assert positions[0]["cost_basis"] == 603
+    assert positions[0]["market_value"] is None
+    workspace = ledger.build_account_workspace("portfolio", accounts, [deposit, buy, future], base_currency="EUR", include_valuation=False, **arguments)
+    account = next(row for row in workspace["accounts"] if row["account"]["account_id"] == "cash")
+    assert account["derived_cash_balance"] == 14224
+    assert account["pending_settlement"] == 0
+    assert account["derived_cash_balance_base"] is None
+    assert workspace["positions"][0]["quantity"] == 60
+    assert workspace["positions"][0]["market_value"] is None

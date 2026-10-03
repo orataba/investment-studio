@@ -12,7 +12,7 @@ import { useLanguage } from '../../../../packages/ui/src/i18n'
 const access = vi.hoisted(() => ({ can_edit: true }))
 const concentrationMocks = vi.hoisted(() => ({ getConcentration: vi.fn(), getConcentrationSettings: vi.fn() }))
 const api = vi.hoisted(() => ({
-  getPortfolioTaxonomyCatalog: vi.fn(), getHoldingsWorkspace: vi.fn(), getPortfolioAccountsWorkspace: vi.fn(), getPortfolioInstruments: vi.fn(),
+  getPortfolioPositions: vi.fn(), getPortfolioTaxonomyCatalog: vi.fn(), getHoldingsWorkspace: vi.fn(), getPortfolioAccountsWorkspace: vi.fn(), getPortfolioInstruments: vi.fn(),
   createPortfolioInstrumentUniverseRecord: vi.fn(), createPortfolioTaxonomy: vi.fn(), createPortfolioTaxonomyAssignment: vi.fn(), createPortfolioTaxonomyNode: vi.fn(),
   savePortfolioTaxonomyTargetConfiguration: vi.fn(), deletePortfolioInstrumentUniverseRecord: vi.fn(), deletePortfolioTaxonomy: vi.fn(), deletePortfolioTaxonomyNode: vi.fn(),
   updatePortfolioTaxonomy: vi.fn(), updatePortfolioTaxonomyAssignment: vi.fn(), updatePortfolioTaxonomyNode: vi.fn(),
@@ -73,6 +73,7 @@ describe('Taxonomies integrated tree contract', () => {
     vi.resetAllMocks(); access.can_edit = true
     api.getPortfolioTaxonomyCatalog.mockResolvedValue(catalogFixture())
     api.getHoldingsWorkspace.mockResolvedValue(holdingsWorkspaceFixture({ totals: { ...holdingsWorkspaceFixture().totals, nav: 1200 } }))
+    api.getPortfolioPositions.mockResolvedValue({ portfolio_id: '3', positions: [{ instrument_id: 'asset-1', instrument_ref: instrumentFixture(), quantity: 60, cost_basis: 603, account_ids: ['account-1'] }] })
     api.getPortfolioAccountsWorkspace.mockResolvedValue(accountResponse)
     api.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [registry('asset-1', 'Alpha Fund'), registry()] })
     api.searchPortfolioSecurities.mockResolvedValue({ results: [], catalog_errors: {} })
@@ -180,6 +181,33 @@ describe('Taxonomies integrated tree contract', () => {
     }
     const root = within(screen.getByRole('table')).getByRole('button', { name: 'Allocation' }).closest('tr')!
     expect(within(root).getAllByRole('cell')[2]).toHaveTextContent('$1,050.00')
+  })
+
+  it.each([60, -60])('keeps nonzero ledger quantity %s held while valuation is unavailable', async (quantity) => {
+    api.getHoldingsWorkspace.mockRejectedValue(new Error('Valuation pending'))
+    api.getPortfolioPositions.mockResolvedValue({ positions: [{ instrument_id: 'asset-1', instrument_ref: instrumentFixture(), quantity }] })
+    renderPage()
+    await screen.findByLabelText('Held')
+    expect(screen.getByLabelText('Held')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Former')).not.toBeInTheDocument()
+    expect(api.getPortfolioPositions).toHaveBeenCalledWith('3', expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), undefined, false)
+  })
+
+  it('uses quantity identity even when the ledger has no instrument display metadata', async () => {
+    api.getPortfolioPositions.mockResolvedValue({ positions: [{ instrument_id: 'asset-1', instrument_ref: null, quantity: 60 }] })
+    renderPage()
+    await ready()
+    expect(screen.getByLabelText('Held')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Former')).not.toBeInTheDocument()
+  })
+
+  it('discloses unconfirmed identity when the quantity ledger fails', async () => {
+    api.getPortfolioPositions.mockRejectedValue(new Error('Ledger unavailable'))
+    renderPage()
+    await ready()
+    expect(screen.getByText('Position unconfirmed')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Former')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Held')).not.toBeInTheDocument()
   })
 
   it('uses the accounts reporting currency when holdings cannot be loaded', async () => {
@@ -334,6 +362,7 @@ describe('Taxonomies integrated tree contract', () => {
   })
 
   it('reloads committed assignments when a later item in a bulk move fails', async () => {
+    api.getPortfolioPositions.mockResolvedValue({ portfolio_id: '3', positions: ['asset-1', 'asset-2'].map((id) => ({ instrument_id: id, instrument_ref: registry(id, id === 'asset-1' ? 'Alpha Fund' : 'Beta Fund'), quantity: 60, cost_basis: 603, account_ids: ['account-1'] })) })
     const catalog = catalogFixture()
     const movedCatalog = structuredClone(catalog)
     movedCatalog.taxonomy_assignments[0].taxonomy_node_id = 'defensive'

@@ -36,7 +36,7 @@ function renderTree(record = run) {
 describe('Research solution tree', () => {
   it('shows the saved full hierarchy, report currency, signed trades and no-trade semantics', () => {
     renderTree()
-    expect(screen.getByRole('columnheader', { name: 'Carrying Amount (USD)' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Saved Amount (USD)' })).toBeInTheDocument()
     const instrument = screen.getByText('HKD instrument').closest('tr')!
     expect(instrument).toHaveAttribute('data-tree-level', 'item')
     expect(within(instrument).getByText('$100.00')).toBeInTheDocument()
@@ -55,7 +55,7 @@ describe('Research solution tree', () => {
     expect(within(derivative).getAllByText('-5.00%')).toHaveLength(2)
     expect(screen.getByText('Weight bound')).toBeInTheDocument()
     // Global stale/convergence warnings and the date are owned by the page.
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Conditional analysis — not execution-ready')
     expect(screen.queryByText('2026-06-30')).not.toBeInTheDocument()
   })
 
@@ -97,6 +97,19 @@ describe('Research solution tree', () => {
     const exported = solutionTreeExportRows(legacy.detail.solution_tree, 'legacy', 'stale', false)
     expect(exported[0][7]).toBe('Target weight (%)')
     expect(exported[1][19]).toContain('target weight uses Saved scope capital')
+  })
+
+  it('keeps conditional reference amounts and quote provenance explicit in the table and export', async () => {
+    const user = userEvent.setup()
+    const conditional = { ...tree, valuation_evidence: { status: 'conditional' as const, as_of_date: '2026-06-30', note: 'Reference inputs require review.', prices: [{ instrument_id: 'x', label: 'Reference security', quantity: 60, price: 330.32, currency: 'USD', quote_date: '2026-06-29', quote_status: 'complete', quote_basis: 'close', provider: 'source-provider', market_value_base: 19819.2 }] } }
+    renderTree({ ...run, detail: { ...run.detail!, solution_tree: conditional } })
+    expect(screen.getByRole('columnheader', { name: 'Reference Amount (USD)' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^Weight basis:/ }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('does not establish a published NAV')
+    const exported = solutionTreeExportRows(conditional, 'saved', 'complete', false)
+    expect(exported[0][14]).toBe('Conditional-analysis net assets')
+    expect(exported[1][19]).toContain('Conditional-analysis')
+    expect(exported[1][20]).toContain('330.32 USD @ 2026-06-29 (source-provider / close / complete)')
   })
 
   it('writes a real OOXML workbook with numeric amount and percentage cells', () => {

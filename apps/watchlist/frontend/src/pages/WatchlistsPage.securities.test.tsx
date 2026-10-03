@@ -50,8 +50,8 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
-function showPage() {
-  render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/watchlists/focus']}>
+function showPage(path = '/watchlists/focus') {
+  render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={[path]}>
     <Routes><Route path="/watchlists/:watchlistId" element={<WatchlistsPage />} /></Routes>
   </MemoryRouter></LanguageProvider>)
 }
@@ -174,4 +174,24 @@ it('identifies existing members independently of filtered rows and blocks redund
   expect(mocks.addWatchlistItems).not.toHaveBeenCalled()
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close' }))
   await waitFor(() => expect(document.activeElement).toBe(add))
+})
+
+
+it('preserves a named view through membership refresh instead of selecting the default view', async () => {
+  const named = { ...detail.views[0], view_id: 'numeric', view_key: 'numeric', name: 'Numeric Check', kind: 'custom' }
+  mocks.getWatchlistDetail.mockResolvedValue({ ...detail, views: [...detail.views, named] })
+  mocks.searchSharedInstruments.mockResolvedValue([registered])
+  mocks.searchSecurities.mockResolvedValue({ results: [], catalog_errors: {} })
+  showPage('/watchlists/focus?view=numeric')
+  const add = await screen.findByRole('button', { name: 'Add' })
+  await waitFor(() => expect(add.hasAttribute('disabled')).toBe(false))
+  const view = screen.getByRole('option', { name: /Numeric Check/ }).parentElement as HTMLSelectElement
+  expect(view.value).toBe('numeric')
+  fireEvent.click(add)
+  fireEvent.change(screen.getByLabelText('Search Instruments'), { target: { value: 'SHV' } })
+  fireEvent.click(await screen.findByRole('button', { name: /Short Treasury ETF/ }))
+  fireEvent.click(screen.getByRole('button', { name: 'Add To Watchlist' }))
+  await waitFor(() => expect(mocks.getWatchlistDetail).toHaveBeenCalledTimes(2))
+  expect(view.value).toBe('numeric')
+  expect(mocks.runScreenerQuery.mock.calls[mocks.runScreenerQuery.mock.calls.length - 1]?.[0].view_id).toBe('numeric')
 })

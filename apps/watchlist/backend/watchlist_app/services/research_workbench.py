@@ -82,7 +82,30 @@ def portfolio_page_evidence(portfolio_id: str, page_context: dict | None):
     scope = {"portfolio_id": portfolio_id}
     if page.get("as_of_date"):
         scope["as_of_date"] = page["as_of_date"]
-    result = external_json("portfolio", "/workspace/holdings?" + urlencode({**scope, "include_details": "true"}))
+    try:
+        result = external_json("portfolio", "/workspace/holdings?" + urlencode({**scope, "include_details": "true"}))
+    except (ResearchInputUnavailable, ValueError) as error:
+        # A failed valuation does not erase confirmed quantities and local cash.
+        # Authorization errors deliberately propagate; this never changes scope.
+        ledger_date = scope.get("as_of_date") or date.today().isoformat()
+        suffix = "?" + urlencode({"as_of_date": ledger_date})
+        result = {"valuation_status": "unavailable", "valuation_error": str(error), "as_of_date": ledger_date,
+                  "ledger_note": "Recorded quantities, cost and local cash only. Do not total reference prices into current NAV or infer portfolio returns.",
+                  "ledger_errors": {}}
+        for key, path in (
+            ("ledger_positions", f"/portfolios/{quote(portfolio_id, safe='')}/positions{suffix}&include_valuation=false"),
+            ("ledger_accounts", f"/portfolios/{quote(portfolio_id, safe='')}/accounts/workspace{suffix}&include_valuation=false"),
+        ):
+            try:
+                payload = external_json("portfolio", path)
+                result[key] = payload.get("positions", []) if key == "ledger_positions" else [{
+                    "account": row["account"], "settled_cash": row.get("derived_cash_balance"),
+                    "pending_settlement": row.get("pending_settlement"),
+                } for row in payload.get("accounts", [])]
+            except (ResearchInputUnavailable, ValueError) as ledger_error:
+                result["ledger_errors"][key] = str(ledger_error)
+        return {**result, "portfolio_id": portfolio_id, "page_scope": page}
+
     if page.get("holding_id"):
         result["selected_holding"] = external_json("portfolio", "/workspace/holdings/position?" + urlencode({
             **scope, "position_reference_id": page["holding_id"]}))

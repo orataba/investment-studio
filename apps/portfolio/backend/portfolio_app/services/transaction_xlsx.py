@@ -301,8 +301,8 @@ FIELD_GUIDANCE: dict[str, tuple[str, str, str]] = {
     ),
     "fx_rate": (
         "换汇汇率",
-        "换汇必填",
-        "仅 fx_conversion 使用；counter_amount 必须等于 gross_amount × fx_rate。",
+        "换汇可选，留空自动计算",
+        "仅 fx_conversion 使用；收到÷付出四舍五入到12位。显式报价也可按8位金额精度匹配收到金额。两端真实金额保留，手续费单独记录。",
     ),
     "fees": (
         "附加费用",

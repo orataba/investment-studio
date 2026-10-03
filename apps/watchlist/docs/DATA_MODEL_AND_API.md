@@ -208,6 +208,7 @@ V1 复用既有 `research_entry`、主题、来源与 `risk_case` JSON；不新�
 - 当前投资判断的同一版本增加 `opportunities`、`risks` 数组，每项包含稳定 `key`、标题、解释、下一观察，以及 `source_ids` / `event_keys` / `theme_ids` 引用；数值依据用 `figure_source_ids`。发布时绑定实际留存证据，历史按原版本读取。数组缺省继续保留旧判断，明确空数组才表示本轮已评估且暂无对应事项。旧记录没有数组时显示覆盖未建立，不推断“没有风险”。`coverage_status` 为 `assessed` / `limited` / `not_established`；`coverage_note` 说明限制。
 - 新重要事件须有整数 `importance_score`（1–5）和具体 `importance_reason`；旧值允许未知。评分不等于确定性、方向或风险严重度。`market_views` 保存有发布者、日期和来源的公开观点；没有样本时不生成共识。`market_reaction` 仅解释绑定的确定性计算及其限制，不写自由浮点行情。
 - `follow_up=watch|none|resolved` 只管理研究跟进。`watch` 可以不关联主题，必须有下一观察；默认期限为 30 个自然日。`follow_up_until`、`follow_up_reason`、`next_observation_on` 保留复核期限和原因。只有有写权限的 PM 能修改 `follow_up_pinned`；模型无法提交该字段。固定、明确未来节点、重大未结风险不会被普通到期流程关闭。检查、措辞、评分及固定操作不刷新事件事实时钟。服务器按本次进展的已核实发布日期保留 `development_at`：旧事件可凭新进展进入近期流，同时保留原发生日；补录不冒充当日新闻。显式 `progress_kind=editorial` 不算实质进展。
+- 共享风险变更在既有 `risk_case.history_json` 中追加 `run_id`、发起人 `actor`、绑定 `scope`、`before` / `after` 与 UTC 时间，同一条变更同时保留在风险结果 `case_changes`。只记录实际改变的事项，不回填历史未知归属；现有版本比较和行锁继续阻止并发覆盖。
 - 风险判断独立保存在 `risk_case.evidence_json.risk_assessment`。新风险线索先待复核；团队风控通过绑定事件版本的 `case_assessments` 写入 `pending` / `active` / `resolved` / `dismissed` 及原因。仅停止跟进、主题接管或调整研究方向不能清除既有有效风险；组合私有复核不得修改团队风险状态。Watchlist 和 Portfolio 读取同一风险事项。
 - 研究与团队风控在发布时重新校验当前团队角色／服务研究权限，组合风控重新校验组合访问。PM 跟进与自动风险刷新在行锁下读取最新事项并追加历史；批量风险评估按事项标识排序加锁。首次自动风险创建和阈值更新按标的串行，避免并发创建重复事项或丢失 PM 记录。
 - 风控的暂时失败沿既有 `queue_retry` 恢复同一运行与原发起人，最多三次总尝试；绑定快照、信息截止和已读取页不在恢复中替换。已失去发布权限的发起人不能重排共享研究或风险任务。

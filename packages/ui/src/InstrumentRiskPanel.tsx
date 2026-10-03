@@ -1,5 +1,7 @@
 import WorkspaceSkeleton from './WorkspaceSkeleton'
 import InfoHint from './InfoHint'
+import { researchStamp } from './ResearchRunStatus'
+import RiskChangeAudit from './RiskChangeAudit'
 import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import RiskOfficerPanel from './RiskOfficerPanel'
 import type { ResearchAssistantReference } from './researchReference'
@@ -112,7 +114,7 @@ function CaseRow({
     sectorEvent && evidence.next_watch
       ? evidence.next_watch
       : ['drawdown_limit', 'period_loss'].includes(record.signal)
-        ? '复核亏损来源、策略是否偏离，以及原有持有依据是否仍成立。'
+        ? '复核价格或净值跌幅、策略是否偏离，以及原有投资依据是否仍成立。'
         : record.severity === 'coverage'
           ? '核对最新披露或行情来源，再判断风险是否变化。'
           : '核实价格影响与实际敞口，记录判断和下次跟进时间。',
@@ -154,7 +156,8 @@ function CaseRow({
           <small>{source.published_at ? `发布时间 ${source.published_at}` : '发布时间待核实'}</small>
         </li>
       })}</ul>
-      <ul className="risk-history">{history.map((item, index) => <li key={index}>{item.at.slice(0, 16).replace('T', ' ')} · {item.detail}</li>)}</ul>
+      <ul className="risk-history">{history.map((item, index) => <li key={index}><time title={item.at} dateTime={item.at}>{researchStamp(item.at)}</time> · {item.detail}
+              {(item.run_id || item.risk_assessment?.run_id) && <details><summary>变更来源</summary><RiskChangeAudit change={item} /></details>}</li>)}</ul>
     </details>
   </article>
   return (
@@ -278,6 +281,7 @@ function CaseRow({
             onChange={(e) => setFollowUp(e.target.value)}
           />
         </label>
+        {sectorEvent && !record.follow_up_date && <p className="research-muted">尚未设置跟进日期；正文中的验证日期不会自动计入到期提醒。请核对事件是否已发生并设置下一次跟进。</p>}
         <div className="risk-actions">
           <button disabled={busy} onClick={() => void update('investigating')}>
             保存跟进
@@ -307,7 +311,8 @@ function CaseRow({
         <ul className="risk-history">
           {history.map((item, i) => (
             <li key={i}>
-              {item.at.slice(0, 16).replace('T', ' ')} · {item.detail}
+              <time title={item.at} dateTime={item.at}>{researchStamp(item.at)}</time> · {item.detail}
+              {(item.run_id || item.risk_assessment?.run_id) && <details><summary>变更来源</summary><RiskChangeAudit change={item} /></details>}
             </li>
           ))}
         </ul>

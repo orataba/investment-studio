@@ -6,7 +6,7 @@ import WorkspaceTools from '../../../../../packages/ui/src/WorkspaceTools'
 import { type FormEvent, Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
-import { formatCurrency, formatPercent, formatSignedCurrency, signedValueClass } from '../lib/format'
+import { formatCurrency, formatDailyPercent, formatSignedCurrency, signedValueClass } from '../lib/format'
 import {
   copyPortfolio,
   deletePortfolio,
@@ -602,8 +602,8 @@ export default function PortfolioWorkspaceLayout({
                           {formatCurrency(activeSummary.nav, activeSummary.base_currency)}
                         </span>
                         <span className={changeClassName}>
-                          {formatSignedCurrency(activeSummary.day_change_value, activeSummary.base_currency)} (
-                          {formatPercent(activeSummary.day_change_pct)}
+                          <span title="Daily investment P&L and cash-flow-adjusted daily return at the displayed valuation date">1D · </span>{formatSignedCurrency(activeSummary.day_change_value, activeSummary.base_currency)} (
+                          {formatDailyPercent(activeSummary.day_change_pct)}
                           )
                         </span>
                       </>

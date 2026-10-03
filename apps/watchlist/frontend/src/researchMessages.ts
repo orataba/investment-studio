@@ -132,6 +132,12 @@ export const researchMessages: LanguageMessages = { 'zh-Hans': {
   '本轮检查与覆盖': 'Latest check and coverage',
   '最近检查': 'Last checked',
   '研究更新状态暂时无法读取：': 'Research status is unavailable:',
+  '状态查询失败不代表任务停止；刷新状态只读取原任务，不会重新提交研究。': 'A status query failure does not mean the task stopped. Refresh Status only reads the existing task; it does not submit new research.',
+  '最近一次更新未完成': 'The latest update did not complete', '上次更新未完成': 'The previous update did not complete',
+  '最近尝试': 'Latest attempt', '下一验证': 'Next verification',
+  '研究更新状态读取失败': 'Could not read research status',
+  '无法启动研究更新': 'Could not start the research update',
+
   '正在读取投资研究…': 'Loading investment research…',
   '尚未形成当前投资判断。已保存资料与既有研究可在下方查阅。': 'No current investment judgment has been formed. Saved materials and prior research remain available below.',
   '分领域研究': 'Research by domain',

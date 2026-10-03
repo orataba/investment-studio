@@ -182,6 +182,15 @@ def test_own_assessment_does_not_expire_new_report_but_later_pm_change_does(clie
             "event_version_id": event["evidence_json"]["event_version_id"], "status": assessment_status, "reason": "依据本轮证据"}]})
         session.commit()
         assert service.review_workspace(session, instrument_id="risk-a")["latest_completed"]["stale"] is False
+        change = session.get(RiskCase, "research").history_json[-1]
+        assert change["run_id"] == run.entry_id
+        assert change["actor"]["user_id"] == run.context_json["research_actor"]["user_id"]
+        assert change["before"]["status"] == "open"
+        assert change["after"]["risk_assessment"]["status"] == assessment_status
+        assert change["scope"]["id"] == "risk-a"
+        saved_change = service.review_workspace(session, instrument_id="risk-a")["latest_completed"]["case_changes"][0]
+        assert saved_change["before"] == change["before"]
+        assert saved_change["after"] == change["after"]
         same, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates=dates)
         assert not created and same.entry_id == run.entry_id
         session.get(RiskCase, "research").status = "handled"

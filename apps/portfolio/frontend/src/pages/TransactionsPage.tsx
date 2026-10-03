@@ -899,7 +899,6 @@ type TransactionFormState = {
   price: string
   gross_amount: string
   counter_amount: string
-  fx_rate: string
   fees: string
   fee_components: Array<{ category: PortfolioFeeCategory; amount: string }>
   fee_category: PortfolioFeeCategory
@@ -946,7 +945,6 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
     price: '',
     gross_amount: '',
     counter_amount: '',
-    fx_rate: '',
     fees: '0',
     fee_components: [{ category: 'transaction_cost', amount: '' }],
     fee_category: 'unknown',
@@ -983,9 +981,9 @@ function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord):
     derivative_contract_id: transaction.derivative_contract_id || '',
     quantity: formatFormNumber(transaction.quantity, { zeroAsEmpty: true }),
     price: formatFormNumber(transaction.price, { zeroAsEmpty: true }),
-    gross_amount: formatFormNumber(transaction.gross_amount, { zeroAsEmpty: true }),
-    counter_amount: formatFormNumber(transaction.counter_amount, { zeroAsEmpty: true }),
-    fx_rate: formatFormNumber(transaction.fx_rate, { zeroAsEmpty: true }),
+    gross_amount: transaction.transaction_type === 'fx_conversion' && transaction.source_gross_amount
+      ? transaction.source_gross_amount : formatFormNumber(transaction.gross_amount, { zeroAsEmpty: true }),
+    counter_amount: transaction.source_counter_amount ?? formatFormNumber(transaction.counter_amount, { zeroAsEmpty: true }),
     fees: formatFormNumber(transaction.fees),
     fee_components: transaction.fee_components?.length
       ? transaction.fee_components.map(item => ({ ...item, amount: String(item.amount) }))
@@ -1832,20 +1830,9 @@ export default function TransactionsPage() {
       )
       return resolved == null ? '' : formatCalculatedFormNumber(resolved, 2)
     })()
-  const resolvedFxRate = form.fx_rate.trim() || (sharedFxRate?.rate ? sharedFxRate.rate.toFixed(6) : '')
-  const computedCounterAmount =
-    form.counter_amount.trim() ||
-    (() => {
-      if (!isFxConversion) {
-        return ''
-      }
-      const sourceAmount = Number(computedGrossAmount)
-      const fxRate = Number(resolvedFxRate)
-      if (!Number.isFinite(sourceAmount) || !Number.isFinite(fxRate) || sourceAmount <= 0 || fxRate <= 0) {
-        return ''
-      }
-      return (sourceAmount * fxRate).toFixed(2)
-    })()
+  const computedCounterAmount = form.counter_amount.trim()
+  const resolvedFxRate = Number(computedGrossAmount) > 0 && Number(computedCounterAmount) > 0
+    ? (Number(computedCounterAmount) / Number(computedGrossAmount)).toFixed(12) : ''
 
   useEffect(() => {
     if (
@@ -2534,24 +2521,10 @@ export default function TransactionsPage() {
   ])
 
   useEffect(() => {
-    if (!isFxConversion) {
-      if (form.counter_amount || form.fx_rate) {
-        setForm((current) => ({
-          ...current,
-          counter_amount: '',
-          fx_rate: '',
-        }))
-      }
-      return
+    if (!isFxConversion && form.counter_amount) {
+      setForm((current) => ({ ...current, counter_amount: '' }))
     }
-
-    if (!form.fx_rate && sharedFxRate?.rate) {
-      setForm((current) => ({
-        ...current,
-        fx_rate: sharedFxRate.rate.toFixed(6),
-      }))
-    }
-  }, [form.counter_amount, form.fx_rate, isFxConversion, sharedFxRate?.rate])
+  }, [form.counter_amount, isFxConversion])
 
   useEffect(() => {
     if (form.asset_domain !== 'security' || !selectedInstrument || !selectedAccount) {
@@ -3493,7 +3466,10 @@ export default function TransactionsPage() {
         return
       }
       if (enteredQuantityExceedsPosition) {
-        setFormError('Entered shares exceed the account holding as of the trade date.')
+        setFormError(fcnLabel(
+          `Entered ${quantityUnit} exceed the ${form.transaction_type === 'buy_to_cover' ? 'open short' : 'available'} quantity as of the trade date.`,
+          `输入${quantityUnitLabel}超过交易日${form.transaction_type === 'buy_to_cover' ? '可回补空头' : '可用'}数量。`,
+        ))
         return
       }
     }
@@ -3526,11 +3502,6 @@ export default function TransactionsPage() {
         setFormError('Enter a positive FX rate.')
         return
       }
-      if (Math.abs(targetAmount - sourceAmount * fxRate) > 0.01) {
-        setFormError('Received amount must match source amount multiplied by FX rate.')
-        return
-      }
-
       const payload: PortfolioTransactionCreatePayload = {
         transaction_type: form.transaction_type,
         trade_date: form.trade_date,
@@ -3543,9 +3514,12 @@ export default function TransactionsPage() {
         instrument_id: null,
         quantity: null,
         price: null,
-        gross_amount: sourceAmount,
-        counter_amount: targetAmount,
-        fx_rate: fxRate,
+        gross_amount: computedGrossAmount,
+        counter_amount: computedCounterAmount,
+        fx_rate: editingTransaction &&
+          computedGrossAmount === (editingTransaction.source_gross_amount ?? formatFormNumber(editingTransaction.gross_amount, { zeroAsEmpty: true })) &&
+          computedCounterAmount === (editingTransaction.source_counter_amount ?? formatFormNumber(editingTransaction.counter_amount, { zeroAsEmpty: true }))
+          ? editingTransaction.source_fx_rate ?? editingTransaction.fx_rate : null,
         fees: 0,
         taxes: 0,
         currency: resolvedTransactionCurrency,
@@ -4119,12 +4093,17 @@ export default function TransactionsPage() {
   )
   const projectedPositionQuantity =
     positionPreview && ticketQuantityDelta != null ? positionPreview.quantity + ticketQuantityDelta : null
+  const quantityUnit = resolvedAssetType === 'option' || resolvedAssetType === 'fcn' ? 'contracts' : 'shares'
+  const quantityUnitLabel = fcnLabel(quantityUnit, quantityUnit === 'contracts' ? '份合约' : '份额')
+  const availablePositionQuantity = positionPreview
+    ? form.transaction_type === 'buy_to_cover' ? Math.max(-positionPreview.quantity, 0) : Math.max(positionPreview.quantity, 0)
+    : null
+  const limitsPositionQuantity = form.transaction_type === 'buy_to_cover' || (
+    ticketQuantityDelta != null && ticketQuantityDelta < 0 && !['short_sell', 'short_opening_balance'].includes(form.transaction_type)
+  )
   const enteredQuantityExceedsPosition =
-    Boolean(positionPreview) &&
-    ticketQuantityDelta != null &&
-    ticketQuantityDelta < 0 &&
-    projectedPositionQuantity != null &&
-    projectedPositionQuantity < -1e-9
+    limitsPositionQuantity && availablePositionQuantity != null && ticketQuantity != null &&
+    ticketQuantity > availablePositionQuantity + 1e-9
   useEffect(() => {
     setInspectorTab('fact')
   }, [selectedTransactionId])
@@ -4704,6 +4683,7 @@ export default function TransactionsPage() {
                       <button
                         type="button"
                         className="toolbar-link"
+                        aria-describedby={selectedTransactionIsPaired ? 'paired-transaction-correction-help' : undefined}
                         disabled={
                           !canEditPortfolio || selectedTransactionIsPaired ||
                           !canEditTransaction(selectedTransaction)
@@ -4725,6 +4705,11 @@ export default function TransactionsPage() {
                       </button>
                     </div>
                   </div>
+                  {selectedTransactionIsPaired ? <p className="transaction-ticket-hint" id="paired-transaction-correction-help">
+                    {fcnLabel('Paired transfers and deliveries cannot be edited one leg at a time. Review both legs in Postings.', '配对转账和交付不能单腿编辑，请在记账分录中核对双腿。')}{' '}
+                    {fcnLabel('Delete removes the linked facts together after a history check and keeps the audit trail; it is not an economic reversal.', '删除会在全历史校验后同时删除关联事实并保留审计记录；删除不等于经济冲正。')}{' '}
+                    {fcnLabel('To retain a real transfer and reverse it, record a confirmed opposite transfer with the original reference in the note.', '如需保留真实转账并冲正，请记录已确认的反向转账，并在备注中引用原记录。')}
+                  </p> : null}
                   <div className="transaction-inspector-tabs" role="tablist" aria-label="Transaction detail views">
                     {([
                       ['fact', 'Fact'],
@@ -4807,7 +4792,12 @@ export default function TransactionsPage() {
                         <div
                           className="transaction-fact-highlight transaction-accounting-highlight"
                           key={`${impact.transaction_id}:${impact.posting_role}:${impact.account_id}`}
-                          title={`Released exposure ${formatCurrency(impact.local_exposure_released, impact.currency)}; historical base basis ${formatCurrency(impact.historical_cost_basis_base, transactionsWorkspace.base_currency)}; settlement fair value ${formatCurrency(impact.fair_value_base, transactionsWorkspace.base_currency)}; settlement FX ${formatNumber(impact.recognition_fx_rate_to_base, 6)}.`}
+                          title={impact.posting_role === 'internal_cash_transfer_netting'
+                            ? fcnLabel(
+                              `Debt settled ${formatCurrency(impact.local_exposure_released, impact.currency)}; realized FX = liability basis ${formatCurrency(impact.liability_cost_basis_base, transactionsWorkspace.base_currency)} − source cash basis ${formatCurrency(impact.source_cost_basis_base, transactionsWorkspace.base_currency)}. Equal cash and debt cancel at settlement; no current FX rate is required.`,
+                              `结清债务 ${formatCurrency(impact.local_exposure_released, impact.currency)}；已实现汇兑 = 负债历史成本 ${formatCurrency(impact.liability_cost_basis_base, transactionsWorkspace.base_currency)} − 来源现金历史成本 ${formatCurrency(impact.source_cost_basis_base, transactionsWorkspace.base_currency)}。等额现金与债务在结算时抵销，无需当前汇率。`,
+                            )
+                            : `Released exposure ${formatCurrency(impact.local_exposure_released, impact.currency)}; historical base basis ${formatCurrency(impact.historical_cost_basis_base, transactionsWorkspace.base_currency)}; settlement fair value ${formatCurrency(impact.fair_value_base, transactionsWorkspace.base_currency)}; settlement FX ${formatNumber(impact.recognition_fx_rate_to_base, 6)}.`}
                         >
                           <span>
                             Realized cash FX · {transactionsWorkspace.base_currency}
@@ -4825,8 +4815,14 @@ export default function TransactionsPage() {
                             {formatCurrency(
                               impact.local_exposure_released,
                               impact.currency,
-                            )}{' released · '}
+                            )}{impact.posting_role === 'internal_cash_transfer_netting' ? fcnLabel(' debt settled · ', ' 债务已结清 · ') : ' released · '}
                             {accountNameById[impact.account_id] ?? impact.account_id}
+                            {impact.posting_role === 'internal_cash_transfer_netting' ? <><br />
+                              {fcnLabel('Liability basis ', '负债历史成本 ')}{formatCurrency(impact.liability_cost_basis_base, transactionsWorkspace.base_currency)}
+                              {fcnLabel(' − source cash basis ', ' − 来源现金历史成本 ')}{formatCurrency(impact.source_cost_basis_base, transactionsWorkspace.base_currency)}
+                              {fcnLabel(' = realized FX ', ' = 已实现汇兑 ')}{formatSignedCurrency(impact.realized_cash_fx_pnl_base, transactionsWorkspace.base_currency)}
+                              {fcnLabel(' · From ', ' · 来源 ')}{accountNameById[impact.source_account_id ?? ''] ?? impact.source_account_id}
+                            </> : null}
                           </em>
                         </div>
                       ))}
@@ -7470,7 +7466,7 @@ export default function TransactionsPage() {
                       }
                       aria-invalid={enteredQuantityExceedsPosition}
                       aria-describedby="transaction-position-quantity-hint"
-                      max={ticketQuantityDelta != null && ticketQuantityDelta < 0 ? positionPreview?.quantity : undefined}
+                      max={limitsPositionQuantity ? availablePositionQuantity ?? undefined : undefined}
                       value={form.quantity}
                       onChange={(event) => updatePricingField('quantity', event.target.value)}
                     />
@@ -7486,10 +7482,16 @@ export default function TransactionsPage() {
                             : 'transaction-ticket-hint'
                         }
                       >
-                        {positionPreviewAccountRole === 'source' ? fcnLabel('Source holding', '来源持仓') : fcnLabel('Available shares', '可售数量')} ({positionPreview.as_of_date}):{' '}
-                        {formatQuantity(positionPreview.quantity)}
-                        {projectedPositionQuantity != null ? ` · After: ${formatQuantity(projectedPositionQuantity)}` : ''}
-                        {enteredQuantityExceedsPosition ? fcnLabel(' · Exceeds available shares; correct the quantity before saving.', ' · 超过可售数量，请修正后保存。') : ''}
+                        {form.transaction_type === 'buy_to_cover' ? fcnLabel('Open short available to cover', '可回补空头数量') : limitsPositionQuantity ? fcnLabel(`Available ${quantityUnit}`, `可用${quantityUnitLabel}`) : fcnLabel('Current signed position', '当前带方向持仓')} ({positionPreview.as_of_date}):{' '}
+                        {formatQuantity(limitsPositionQuantity ? availablePositionQuantity : positionPreview.quantity)} {quantityUnitLabel}
+                        {projectedPositionQuantity != null ? fcnLabel(` · After: ${formatQuantity(projectedPositionQuantity)} ${quantityUnit}${projectedPositionQuantity < 0 ? ' short' : projectedPositionQuantity > 0 ? ' long' : ' flat'}`, ` · 交易后：${formatQuantity(projectedPositionQuantity)} ${quantityUnitLabel}（${projectedPositionQuantity < 0 ? '空头' : projectedPositionQuantity > 0 ? '多头' : '已平仓'}）`) : ''}
+                        {form.transaction_type === 'short_sell' && positionPreview.quantity > 0 && ticketQuantity != null
+                          ? fcnLabel(` · Closes ${formatQuantity(Math.min(positionPreview.quantity, ticketQuantity))} long; opens ${formatQuantity(Math.max(0, ticketQuantity - positionPreview.quantity))} short.`, ` · 平多头 ${formatQuantity(Math.min(positionPreview.quantity, ticketQuantity))}；开空头 ${formatQuantity(Math.max(0, ticketQuantity - positionPreview.quantity))}。`) : ''}
+                        {form.transaction_type === 'buy' && positionPreview.quantity < 0 && ticketQuantity != null
+                          ? fcnLabel(` · Covers ${formatQuantity(Math.min(-positionPreview.quantity, ticketQuantity))} short; opens ${formatQuantity(Math.max(0, ticketQuantity + positionPreview.quantity))} long.`, ` · 回补空头 ${formatQuantity(Math.min(-positionPreview.quantity, ticketQuantity))}；开多头 ${formatQuantity(Math.max(0, ticketQuantity + positionPreview.quantity))}。`) : ''}
+                        {resolvedAssetType === 'option' && activeDerivativeContract?.contract_type === 'option'
+                          ? fcnLabel(` · ${formatQuantity((availablePositionQuantity ?? 0) * activeDerivativeContract.terms.contract_multiplier)} underlying units available.`, ` · 可用合约对应 ${formatQuantity((availablePositionQuantity ?? 0) * activeDerivativeContract.terms.contract_multiplier)} 个标的单位。`) : ''}
+                        {enteredQuantityExceedsPosition ? fcnLabel(` · Exceeds available ${quantityUnit}; correct the quantity before saving.`, ` · 超过可用${quantityUnitLabel}，请修正数量后保存。`) : ''}
                       </span>
                     ) : positionPreviewError ? (
                       <span className="transaction-ticket-hint">{positionPreviewError}</span>
@@ -7501,20 +7503,16 @@ export default function TransactionsPage() {
 
                 {isFxConversion ? (
                   <label className="transaction-ticket-field">
-                    <span>{fcnLabel('FX Rate', '汇率')} ({resolvedTransactionCurrency}/{resolvedCounterpartyCurrency || fcnLabel('Target', '目标币种')})</span>
+                    <span>{fcnLabel('FX Rate', '汇率')} ({fcnLabel(`${resolvedCounterpartyCurrency || 'Target'} per ${resolvedTransactionCurrency}`, `每 ${resolvedTransactionCurrency} 对应 ${resolvedCounterpartyCurrency || '目标币种'}`)})</span>
                     <input
                       type="number"
                       min="0"
-                      step="0.000001"
-                      value={form.fx_rate}
-                      placeholder={resolvedFxRate || '0.000000'}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          fx_rate: event.target.value,
-                        }))
-                      }
+                      step="any"
+                      value={resolvedFxRate}
+                      readOnly
+                      aria-describedby="transaction-fx-rate-help"
                     />
+                    <span id="transaction-fx-rate-help" className="transaction-ticket-hint">{fcnLabel('Derived from the two confirmed cash amounts. Record any FX fee separately in the charged currency.', '汇率由双方确认的现金金额推导。换汇费用按实际扣费币种单独记录。')}</span>
                   </label>
                 ) : shouldUsePrice ? (
                   <label className="transaction-ticket-field">
@@ -7531,7 +7529,8 @@ export default function TransactionsPage() {
                       type="number"
                       min="0"
                       step="any"
-                      aria-label={isFundTrade ? 'Derived Unit Price' : 'Execution Price'}
+                      aria-label={isFundTrade ? 'Derived Unit Price' : resolvedAssetType === 'option' ? 'Premium per Underlying Unit' : resolvedAssetType === 'fcn' ? 'Contract Price' : 'Execution Price'}
+                      aria-describedby={resolvedAssetType === 'option' ? 'transaction-option-premium-help' : undefined}
                       value={form.price}
                       placeholder={computedUnitPrice || '0.0000'}
                       readOnly={isFundTrade}
@@ -7548,7 +7547,7 @@ export default function TransactionsPage() {
                     ) : historicalQuoteError ? (
                       <span className="transaction-ticket-hint">{historicalQuoteError}</span>
                     ) : resolvedAssetType === 'option' ? (
-                      <span className="transaction-ticket-hint">
+                      <span id="transaction-option-premium-help" className="transaction-ticket-hint">
                         Amount = contracts × premium × multiplier.
                       </span>
                     ) : null}

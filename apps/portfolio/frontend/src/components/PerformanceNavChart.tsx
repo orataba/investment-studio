@@ -22,7 +22,7 @@ type PerformanceNavChartProps = {
   includeStartDateReturn?: boolean
 }
 
-const CHART_WIDTH = 960
+const DEFAULT_CHART_WIDTH = 960
 const NAV_CHART_HEIGHT = 318
 const DRAWDOWN_CHART_HEIGHT = 120
 const NAV_CHART_PADDING = { top: 24, right: 18, bottom: 40, left: 58 }
@@ -105,13 +105,13 @@ function formatDateTickLabel(dateKey: string, previousDateKey: string | null, sp
   return month
 }
 
-function buildDateTicks(points: PerformanceNavChartPoint[], padding: typeof NAV_CHART_PADDING, count = 7) {
+function buildDateTicks(points: PerformanceNavChartPoint[], padding: typeof NAV_CHART_PADDING, chartWidth: number, count = 7) {
   const startTime = toDateMs(points[0]?.date)
   const endTime = toDateMs(points[points.length - 1]?.date)
   if (startTime == null || endTime == null) {
     return []
   }
-  const drawableWidth = CHART_WIDTH - padding.left - padding.right
+  const drawableWidth = chartWidth - padding.left - padding.right
   const spanDays = Math.max(0, Math.round((endTime - startTime) / 86_400_000))
   const targetCount = Math.min(Math.max(2, count), spanDays + 1)
   const ticks = Array.from({ length: targetCount }, (_, index) => {
@@ -129,8 +129,8 @@ function buildDateTicks(points: PerformanceNavChartPoint[], padding: typeof NAV_
   }))
 }
 
-function buildPlotBands(padding: typeof NAV_CHART_PADDING, chartHeight: number, segments = CHART_BAND_SEGMENTS) {
-  const plottingWidth = CHART_WIDTH - padding.left - padding.right
+function buildPlotBands(padding: typeof NAV_CHART_PADDING, chartHeight: number, chartWidth: number, segments = CHART_BAND_SEGMENTS) {
+  const plottingWidth = chartWidth - padding.left - padding.right
   const bandWidth = plottingWidth / segments
   return Array.from({ length: segments }, (_, index) => {
     if (index % 2 === 0) {
@@ -230,9 +230,10 @@ function projectCoordinates(
   bounds: ChartBounds,
   chartHeight: number,
   padding: typeof NAV_CHART_PADDING,
+  chartWidth: number,
 ) {
   const span = bounds.yMax - bounds.yMin || 1
-  const drawableWidth = CHART_WIDTH - padding.left - padding.right
+  const drawableWidth = chartWidth - padding.left - padding.right
   const drawableHeight = chartHeight - padding.top - padding.bottom
   const useDateScale =
     bounds.startTime != null && bounds.endTime != null && bounds.endTime > bounds.startTime
@@ -251,10 +252,10 @@ function projectCoordinates(
   })
 }
 
-function buildNavGeometry(points: PerformanceNavChartPoint[], comparisonPoints: PerformanceNavChartPoint[] = []) {
+function buildNavGeometry(points: PerformanceNavChartPoint[], comparisonPoints: PerformanceNavChartPoint[], chartWidth: number) {
   const bounds = buildBounds(points, comparisonPoints)
-  const coordinates = projectCoordinates(points, bounds, NAV_CHART_HEIGHT, NAV_CHART_PADDING)
-  const comparisonCoordinates = projectCoordinates(comparisonPoints, bounds, NAV_CHART_HEIGHT, NAV_CHART_PADDING)
+  const coordinates = projectCoordinates(points, bounds, NAV_CHART_HEIGHT, NAV_CHART_PADDING, chartWidth)
+  const comparisonCoordinates = projectCoordinates(comparisonPoints, bounds, NAV_CHART_HEIGHT, NAV_CHART_PADDING, chartWidth)
   const baselineY = NAV_CHART_HEIGHT - NAV_CHART_PADDING.bottom
   const span = bounds.yMax - bounds.yMin || 1
   const guideValues = [bounds.yMax, bounds.yMin + span * 0.67, bounds.yMin + span * 0.33, bounds.yMin]
@@ -280,10 +281,10 @@ function buildDrawdownPoints(points: PerformanceNavChartPoint[], baselineValue?:
   })
 }
 
-function buildDrawdownGeometry(points: Array<{ date: string; drawdown: number }>) {
+function buildDrawdownGeometry(points: Array<{ date: string; drawdown: number }>, chartWidth: number) {
   const minDrawdown = Math.min(...points.map((point) => point.drawdown), 0)
   const yMin = minDrawdown < 0 ? minDrawdown : -0.01
-  const drawableWidth = CHART_WIDTH - DRAWDOWN_CHART_PADDING.left - DRAWDOWN_CHART_PADDING.right
+  const drawableWidth = chartWidth - DRAWDOWN_CHART_PADDING.left - DRAWDOWN_CHART_PADDING.right
   const drawableHeight = DRAWDOWN_CHART_HEIGHT - DRAWDOWN_CHART_PADDING.top - DRAWDOWN_CHART_PADDING.bottom
   const startTime = toDateMs(points[0]?.date)
   const endTime = toDateMs(points[points.length - 1]?.date)
@@ -442,6 +443,7 @@ function buildValueTagGeometry(
   label: string,
   padding: typeof NAV_CHART_PADDING,
   chartHeight: number,
+  chartWidth: number,
 ) {
   if (!coordinate) {
     return null
@@ -449,7 +451,7 @@ function buildValueTagGeometry(
   const width = Math.min(Math.max(label.length * 6.4 + 16, 52), 132)
   const height = 22
   const x = Math.min(
-    CHART_WIDTH - padding.right - width,
+    chartWidth - padding.right - width,
     Math.max(padding.left, coordinate.x - width - 8),
   )
   const y = Math.min(
@@ -484,6 +486,8 @@ export default function PerformanceNavChart({
   benchmarkLabel = null,
   includeStartDateReturn = false,
 }: PerformanceNavChartProps) {
+  const chartRef = useRef<HTMLElement | null>(null)
+  const [chartWidth, setChartWidth] = useState(DEFAULT_CHART_WIDTH)
   const isOverview = variant === 'overview'
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
   const [selectedRange, setSelectedRange] = useState<RangeKey | 'CUSTOM'>('MAX')
@@ -569,11 +573,12 @@ export default function PerformanceNavChart({
         : []
 
     return {
-      navGeometry: buildNavGeometry(visiblePoints, visibleBenchmarkPoints),
-      drawdownGeometry: drawdownPoints.length > 1 ? buildDrawdownGeometry(drawdownPoints) : null,
+      navGeometry: buildNavGeometry(visiblePoints, visibleBenchmarkPoints, chartWidth),
+      drawdownGeometry: drawdownPoints.length > 1 ? buildDrawdownGeometry(drawdownPoints, chartWidth) : null,
       drawdownPoints,
     }
   }, [
+    chartWidth,
     drawdownSourcePoints,
     includesFundedStart,
     effectiveSeriesMode,
@@ -582,6 +587,17 @@ export default function PerformanceNavChart({
     visibleBenchmarkPoints,
     visiblePoints,
   ])
+
+  const hasChart = chartState !== null
+  useEffect(() => {
+    const element = chartRef.current
+    if (!element || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.width > 0) setChartWidth(entry.contentRect.width)
+    })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [hasChart])
 
   if (!chartState) {
     return <div className="price-chart-empty">Insufficient data.</div>
@@ -623,6 +639,7 @@ export default function PerformanceNavChart({
     latestMainTagLabel,
     NAV_CHART_PADDING,
     NAV_CHART_HEIGHT,
+    chartWidth,
   )
   const drawdownCoordinates = chartState.drawdownGeometry?.coordinates ?? []
   const latestDrawdownCoordinate = drawdownCoordinates[drawdownCoordinates.length - 1]
@@ -633,10 +650,11 @@ export default function PerformanceNavChart({
     latestDrawdownTagLabel,
     DRAWDOWN_CHART_PADDING,
     DRAWDOWN_CHART_HEIGHT,
+    chartWidth,
   )
-  const mainBands = buildPlotBands(NAV_CHART_PADDING, NAV_CHART_HEIGHT)
-  const drawdownBands = buildPlotBands(DRAWDOWN_CHART_PADDING, DRAWDOWN_CHART_HEIGHT)
-  const mainDateTicks = buildDateTicks(visiblePoints, NAV_CHART_PADDING, 8)
+  const mainBands = buildPlotBands(NAV_CHART_PADDING, NAV_CHART_HEIGHT, chartWidth)
+  const drawdownBands = buildPlotBands(DRAWDOWN_CHART_PADDING, DRAWDOWN_CHART_HEIGHT, chartWidth)
+  const mainDateTicks = buildDateTicks(visiblePoints, NAV_CHART_PADDING, chartWidth, Math.max(2, Math.floor(chartWidth / 110)))
   const windowReturn = firstPoint.value !== 0 ? (lastPoint.value - firstPoint.value) / firstPoint.value : null
   const windowReturnClassName = toneClassName(isOverview ? activePeriodReturn : windowReturn)
   const yAxisUnit = getYAxisUnit(chartState.navGeometry.guideValues, effectiveSeriesMode, currency)
@@ -678,13 +696,15 @@ export default function PerformanceNavChart({
 
   function handlePointerMove(event: MouseEvent<SVGSVGElement>) {
     const bounds = event.currentTarget.getBoundingClientRect()
-    const chartX = bounds.width > 0 ? ((event.clientX - bounds.left) / bounds.width) * CHART_WIDTH : 0
-    const drawableWidth = CHART_WIDTH - NAV_CHART_PADDING.left - NAV_CHART_PADDING.right
+    const chartX = bounds.width > 0 ? ((event.clientX - bounds.left) / bounds.width) * chartWidth : 0
+    const drawableWidth = chartWidth - NAV_CHART_PADDING.left - NAV_CHART_PADDING.right
     const ratio = drawableWidth > 0 ? (chartX - NAV_CHART_PADDING.left) / drawableWidth : 0
-    const nextIndex = Math.min(
-      visiblePoints.length - 1,
-      Math.max(0, Math.round(ratio * (visiblePoints.length - 1))),
-    )
+    const start = toDateMs(visiblePoints[0].date) ?? 0
+    const end = toDateMs(visiblePoints[visiblePoints.length - 1].date) ?? start
+    const target = start + ratio * (end - start)
+    const nextIndex = visiblePoints.reduce((best, point, index) => (
+      Math.abs((toDateMs(point.date) ?? start) - target) < Math.abs((toDateMs(visiblePoints[best].date) ?? start) - target) ? index : best
+    ), 0)
     setHoveredIndex(nextIndex)
   }
 
@@ -785,7 +805,7 @@ export default function PerformanceNavChart({
     ) : null
 
   return (
-    <section className={`portfolio-nav-chart ${isOverview ? 'portfolio-nav-chart-overview' : ''}`}>
+    <section ref={chartRef} className={`portfolio-nav-chart ${isOverview ? 'portfolio-nav-chart-overview' : ''}`}>
       {isOverview ? (
         <div className="portfolio-nav-chart-series-head">
           <div className="portfolio-series-legend">
@@ -796,7 +816,7 @@ export default function PerformanceNavChart({
                 <em>{formatCurrency(activePoint.value, currency)}</em>
               ) : null}
               <em className={activeChangeClassName}>{activePeriodLabel} {formatSignedPercent(activePeriodReturn)}</em>
-              <span>{includesFundedStart ? 'Includes the first funded day' : 'Opening close; first-day return excluded'}</span>
+              <span className="portfolio-series-basis">{effectiveSeriesMode === 'portfolio_value' ? 'First plotted close to selected close; includes cash flows' : includesFundedStart ? 'Includes the first funded day' : 'Opening close; first-day return excluded'}</span>
             </div>
             {benchmarkLabel && effectiveSeriesMode === 'twr_index' ? (
               <div className="portfolio-series-label portfolio-series-label-benchmark-row">
@@ -854,8 +874,8 @@ export default function PerformanceNavChart({
       <div className="portfolio-nav-chart-plot">
         {hoveredIndex != null ? (
           <div
-            className={`portfolio-nav-chart-tooltip ${activeCoordinate.x > CHART_WIDTH * 0.72 ? 'portfolio-nav-chart-tooltip-left' : ''}`}
-            style={{ left: `${(activeCoordinate.x / CHART_WIDTH) * 100}%` }}
+            className={`portfolio-nav-chart-tooltip ${chartWidth < 600 ? 'portfolio-nav-chart-tooltip-compact' : activeCoordinate.x > chartWidth * 0.72 ? 'portfolio-nav-chart-tooltip-left' : ''}`}
+            style={{ left: chartWidth < 600 ? '8px' : `${(activeCoordinate.x / chartWidth) * 100}%` }}
           >
             <span>{activePoint.date}</span>
             <strong>{formatSeriesValue(activePoint.value, effectiveSeriesMode, currency)}</strong>
@@ -877,7 +897,7 @@ export default function PerformanceNavChart({
         ) : null}
         <svg
           className="portfolio-nav-chart-svg portfolio-nav-main-svg"
-          viewBox={`0 0 ${CHART_WIDTH} ${NAV_CHART_HEIGHT}`}
+          viewBox={`0 0 ${chartWidth} ${NAV_CHART_HEIGHT}`}
           role="img"
           aria-label={isOverview ? `${seriesLabel(effectiveSeriesMode)} trend` : 'Portfolio NAV trend'}
           onMouseMove={handlePointerMove}
@@ -921,13 +941,13 @@ export default function PerformanceNavChart({
                 <line
                   className={`portfolio-nav-grid-line ${isBottomTick ? 'portfolio-nav-grid-line-emphasis' : ''}`}
                   x1={NAV_CHART_PADDING.left}
-                  x2={CHART_WIDTH - NAV_CHART_PADDING.right}
+                  x2={chartWidth - NAV_CHART_PADDING.right}
                   y1={y}
                   y2={y}
                 />
                 <text
                   className="portfolio-nav-axis-label"
-                  x={isOverview ? getYAxisStubEndX(NAV_CHART_PADDING) : CHART_WIDTH - 4}
+                  x={isOverview ? getYAxisStubEndX(NAV_CHART_PADDING) : chartWidth - 4}
                   y={
                     isOverview
                       ? getYAxisLabelTextY(y, NAV_CHART_HEIGHT, isBottomTick ? 'above' : 'below')
@@ -1023,7 +1043,7 @@ export default function PerformanceNavChart({
           <div className="portfolio-nav-drawdown-plot">
             <svg
               className="portfolio-nav-chart-svg"
-              viewBox={`0 0 ${CHART_WIDTH} ${DRAWDOWN_CHART_HEIGHT}`}
+              viewBox={`0 0 ${chartWidth} ${DRAWDOWN_CHART_HEIGHT}`}
               role="img"
               aria-label={isOverview || useTwrDrawdown ? 'Portfolio TWR drawdown' : 'Portfolio NAV drawdown'}
               onMouseMove={handlePointerMove}
@@ -1063,13 +1083,13 @@ export default function PerformanceNavChart({
                     <line
                       className={`portfolio-nav-grid-line ${isBottomTick ? 'portfolio-nav-grid-line-emphasis' : ''}`}
                       x1={DRAWDOWN_CHART_PADDING.left}
-                      x2={CHART_WIDTH - DRAWDOWN_CHART_PADDING.right}
+                      x2={chartWidth - DRAWDOWN_CHART_PADDING.right}
                       y1={y}
                       y2={y}
                     />
                     <text
                       className="portfolio-nav-axis-label"
-                      x={isOverview ? getYAxisStubEndX(DRAWDOWN_CHART_PADDING) : CHART_WIDTH - 4}
+                      x={isOverview ? getYAxisStubEndX(DRAWDOWN_CHART_PADDING) : chartWidth - 4}
                       y={
                         isOverview
                           ? getYAxisLabelTextY(y, DRAWDOWN_CHART_HEIGHT, isBottomTick ? 'above' : 'below')

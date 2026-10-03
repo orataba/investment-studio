@@ -364,6 +364,7 @@ function sumComplete(
 }
 
 function accountLabel(row: PortfolioHoldingRow) {
+  if (row.account_names?.length) return <span title={(row.account_ids ?? []).join(', ')}>{row.account_names.join(', ')}</span>
   const derivativeAccount = row.derivative_contract?.account_id?.trim()
   if (derivativeAccount) {
     return derivativeAccount

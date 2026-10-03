@@ -17,6 +17,8 @@ import {
   deletePortfolioTaxonomyNode,
   getHoldingsWorkspace,
   getPortfolioInstruments,
+  getPortfolioPositions,
+  type PortfolioPositionRecord,
   getPortfolioAccountsWorkspace,
   getPortfolioTaxonomyCatalog,
   updatePortfolioTaxonomy,
@@ -156,6 +158,7 @@ type TaxonomyContextMenuState =
 type WorkspaceFetchResult = {
   catalog: PortfolioTaxonomyCatalogResponse | null
   holdingsWorkspace: HoldingsWorkspaceResponse | null
+  ledgerPositions: PortfolioPositionRecord[] | null
   accountsResponse: PortfolioAccountsWorkspaceResponse | null
   instrumentsResponse: { portfolio_id: string; instruments: SharedInstrumentRecord[] } | null
   workspaceError: string | null
@@ -275,9 +278,10 @@ function TableStatusRow({
 }
 
 function renderInstrumentStatusCell(entity: CoverageEntity) {
-  if (!entity.instrument_state || !entity.instrument_state_label) {
+  if (!entity.instrument_state_label) {
     return null
   }
+  if (!entity.instrument_state) return <span className="portfolio-detail-meta">{entity.instrument_state_label}</span>
   return (
     <span
       className={`taxonomy-instrument-status taxonomy-instrument-status-${entity.instrument_state}`}
@@ -510,11 +514,12 @@ function buildChildrenByParent(nodes: PortfolioTaxonomyNodeRecord[]) {
 }
 
 async function fetchWorkspace(portfolioId: string): Promise<WorkspaceFetchResult> {
-  const [catalogResult, holdingsResult, accountsResult, instrumentsResult] = await Promise.allSettled([
+  const [catalogResult, holdingsResult, accountsResult, instrumentsResult, positionsResult] = await Promise.allSettled([
     getPortfolioTaxonomyCatalog(portfolioId),
     getHoldingsWorkspace(portfolioId, { include_details: true }),
     getPortfolioAccountsWorkspace(portfolioId),
     getPortfolioInstruments(portfolioId),
+    getPortfolioPositions(portfolioId, new Date().toLocaleDateString('en-CA'), undefined, false),
   ])
 
   const supplementalMessages: string[] = []
@@ -537,7 +542,9 @@ async function fetchWorkspace(portfolioId: string): Promise<WorkspaceFetchResult
   if (instrumentsResult.status === 'rejected') {
     supplementalMessages.push(`Instrument registry unavailable: ${extractErrorMessage(instrumentsResult.reason)}`)
   }
+  if (positionsResult.status === 'rejected') supplementalMessages.push(`Position quantities unavailable: ${extractErrorMessage(positionsResult.reason)}`)
   return {
+    ledgerPositions: positionsResult.status === 'fulfilled' ? positionsResult.value.positions : null,
     catalog,
     holdingsWorkspace,
     accountsResponse,
@@ -560,6 +567,7 @@ export default function TaxonomiesPage() {
   }, [])
   const [searchParams, setSearchParams] = useSearchParams()
   const [catalog, setCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
+  const [ledgerPositions, setLedgerPositions] = useState<PortfolioPositionRecord[] | null>(null)
   const [holdingsWorkspace, setHoldingsWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
   const [accountsResponse, setAccountsResponse] = useState<PortfolioAccountsWorkspaceResponse | null>(null)
   const [instrumentsResponse, setInstrumentsResponse] = useState<{ portfolio_id: string; instruments: SharedInstrumentRecord[] } | null>(null)
@@ -644,6 +652,7 @@ export default function TaxonomiesPage() {
         }
         setCatalog(result.catalog)
         setHoldingsWorkspace(result.holdingsWorkspace)
+        setLedgerPositions(result.ledgerPositions)
         setAccountsResponse(result.accountsResponse)
         setInstrumentsResponse(result.instrumentsResponse)
         setWorkspaceError(result.workspaceError)
@@ -682,6 +691,7 @@ export default function TaxonomiesPage() {
       }
       setCatalog(result.catalog)
       setHoldingsWorkspace(result.holdingsWorkspace)
+        setLedgerPositions(result.ledgerPositions)
       setAccountsResponse(result.accountsResponse)
       setInstrumentsResponse(result.instrumentsResponse)
       setWorkspaceError(result.workspaceError)
@@ -1047,7 +1057,13 @@ export default function TaxonomiesPage() {
       return []
     }
 
-      const holdingEntities = securitiesHoldingRows.map((row) => {
+      const heldRows = (ledgerPositions ?? []).filter((row) => row.instrument_id && !row.derivative_contract_id && Math.abs(row.quantity) > 1e-9).map((position) => ({
+        instrument_core: position.instrument_ref ?? instrumentById.get(position.instrument_id!) ?? universeInstrumentById.get(position.instrument_id!) ?? {
+          instrument_id: position.instrument_id!, instrument_name: position.instrument_id!, identifiers: [],
+        },
+        market_value_base: securitiesHoldingRows.find((row) => row.instrument_core.instrument_id === position.instrument_id)?.market_value_base ?? null,
+      }))
+      const holdingEntities = heldRows.map((row) => {
         const assignments = activeAssignmentsByEntityKey.get(coverageEntityKey('instrument', row.instrument_core.instrument_id)) ?? []
         const assignment = assignments.length === 1 ? assignments[0] : null
         const currentNode = assignment ? nodeById.get(assignment.taxonomy_node_id) ?? null : null
@@ -1075,7 +1091,7 @@ export default function TaxonomiesPage() {
         } satisfies CoverageEntity
       })
 
-      const heldInstrumentIds = new Set(securitiesHoldingRows.map((row) => row.instrument_core.instrument_id))
+      const heldInstrumentIds = new Set(heldRows.map((row) => row.instrument_core.instrument_id))
       const visibleNonHeldInstrumentIds = new Set<string>()
       contractLinkedInstruments.forEach((_item, id) => {
         if (!heldInstrumentIds.has(id)) visibleNonHeldInstrumentIds.add(id)
@@ -1142,7 +1158,7 @@ export default function TaxonomiesPage() {
             holding_state: 'not_held',
             ...(contractOnly
               ? { instrument_state: 'contract' as const, instrument_state_label: zh ? '合约关联' : 'Contract linked' }
-              : instrumentStateForEntity('not_held', universeRecord)),
+              : ledgerPositions == null ? { instrument_state: null, instrument_state_label: zh ? '持仓待确认' : 'Position unconfirmed' } : instrumentStateForEntity('not_held', universeRecord)),
             coverage_state: coverageState,
           })
           return entities
@@ -1156,6 +1172,7 @@ export default function TaxonomiesPage() {
     instrumentUniverseRows,
     nodeById,
     securitiesHoldingRows,
+    ledgerPositions,
     selectedTaxonomy,
     portfolioNav,
     universeInstrumentById,

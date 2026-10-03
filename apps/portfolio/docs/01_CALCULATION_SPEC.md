@@ -115,7 +115,7 @@
 - 所有显式区间都必须满足 `start_date <= end_date`；逆序区间由 API 以校验错误拒绝，UI 不发起该请求，不能通过排序或空结果掩盖调用错误。
 - Performance、Calculation、Contribution 与 Groups 的主摘要必须保留 `requested_start_date` / `requested_end_date`，并单独返回 `effective_start_date` / `effective_end_date` 与 clamp reason。请求晚于最后可靠估值日时只收缩 effective end，不能改写用户原始请求。
 - 主摘要还必须声明 `start_boundary_kind` 与 `include_start_date_return`：普通期初收盘为 `close_eod / false`，首次或重启入资为 `funded_bod / true`，导入式期初余额为 `imported_opening_eod / false`。下游不得再根据日期或首条收益自行猜测边界语义。
-- Overview 图表使用同一边界标识：窗口包含首次入资起点时以 TWR 指数 100 为 BOD 基数，保留首日收益；缩放后的普通窗口以首个显示点 EOD 为基数。Value 与 TWR 图表提示使用同一收益窗口，不重新猜测首日边界。
+- Overview 图表使用同一边界标识：窗口包含首次入资起点时以 TWR 指数 100 为 BOD 基数，保留首日收益；缩放后的普通窗口以首个显示点 EOD 为基数。TWR 提示遵循该收益边界；Value 明确显示首个绘制 EOD 至所选 EOD 的净值变化，分母为首个绘制净值，包含资金流，不能称为包含成立日 BOD 收益。目录和组合抬头的金额、百分比分别标为该估值日的 1D 投资损益与现金流调整收益。
 
 已全部处置的证券在份额生效日以确认的卖出／赎回金额形成现金或应收，其已实现损益由真实成本与处置金额确定。该日日末持仓为零时，不要求该证券已无估值用途的收盘价或净值；部分处置后仍有持仓则仍须有当日有效估值。早于处置日的持仓估值缺口仍会阻断连续收益，不能用后来的处置金额跨越历史缺口。
 
@@ -1336,6 +1336,9 @@ $$
 
 ### 10.4 Forward covariance risk share
 
+协方差估计以经济因子为维度：同币种 monetary rows 共用一个 FX 因子，同一证券身份共用一个证券因子；先在唯一因子上估计并应用 shrinkage，再按行到因子的映射还原账户协方差。账户权重保留符号，`RC_i = w_i(Σw)_i / (wᵀΣw)`，同因子账户拆分或合并不改变总风险，债务可有负贡献；完全抵销且无其他风险时 variance 为零，RC 百分比不可定义，保持 unavailable。相关矩阵仍可列出账户，名称包含币种、账户及用途，不把账户个数当经济因子个数。
+
+
 正式版同时保留 `signed` 与 `abs` 两种 forward covariance risk share 口径，并在 Holdings、Risk 和 Research 中使用同一组选项。Research solver 的 primary mode 是 `signed`；当 signed shares 因对冲或负相关导致目标预算不可稳定匹配时，只能由配置显式切换到 `abs` 作为 alternate diagnostic view，不能在求解失败后自动切换。
 
 Signed share:
@@ -1472,7 +1475,7 @@ Research 历史模拟合同为 `Current-target historical simulation`：用本�
 
 每次 run 必须输出 root `solve_event` 和完整 `scope_solve_events`，用于复核每层 scope 的默认维度、实际维度、solver、RC mode、risk gap 与成员数。
 
-固定日期（pinned）只将行情、持仓及相关交易的时效性固定在数据截止日，不因该日以后的交易就自动失效；最新可用模式与最新组合日期比较。两种模式都将已保存目标快照与当前完整配置比较，当前目标、分类、资格或设置变化均使旧结果 stale。`RESEARCH_TARGET_SOLVER_VERSION=global_leaf_scalar_targets_v7_observed_session_coverage` 同时进入 request、结果方法披露和 planning-state fingerprint；算法变化使工作台缓存与保存结果一起失效。缺少该方法版本或使用旧输入身份版本的 run 可继续阅读存档，但明确 stale，须重新运行才能作为当前结果，不迁移或重写旧解。当前页展示旧模拟时将未标记锚点的成立前经济历史裁出比较范围，原存档仍可审计。
+固定日期（pinned）只将行情、持仓及相关交易的时效性固定在数据截止日，不因该日以后的交易就自动失效；最新可用模式与最新组合日期比较。两种模式都将已保存目标快照与当前完整配置比较，当前目标、分类、资格或设置变化均使旧结果 stale。`research_solver.py` 的 `RESEARCH_TARGET_SOLVER_VERSION` 同时进入 request、结果方法披露和 planning-state fingerprint；算法变化使工作台缓存与保存结果一起失效。缺少该方法版本或使用旧输入身份版本的 run 可继续阅读存档，但明确 stale，须重新运行才能作为当前结果，不迁移或重写旧解。当前页展示旧模拟时将未标记锚点的成立前经济历史裁出比较范围，原存档仍可审计。
 
 每次 run 还必须输出 `calculation_frequency` profile，其中 requested / resolved / default 均为 `daily`，并保留源数据发布节奏计数；同时输出 missing-return policy、rows before / after、missing rows、dropped rows、latest complete date 与 trailing staleness，便于复核日频样本。
 
@@ -1573,6 +1576,10 @@ Risk 页“历史情景损失”使用当前 signed 基准货币敞口重放真�
 - `irr_solver_status`（若请求 MWR）
 - risk `calculation_frequency`、sample count 与 minimum-sample / coverage reason（若适用）
 
+缺少估值时，持仓页持续显示估值失败或等待原因，并提供独立账本视图。证券数量、成本和原币现金使用同一明确请求日的 canonical 交易派生；positions 与 accounts/workspace 的 include_valuation=false 路径不加载价格及 FX，外币折算值保留为空，必要的已确认企业行动仍参与数量派生；不得把参考价、成本或空值拼成当前 NAV。分类的 Held/Former 使用有效数量，不依赖估值是否发布；数量读取失败显示持仓待确认。账户持仓报价附近显示报价日期和估值条件。
+
+优化的计算完成与投资执行资格分开：保存 `solution_tree.valuation_evidence`，包括分析日、输入来源资格和逐证券数量、参考价、报价日、币种、来源及口径。当前求解从参考输入重新构建 statement，并非直接消费已发布快照，因此统一为 conditional；已有完整 NAV 不能证明逐行价格来源相同。条件求解保留参考金额，但可调仓行必须人工复核，结果首层和导出都披露限制。存档无报价证据也不得标为 ready，且不从现时行情回填；不交易成员仍保留 no_trade。方法版本变化使旧解过时。
+
 ### 12.1 物化快照刷新一致性
 
 daily snapshot、holding snapshot、contribution slice 是可重建的读模型，不是源事实。刷新链路必须满足：
@@ -1580,7 +1587,7 @@ daily snapshot、holding snapshot、contribution slice 是可重建的读模型�
 - 交易、账户、共享行情或 FX 变化先写入源事实，再把受影响组合标记为 `stale`；
 - 每次 stale 标记生成新的 `refresh_request_id`，用于表示“至少需要覆盖到这次事实更新之后”；
 - 物化 payload schema 或核心计算口径改变时必须提升 `calculation_version`，让旧 read model 自动失效并重建；不能在 daily snapshot、contribution regroup 或 calculation detail 聚合中长期保留旧字段兼容逻辑。
-- 阶段收口版本包含 `observed-session-risk-short-expense-transfer-fx-netting-v1`：交易事实不变，daily/holding snapshots 与 contribution slices 从 inception 重建；`WORKSPACE_ANALYSIS_VERSION=4` 使旧 workspace projection 失效，重新发布完整覆盖元数据及同一生产协方差 artifact。Research solver 为 `global_leaf_scalar_targets_v7_observed_session_coverage`，旧已保存方案保留审计价值，当前应用前必须重新求解，不能原地改写旧模拟。该版本标记本身不表示运行环境已经完成重建。
+- 当前版本身份唯一由 `daily_snapshots.py::DAILY_SNAPSHOT_CALCULATION_VERSION`、`workspace_read_models.py::WORKSPACE_ANALYSIS_VERSION` 和 `research_solver.py::RESEARCH_TARGET_SOLVER_VERSION` 定义，不在文档复制随发布变化的数值。仅风险分析或投影变化时提升工作区版本并重新发布，不重述未改变的账本；核算口径变化才按 daily snapshot 版本重建。旧研究方案保留审计价值，版本变化后明确 stale，当前应用前重新求解。版本标记本身不证明运行环境已完成重建。
 - risk-context 从 taxonomy 服务读取当前分类，不调用 HTTP route。相关性直接由同次生产 RC 的已物化协方差投影，不再独立估计；current 只保留 tail-risk 所需完整收益历史与实时风险观察，prior comparison 不重做实时任务、衍生品状态或 position-cycle 成本装配。协方差 artifact 属于内部可重建分析数据，不暴露成第二套客户端模型配置。
 - 组合 summary、Overview 与默认 Holdings 的 as-of 选择必须复用同一套 latest fresh complete snapshot 规则；不得在不同读路径各自实现日期兜底，也不得因浏览器日期、服务器当前日期或部分资产已更新而改变组合层窗口终点。
 - 同一组合的物化刷新串行执行；如果刷新期间又收到新的 `refresh_request_id`，当前计算结果不得把状态置为 `current` 或清空 `dirty_from`，必须继续按最新事实再计算一轮；

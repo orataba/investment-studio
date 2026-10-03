@@ -59,6 +59,9 @@ it('isolates late reads and submissions when the scope changes', async () => {
   await act(async () => { oldRead.resolve(payload('a', { latest_completed: completed('a') })) })
   expect(screen.queryByText('a 的既有研判结论。')).toBeNull()
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: '更新研判' })) })
+  expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
+  expect(screen.getByRole('alertdialog').textContent).toContain('其他列表与组合读取同一份风险记录')
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '确认更新研判' })) })
   expect(request).toHaveBeenCalledWith('/risk/review/runs', expect.objectContaining({
     method: 'POST', body: JSON.stringify({ instrument_id: 'b' }),
   }))
@@ -201,4 +204,29 @@ it('keeps legacy conclusions readable while their current inputs remain unverifi
   expect(screen.getByText('a 的既有研判结论。')).toBeTruthy()
   expect(screen.getByText('尚未核对已有结论的当前输入，请更新研判。原结论与依据仍保留。')).toBeTruthy()
   expect(screen.getByRole('button', { name: '更新研判' }).hasAttribute('disabled')).toBe(false)
+})
+
+
+it('shows a shared risk receipt with one UTC clock and recovers status without resubmitting', async () => {
+  const saved = { ...completed('a'), completed_at: '2026-11-01T01:30:00-07:00', case_changes: [{
+    case_id: 'case-1', title: '事件甲', at: '2026-11-01T01:30:00-07:00', run_id: 'saved-a',
+    actor: { display_name: 'Alice', user_id: 'alice' }, scope: { kind: 'watchlist', id: 'list-a', name: 'QA list' },
+    before: { status: 'open', trigger_active: true, risk_assessment: { status: 'pending', reason: '缺少证据' } },
+    after: { status: 'resolved', trigger_active: false, risk_assessment: { status: 'resolved', reason: '证据已核实' } },
+  }] }
+  const request = vi.fn().mockResolvedValue(payload('a', { latest_completed: saved }))
+  const { rerender } = render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" refreshToken={0} />)
+  await load()
+  expect(screen.getAllByText('2026-11-01 08:30:00 UTC')).toHaveLength(2)
+  expect(screen.getByText('Alice')).toBeTruthy()
+  expect(screen.getByText('QA list')).toBeTruthy()
+  expect(screen.getByText('变更前')).toBeTruthy()
+  request.mockRejectedValueOnce(new Error('暂时断线'))
+  rerender(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" refreshToken={1} />)
+  await load()
+  expect(screen.getByRole('alert').textContent).toContain('尚未确认任务停止')
+  expect((screen.getByRole('button', { name: '更新研判' }) as HTMLButtonElement).disabled).toBe(true)
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '刷新状态' })) })
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
 })

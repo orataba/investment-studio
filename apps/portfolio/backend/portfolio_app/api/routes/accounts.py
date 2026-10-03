@@ -204,6 +204,7 @@ def get_accounts_workspace(
     portfolio_id: str,
     account_id: str | None = None,
     as_of_date: date | None = None,
+    include_valuation: bool = True,
 ) -> AccountsWorkspaceResponse:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -228,6 +229,7 @@ def get_accounts_workspace(
             selected_account_id=account_id,
             base_currency=str(portfolio.get("base_currency") or "USD"),
             as_of_date=resolved_as_of_date,
+            include_valuation=include_valuation,
         )
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error

@@ -29,10 +29,11 @@ class ResearchSolutionTreeRow(BaseModel):
 
 
 class ResearchSolutionTreeRecord(BaseModel):
-    schema_version: int = 2
+    schema_version: int = 3
     as_of_date: str | None = None
     base_currency: str | None = None
     portfolio_nav: float | None = None
+    valuation_evidence: dict | None = None
     capital_weight_basis: Literal["portfolio_nav", "saved_scope"]
     risk_attribution_scope: Literal["portfolio", "selected_research_scope"]
     hierarchy_status: Literal["complete", "recorded_groups_only"]

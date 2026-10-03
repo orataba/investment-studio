@@ -26,6 +26,7 @@ export type ResearchSolutionTreeRow = {
 }
 
 export type ResearchSolutionTreeData = {
+  valuation_evidence?: { status: 'canonical' | 'conditional'; as_of_date: string; note: string; prices: Array<{ instrument_id: string; label: string; quantity: number; price: number | null; currency: string; quote_date: string | null; quote_status: string | null; quote_basis: string | null; provider: string | null; market_value_base: number | null }> } | null
   schema_version: number
   as_of_date: string | null
   base_currency: string | null
@@ -69,16 +70,21 @@ export function solutionConstraintLabel(row: ResearchSolutionTreeRow, zh: boolea
 export function solutionTreeExportRows(tree: ResearchSolutionTreeData, runId: string, status: string, zh: boolean): TableCell[][] {
   const percent = (value: number | null) => value == null ? null : value * 100
   const currency = tree.base_currency ?? (zh ? '币种未保存' : 'Currency not recorded')
-  const capitalBasis = tree.capital_weight_basis === 'portfolio_nav' ? 'NAV' : (zh ? '保存范围' : 'Saved scope')
+  const valuation = tree.valuation_evidence
+  const valuationNote = valuation ? `${valuation.status}: ${valuation.note} ${valuation.prices.map((price) => `${price.label}: ${price.price ?? 'unavailable'} ${price.currency} @ ${price.quote_date ?? 'unknown date'} (${[price.provider, price.quote_basis, price.quote_status].filter(Boolean).join(' / ')})`).join('; ')}` : (zh ? '此存档未保存报价资格与日期，不能据此确认可执行性。' : 'This archive did not record valuation eligibility or quote dates; execution readiness cannot be established.')
+  const published = valuation?.status === 'canonical'
+  const amountTitle = published ? (zh ? '账面金额' : 'Carrying amount') : valuation ? (zh ? '参考金额' : 'Reference amount') : (zh ? '保存金额' : 'Saved amount')
+  const navTitle = published ? (zh ? '组合 NAV' : 'Portfolio NAV') : (zh ? '条件分析净资产' : 'Conditional-analysis net assets')
+  const capitalBasis = tree.capital_weight_basis === 'portfolio_nav' ? (published ? 'NAV' : navTitle) : (zh ? '保存范围' : 'Saved scope')
   return [
-    zh ? ['层级', '分类路径', '分类 / 标的', '目标风险贡献 (%)', '求解风险贡献 (%)', `账面金额 (${currency})`, '当前权重 (%)', '目标权重 (%)', `调仓金额 (${currency})`, '约束', '资金权重下限 (%)', '资金权重上限 (%)', '数据截止日', '报告币种', '组合 NAV', '求解风险贡献范围', '配置保存时间', '研究编号', '结果状态', '口径']
-      : ['Level', 'Classification path', 'Category / Instrument', 'Target RC (%)', 'Solved RC (%)', `Carrying amount (${currency})`, 'Current weight (%)', 'Target weight (%)', `Rebalance amount (${currency})`, 'Constraint', 'Min capital weight (%)', 'Max capital weight (%)', 'Data cutoff', 'Reporting currency', 'Portfolio NAV', 'Solved risk attribution scope', 'Configuration captured at', 'Research run', 'Result status', 'Basis'],
+    zh ? ['层级', '分类路径', '分类 / 标的', '目标风险贡献 (%)', '求解风险贡献 (%)', `${amountTitle} (${currency})`, '当前权重 (%)', '目标权重 (%)', `调仓金额 (${currency})`, '约束', '资金权重下限 (%)', '资金权重上限 (%)', '数据截止日', '报告币种', navTitle, '求解风险贡献范围', '配置保存时间', '研究编号', '结果状态', '口径', '估值依据与限制']
+      : ['Level', 'Classification path', 'Category / Instrument', 'Target RC (%)', 'Solved RC (%)', `${amountTitle} (${currency})`, 'Current weight (%)', 'Target weight (%)', `Rebalance amount (${currency})`, 'Constraint', 'Min capital weight (%)', 'Max capital weight (%)', 'Data cutoff', 'Reporting currency', navTitle, 'Solved risk attribution scope', 'Configuration captured at', 'Research run', 'Result status', 'Basis', 'Valuation evidence and limits'],
     ...tree.rows.map((row) => [row.depth, row.path.join(' / '), solutionRowLabel(row, zh), percent(row.target_risk_share), percent(row.solved_risk_share), row.current_value_base,
       percent(row.current_weight), percent(row.target_weight), row.rebalance_value_base, solutionConstraintLabel(row, zh),
       percent(row.min_weight), percent(row.max_weight), tree.as_of_date, tree.base_currency, tree.portfolio_nav, tree.risk_attribution_scope,
       tree.configuration_captured_at, runId, status,
-      zh ? `当前权重=保存账面金额/全组合NAV；目标权重分母为${capitalBasis}。目标RC只取可证明的组合根预算路径；求解RC汇总保存成员的同范围贡献。父子行不可重复累加。`
-        : `Current weight is saved carrying amount / total portfolio NAV; target weight uses ${capitalBasis} capital. Target RC requires a provable portfolio-root budget path; solved RC aggregates saved member contributions within their recorded scope. Parent and child rows are not additive.`,
-    ]),
+      zh ? `当前权重=保存金额/${navTitle}；目标权重分母为${capitalBasis}。目标RC只取可证明的组合根预算路径；求解RC汇总保存成员的同范围贡献。父子行不可重复累加。`
+        : `Current weight is saved amount / ${navTitle}; target weight uses ${capitalBasis} capital. Target RC requires a provable portfolio-root budget path; solved RC aggregates saved member contributions within their recorded scope. Parent and child rows are not additive.`,
+      valuationNote]),
   ]
 }

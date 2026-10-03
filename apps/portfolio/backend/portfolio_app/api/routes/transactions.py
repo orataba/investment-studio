@@ -6,7 +6,7 @@ from portfolio_app.services.portfolio_store import amend_derivative_contract
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import (
@@ -27,7 +27,7 @@ from portfolio_app.api.assemblers import (
     summarize_transactions,
 )
 from portfolio_app.api.contracts import (
-    AMOUNT_SOURCE_QUANTUM,
+    conversion_rate_matches_amounts,
     _amount_contract_matches_display_price,
     DerivativeContractCreate,
     DerivativeContractListResponse,
@@ -934,16 +934,13 @@ def _validate_fx_conversion(
         raise HTTPException(status_code=400, detail="FX conversion requires positive counter amount.")
     if fx_rate is None:
         raise HTTPException(status_code=400, detail="FX conversion requires fx_rate.")
-    expected_target_amount = (source_amount * fx_rate).quantize(
-        AMOUNT_SOURCE_QUANTUM,
-        rounding=ROUND_HALF_UP,
-    )
-    if target_amount != expected_target_amount:
+    if not conversion_rate_matches_amounts(source_amount, target_amount, fx_rate):
         raise HTTPException(
             status_code=400,
             detail=(
-                "counter_amount must equal gross_amount multiplied by fx_rate "
-                "at transaction amount precision."
+                "FX rate must equal received amount divided by source amount, rounded to 12 decimals, "
+                "or reproduce the received amount at 8-decimal amount precision. "
+                "Both cash amounts retain transaction amount precision; omit fx_rate to derive it."
             ),
         )
 
@@ -1769,8 +1766,19 @@ def _prepare_transaction_import_batch(
     if missing_source_identity_count:
         warnings.append(
             f"{missing_source_identity_count} record(s) lack a complete source identity; "
-            "only the batch Idempotency-Key protects replay."
+            f"importing may add these {missing_source_identity_count} transactions again, changing cash, holdings and performance. "
+            "File record references link rows within the file; they do not replace existing transactions. "
+            "Only replaying the same confirmed import batch is protected."
         )
+    existing_transaction_ids = {str(record["transaction_id"]) for record in existing_records}
+    for row in response_rows:
+        payload = row.transaction or row.internal_transfer
+        reference = payload.record_reference if payload is not None else None
+        if reference and reference in existing_transaction_ids:
+            warnings.append(
+                f"Row {row.record_index}: file reference {reference} already exists in this portfolio. "
+                "Import creates a new fact, not an update; compare this row with the original before importing."
+            )
     return _TransactionBatchPreview(
         rows=tuple(response_rows),
         prepared_records=tuple(prepared_records),

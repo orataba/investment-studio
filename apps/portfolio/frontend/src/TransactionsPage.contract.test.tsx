@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { LanguageProvider } from '../../../../packages/ui/src/i18n'
+import { LANGUAGE_STORAGE_KEY, LanguageProvider } from '../../../../packages/ui/src/i18n'
 import TransactionsPage from './pages/TransactionsPage'
 import type {
   PortfolioTransactionCaptureAnalysisRevision,
@@ -387,6 +387,7 @@ function screenshotBatchFixture({
 
 describe('Transactions rendered page contract', () => {
   beforeEach(() => {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, 'en')
     accessState.can_edit = true
     vi.clearAllMocks()
     apiMocks.searchPortfolioSecurities.mockResolvedValue({ results: [], catalog_errors: {} })
@@ -2555,6 +2556,83 @@ describe('Transactions rendered page contract', () => {
     expect(quantity).toHaveValue(79.5)
     expect(quantity).toHaveAttribute('aria-invalid', 'false')
     expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+  })
+
+  it.each([[60, 'en'], [0, 'en'], [-2, 'en'], [60, 'zh-Hans']] as const)('uses actual short availability for cover at %s in %s', async (held, language) => {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language)
+    apiMocks.getPortfolioTransactionPositionPreview.mockImplementation((_id, request) => Promise.resolve({
+      portfolio_id: '3', account_id: request.account_id, position_kind: request.position_kind,
+      position_reference_id: request.position_reference_id, as_of_date: request.as_of_date, quantity: held,
+    }))
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    fireEvent.change(within(dialog).getByRole('searchbox', { name: 'Security' }), { target: { value: 'GETF' } })
+    await user.click(await within(dialog).findByRole('button', { name: /GETF.*Global Equity ETF.*USD/ }))
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'buy_to_cover')
+    const quantity = within(dialog).getByRole('spinbutton', { name: /^Shares/ })
+    fireEvent.change(quantity, { target: { value: '1' } })
+    const hint = language === 'en' ? /Open short available to cover/ : /可回补空头数量/
+    await waitFor(() => expect(within(dialog).getByText(hint)).toHaveTextContent(new RegExp(`${Math.max(-held, 0)}(?:\\.00)? ${language === 'en' ? 'shares' : '份额'}`)))
+    if (language === 'zh-Hans') {
+      expect(within(dialog).getByText(hint)).toHaveTextContent('交易后：61.00 份额（多头）')
+      expect(within(dialog).getByText(hint)).not.toHaveTextContent('Open short')
+    }
+    expect(quantity).toHaveAttribute('max', String(Math.max(-held, 0)))
+    expect(quantity).toHaveAttribute('aria-invalid', String(held >= 0))
+    if (held >= 0) expect(within(dialog).getByRole('button', { name: 'Record Transaction' })).toBeDisabled()
+    fireEvent.change(quantity, { target: { value: '3' } })
+    expect(quantity).toHaveAttribute('aria-invalid', 'true')
+    expect(quantity).toHaveValue(3)
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'short_sell')
+    await waitFor(() => expect(quantity).toHaveAttribute('aria-invalid', 'false'))
+    expect(quantity).not.toHaveAttribute('max')
+  })
+
+  it('labels option availability in contracts and associates the premium formula', async () => {
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [optionAccount, cashAccount] })
+    apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({ portfolio_id: '3', derivative_contracts: [optionContract] })
+    apiMocks.getPortfolioTransactionPositionPreview.mockImplementation((_id, request) => Promise.resolve({
+      portfolio_id: '3', account_id: request.account_id, position_kind: request.position_kind,
+      position_reference_id: request.position_reference_id, as_of_date: request.as_of_date, quantity: 2,
+    }))
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.click(within(dialog).getByRole('button', { name: /^Option/ }))
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Option Contract' }), optionContract.derivative_contract_id)
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'sell_to_close')
+    const quantity = within(dialog).getByRole('spinbutton', { name: /^Contracts/ })
+    fireEvent.change(quantity, { target: { value: '3' } })
+    await waitFor(() => expect(quantity).toHaveAttribute('aria-invalid', 'true'))
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('200.00 underlying units')
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Exceeds available contracts')
+    expect(within(dialog).getByRole('spinbutton', { name: 'Premium per Underlying Unit' })).toHaveAccessibleDescription('Amount = contracts × premium × multiplier.')
+    expect(within(dialog).getByRole('button', { name: 'Record Transaction' })).toBeDisabled()
+  })
+
+  it('derives a readonly FX rate from confirmed cash amounts without rounding either leg', async () => {
+    const hkd = { ...cashAccount, account_id: 'cash-hkd', account_name: 'HKD Cash', currency: 'HKD' }
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [hkd, cashAccount] })
+    apiMocks.createPortfolioTransaction.mockRejectedValue(new Error('Inspect request only'))
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.click(within(dialog).getByRole('button', { name: /^Cash/ }))
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'fx_conversion')
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Source Amount' }), { target: { value: '780' } })
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: /^Received Amount/ }), { target: { value: '100' } })
+    const rate = within(dialog).getByRole('spinbutton', { name: /^FX Rate/ })
+    expect(rate).toHaveValue(.128205128205)
+    expect(rate).toHaveAttribute('readonly')
+    expect(rate).toHaveAttribute('step', 'any')
+    await user.click(within(dialog).getByRole('button', { name: 'Record Transaction' }))
+    await waitFor(() => expect(apiMocks.createPortfolioTransaction).toHaveBeenCalledWith('3', expect.objectContaining({
+      gross_amount: '780', counter_amount: '100', fx_rate: null,
+    }), expect.any(String)))
   })
 
   it('links an account-free portfolio to account creation', async () => {

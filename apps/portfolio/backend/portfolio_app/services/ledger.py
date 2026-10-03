@@ -1016,6 +1016,9 @@ def _replay_settled_monetary_postings(
                     base_currency=normalized_base, direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache, fx_conversion_legs=conversion_legs,
                     resolve_fx_rate_on=resolve_fx_rate_on)
+            source_amount_before, target_amount_before = float(source["amount"]), float(target["amount"])
+            source_basis_before = _safe_float(source.get("historical_cost_basis_base"))
+            target_basis_before = _safe_float(target.get("historical_cost_basis_base"))
             netted, released_basis, basis_stale = _apply_cash_transfer_basis(
                 source, target, amount, new_borrowing_fx=rate, new_borrowing_stale=stale)
             for state, leg in ((source, outgoing), (target, incoming)):
@@ -1029,7 +1032,12 @@ def _replay_settled_monetary_postings(
                 impacts.append({"transaction_id": str(incoming["transaction_id"]),
                     "posting_role": "internal_cash_transfer_netting", "account_id": target["account_id"],
                     "currency": target["currency"], "recognition_date": effective_date_iso,
-                    "recognition_fx_rate_to_base": None, "local_exposure_released": 0.0,
+                    "recognition_fx_rate_to_base": None, "local_exposure_released": netted,
+                    "source_account_id": source["account_id"],
+                    "source_cost_basis_base": source_basis_before * netted / source_amount_before
+                        if source_basis_before is not None and source_amount_before > 0 else None,
+                    "liability_cost_basis_base": target_basis_before * netted / target_amount_before
+                        if target_basis_before is not None and target_amount_before < 0 else None,
                     "historical_cost_basis_base": released_basis, "fair_value_base": 0.0,
                     "realized_cash_fx_pnl_base": -released_basis if released_basis is not None else None,
                     "fx_coverage_status": "unavailable" if released_basis is None else "stale" if basis_stale else "complete"})
@@ -4887,6 +4895,7 @@ def build_portfolio_positions(
     transactions: list[dict[str, object]],
     *,
     as_of_date: date | None = None,
+    resolve_pricing: bool = True,
 ) -> list[dict[str, object]]:
     pricing_map: dict[str, object] = {}
     position_lots = build_position_lots(
@@ -4895,6 +4904,7 @@ def build_portfolio_positions(
         transactions,
         status="open",
         as_of_date=as_of_date,
+        resolve_pricing=resolve_pricing,
         pricing_map=pricing_map,
     )
     positions_by_reference: dict[str, dict[str, object]] = {}
@@ -5019,6 +5029,7 @@ def build_account_workspace(
     base_currency: str = "USD",
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     direct_fx_instruments: valuation_fx.FxInstrumentMap | None = None,
+    include_valuation: bool = True,
 ) -> dict[str, object]:
     account_lookup = {str(account["account_id"]): account for account in accounts}
     resolved_selected_account_id = selected_account_id or next(iter(account_lookup.keys()), None)
@@ -5049,6 +5060,12 @@ def build_account_workspace(
         corporate_actions=corporate_actions,
         as_of_date=as_of_date,
     )
+    # Ledger-only consumers need native balances even while quotes/FX are
+    # unavailable. Keep the same postings and economic dates, but provide no
+    # market sources; foreign-currency base values consequently remain absent.
+    if not include_valuation:
+        instrument_detail_cache = {}
+        direct_fx_instruments = {}
     resolved_instrument_detail_cache = (
         instrument_detail_cache
         if instrument_detail_cache is not None
@@ -5153,6 +5170,7 @@ def build_account_workspace(
         corporate_actions=corporate_actions,
         pricing_map=pricing_map,
         instrument_detail_cache=(resolved_instrument_detail_cache if instrument_detail_cache is not None else None),
+        resolve_pricing=include_valuation,
     )
     positions_by_account_reference: dict[tuple[str, str], dict[str, object]] = {}
     for position_lot in position_lots:
@@ -5246,6 +5264,15 @@ def build_account_workspace(
                 "quantity": quantity,
                 "cost_basis": float(bucket["cost_basis"]),
                 "last_price": None if event_valued else last_price,
+                "quote_date": str(pricing_quote.get("as_of_date"))[:10]
+                    if not event_valued and isinstance(pricing_quote, dict) and pricing_quote.get("as_of_date") else None,
+                "valuation_note": (
+                    "Carried at transaction cost; no observed market quote."
+                    if event_valued else "Market quote unavailable; quantity and book cost remain confirmed ledger facts."
+                    if last_price is None else "Initial purchase price; no independent market quote."
+                    if isinstance(pricing_quote, dict) and pricing_quote.get("status") == "transaction-price"
+                    else "Latest eligible market quote on or before the valuation date."
+                ),
                 "market_value": market_value,
                 "carrying_value": market_value if event_valued else None,
                 "fair_value": None if event_valued or (isinstance(pricing_quote, dict) and pricing_quote.get("status") == "transaction-price") else market_value,

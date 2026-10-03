@@ -8920,7 +8920,8 @@ td b {
 
   .portfolio-nav-chart-series-head,
   .portfolio-series-label {
-    flex-direction: column;
+    flex-direction: row;
+    flex-wrap: wrap;
   }
 
   .portfolio-series-label span {
@@ -10076,10 +10077,17 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-series-label {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   color: var(--portfolio-muted);
   font-size: 14px;
+}
+
+.portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-series-label .portfolio-series-basis {
+  flex-basis: 100%;
+  color: var(--portfolio-muted);
+  font-size: 12px;
 }
 
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-series-label strong {
@@ -11982,4 +11990,11 @@ input[type='date']::-webkit-calendar-picker-indicator {
   .risk-date-selector > button { grid-column: 2; grid-row: 1; }
   .risk-date-selector .risk-date-slider { grid-column: 1 / -1; grid-row: 2; width: 100%; min-width: 0; }
   .risk-date-selector [role='status'] { grid-column: 1 / -1; }
+}
+
+.portfolio-workspace-page .portfolio-nav-chart .portfolio-nav-chart-tooltip-compact {
+  right: 8px;
+  min-width: 0;
+  transform: none;
+  overflow-wrap: anywhere;
 }

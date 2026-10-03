@@ -241,6 +241,8 @@ it('translates shared failure diagnostics while preserving a generated review su
   const view = render(<LanguageProvider messages={researchMessages} patterns={researchPatterns}><SectorResearchPanel instrumentId="xlk-us" /></LanguageProvider>)
   await load()
   expect(screen.getByText('Fact verification failed: The model provider is temporarily rate limited. The draft and evidence are retained.')).toBeTruthy()
+  expect(screen.getAllByText(/The latest update did not complete/).length).toBeGreaterThan(0)
+  expect(screen.queryByText(/最近一次更新未完成/)).toBeNull()
   request.mockResolvedValue({ ...data, sectors: [{ ...data.sectors[0], latest_review: {
     ...review('completed'), reflection: { status: 'reviewed', summary: '模型服务暂时限流，草稿与已有证据已保留。', reviewed_update_ids: [] },
   } }] })
@@ -249,4 +251,20 @@ it('translates shared failure diagnostics while preserving a generated review su
   expect(screen.getByText('Prior judgments reviewed')).toBeTruthy()
   expect(screen.getByText('模型服务暂时限流，草稿与已有证据已保留。').getAttribute('translate')).toBe('no')
   expect(request.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+})
+
+
+it('retains the original running task when status fails and uses read-only recovery in English', async () => {
+  window.history.replaceState(null, '', '/?lang=en')
+  request.mockResolvedValue(payload('running'))
+  render(<LanguageProvider messages={researchMessages} patterns={researchPatterns}><SectorResearchPanel instrumentId="xlk-us" /></LanguageProvider>)
+  await load()
+  request.mockRejectedValueOnce(new Error('Temporary identity outage'))
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+  expect(screen.getByRole('alert').textContent).toContain('does not mean the task stopped')
+  expect(screen.getByText('run-1')).toBeTruthy()
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Refresh Status' })) })
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(screen.getByText('run-1')).toBeTruthy()
+  expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
 })

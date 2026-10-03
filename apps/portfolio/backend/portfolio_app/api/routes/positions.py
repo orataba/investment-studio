@@ -54,6 +54,7 @@ def get_portfolio_fcn_lifecycles(
 def list_portfolio_positions(
     portfolio_id: str,
     as_of_date: date | None = None,
+    include_valuation: bool = True,
 ) -> PositionListResponse:
     if get_portfolio(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -69,6 +70,7 @@ def list_portfolio_positions(
             accounts,
             transactions,
             as_of_date=as_of_date,
+            resolve_pricing=include_valuation,
         )
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error

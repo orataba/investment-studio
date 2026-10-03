@@ -1,0 +1,48 @@
+.contract-amendment-editor {
+  margin-top: 1rem;
+}
+
+.contract-amendment-editor summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.contract-amendment-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 1rem;
+  margin: 1rem 0;
+  padding: 1rem;
+  min-width: 0;
+}
+
+.contract-amendment-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+  min-width: 0;
+}
+
+.contract-amendment-fields :is(input, select, textarea) {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  min-height: 2.5rem;
+  padding: .55rem .65rem;
+  border: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: var(--portfolio-surface, #fff);
+  color: var(--portfolio-ink);
+  font: inherit;
+  line-height: 1.4;
+}
+
+.contract-amendment-fields textarea {
+  min-height: 6rem;
+  resize: vertical;
+}
+
+.contract-amendment-wide, .contract-amendment-fields [role="alert"] {
+  grid-column: 1 / -1;
+}

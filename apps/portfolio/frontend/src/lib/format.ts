@@ -53,6 +53,15 @@ export function formatPercent(value: number | null | undefined, digits = 2) {
   return `${(Object.is(rounded, -0) ? 0 : rounded).toFixed(digits)}%`
 }
 
+// Daily changes smaller than the ordinary two-decimal display must retain direction.
+export function formatDailyPercent(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  const percent = value * 100
+  return percent !== 0 && Math.abs(percent) < 0.005
+    ? `${percent.toPrecision(1)}%`
+    : formatPercent(value)
+}
+
 export function formatPercentInput(value: number | null | undefined, digits = 4) {
   if (value == null || !Number.isFinite(value)) {
     return ''

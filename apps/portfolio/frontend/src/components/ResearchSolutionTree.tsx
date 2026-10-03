@@ -23,16 +23,27 @@ export default function ResearchSolutionTree({ run }: { run: PortfolioResearchRu
   const money = (value: number | null) => tree.base_currency ? formatCurrency(value, tree.base_currency) : formatNumber(value, 2)
   const level = (row: ResearchSolutionTreeRow) => row.row_kind === 'portfolio' ? 'root' : row.row_kind === 'instrument' ? 'item' : row.depth === 1 ? 'primary' : 'nested'
   const amountLabel = tree.base_currency ? ` (${tree.base_currency})` : ''
-  const globalRisk = ['global_leaf_covariance_v1', 'global_leaf_scalar_targets_v2', 'global_leaf_scalar_targets_v3', 'global_leaf_scalar_targets_v4', 'global_leaf_scalar_targets_v5'].includes(run.detail?.solver_version ?? '')
+  const globalRisk = tree.risk_attribution_scope === 'portfolio' && Boolean(run.detail?.solver_version?.startsWith('global_leaf_'))
   const riskDetail = tree.risk_attribution_scope !== 'portfolio'
     ? (zh ? '目标以保存的全组合风险预算为分母；本次只研究指定分类，求解贡献仍以该范围风险为分母，不含外部持仓，两列不能直接计算偏差。' : 'Targets use the saved total portfolio risk budget. This run solves only the selected scope, so solved RC retains that scope’s risk denominator and excludes outside holdings; the two columns cannot be directly subtracted.')
     : !globalRisk
     ? (zh ? '目标仅显示能够从保存的完整预算路径证明的组合风险份额。求解贡献汇总旧记录保存的成员归因，不重新估计协方差；未保存中间预算的目标留空。' : 'Targets show only portfolio risk shares provable from the saved budget path. Solved contributions aggregate archived member attribution without re-estimating covariance; targets with missing intermediate budgets remain blank.')
     : (zh ? '目标从保存的组合根风险预算逐层相乘；资金配置分叉后的风险目标无法据此确定，留空。分类求解贡献汇总成员在同一组合协方差下的贡献。现金与衍生品不进入协方差。' : 'Target RC follows the saved portfolio-root risk-budget path; a branching capital allocation does not determine a risk target. Category solved RC sums member contributions under the same portfolio covariance. Cash and derivatives are excluded from covariance.')
+  const evidence = tree.valuation_evidence
+  const amountTitle = evidence?.status === 'canonical' ? (zh ? '账面金额' : 'Carrying Amount') : evidence ? (zh ? '参考金额' : 'Reference Amount') : (zh ? '保存金额' : 'Saved Amount')
   const capitalDetail = tree.capital_weight_basis === 'portfolio_nav'
-    ? (zh ? '当前权重=当前账面金额/保存估值日全组合 NAV；目标权重=求解目标资金金额/NAV。调仓金额=目标金额−当前账面金额；不交易成员保持原金额。' : 'Current weight is current carrying amount / saved total portfolio NAV; target weight is solved target capital / NAV. Rebalance amount is target less current carrying amount; no-trade members retain their amount.')
+    ? evidence?.status === 'canonical'
+      ? (zh ? '当前权重=当前账面金额/保存估值日全组合 NAV；目标权重=求解目标资金金额/NAV。调仓金额=目标金额−当前账面金额；不交易成员保持原金额。' : 'Current weight is current carrying amount / saved total portfolio NAV; target weight is solved target capital / NAV. Rebalance amount is target less current carrying amount; no-trade members retain their amount.')
+      : (zh ? '当前及目标权重分别用保存的当前与目标金额除以条件分析净资产；该分母不代表已发布 NAV。调仓金额是参考输入下的目标与当前金额之差，不交易成员保持原金额。' : 'Current and target weights divide the saved current and target amounts by the conditional-analysis net assets; this denominator does not establish a published NAV. Rebalance amounts are differences under the saved reference inputs; no-trade members retain their amount.')
     : (zh ? '此记录无法证明全组合 NAV，当前权重留空；目标权重保留保存时的研究范围口径。调仓金额来自保存的目标金额和账面金额。' : 'Total portfolio NAV cannot be established from this archive, so current weight is unavailable. Target weights retain the saved research-scope basis; rebalance amounts use the recorded target and carrying amounts.')
   return <div className="research-solution-tree">
+    <div className={`inline-notice ${evidence?.status === 'canonical' ? '' : 'inline-notice-warning'}`} role="status">
+      <strong>{evidence?.status === 'canonical' ? (zh ? '已发布估值基础' : 'Published valuation basis') : (zh ? '条件测算，尚不可执行' : 'Conditional analysis — not execution-ready')}</strong>
+      <span>{zh ? (evidence?.status === 'canonical' ? '采用所选日期已发布的完整估值；交易前仍须复核执行价格。' : '此结果使用参考价格重新测算，或存档未保存报价资格，未直接读取已发布估值。执行前须复核价格、汇率及组合估值。') : evidence?.note ?? 'This archive did not record valuation eligibility or reference-price dates. Execution readiness cannot be established.'}</span>
+    </div>
+    {evidence?.prices.length ? <details className="research-valuation-evidence"><summary>{zh ? '参考价格与日期' : 'Reference prices and dates'} · {evidence.as_of_date} · {evidence.prices.map((price) => price.quote_date ?? '—').filter((date, index, all) => all.indexOf(date) === index).join(', ')}</summary>
+      <HorizontalTableScroll className="table-shell"><table className="transactions-table"><thead><tr><th>{zh ? '证券' : 'Security'}</th><th>{zh ? '数量' : 'Quantity'}</th><th>{zh ? '参考价格' : 'Reference price'}</th><th>{zh ? '报价日期' : 'Quote date'}</th><th>{zh ? '来源 / 口径' : 'Source / basis'}</th></tr></thead><tbody>{evidence.prices.map((price) => <tr key={price.instrument_id}><td>{price.label}</td><td>{formatNumber(price.quantity, 6)}</td><td>{formatNumber(price.price, 6)} {price.currency}</td><td>{price.quote_date ?? '—'}</td><td>{[price.provider, price.quote_basis, price.quote_status].filter(Boolean).join(' / ')}</td></tr>)}</tbody></table></HorizontalTableScroll>
+    </details> : null}
     <div className="research-solution-toolbar">
       <div className="research-solution-actions">
         <button type="button" className="table-inline-button" onClick={() => setCollapsed(new Set())}>{zh ? '展开全部' : 'Expand all'}</button>
@@ -45,7 +56,7 @@ export default function ResearchSolutionTree({ run }: { run: PortfolioResearchRu
         <colgroup><col style={{ width: '30%' }} /><col style={{ width: '10%' }} /><col style={{ width: '10%' }} /><col style={{ width: '13%' }} /><col style={{ width: '11%' }} /><col style={{ width: '11%' }} /><col style={{ width: '15%' }} /></colgroup>
         <thead><tr><th>{zh ? '分类 / 标的' : 'Category / Instrument'}</th>
           <th>{zh ? '目标风险贡献' : 'Target RC'}</th><th>{zh ? '求解风险贡献' : 'Solved RC'}<InfoHint label={zh ? '风险贡献口径' : 'Risk contribution basis'} detail={riskDetail} /></th>
-          <th>{zh ? '账面金额' : 'Carrying Amount'}{amountLabel}{!tree.base_currency ? <><InfoHint kind="attention" label={zh ? '报告币种未保存' : 'Reporting currency not recorded'} detail={zh ? '此存档未保存报告币种；账面及调仓金额按原始数值展示，未换算。' : 'This archive did not record its reporting currency. Carrying and rebalance amounts show their original numeric values without conversion.'} /></> : null}</th>
+          <th>{amountTitle}{amountLabel}{!tree.base_currency ? <><InfoHint kind="attention" label={zh ? '报告币种未保存' : 'Reporting currency not recorded'} detail={zh ? '此存档未保存报告币种；保存及调仓金额按原始数值展示，未换算。' : 'This archive did not record its reporting currency. Saved and rebalance amounts show their original numeric values without conversion.'} /></> : null}</th>
           <th>{zh ? '当前权重' : 'Current Weight'}</th>
           <th>{zh ? '目标权重' : 'Target Weight'}<InfoHint label={zh ? '权重口径' : 'Weight basis'} detail={capitalDetail} /></th><th>{zh ? '调仓金额' : 'Rebalance amount'}{amountLabel}</th></tr></thead>
         <tbody>{rows.map((row) => {

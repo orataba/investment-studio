@@ -572,6 +572,26 @@ def test_stock_short_partial_cover_fifo_and_average(client, monkeypatch, cost_me
     assert sum(lot["realized_pnl"] for lot in lots) == pytest.approx(1920)
 
 
+def test_cover_rejects_long_positions_and_overcover_while_short_sale_crossing_is_explicit(client):
+    cash = funded(client, 20000)
+    stock = account(client, "security", cash)
+    post(client, transaction_type="buy", trade_date="2026-01-05", account_id=stock,
+         settlement_cash_account_id=cash, instrument_id="equity-us-abbv", quantity=60, price=100, gross_amount=6000)
+    base = dict(transaction_type="buy_to_cover", trade_date="2026-01-06", account_id=stock,
+        settlement_cash_account_id=cash, instrument_id="equity-us-abbv", quantity=1, price=100, gross_amount=100, currency="USD")
+    rejected = client.post(f"{BASE}/transactions", json=base)
+    assert rejected.status_code == 409, rejected.text
+    assert "open short quantity" in rejected.text
+    post(client, **{**base, "transaction_type": "short_sell", "quantity": 62, "gross_amount": 6200})
+    preview = client.get(f"{BASE}/transactions/position-preview", params={"account_id": stock,
+        "position_kind": "instrument", "position_reference_id": "equity-us-abbv", "as_of_date": "2026-01-07"})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["quantity"] == -2
+    rejected = client.post(f"{BASE}/transactions", json={**base, "trade_date": "2026-01-07", "quantity": 3, "gross_amount": 300})
+    assert rejected.status_code == 409, rejected.text
+    assert "open short quantity" in rejected.text
+
+
 @pytest.mark.parametrize("file_format", ["csv", "xlsx"])
 def test_naked_call_assignment_creates_short_shares_then_actual_cover(client, file_format):
     cash = funded(client, 20000)

@@ -12,6 +12,7 @@ import {
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import CalculationStatus from '../components/CalculationStatus'
+import LedgerHoldings from '../components/LedgerHoldings'
 import HoldingsSectionTables, {
   DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS,
   HOLDINGS_SECTION_COLUMN_KEYS,
@@ -3279,7 +3280,7 @@ export default function PortfolioHomePage() {
         row.instrument_core?.instrument_name ?? row.line_id,
         row.holding_kind,
         holdingCurrency(row),
-        (row.account_ids ?? []).join(', '),
+        (row.account_names ?? row.account_ids ?? []).join(', '),
         Boolean(row.available_for_trading),
         row.market_value,
         rowMarketValueBase(row, workspace),
@@ -3693,7 +3694,7 @@ export default function PortfolioHomePage() {
                 className="holdings-filter-input"
                 type="date"
                 aria-label="As Of Date"
-                value={requestedAsOfDate || workspace?.as_of_date || ''}
+                value={requestedAsOfDate || workspace?.as_of_date || new Date().toLocaleDateString('en-CA')}
                 onChange={(event) => updateSearchParam('as_of_date', event.target.value || null)}
               />
             </label>
@@ -3718,7 +3719,8 @@ export default function PortfolioHomePage() {
           {zh ? '有效持仓日期' : 'Effective holdings date'}: {workspace.as_of_date}
           {requestedAsOfDate && requestedAsOfDate !== workspace.as_of_date ? ` · ${zh ? '请求日期' : 'Requested date'}: ${requestedAsOfDate} · ${loading ? (zh ? '正在加载请求日期，当前仍显示上次快照' : 'Loading requested date; the previous snapshot remains visible') : (zh ? '显示最近可靠估值日持仓' : 'Showing the latest reliable valuation snapshot')}` : ''}
         </div> : null}
-        <NoticeToast notice={error ? { id: 0, tone: 'error', message: error } : null} onDismiss={() => setError(null)} />
+        {error ? <div className="inline-notice inline-notice-warning" role="status"><span>{error}</span><button type="button" onClick={() => setRiskPolicyRevision((value) => value + 1)}>{zh ? '重试估值读取' : 'Retry valuation'}</button></div> : null}
+        {!loading && !workspace && error ? <LedgerHoldings key={`${portfolioId}:${requestedAsOfDate}`} portfolioId={portfolioId} asOfDate={requestedAsOfDate || undefined} /> : null}
         {holdingsViewStoreError ? (
           <div className="inline-notice inline-notice-error holdings-view-error" role="alert">
             <span>{holdingsViewStoreError}</span>

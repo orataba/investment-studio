@@ -375,6 +375,12 @@ def _public_holdings_workspace_response(
     }
     instrument_ids = set(_instrument_ids_from_holdings_workspace(workspace))
     portfolio_id = str(workspace.get("portfolio_id") or "").strip()
+    account_names = {str(account["account_id"]): str(account["account_name"])
+                     for account in list_accounts(portfolio_id)} if portfolio_id else {}
+    for row in row_items:
+        contract = row.get("derivative_contract") or {}
+        ids = row.get("account_ids") or ([contract["account_id"]] if contract.get("account_id") else [])
+        row["account_names"] = [account_names.get(str(account_id), str(account_id)) for account_id in ids if account_id]
     workspace["quality_warnings"] = (
         corporate_action_quality_warnings(
             instrument_types,
