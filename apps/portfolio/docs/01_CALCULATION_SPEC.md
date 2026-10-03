@@ -594,7 +594,7 @@ Holdings `Forward RC` 是当前正式风险持仓的组合级 forward risk contr
 - 窗口固定锚在请求的 holdings as-of date；较早的 latest observation 只能触发 trailing-staleness 诊断，不能把整个 lookback window 一起向前移动；
 - 每个 leaf return 必须有合法且与其他成员一致的 period start/end；taxonomy group 的 Forward RC 只加总 leaf `forward_risk_share` 和 contribution，不重新估计 group covariance；
 - 若没有任何可建模市场敞口（包括外币 monetary），或任一 modeled member 缺少完整收益窗口、base-currency return、权重、共同 period identity 或正的组合 variance，Forward RC 进入 `unavailable`，无法建模的非零普通证券敞口必须使结果不可用，不得用短窗口、0 return、pairwise covariance 或现金归一化兜底；
-- 完整样本实际估计得到净方差恰为零时，保留 `portfolio_variance=0`、`portfolio_volatility=0` 及观察数；比例 RC 仍为 `unavailable` / null，因为其分母为零。缺数据不能进入此分支，微小正方差也不舍入为零；FX 抵销不表示融资、信用、流动性或未建模风险消失；
+- 完整样本实际估计得到净方差恰为零时，保留 `portfolio_variance=0`、`portfolio_volatility=0` 及观察数；比例 RC 仍为 `unavailable` / null，因为其分母为零。同因子账户先汇总 signed 金额，再除以 NAV，并在唯一经济因子上计算组合方差及 marginal risk；账户贡献使用原 signed 权重乘对应因子的 marginal risk，避免先展开重复协方差后相抵产生平台相关的浮点残差。缺数据不能进入此分支，微小正方差也不舍入为零；FX 抵销不表示融资、信用、流动性或未建模风险消失；
 - Holdings 普通证券的 `Vol 1M / 3M / 6M / 1Y` 仍是标的自身 trailing sample volatility 观测列，不受 Production Risk Model 的 lookback 或 covariance model 影响，也不能替代 Forward RC；衍生品固定为 `N/A / excluded`。
 
 Holdings group rows 不是后端 period-performance group：

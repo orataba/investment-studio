@@ -236,9 +236,14 @@ def test_economic_fx_factor_is_invariant_to_signed_account_splits(model, exposur
 
 @pytest.mark.parametrize('model', ['sample_covariance', 'ewma_covariance', 'ewma_vol_shrinkage_corr_covariance'])
 @pytest.mark.parametrize('mode', ['signed', 'abs'])
-def test_fully_offset_fx_accounts_do_not_invent_positive_risk(model, mode):
+@pytest.mark.parametrize('exposures', [
+    [100_000, -100_000],
+    [100_000, 50_000, -150_000],
+    [1_000_000, -999_999, -1],
+])
+def test_fully_offset_fx_accounts_do_not_invent_positive_risk(model, mode, exposures):
     history = risk_fx_history()
-    rows = [monetary('cash:HKD:asset', 100_000), monetary('cash:HKD:debt', -100_000)]
+    rows = [monetary(f'cash:HKD:{index}', exposure) for index, exposure in enumerate(exposures)]
     result = enrich_holdings_forward_risk(_workspace(rows, base_currency='USD'),
         as_of_date=AS_OF_DATE, calculation_frequency='daily',
         risk_policy=_risk_policy(covariance_model_id=model, contribution_mode=mode), fx_histories={history.instrument_id: history})
@@ -247,6 +252,20 @@ def test_fully_offset_fx_accounts_do_not_invent_positive_risk(model, mode):
     assert result['forward_risk']['observation_count'] > 0
     assert 'proportional risk contributions are undefined' in result['forward_risk']['errors'][0]
     assert all(row['forward_risk_share'] is None for row in rows)
+
+
+@pytest.mark.parametrize('missing_history', [False, True])
+def test_offset_fx_does_not_label_small_risk_or_missing_history_as_known_zero(missing_history):
+    history = risk_fx_history(missing=date.fromisoformat(_return_points()[10]['date']) if missing_history else None)
+    rows = [monetary('cash:HKD:asset', 100_000),
+            monetary('cash:HKD:debt', -100_000 if missing_history else -99_999.999)]
+    result = enrich_holdings_forward_risk(_workspace(rows, base_currency='USD'),
+        as_of_date=AS_OF_DATE, calculation_frequency='daily', risk_policy=_risk_policy(),
+        fx_histories={history.instrument_id: history})['forward_risk']
+    assert result['status'] == 'unavailable'
+    assert result.get('portfolio_variance') is None
+    assert result.get('portfolio_volatility') is None
+    assert not any('Modeled net variance is zero' in error for error in result['errors'])
 
 
 @pytest.mark.parametrize('model', ['sample_covariance', 'ewma_covariance', 'ewma_vol_shrinkage_corr_covariance'])

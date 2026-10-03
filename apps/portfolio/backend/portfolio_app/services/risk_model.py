@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import date
-from math import sqrt
+from math import fsum, sqrt
 
 import numpy as np
 import pandas as pd
@@ -28,7 +28,7 @@ from portfolio_app.services.research_solver import (
     research_covariance_parameters_for_window,
     research_min_observations_for_window,
     research_window_start_date,
-    risk_contribution_shares,
+    normalize_risk_contributions,
 )
 
 PORTFOLIO_RISK_POLICY_MODEL_NAME = "Production Risk Model"
@@ -684,10 +684,21 @@ def enrich_holdings_forward_risk(
             calculation_frequency=calculation_frequency,
             as_of_date=as_of_date,
         )
-        covariance_matrix = factor_covariance.loc[row_factor_keys, row_factor_keys].to_numpy(dtype="float64")
-        marginal = covariance_matrix @ weights
+        factor_keys = list(representative_by_factor.values())
+        # Net signed amounts before NAV normalization and matrix multiplication.
+        # Expanded duplicate columns can leave BLAS/FMA cancellation residue
+        # for an exactly offset factor, turning known zero into unavailable risk.
+        factor_weights = np.asarray([
+            fsum(modeled_exposures[index] for index, row_factor in enumerate(row_factor_keys) if row_factor == key) / total_nav
+            for key in factor_keys
+        ], dtype="float64")
+        factor_matrix = factor_covariance.loc[factor_keys, factor_keys].to_numpy(dtype="float64")
+        factor_marginal = factor_matrix @ factor_weights
+        marginal_by_factor = dict(zip(factor_keys, factor_marginal))
+        marginal = np.asarray([marginal_by_factor[key] for key in row_factor_keys], dtype="float64")
         signed_contributions = weights * marginal
-        variance = float(weights @ marginal)
+        variance = float(factor_weights @ factor_marginal)
+        covariance_matrix = factor_covariance.loc[row_factor_keys, row_factor_keys].to_numpy(dtype="float64")
         if variance == 0.0:
             # Only an actually estimated zero is known. Missing histories and
             # insufficient observations must retain unavailable measurements.
@@ -696,9 +707,8 @@ def enrich_holdings_forward_risk(
                 "portfolio_volatility": 0.0,
                 "observation_count": int(len(coverage.returns)),
             }
-        shares = risk_contribution_shares(
-            covariance_matrix,
-            weights,
+        shares = normalize_risk_contributions(
+            signed_contributions,
             contribution_mode=str(snapshot["contribution_mode"]),
         )
     except ValueError as error:

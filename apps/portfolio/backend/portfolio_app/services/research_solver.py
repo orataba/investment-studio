@@ -1166,9 +1166,17 @@ def _risk_contribution_shares(
     *,
     contribution_mode: str,
 ) -> np.ndarray:
-    mode = contribution_mode.strip().lower()
     marginal = covariance @ weights
-    signed = weights * marginal
+    return normalize_risk_contributions(weights * marginal, contribution_mode=contribution_mode)
+
+
+def normalize_risk_contributions(
+    signed: np.ndarray,
+    *,
+    contribution_mode: str,
+) -> np.ndarray:
+    """Normalize already computed signed Euler contributions in the selected mode."""
+    mode = contribution_mode.strip().lower()
     if mode == "signed":
         contributions = signed
     elif mode == "abs":
