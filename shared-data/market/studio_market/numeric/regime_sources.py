@@ -279,7 +279,7 @@ class RegimeSources:
         stored = self._publish(response, rows, source="fred", series="fred:" + series)
         return [{"date": row["date"], "value": row["value"]} for row in stored]
 
-    def datahub_page(self, endpoint: str, parameters: dict) -> tuple[list[dict], bool]:
+    def datahub_page(self, endpoint: str, parameters: dict) -> tuple[list[dict], bool | None]:
         if endpoint not in {"trade_cal", "fund_daily", "fund_adj", "index_daily"}:
             raise ValueError("Regime DataHub intake is scoped to its declared daily endpoints")
         if self.role == "replica":
@@ -298,7 +298,7 @@ class RegimeSources:
         url = self.settings.datahub_api_url.rstrip("/") + "/" + endpoint.replace("_", "-")
         # The DataHub REST gateway accepts at most 5,000 rows per page, while
         # callers may use Tushare's larger page size. The caller advances by
-        # actual returned rows and uses has_more, so the smaller page is complete.
+        # actual returned rows; without has_more it must request an empty page.
         limit = int(parameters.get("limit", 5000))
         if limit < 1:
             raise ValueError("DataHub daily page limit must be positive")
@@ -320,8 +320,12 @@ class RegimeSources:
             raise ValueError("DataHub daily response rejected the authorized request")
         data = payload.get("data") or {}
         fields, items, has_more = data.get("fields"), data.get("items"), data.get("has_more")
-        if not isinstance(fields, list) or not fields or any(not isinstance(field, str) or not field for field in fields) or not isinstance(items, list) or not isinstance(has_more, bool):
+        if not isinstance(fields, list) or not fields or any(not isinstance(field, str) or not field for field in fields) or not isinstance(items, list):
             raise ValueError("DataHub daily response has an invalid page envelope")
+        # Live daily responses may contain only fields/items. Absence means
+        # unknown, not end-of-history; short pages are not completion evidence.
+        if "has_more" in data and not isinstance(has_more, bool):
+            raise ValueError("DataHub daily response has invalid pagination metadata")
         if len(set(fields)) != len(fields) or any(not isinstance(item, list) or len(item) != len(fields) for item in items):
             raise ValueError("DataHub daily page has invalid columns or row widths")
         if not items and has_more:

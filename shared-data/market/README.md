@@ -26,9 +26,14 @@ Source secrets are file references, never values in bundles or database URLs:
 DataHub and official Tushare credentials are distinct. DataHub's configured API
 URL defaults to the existing `http://datahubco.com/app-api/openapi/v1/tushare`.
 The Regime DataHub adapter requests at most 5,000 rows per REST page and retains
-the effective request parameters with each capture. Consumers continue by actual
-row count and `has_more`; deterministic HTTP request/authentication failures do
-not enter the transport retry path.
+the effective request parameters with each capture. Daily responses can omit
+`has_more`: the adapter preserves this as unknown, and the Regime consumer
+advances by the actual row count until an explicit empty page or boolean
+`has_more=false`. A short page or `meta.snapshot_id` does not prove completion.
+Present non-boolean markers and empty pages claiming more rows are rejected;
+the consumer retains its page bound and duplicate-row checks. Terminal empty
+responses are archived too. Deterministic HTTP request/authentication failures
+do not enter the transport retry path.
 
 The cloud installation uses `ROLE=collector`; the local installation uses
 `ROLE=replica`. Text receivers either configure `MI_HOST` and `MI_REMOTE_DIR`

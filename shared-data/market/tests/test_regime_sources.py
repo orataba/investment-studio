@@ -278,6 +278,99 @@ def test_datahub_rest_page_size_and_actual_capture_preserve_pagination(source, m
     assert more and not last_more
 
 
+def test_datahub_missing_pagination_keeps_short_pages_unknown_and_archives_empty_terminal(source, monkeypatch, tmp_path):
+    from dataclasses import replace
+    from curl_cffi import requests
+
+    key = tmp_path / "datahub-key"
+    key.write_text("fixture-only-key")
+    source.settings = replace(source.settings, datahub_api_key_file=key)
+    wire = []
+    pages = [["20260930", "20260929"], ["20260928"], []]
+
+    class Session:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, url, **kwargs):
+            wire.append(dict(kwargs["params"]))
+            body = {"code": 0, "meta": {"snapshot_id": "fixture-snapshot"},
+                    "data": {"fields": ["ts_code", "trade_date", "close"],
+                             "items": [["000985.CSI", day, 100] for day in pages.pop(0)]}}
+            return SimpleNamespace(status_code=200, content=json.dumps(body).encode(), raise_for_status=lambda: None)
+
+    monkeypatch.setattr(requests, "Session", Session)
+    rows = []
+    for _ in range(3):
+        page, more = source.datahub_page("index_daily", {
+            "ts_code": "000985.CSI", "fields": "ts_code,trade_date,close",
+            "limit": 6000, "offset": len(rows),
+        })
+        # A short response and a snapshot identity cannot prove completion.
+        assert more is None
+        if not page:
+            break
+        rows.extend(page)
+    else:
+        pytest.fail("No explicit terminal page was observed")
+
+    assert [row["trade_date"] for row in rows] == ["20260930", "20260929", "20260928"]
+    assert [params["offset"] for params in wire] == [0, 2, 3]
+    assert source.store.query("regime_market_daily")["total"] == 3
+    with source.store.engine.connect() as connection:
+        captures = connection.execute(select(batches.c.details)).scalars().all()
+    assert len(captures) == 3
+    terminal = next(capture for capture in captures if capture["parameters"]["offset"] == 3)
+    raw = json.loads(gzip.decompress((source.settings.data_root / terminal["raw_ref"]).read_bytes()))
+    assert raw["data"]["items"] == []
+    assert "has_more" not in raw["data"]
+
+
+@pytest.mark.parametrize("marker", [None, 0, 1, "false", "true", [], {}])
+def test_datahub_explicit_invalid_pagination_is_rejected_before_capture(source, monkeypatch, tmp_path, marker):
+    from dataclasses import replace
+    from curl_cffi import requests
+
+    key = tmp_path / "datahub-key"
+    key.write_text("fixture-only-key")
+    source.settings = replace(source.settings, datahub_api_key_file=key)
+    class Session:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, url, **kwargs):
+            body = {"code": 0, "data": {"fields": ["ts_code", "trade_date", "close"],
+                    "items": [["000985.CSI", "20260930", 100]], "has_more": marker}}
+            return SimpleNamespace(status_code=200, content=json.dumps(body).encode(), raise_for_status=lambda: None)
+    monkeypatch.setattr(requests, "Session", Session)
+    with pytest.raises(ValueError, match="pagination metadata"):
+        source.datahub_page("index_daily", {"ts_code": "000985.CSI"})
+    with source.store.engine.connect() as connection:
+        assert connection.execute(select(batches.c.id)).all() == []
+
+
+def test_datahub_empty_page_cannot_claim_more_rows(source, monkeypatch, tmp_path):
+    from dataclasses import replace
+    from curl_cffi import requests
+
+    key = tmp_path / "datahub-key"
+    key.write_text("fixture-only-key")
+    source.settings = replace(source.settings, datahub_api_key_file=key)
+    class Session:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, url, **kwargs):
+            body = {"code": 0, "data": {"fields": ["ts_code", "trade_date", "close"],
+                                      "items": [], "has_more": True}}
+            return SimpleNamespace(status_code=200, content=json.dumps(body).encode(), raise_for_status=lambda: None)
+    monkeypatch.setattr(requests, "Session", Session)
+    with pytest.raises(ValueError, match="empty page incorrectly reports more rows"):
+        source.datahub_page("index_daily", {"ts_code": "000985.CSI"})
+    with source.store.engine.connect() as connection:
+        assert connection.execute(select(batches.c.id)).all() == []
+
+
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 422, 408, 429, 500, 503])
 def test_datahub_http_failures_preserve_only_transient_transport_errors(source, monkeypatch, tmp_path, status):
     from dataclasses import replace
