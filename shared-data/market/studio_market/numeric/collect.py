@@ -15,7 +15,8 @@ from .raw import archive_response
 from .store import NumericStore
 from .price_revisions import history_start, pending_revisions
 from .price_identities import (PriceIdentityUnavailable, guard_reference_changes,
-                               price_identities, price_capture_bases, action_in_identity)
+                               price_identities, price_capture_bases, action_in_identity,
+                               reviewed_retained_dates)
 from .providers import analyst, directory, etf, events, financials, indexes, macro, market_series, profiles, ratings, treasury, us_market
 from .providers.fmp import FmpClient, FmpHttpError, FmpResponseError, FmpTransportError
 from .providers.cn_futures import CnFuturesError
@@ -296,7 +297,10 @@ class Collector:
                     # prior coherent generation, never the reused ticker's rows.
                     prior = {row['date']:row for row in self.store.query(dataset,symbols=[symbol],
                         start=cursor.isoformat(),end=stop.isoformat(),limit=100000)['rows']}
-                    missing = sorted(set(prior)-{row['date'].isoformat() for row in rows})
+                    retained = set(prior)
+                    if identity and not base:
+                        retained.update(reviewed_retained_dates(self.store, dataset, identity, cursor, stop))
+                    missing = sorted(retained-{row['date'].isoformat() for row in rows})
                     missing_dates.extend(missing)
                     if (revision_id or full_identity) and missing:
                         raise us_market.PriceHistoryUnavailable('retained_price_dates_missing',symbol,missing)

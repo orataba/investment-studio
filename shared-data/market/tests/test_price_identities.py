@@ -16,6 +16,7 @@ from studio_market.numeric.price_revisions import pending_revisions
 from studio_market.numeric.providers.fmp import FmpResponse
 from studio_market.numeric.providers.us_market import PriceHistoryUnavailable
 from studio_market.numeric.replication import export_bundle, import_bundle
+from studio_market.numeric.raw import archive_response
 from studio_market.numeric.schema import batches
 from studio_market.numeric.store import NumericStore
 
@@ -52,8 +53,8 @@ def seed(store, symbol='REUSED', day='2001-01-02', close=10):
 
 
 class Prices:
-    def __init__(self, *, adjusted=50, before=None):
-        self.adjusted, self.before, self.calls = adjusted, before, []
+    def __init__(self, *, adjusted=50, before=None, days=()):
+        self.adjusted, self.before, self.calls, self.days = adjusted, before, [], days
 
     def get_json(self, endpoint, params):
         self.calls.append((endpoint, params.copy()))
@@ -63,7 +64,7 @@ class Prices:
         value = self.adjusted if endpoint.endswith('dividend-adjusted') else 50
         row = dict(symbol=params['symbol'], date=params['to'], open=50, high=50, low=50,
                    close=50, adjOpen=value, adjHigh=value, adjLow=value, adjClose=value, volume=1)
-        payload = [row]
+        payload = [{**row, 'date': day} for day in self.days if params['from'] <= day <= params['to']] + [row]
         return FmpResponse(endpoint, params, CAPTURE, json.dumps(payload).encode(), payload)
 
 
@@ -114,7 +115,7 @@ def test_reused_ticker_full_capture_excludes_other_security_but_retains_original
 def test_renamed_security_uses_one_provider_generation_and_preserves_alias_lineage(store):
     seed(store, symbol='OLD', day='2024-06-03', close=10)
     approve(store, symbol='OLD', provider_symbol='NEW', symbol_end='2025-03-31')
-    client = Prices()
+    client = Prices(days=['2024-06-03'])
     Collector(store.settings, store=store, client=client).reconcile_price_revisions(END, symbols=['OLD'])
     assert {p['symbol'] for _, p in client.calls} == {'NEW'}
     row = store.query('us_eod_daily', symbols=['OLD'])['rows'][0]
@@ -129,6 +130,33 @@ def test_renamed_security_uses_one_provider_generation_and_preserves_alias_linea
     new = store.ingest('dividends', [], source='fixture', observed_at=CAPTURE + timedelta(days=2), details={
         'price_revision_requests':[{'symbol':'NEW','effective_date':'2026-09-05'}]})
     assert pending_revisions(store, dataset='us_eod_daily', symbols=['OLD'], end=END)['OLD'].startswith(new['batch_id'])
+
+
+def test_first_capture_protects_retained_dates_only_inside_reviewed_symbol_lifecycle(store):
+    seed(store, symbol='OLD', day='2001-01-02')
+    seed(store, symbol='OLD', day='2024-06-03')
+    seed(store, symbol='OLD', day='2025-04-01')
+    approve(store, symbol='OLD', provider_symbol='NEW', symbol_end='2025-03-31')
+    collector = Collector(store.settings, store=store, client=Prices())
+    result = collector.reconcile_price_revisions(END, symbols=['OLD'])
+    assert result['status'] == 'failed'
+    assert result['price_revisions'][0]['missing_dates'] == ['2024-06-03']
+    assert not price_capture_bases(store, 'us_eod_daily', price_identities(store))
+    assert not store.query('us_eod_daily', symbols=['OLD'])['rows']
+    collector = Collector(store.settings, store=store, client=Prices(days=['2024-06-03']))
+    assert collector.reconcile_price_revisions(END, symbols=['OLD'])['status'] == 'ready'
+    assert store.query('us_eod_daily', versions=True)['total'] == 5
+
+
+def test_identity_raw_evidence_is_included_in_replication_bundle(store, tmp_path):
+    _, ref = archive_response(store.settings, 'price_diagnostics', b'{"invalid_adjusted_price":0}')
+    approve(store, source_refs=[ref, 'https://exchange.example/listing/new'])
+    bundle = tmp_path / 'identity-evidence.zip'
+    export_bundle(store.settings, bundle)
+    with zipfile.ZipFile(bundle) as package:
+        assert ref in package.namelist()
+    batch = next(row for row in captures(store) if row['dataset'] == 'price_series_identities')
+    assert batch['details']['source_parts'] == [{'raw_ref': ref}]
 
 
 def test_terminated_security_bounds_history_and_does_not_acknowledge_impossible_action(store):

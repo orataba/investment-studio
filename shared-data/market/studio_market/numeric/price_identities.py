@@ -10,6 +10,7 @@ from datetime import date, datetime, timezone
 import re
 from urllib.parse import parse_qsl, urlsplit
 
+import duckdb
 from sqlalchemy import select
 
 from .schema import batches
@@ -106,11 +107,34 @@ def record_price_identities(store, records, *, apply=False, observed_at=None, so
         capture = observed_at or datetime.now(timezone.utc)
         result.update(store.ingest(DATASET, [changed], source=source, observed_at=capture,
                                    details={"observed_at": capture, "identity_decision": True,
-                                            "source_parts": [{"identity_evidence_raw_ref": ref}
+                                            "source_parts": [{"raw_ref": ref}
                                                 for ref in sorted({ref for row in changed for ref in row['source_refs']
                                                                    if ref.startswith('numeric/raw/')})]}))
         result["applied"] = True
     return result
+
+
+def reviewed_retained_dates(store, dataset, identity, start, end):
+    """Audit retained dates only inside the reviewed ticker/security overlap.
+
+    Before the first coherent capture public reads deliberately hide all legacy
+    rows. Their dates still protect against a shrunken source, but neither old
+    ticker lifecycles nor old price/adjustment values are reusable evidence.
+    """
+    begin = max(start, date.fromisoformat(identity['history_start']),
+                date.fromisoformat(identity.get('symbol_start') or identity['history_start']))
+    stop = min([end, *(date.fromisoformat(identity[field]) for field in ('history_end', 'symbol_end')
+                       if identity.get(field))])
+    if begin > stop:
+        return set()
+    paths = store._paths(dataset, start=begin.isoformat(), end=stop.isoformat())
+    if not paths:
+        return set()
+    with duckdb.connect(':memory:') as connection:
+        connection.from_parquet(paths, union_by_name=True).create_view('facts')
+        return {row[0].isoformat() for row in connection.execute(
+            'SELECT DISTINCT date FROM facts WHERE symbol=? AND date>=? AND date<=?',
+            [identity['symbol'], begin, stop]).fetchall()}
 
 
 def price_capture_bases(store, dataset, identities, *, as_of=None):

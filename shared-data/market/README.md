@@ -110,6 +110,11 @@ complete history capture whose `price_series_capture` metadata binds the exact
 identity source ID. Subsequent `price_series_updates` bind that same identity and
 base capture. Changing the identity or rebuilding the base excludes older
 generations from ordinary price queries, including latest reads and pagination.
+The first rebuild also checks retained dates within the reviewed security and
+ticker validity interval through the audit history. Quarantine cannot hide a
+same-security coverage regression, and prior identities or expired ticker dates
+cannot force unrelated history into the replacement. Raw identity evidence is
+carried by the existing bundle metadata alongside the reviewed source references.
 Unverified identities and missing complete captures expose
 `provenance.price_series_unavailable`; they do not fall back to mixed history.
 Historical `as_of` uses only identity evidence known at its cutoff. Explicit
