@@ -567,7 +567,7 @@ it('groups versions by date, keeps failed attempts and offers the same-day reada
   expect(container.querySelector('.coverage-summary')?.textContent).not.toContain('Completed')
   fireEvent.click(screen.getByRole('button', { name: 'Read available edition · 2026-09-07 · v1' }))
   await screen.findByRole('heading', { name: '央行继续观察就业' })
-  expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Daily research briefing | 2026-09-07' }))
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Daily research briefing | 2026-09-07' })))
 })
 
 it('keeps both prices while moving through starting and ending evidence, then returns to the summary', async () => {
