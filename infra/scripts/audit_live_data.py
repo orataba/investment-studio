@@ -1953,8 +1953,10 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                             ELSE false
                                         END
                                         OR (
-                                            contract.terms_json::jsonb
-                                            ? 'settlement_type'
+                                            contract.terms_json ->> 'settlement_type'
+                                                IS NOT NULL
+                                            AND contract.terms_json ->> 'settlement_type'
+                                                NOT IN ('physical', 'cash')
                                         )
                                     )
                                )

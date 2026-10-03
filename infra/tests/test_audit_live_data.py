@@ -336,8 +336,8 @@ def test_twr_audit_cte_projects_daily_twr(
         if "portfolio.derivative_contract_record contract" in query
         and "contract.terms_json" in query
     )
-    assert "contract.terms_json::jsonb" in derivative_contract_query
-    assert "? 'settlement_type'" in derivative_contract_query
+    assert "NOT IN ('physical', 'cash')" in derivative_contract_query
+    assert "? 'settlement_type'" not in derivative_contract_query
     assert "invalid_option_lifecycle" in derivative_contract_query
     assert "option_long_cash_settlement" in derivative_contract_query
     assert "option_writer_cash_settlement" in derivative_contract_query
