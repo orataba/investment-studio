@@ -71,10 +71,10 @@ def test_documented_watchlist_api_routes_exist(client) -> None:
     }
     documented_routes: set[tuple[str, str]] = set()
     for code_span in re.findall(
-        r"`([^`]*?/api/[^`]*)`",
+        r"`([^`\n]+)`",
         DATA_MODEL_CONTRACT.read_text(encoding="utf-8"),
     ):
-        if "[...]" in code_span:
+        if "/api/" not in code_span or "[...]" in code_span:
             continue
         path_match = re.search(r"(/api/[^ ]+)", code_span)
         assert path_match is not None

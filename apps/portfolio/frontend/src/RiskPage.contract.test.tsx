@@ -991,6 +991,42 @@ describe('Risk rendered page contract', () => {
     expect(await screen.findByRole('img', { name: 'Annualized Volatility' })).toBeInTheDocument()
   })
 
+  it('uses friendly account names for monetary matrix members and preserves identity when names are absent', async () => {
+    const workspace = twoHoldingWorkspace()
+    workspace.rows = ([
+      { id: 'cash-a', name: 'Operating HKD', value: 0.3, purpose: 'operating' },
+      { id: 'cash-b', name: 'Margin Financing', value: -0.1, purpose: 'financing' },
+      { id: 'cash-c', name: '', value: 0.1, purpose: 'operating' },
+    ] as const).map(({ id, name, value, purpose }) => holdingFixture({
+      line_id: `cash:${id}`, allocation: value, market_value_base: value * 1000,
+      account_ids: [id], account_names: [name], cash_purpose: purpose,
+      holding_category: 'cash_and_settlement', holding_kind: 'settled_cash', risk_eligible: false,
+      instrument_core: instrumentFixture({ instrument_id: 'cash:HKD', instrument_type: 'cash', currency: 'HKD' }),
+      risk_return_series: riskHolding.risk_return_series,
+    }))
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(workspace)
+    renderRiskPage()
+    const region = await screen.findByRole('region', { name: 'Correlation analysis' })
+    expect(await within(region).findAllByText('HKD · Asset · operating · Operating HKD')).not.toHaveLength(0)
+    expect(within(region).getAllByText('HKD · Liability · financing · Margin Financing')).not.toHaveLength(0)
+    expect(within(region).getAllByText('HKD · Asset · operating · cash-c')).not.toHaveLength(0)
+  })
+
+  it.each([true, false])('separates measured zero variance from unavailable history (zero %s)', async (zero) => {
+    const workspace = twoHoldingWorkspace()
+    workspace.forward_risk = { ...workspace.forward_risk!, status: 'unavailable',
+      portfolio_variance: zero ? 0 : null, portfolio_volatility: zero ? 0 : null,
+      errors: [zero ? 'Proportional risk contributions are undefined.' : 'Missing FX history.'],
+    }
+    workspace.rows.forEach((row) => { row.forward_risk_share = null; row.forward_risk_status = 'unavailable' })
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(workspace)
+    renderRiskPage()
+    const region = await screen.findByRole('region', { name: 'Risk health' })
+    const card = within(region).getByText('Modeled Portfolio Volatility').closest('article')!
+    await waitFor(() => expect(card).toHaveTextContent(zero ? '0.00%' : 'Unavailable'))
+    expect(region).toHaveTextContent(zero ? 'Zero net variance; proportional RC undefined' : 'Model unavailable')
+  })
+
   it.each([[-0.1, true], [-0.3, false]])('keeps foreign monetary exposures in the cash correlation group (payable %s)', async (payableWeight, available) => {
     const workspace = twoHoldingWorkspace()
     const monetary = (line_id: string, allocation: number, currency: string) => holdingFixture({

@@ -131,6 +131,8 @@ Watchlist 允许不同 instrument 的最新数据日期不同。`1M / 3M / YTD` 
 
 收益窗口各自截止到该行的指标截至日。近1年历史不足或字段不适用时显示 `—`；基金收益只依赖可信的分红再投资复权累计净值，缺失时不回退单位净值。当前回撤表示距离可用历史峰值的跌幅，用于观察当前状态；最新值可能是基金净值、证券价格或指数点位，绝对水平不用于判断贵贱。
 
+窄屏在资产名称下显示当前视图最靠前的两项收益，完整列仍可横向查看；这不会修改已保存的视图。风险提醒设置同时显示规则来源、参数、设置时间和观察日期。“未触发”不等于没有配置规则；历史研判中的规则说明只引用当时冻结的事实，旧版本未记录的部分会明确说明。
+
 需要长期收益或完整风险比较时，进入资产详情核对样本区间、数据截止日和收益口径。`3Y`、`5Y`为近三年、五年的年化收益，`Ann.`为成立以来年化收益；最大回撤、波动率、Sharpe使用各自有效历史，Sharpe采用零无风险利率。
 
 列配置只调整展示，不改变底层数据。常用布局可保存为当前列表的视图。
@@ -278,6 +280,8 @@ Portfolio 创建时必须确定 inception date。任何交易都不得早于该�
 
 费用应选择可证明的 fee category；来源无法分类时保留 `Unknown`，不要猜测。重复提交会通过 idempotency key 去重；若页面提示记录版本冲突，说明事实已在别处更新，应刷新后重新核对，不能覆盖较新版本。
 
+换汇金额最多保留八位小数，这是账本保存的精度上限，不要求每笔金额补足八位。页面与导入都保留实际付出和收到金额；超过保存精度会提示修正，不静默四舍五入。
+
 页面右上角把文件操作 `Export / Import / Template` 与录入操作 `From Screenshot / Record Transaction` 分组展示。Export 和 Template 都可选 CSV 或 Excel；Export 始终包含组合的全部交易命令，不受当前筛选影响，导出的任一格式都可再次 Import。Excel 文件使用 `Transactions` 工作表。Import 会先显示逐行和整批校验结果，只有全部通过后才能原子写入；CSV 与 Excel 使用同一字段、账户/币种规则、仓位校验和 preview digest。不要把数据库行 ID、内部 transfer legs 或页面筛选结果另做成第二种导入格式。
 
 `From Screenshot` 只处理当前打开的 Portfolio。一次可上传 1–10 张 PNG、JPEG 或 WebP；重叠截图应放在同一批次，由 Agent 结合当前组合账户、持仓、合约、Instrument Data 标的和既有交易一起理解。上传后自动开始分析，结果是一份可直接修改的草稿，不会自行创建交易。用户核对账户、日期、数量、价格、金额、重复关系及衍生品条款后，点击一次 `Confirm & record`；页面先运行 Preview，校验不通过就保留草稿和错误供修改，通过才立即原子入账。AI 问题只是提示，不需要逐项打勾；历史批次和详细 AI 说明位于次要入口。持仓或现金快照可以只形成初始化/对账候选，不会被自动伪造成历史成交。
@@ -325,13 +329,17 @@ Security Group/subtotal 是**当前持仓篮子**：金额加总，比例用组�
 
 持仓详情的 Period P/L 按“已实现价格损益 + 未实现价格损益变动 + 收入 + 汇兑损益 − 独立现金费用”对账。“其中交易费用与税费”已包含，不能再次扣除。期间归因按期初市值和期间交易计算，FIFO 批次已实现损益按取得成本及分摊费用计算，两者的已实现部分不必相等。
 
+多头期权到期盈亏示意以剩余权利金成本为起点；已费用化的开仓费用、税费及未来平仓费用不包含在图中。完整持仓损益应以上述期间对账为准。
+
 ### 6.5 Overview
 
 Overview 是组合默认首页，展示组合市值、TWR index、回撤、Asset Mix、sleeve 结构、top holdings 和 benchmark 对比。页面只在数据完整时展示计算结果；缺少 fresh snapshot、关键行情或 FX 时，不会用部分数据硬算。
 
 TWR 图表与 Performance 使用相同起始边界：从首个入资日开始时包含该日收益；普通区间从起点收盘计算，不包含起始日收益。图表直接标明当前边界，缩放窗口后同步调整。
 
-`Asset Mix` 使用与 Holdings 相同的 as-of workspace，把当前组合汇总为 `Securities`、`FCN`、`Options`、`Cash & Settlement` 四类，并以 `Portfolio Total` 作为表尾。金额和权重保留资产负债表符号，负的 FCN 或 option liability 因而显示负金额与负权重；各分类权重、Day Change 和 Forward RC 都使用完整组合 NAV / 风险模型作为共同分母，不把分类各自重新归一成 100%。若某类缺少 base-currency valuation，或存在无法识别为 FCN / Option 的 derivative row，图形整体不可用，表格保留逐类 coverage 状态，不用已覆盖部分拼出伪完整结构。
+页头 `1D P&L` 是实际组合日损益；Asset Mix 与 Top Holdings 的 `Quote / FX Move` 把最新一组报价和汇率变化应用于当前数量，不包括期间交易、费用或外部资金流，二者不要求相等。Asset Mix 的 `Quote / FX dates` 可展开核对各项实际报价、收益口径和汇率日期。图中回撤对应组合 TWR 或 NAV；市场风险区的回撤使用独立风险收益链，并显示其有效观测区间。图表设置支持 Escape 关闭并将焦点返回设置按钮。
+
+`Asset Mix` 使用与 Holdings 相同的 as-of workspace，把当前组合汇总为 `Securities`、`FCN`、`Options`、`Cash & Settlement` 四类，并以 `Portfolio Total` 作为表尾。金额和权重保留资产负债表符号，负的 FCN 或 option liability 因而显示负金额与负权重；各分类权重、Quote / FX Move 和 Forward RC 都使用完整组合 NAV / 风险模型作为共同分母，不把分类各自重新归一成 100%。若某类缺少 base-currency valuation，或存在无法识别为 FCN / Option 的 derivative row，图形整体不可用，表格保留逐类 coverage 状态，不用已覆盖部分拼出伪完整结构。
 
 Overview 的质量提示只在检测到实际问题时出现，并给出受影响的资产/日期和处理方向。没有检测到 corporate action 问题时不会显示通用警告。若请求日期晚于最后一个可靠估值日，页面会使用后端返回的 effective as-of，并解释 clamp 原因。
 

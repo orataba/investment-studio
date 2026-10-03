@@ -1610,6 +1610,32 @@ input[type='checkbox'] {
   gap: 20px;
 }
 
+.overview-metric-basis {
+  margin-top: 6px;
+  color: var(--portfolio-muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.overview-quote-dates {
+  margin-top: 12px;
+  color: var(--portfolio-muted);
+  font-size: 12px;
+}
+
+.overview-quote-dates summary {
+  cursor: pointer;
+}
+
+.overview-quote-dates th,
+.overview-quote-dates td {
+  padding: 6px 12px 6px 0;
+  text-align: left;
+  white-space: nowrap;
+  font-weight: 400;
+}
+
 .overview-asset-mix-bars {
   display: grid;
   align-content: center;
@@ -8928,12 +8954,6 @@ td b {
     max-width: 100%;
   }
 
-  .portfolio-nav-settings-panel {
-    right: auto;
-    left: 0;
-    width: min(94vw, 420px);
-  }
-
   .portfolio-workspace-page .risk-settings-panel {
     right: auto;
     left: 0;
@@ -10159,12 +10179,20 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-settings-panel {
   right: 0;
-  width: min(560px, calc(100vw - 48px));
+  width: min(560px, 100%);
   max-height: min(640px, calc(100vh - 180px));
   padding: 16px;
   overflow: auto;
   border-color: var(--portfolio-line-strong);
   box-shadow: 0 16px 32px rgba(17, 24, 39, 0.12);
+}
+
+.portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-chart-series-head {
+  position: relative;
+}
+
+.portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-chart-menu {
+  position: static;
 }
 
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-settings-layout {
@@ -10227,6 +10255,20 @@ input[type='date']::-webkit-calendar-picker-indicator {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   gap: 8px;
+}
+
+@media (max-width: 600px) {
+  .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-settings-block {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-settings-block > :not(.portfolio-nav-settings-block-head) {
+    grid-column: 1;
+  }
+
+  .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-settings-option-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(112px, 100%), 1fr));
+  }
 }
 
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-option {

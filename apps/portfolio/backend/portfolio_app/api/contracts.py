@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 from datetime import date, time
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationInfo, field_validator, model_validator
 from investment_studio_instrument_core import (
     CorporateActionEvent as CorporateActionEventContract,
     DataStatus as CoverageState,
@@ -278,7 +278,7 @@ def _amount_contract_matches_display_price(
     return normalized_price == derived_display_price
 
 
-def _quantize_numeric_input(value: object, *, quantum: Decimal) -> object:
+def _quantize_numeric_input(value: object, *, quantum: Decimal, reject_rounding: bool = False) -> object:
     if value is None:
         return None
     if isinstance(value, str):
@@ -288,7 +288,10 @@ def _quantize_numeric_input(value: object, *, quantum: Decimal) -> object:
     resolved_value = _to_decimal(value)
     if resolved_value is None:
         return value
-    return resolved_value.quantize(quantum, rounding=ROUND_HALF_UP)
+    quantized = resolved_value.quantize(quantum, rounding=ROUND_HALF_UP)
+    if reject_rounding and quantized != resolved_value:
+        raise ValueError("FX conversion amounts support at most 8 decimal places; the amount was not rounded.")
+    return quantized
 
 
 def _normalize_required_text(value: object) -> object:
@@ -1538,6 +1541,8 @@ class PerformanceSummary(BaseModel):
     snapshot_count: int
     return_observation_count: int
     risk_return_observation_count: int = 0
+    risk_observation_start_date: date | None = None
+    risk_observation_end_date: date | None = None
     market_risk_return_coverage_state: CoverageState = "unavailable"
     risk_metric_basis: Literal["market_risk_return"] = "market_risk_return"
     risk_metric_label: str = (
@@ -3739,8 +3744,13 @@ class TransactionCreateRequest(BaseModel):
 
     @field_validator("gross_amount", "counter_amount", "fees", "taxes", mode="before")
     @classmethod
-    def normalize_amount_precision(cls, value: object) -> object:
-        return _quantize_numeric_input(value, quantum=AMOUNT_SOURCE_QUANTUM)
+    def normalize_amount_precision(cls, value: object, info: ValidationInfo) -> object:
+        return _quantize_numeric_input(
+            value,
+            quantum=AMOUNT_SOURCE_QUANTUM,
+            reject_rounding=info.data.get("transaction_type") == "fx_conversion"
+            and info.field_name in {"gross_amount", "counter_amount"},
+        )
 
     @field_validator("fx_rate", mode="before")
     @classmethod
@@ -4390,8 +4400,13 @@ class TransactionImportCommand(BaseModel):
         mode="before",
     )
     @classmethod
-    def normalize_amount_precision(cls, value: object) -> object:
-        return _quantize_numeric_input(value, quantum=AMOUNT_SOURCE_QUANTUM)
+    def normalize_amount_precision(cls, value: object, info: ValidationInfo) -> object:
+        return _quantize_numeric_input(
+            value,
+            quantum=AMOUNT_SOURCE_QUANTUM,
+            reject_rounding=info.data.get("transaction_action") == "fx_conversion"
+            and info.field_name in {"gross_amount", "counter_amount"},
+        )
 
 
 class TransactionImportPreviewRequest(BaseModel):

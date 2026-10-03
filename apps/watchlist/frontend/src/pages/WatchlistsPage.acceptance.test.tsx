@@ -37,6 +37,20 @@ it('keeps share identifiers in Name and selection labels when optional identifie
   expect(screen.getByRole('checkbox', { name: 'Select Alphabet Inc. · GOOGL' })).toBeTruthy()
   expect(screen.getByText('GOOG').closest('td')?.textContent).toContain('Alphabet Inc.')
 })
+it('mirrors selected return values under the mobile identity without changing the named view', async () => {
+  const named = { ...view, name: 'Research returns', columns: ['instrument_name', 'currency', 'return_ytd'] }
+  api.getWatchlistDetail.mockResolvedValue({ ...detail, views: [named] })
+  const { container } = show()
+  await screen.findByRole('checkbox', { name: 'Select Alphabet Inc. · GOOG' })
+  const summaries = container.querySelectorAll('.watchlists-mobile-returns')
+  expect(summaries[0].textContent).toContain('YTD')
+  expect(summaries[0].textContent).toContain('2.00%')
+  expect(summaries[1].textContent).toContain('—')
+  expect(summaries[0].querySelector('[title]')?.getAttribute('title')).toContain('2026-09-30')
+  expect(api.updateWatchlistView).not.toHaveBeenCalled()
+  expect(screen.getByRole('columnheader', { name: /YTD/ })).toBeTruthy()
+  expect(screen.getByRole('option', { name: /Research returns/ })).toBeTruthy()
+})
 it('keeps a newer column draft through an older save response and saves it in order', async () => {
   let finish!: (v: unknown) => void
   api.updateWatchlistView.mockImplementationOnce((_id, _view, p) => new Promise(resolve => { finish = () => resolve({ ...view, columns: p.columns.map((c: {field_key: string}) => c.field_key), column_meta: p.columns }) }))

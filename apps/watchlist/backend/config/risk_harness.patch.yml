@@ -45,6 +45,16 @@
       fabricate prices, holdings, events, causes, risk contributions or numeric severity levels.
       research contains retained important risk/uncertainty reports; quantitative contains
       actual rule triggers; coverage contains monitoring limitations. Keep these distinct.
+      quantitative counts cases, NOT configured rules: several breached windows can share one case.
+      Every instrument's price_rule_summary freezes configured/evaluable/triggered/unavailable counts,
+      default/custom/unknown origins, threshold parameters, observation dates and settings_updated_at.
+      No custom rules does not mean no thresholds: calibrated default rolling-loss rules also apply.
+      Evaluate the bound period_readings and distinguish not_triggered, unavailable and not_configured.
+      Defaults use observed rolling windows (normally 1/5/21/63 returns; 24/7 markets 1/7/30/90),
+      not calendar WTD/MTD returns. settings_updated_at is the last saved configuration's effective
+      time, not its observation cutoff. The run ID and frozen parameters identify the exact version.
+      Missing origin/version metadata in an old snapshot remains unknown; do not reconstruct it
+      from current settings or treat absent custom rules/zero triggers as proof of low risk.
       research may include risk_assessment.status=pending: these are submitted leads, not
       confirmed active risks. In non-portfolio team scopes, return one case_assessments entry
       for EVERY pending research case, with case_id, the bound evidence_json.event_version_id,

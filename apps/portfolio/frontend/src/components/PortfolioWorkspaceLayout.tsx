@@ -602,7 +602,7 @@ export default function PortfolioWorkspaceLayout({
                           {formatCurrency(activeSummary.nav, activeSummary.base_currency)}
                         </span>
                         <span className={changeClassName}>
-                          <span title="Daily investment P&L and cash-flow-adjusted daily return at the displayed valuation date">1D · </span>{formatSignedCurrency(activeSummary.day_change_value, activeSummary.base_currency)} (
+                          <span title="Daily investment P&L and cash-flow-adjusted daily return at the displayed valuation date">1D P&amp;L · </span>{formatSignedCurrency(activeSummary.day_change_value, activeSummary.base_currency)} (
                           {formatDailyPercent(activeSummary.day_change_pct)}
                           )
                         </span>

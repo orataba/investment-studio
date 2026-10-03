@@ -80,6 +80,36 @@ describe('Overview rendered page contract', () => {
     expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledTimes(1)
   })
 
+  it('distinguishes current-quantity quote moves from fee-inclusive TWR and the market-risk clock', async () => {
+    const user = userEvent.setup()
+    const performance = performanceFixture()
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(holdingsWorkspaceFixture({
+      as_of_date: '2026-10-03',
+      rows: [holdingFixture({ quantity: 60, day_change_value_base: 202.2,
+        day_change_price_as_of_date: '2026-10-02', previous_day_change_price_as_of_date: '2026-10-01',
+        day_change_price_basis: 'price_return',
+      })],
+    }))
+    apiMocks.getPortfolioPerformance.mockResolvedValue({ ...performance,
+      summary: { ...performance.summary, cumulative_twr: -149 / 34394.4, current_drawdown: 0, max_drawdown: 0,
+        risk_observation_start_date: '2026-10-01', risk_observation_end_date: '2026-10-02' },
+      daily_series: [dailyPerformancePoint('2026-10-02', 29394.4, 0, 0), dailyPerformancePoint('2026-10-03', 34245.4, -149 / 34394.4, -149 / 34394.4)],
+    })
+    renderPortfolioPage(<OverviewPage />, '/portfolios/3/overview', '/portfolios/:portfolioId/overview')
+    const table = await screen.findByRole('table', { name: 'Asset mix summary' })
+    expect(within(table).getByRole('columnheader', { name: 'Quote / FX Move (USD)' })).toBeInTheDocument()
+    expect(within(table).getByRole('row', { name: /^Securities/ })).toHaveTextContent('202.20')
+    await user.click(screen.getByRole('button', { name: /^Quote \/ FX move basis:/ }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent("it is not the portfolio's daily P&L")
+    expect(screen.getByRole('tooltip')).toHaveTextContent('NAV reconciliation checks carrying amounts only')
+    expect(screen.getByRole('table', { name: 'Quote and FX observation dates', hidden: true })).toHaveTextContent('2026-10-01 → 2026-10-02')
+    const metrics = screen.getByRole('complementary', { name: 'Portfolio overview key metrics' })
+    expect(metrics).toHaveTextContent('Eligible market observations 2026-10-01 → 2026-10-02')
+    expect(within(metrics).getByRole('row', { name: 'Market Current DD 0.00%' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^Market-risk return basis:/ }))
+    expect(screen.getAllByRole('tooltip').some(tip => tip.textContent?.includes('exclude recorded fees'))).toBe(true)
+  })
+
   it.each(['', 'deleted-taxonomy'])('requires an explicit choice for multiple or unavailable classifications (%s)', async (savedTaxonomyId) => {
     if (savedTaxonomyId) localStorage.setItem('investment_studio.portfolio.overview.taxonomy.3', savedTaxonomyId)
     apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ portfolio_id: '3', taxonomy_configuration_version: 0,
@@ -544,10 +574,10 @@ describe('Overview rendered page contract', () => {
       '/portfolios/:portfolioId/overview',
     )
 
-    await screen.findByText('CNY Local Only')
+    await screen.findByRole('cell', { name: 'CNY Local Only' })
     await user.click(screen.getByRole('button', { name: 'Data Columns' }))
     const columnsDialog = screen.getByRole('dialog', { name: 'Choose top holdings columns' })
-    await user.click(within(columnsDialog).getByRole('checkbox', { name: 'Day Change' }))
+    await user.click(within(columnsDialog).getByRole('checkbox', { name: 'Quote / FX Move' }))
     await user.click(within(columnsDialog).getByRole('button', { name: 'Update' }))
     const detailSection = screen.getByText('Top Holdings Detail').closest('section')
     expect(detailSection).not.toBeNull()

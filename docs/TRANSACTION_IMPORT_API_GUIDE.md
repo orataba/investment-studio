@@ -395,7 +395,7 @@ Cash 动作不得发送 `instrument_id`、`derivative_contract_id` 或 `settleme
 - `fee` 或 `tax` 独立动作使用 `gross_amount` 表示该笔费用或税款，不能同时再填写嵌套 `fees` 或 `taxes`。
 - `fee_category` 允许：`unknown`、`transaction_cost`、`management_fee`、`custody_fee`、`administration_fee`、`performance_fee`、`financing_interest`、`borrow_fee`、`payment_in_lieu`、`other`。无法从截图证明分类时使用 `unknown`，不要猜测。
 - 普通交易的持仓账户、证券或衍生品合约、结算现金账户及交易币种一致。期权权利金币种可不同于股票币种，但实物股票腿必须使用明确 strike_currency 对应的股票报价及账户币种；FCN 跨币种交付腿使用显式 fx_rate_to_contract，不从行情猜测转换条款。
-- FX conversion 中，`currency` 是源现金账户币种；`counterparty_account_id` 指向目标现金账户，且 `counter_amount = gross_amount × fx_rate`。
+- FX conversion 中，`currency` 是源现金账户币种；`counterparty_account_id` 指向目标现金账户。两端金额须为正且能以最多 8 位小数精确保存，超精度输入被拒绝，不先舍入再预览。`fx_rate` 可省略并按两端金额派生为 12 位；显式报价允许金额精度内的舍入，不要求循环小数逐位反乘一致。完整金额、报价和独立扣费规则见 [交易操作合同](../apps/portfolio/docs/04_TRANSACTION_OPERATIONS.md)。
 
 ## 8. 日期和期初边界
 

@@ -372,6 +372,36 @@ def holding_day_change_metrics(
     return day_change_pct, day_change_value
 
 
+def holding_day_change_price_window(
+    *,
+    day_change_pct: float | None,
+    price_point: dict[str, object] | None,
+    previous_price_point: dict[str, object] | None,
+    return_price_point: dict[str, object] | None,
+    previous_return_price_point: dict[str, object] | None,
+) -> dict[str, object]:
+    """Dates of the actual pair used by holding_day_change_metrics, not the valuation clock."""
+    if day_change_pct is None:
+        return {
+            "day_change_price_as_of_date": None,
+            "previous_day_change_price_as_of_date": None,
+            "day_change_price_basis": None,
+        }
+    total_return = all(
+        _safe_float((point or {}).get("value")) is not None
+        for point in (return_price_point, previous_return_price_point)
+    )
+    current, previous = (
+        (return_price_point, previous_return_price_point)
+        if total_return else (price_point, previous_price_point)
+    )
+    return {
+        "day_change_price_as_of_date": (current or {}).get("as_of_date"),
+        "previous_day_change_price_as_of_date": (previous or {}).get("as_of_date"),
+        "day_change_price_basis": "total_return" if total_return else "price_return",
+    }
+
+
 def cash_day_change_metrics(
     *,
     amount: float,
@@ -1996,6 +2026,13 @@ def build_materialized_holding_rows(
                 "last_price": last_price,
                 "quote_as_of_date": (
                     None if event_valued else (price_point or {}).get("as_of_date")
+                ),
+                **holding_day_change_price_window(
+                    day_change_pct=day_change_pct,
+                    price_point=price_point,
+                    previous_price_point=previous_price_point,
+                    return_price_point=return_price_point,
+                    previous_return_price_point=previous_return_price_point,
                 ),
                 "quote_metric_family": (
                     None if event_valued else (price_point or {}).get("metric_family")

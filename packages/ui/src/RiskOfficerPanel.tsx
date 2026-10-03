@@ -1,7 +1,8 @@
 import WorkspaceSkeleton from './WorkspaceSkeleton'
 import InfoHint from './InfoHint'
 import { useEffect, useRef, useState } from 'react'
-import type { RiskRequest, RiskCaseHistory } from './instrumentRisk'
+import type { RiskRequest, RiskCaseHistory, PriceRuleCounts, PriceRuleSummary } from './instrumentRisk'
+import { PriceRuleCountsLine, PriceRuleDetails } from './PriceRiskRules'
 import { researchStamp } from './ResearchRunStatus'
 import ConfirmDialog from './ConfirmDialog'
 import RiskChangeAudit from './RiskChangeAudit'
@@ -26,6 +27,9 @@ export type RiskOfficerReview = {
     summary: string
     case_changes?: RiskCaseHistory[]
     review_note?: string
+    prepared_at?: string
+    price_rule_summary?: { contract_version: number; counts: PriceRuleCounts;
+      instruments: Array<PriceRuleSummary & { instrument_id: string; name: string }> } | null
     priorities: Array<{ title: string; analysis: string; instrument_ids: string[]; holding_ids?: string[]; case_ids: string[]; source_ids?: string[]; next_watch: string }>
     evidence_sources?: Record<string, { title: string; detail_path?: string | null; start_date?: string | null; end_date?: string | null; currency?: string | null; frequency?: string | null }>
     limitations: string[]
@@ -36,6 +40,7 @@ export type RiskOfficerReview = {
 
 type Props = { canRun?: boolean; request: RiskRequest; scopeQuery: string; refreshToken?: number; onCompleted?: () => void }
 const running = (status: RunStatus | undefined) => status === 'queued' || status === 'running'
+const settled = (status: RunStatus | undefined) => status === 'completed' || status === 'failed'
 const frequencyLabels: Record<string, string> = { daily: '日度', weekly: '周度', monthly: '月度' }
 const portfolioHref = (path: string | null | undefined) => path?.startsWith('/portfolios/')
   ? `${resolveWorkspaceUrl(import.meta.env.VITE_PORTFOLIO_URL, 'portfolio')}${path}` : undefined
@@ -73,7 +78,7 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
         setData(result)
         setPending(null)
         setError('')
-        polling = running(result.latest_run?.status)
+        polling = Boolean(result.latest_run && !settled(result.latest_run.status))
         if (polling && result.latest_run) {
           observedRun.current = result.latest_run.run_id
         } else if (result.latest_run && observedRun.current === result.latest_run.run_id) {
@@ -95,7 +100,7 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
   }, [request, scopeQuery, refresh, refreshToken])
 
   async function update() {
-    if (!canRun) return
+    if (!canSubmit) return
     setPosting(true)
     setError('')
     const controller = new AbortController()
@@ -121,7 +126,10 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
   }
 
   const latest = pending || data?.latest_run
+  const unknownStatus = Boolean(latest && !running(latest.status) && !settled(latest.status))
   const busy = posting || running(latest?.status)
+  const canSubmit = Boolean(canRun && data?.available && !busy && !unknownStatus && !error)
+  useEffect(() => { if (!canSubmit) setConfirming(false) }, [canSubmit])
   const completed = data?.latest_completed
   const names = new Map(data?.instruments.map((instrument) => [instrument.instrument_id, instrument.name]))
   const holdings = new Map(data?.holdings?.map((holding) => [holding.holding_id, holding]))
@@ -150,8 +158,8 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
 
   return <section className="risk-officer" aria-label="风险研判">
     <header className="risk-officer-heading">
-      <div><div className="risk-officer-title"><h2>风险研判</h2>{data && <InfoHint label="风控输入" detail={`研究上报 ${data.counts.research} · 量化触发 ${data.counts.quantitative} · 监测受限 ${data.counts.coverage}。输入截至 ${data.input_as_of?.slice(0, 10) || '尚无输入日期'}。`} />}</div>{data && <p translate="no">{data.scope.name}</p>}</div>
-      <button type="button" disabled={!canRun || !data?.available || busy || Boolean(error)} onClick={() => data?.scope.kind === 'portfolio' ? void update() : setConfirming(true)}>
+      <div><div className="risk-officer-title"><h2>风险研判</h2>{data && <InfoHint label="风控输入" detail={`研究上报: ${data.counts.research} · 量化触发事项: ${data.counts.quantitative} · 监测受限: ${data.counts.coverage} · 输入截至: ${data.input_as_of?.slice(0, 10) || '尚无输入日期'}`} />}</div>{data && <p translate="no">{data.scope.name}</p>}</div>
+      <button type="button" disabled={!canSubmit} onClick={() => data?.scope.kind === 'portfolio' ? void update() : setConfirming(true)}>
         {busy ? '研判进行中…' : '更新研判'}
       </button>
     </header>
@@ -165,6 +173,7 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
     {data && <>
       {!data.available && <p className="risk-officer-warning" role="status">风险研判服务不可用，暂时无法更新。</p>}
       {busy && <p className="risk-officer-muted" role="status">研判进行中，完成后将自动更新。</p>}
+      {unknownStatus && <p className="risk-officer-warning" role="status">任务状态暂未确认；保留已有结论，确认状态前不能重复提交。 <button type="button" onClick={() => setRefresh(value => value + 1)}>刷新状态</button></p>}
       {data.latest_run?.status === 'failed' && !busy && <p className="risk-officer-warning" role="status">
         本次研判失败：{data.latest_run.message || '本次未生成有效结论。'}
       </p>}
@@ -176,6 +185,18 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
         {completed.stale && <p className="risk-officer-warning">输入版本已有变化，请更新研判。</p>}
         {completed.stale === null && <p className="risk-officer-warning">尚未核对已有结论的当前输入，请更新研判。原结论与依据仍保留。</p>}
         <p className="risk-officer-summary" translate="no">{completed.summary}</p>
+        <details><summary>本轮价格复核规则</summary>
+          <p><span>任务编号</span> <code translate="no">{completed.run_id}</code></p>
+          {completed.prepared_at && <p><span>输入冻结时间</span> {researchStamp(completed.prepared_at)}</p>}
+          {completed.price_rule_summary ? <>
+            <PriceRuleCountsLine counts={completed.price_rule_summary.counts} />
+            <p>规则数与量化触发事项数不同；多条规则可以共用一条事项。未触发不代表没有风险。</p>
+            <p>以下为本轮冻结的规则、参数与观察日期，不随当前设置变化。</p>
+            {completed.price_rule_summary.instruments.map(item => <details key={item.instrument_id}>
+              <summary translate="no">{item.name}</summary><PriceRuleCountsLine counts={item.counts} /><PriceRuleDetails summary={item} />
+            </details>)}
+          </> : <p>旧报告未留存规则统计与版本摘要；保留原结论，不使用当前设置反推当时规则。</p>}
+        </details>
         {completed.case_changes && <details><summary>本次共享风险变更</summary>
           <p><span>任务编号</span> <code translate="no">{completed.run_id}</code></p>
           {completed.case_changes.length ? <ul>{completed.case_changes.map((change, index) => <li key={index}>

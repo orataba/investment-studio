@@ -196,21 +196,23 @@ def test_composite_carry_on_closed_weekend_requires_all_source_calendars_and_cut
 
 @pytest.mark.parametrize('model', ['sample_covariance', 'ewma_covariance', 'ewma_vol_shrinkage_corr_covariance'])
 @pytest.mark.parametrize('exposures', [[150_000, -50_000], [200_000, -70_000, -30_000]])
-@pytest.mark.parametrize('another_currency', [False, True])
-def test_economic_fx_factor_is_invariant_to_signed_account_splits(model, exposures, another_currency):
+@pytest.mark.parametrize('other_factor', ['none', 'currency', 'security'])
+def test_economic_fx_factor_is_invariant_to_signed_account_splits(model, exposures, other_factor):
     history = risk_fx_history()
     histories = {history.instrument_id: history}
     other = []
-    if another_currency:
+    if other_factor == 'currency':
         euro = fx('USD', 'EUR', values=[.9 * (1 + .006 * np.cos(i)) for i in range(len(history.levels))], days=list(history.levels.index))
         histories[euro.instrument_id] = euro
         row = monetary('cash:EUR', 50_000)
         row['instrument_core']['currency'] = 'EUR'
         other.append(row)
-    def evaluate(rows):
+    elif other_factor == 'security':
+        other.append(_holding('ordinary-security', .2, currency='USD', points=_return_points(.7)))
+    def evaluate(rows, mode='signed'):
         return enrich_holdings_forward_risk(_workspace(rows + deepcopy(other), base_currency='USD'),
             as_of_date=AS_OF_DATE, calculation_frequency='daily',
-            risk_policy=_risk_policy(covariance_model_id=model), fx_histories=histories)
+            risk_policy=_risk_policy(covariance_model_id=model, contribution_mode=mode), fx_histories=histories)
     whole = evaluate([monetary('cash:HKD:whole', 100_000)])
     split = evaluate([monetary(f'cash:HKD:{i}', exposure) for i, exposure in enumerate(exposures)])
     assert whole['forward_risk']['status'] == split['forward_risk']['status'] == 'ok'
@@ -220,16 +222,30 @@ def test_economic_fx_factor_is_invariant_to_signed_account_splits(model, exposur
         assert row['forward_risk_share'] == pytest.approx(whole['rows'][0]['forward_risk_share'] * exposure / 100_000)
     covariance = split['_forward_risk_covariance']['values']
     assert covariance[0][1] == covariance[0][0] == covariance[1][1]
+    absolute = evaluate([monetary(f'cash:HKD:{i}', exposure) for i, exposure in enumerate(exposures)], 'abs')
+    assert absolute['forward_risk']['portfolio_variance'] == pytest.approx(whole['forward_risk']['portfolio_variance'])
+    signed_contributions = [row['forward_contribution_to_variance'] for row in split['rows']]
+    gross_contribution = sum(abs(value) for value in signed_contributions)
+    for row, contribution in zip(absolute['rows'], signed_contributions):
+        assert row['forward_contribution_to_variance'] == pytest.approx(contribution)
+        assert row['forward_risk_share'] == pytest.approx(abs(contribution) / gross_contribution)
+    if other_factor == 'none':
+        assert [row['forward_risk_share'] for row in absolute['rows']] == pytest.approx(
+            [abs(exposure) / sum(abs(value) for value in exposures) for exposure in exposures])
 
 
 @pytest.mark.parametrize('model', ['sample_covariance', 'ewma_covariance', 'ewma_vol_shrinkage_corr_covariance'])
-def test_fully_offset_fx_accounts_do_not_invent_positive_risk(model):
+@pytest.mark.parametrize('mode', ['signed', 'abs'])
+def test_fully_offset_fx_accounts_do_not_invent_positive_risk(model, mode):
     history = risk_fx_history()
     rows = [monetary('cash:HKD:asset', 100_000), monetary('cash:HKD:debt', -100_000)]
     result = enrich_holdings_forward_risk(_workspace(rows, base_currency='USD'),
         as_of_date=AS_OF_DATE, calculation_frequency='daily',
-        risk_policy=_risk_policy(covariance_model_id=model), fx_histories={history.instrument_id: history})
+        risk_policy=_risk_policy(covariance_model_id=model, contribution_mode=mode), fx_histories={history.instrument_id: history})
     assert result['forward_risk']['status'] == 'unavailable'  # A zero-variance RC denominator is undefined.
+    assert result['forward_risk']['portfolio_variance'] == result['forward_risk']['portfolio_volatility'] == 0
+    assert result['forward_risk']['observation_count'] > 0
+    assert 'proportional risk contributions are undefined' in result['forward_risk']['errors'][0]
     assert all(row['forward_risk_share'] is None for row in rows)
 
 

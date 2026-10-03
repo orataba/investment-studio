@@ -228,6 +228,7 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
     </div>
   }
   return <div className={`research-dossier-panel research-dossier-${variant}`}>
+    <p className="sector-research-note">研究正文和引用保留原语言。</p>
     <nav className="research-reading-nav" aria-label="研究报告目录">
       <a href={`#research-summary-${instrumentId}`}><span>01</span> 机会与风险</a><a href={`#research-events-${instrumentId}`}><span>02</span> 重要进展</a><a href={`#research-tracking-${instrumentId}`}><span>03</span> 重点主题</a><a href={`#research-quant-${instrumentId}`}><span>04</span> 量化观察</a>
     </nav>

@@ -1,4 +1,13 @@
 export type PriceRiskPeriod = 'day' | 'week' | 'month' | 'quarter'
+export type PriceRuleCounts = Record<'configured' | 'evaluable' | 'triggered' | 'unavailable' | 'default' | 'custom' | 'unknown', number>
+export type PriceRuleSummary = {
+  contract_version: number
+  settings_updated_at: string | null
+  counts: PriceRuleCounts
+  rules: Array<{ key: PriceRiskPeriod | 'drawdown'; source: 'default' | 'custom' | 'unknown' | 'none';
+    state: 'not_configured' | 'unavailable' | 'triggered' | 'not_triggered'; limit_pct: number | null;
+    value_pct: number | null; observations: number | null; start_date: string | null; end_date: string | null; limitation: string | null }>
+}
 export type PeriodLossReading = {
   period: PriceRiskPeriod
   label: string
@@ -28,6 +37,7 @@ export type RiskAsset = {
   previous_observation_date?: string | null
   period_limits?: Partial<Record<PriceRiskPeriod, number | null>>
   period_readings?: PeriodLossReading[]
+  price_rule_summary?: PriceRuleSummary
   price_risk_note?: string | null
   return_kind?: string | null
   price_risk_calibration?: {

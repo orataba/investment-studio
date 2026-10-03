@@ -4132,6 +4132,8 @@ def build_portfolio_performance_report_from_snapshots(
             "snapshot_count": len(visible_snapshots),
             "return_observation_count": return_observation_count,
             "risk_return_observation_count": risk_return_observation_count,
+            "risk_observation_start_date": risk_return_snapshots[0]["as_of_date"] if risk_return_snapshots else None,
+            "risk_observation_end_date": risk_return_snapshots[-1]["as_of_date"] if risk_return_snapshots else None,
             "market_risk_return_coverage_state": (
                 market_risk_return_coverage_state
             ),
@@ -5086,6 +5088,13 @@ def _build_boundary_holding_records(
                 "last_price": last_price,
                 "quote_as_of_date": (
                     None if event_valued else (price_point or {}).get("as_of_date")
+                ),
+                **holdings_market_profile.holding_day_change_price_window(
+                    day_change_pct=day_change_pct,
+                    price_point=price_point,
+                    previous_price_point=previous_price_point,
+                    return_price_point=return_price_point,
+                    previous_return_price_point=previous_return_price_point,
                 ),
                 "quote_metric_family": (
                     None

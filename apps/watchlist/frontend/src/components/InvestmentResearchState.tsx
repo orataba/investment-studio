@@ -24,7 +24,7 @@ function ReferencedThemeEvidence({ instrumentId, themeId }: { instrumentId: stri
   return error ? <p role="alert">{error}</p> : theme ? <section className="research-insight-theme-evidence">
     <h3 translate="no">{theme.title}</h3>
     <p className="sector-research-note">实质更新 {dateLabel(theme.last_changed_at)} · 最近检查 {dateLabel(theme.last_reviewed_at)}</p>
-    <p className="research-dossier-text" translate="no">{theme.synthesis || '主题基线尚待建立。'}</p>
+    <p className="research-dossier-text" translate={theme.synthesis ? 'no' : undefined}>{theme.synthesis || '主题基线尚待建立。'}</p>
     {theme.latest_development && <p translate="no">{theme.latest_development}</p>}
     {theme.next_check && <p><span>下一观察：</span><span translate="no">{theme.next_check}</span></p>}
     <SourceList instrumentId={instrumentId} versionId={theme.source_version_id} sources={theme.sources || []} />
@@ -40,7 +40,7 @@ function InsightList({ title, items, legacy, view, instrumentId, sources }: { ti
         <h5 translate="no">{item.title}</h5>
         <ResearchReadingAside label="依据与下一观察" title={`${item.title} · 依据与下一观察`}>
           <p translate="no">{item.explanation}</p>
-          <p><strong>下一观察</strong> <span translate="no">{item.next_watch || '尚待明确。'}</span></p>
+          <p><strong>下一观察</strong> <span translate={item.next_watch ? 'no' : undefined}>{item.next_watch || '尚待明确。'}</span></p>
           {sources([...new Set([...(item.source_ids || []), ...(item.figure_source_ids || [])])])}
           {item.event_keys?.map(key => <ReferencedResearchEvent key={`${instrumentId}:${key}`} instrumentId={instrumentId} eventKey={key} />)}
           {item.theme_ids?.map(id => <ReferencedThemeEvidence key={`${instrumentId}:${id}`} instrumentId={instrumentId} themeId={id} />)}
@@ -101,7 +101,7 @@ function ForecastBody({ forecast, sources }: { forecast: ResearchForecast; sourc
 function ForecastRecord({ forecast, reference, sources, onAskAssistant }: { forecast: ResearchForecast; reference: ResearchReference; sources: Sources; onAskAssistant?: AskResearchAssistant }) {
   const ask = (value: ResearchForecast) => onAskAssistant?.(`请复核这项预测“${value.claim}”。对照当时的假设与证据，分析新增信息、后续演化和是否需要修订判断。`, { ...reference, forecast_key: forecast.key, forecast_version_id: value.version_id })
   return <article className="research-notebook-question">
-    <div className="research-notebook-question-heading"><h4 translate="no">{forecast.variable || '研究预测'}</h4><span>{forecastStatus[forecast.status]}</span></div>
+    <div className="research-notebook-question-heading"><h4 translate={forecast.variable ? 'no' : undefined}>{forecast.variable || '研究预测'}</h4><span>{forecastStatus[forecast.status]}</span></div>
     <ForecastBody forecast={forecast} sources={sources} />
     {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => ask(forecast)}>追问这项预测</button>}
     {Boolean(forecast.versions?.length) && <details className="research-dossier-record"><summary>预测修订历史 · {forecast.versions!.length} 次</summary>
@@ -161,7 +161,7 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
       {view && (compact ? <>
         <div className="research-judgment-layout">
           <div className="research-judgment-lead">
-            <p className="research-current-direction" translate="no">{view.direction || '当前总结尚待补充。'}</p>
+            <p className="research-current-direction" translate={view.direction ? 'no' : undefined}>{view.direction || '当前总结尚待补充。'}</p>
             {view.coverage_status === 'limited' && <p className="sector-research-limitation">已保存的研究部分可用，未覆盖部分不能据此判断。</p>}
           </div>
           {(view.invalidation || view.next_check) && <dl className="research-judgment-conditions" aria-label="判断条件与下一验证">

@@ -318,6 +318,8 @@ export type PortfolioPerformanceSummary = {
   snapshot_count: number
   return_observation_count: number
   risk_return_observation_count: number
+  risk_observation_start_date?: string | null
+  risk_observation_end_date?: string | null
   market_risk_return_coverage_state: PortfolioPerformanceCoverageState
   risk_metric_basis: 'market_risk_return'
   risk_metric_label: string
@@ -778,6 +780,9 @@ export type PortfolioHoldingRow = {
   quantity: number
   last_price: number | null
   quote_as_of_date?: string | null
+  day_change_price_as_of_date?: string | null
+  previous_day_change_price_as_of_date?: string | null
+  day_change_price_basis?: 'total_return' | 'price_return' | null
   quote_metric_family?: string | null
   quote_basis?: string | null
   quote_provider?: string | null

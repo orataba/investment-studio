@@ -46,7 +46,7 @@ export function EvidenceFigure({ source, hideSummary = false }: { source: SavedR
   const comparisonIncomplete = comparison && (source.data?.available === false || observedRows.length < 2
     || observedRows.length !== rows.length || !source.data?.sample_start || !source.data?.sample_end || (source.data?.observations ?? 0) < 2)
   return <figure className="research-evidence-figure">
-    <figcaption>{source.title || '留存数值依据'}</figcaption>
+    <figcaption translate={source.title ? 'no' : undefined}>{source.title || '留存数值依据'}</figcaption>
     {quantitative && <ResearchQuantFigure source={source} captioned hideSummary={hideSummary} />}
     {comparison && <p className="sector-research-note">共同样本 {source.data?.sample_start || '未取得'} 至 {source.data?.sample_end || '未取得'} · 实际观察数 {source.data?.observations ?? '未取得'}{source.data?.currency && ` · ${source.data.currency}`}</p>}
     {comparison && (source.data?.available === false || !observedRows.length) && <p className="sector-research-note">本次计算未取得可用结果。</p>}
@@ -134,7 +134,7 @@ export default function ResearchModules({ instrumentId, notebook, plan, onAskAss
           {result.next_check && <p className="research-notebook-next"><strong>下一步核实</strong> <span translate="no">{result.next_check}</span></p>}
           <ResearchReadingAside label={`依据与原文 · ${sources.length}`} title={`${title} · 研究依据`}><p className="sector-research-note">分析更新 {dateLabel(result.updated_at)} · 证据截至 {dateLabel(result.evidence_as_of)}{result.method_version && ` · 方法版本 ${result.method_version}`}</p><p className="sector-research-note">{coverageLabels[result.coverage]}</p><SourceList instrumentId={instrumentId} versionId={notebook?.version_id} sources={sources} /></ResearchReadingAside>
           {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(`请复核“${title}”模块（${key}）的判断：${result.summary}\n${result.analysis}\n请核实证据、反例和下一步检查，保留其他领域的已有研究。`, { instrument_id: instrumentId, notebook_version_id: notebook?.version_id })}>追问这一领域</button>}
-        </> : <p className="sector-research-note" translate="no">{method?.reason || '尚未保存这一领域的研究判断。'}</p>}
+        </> : <p className="sector-research-note" translate={method?.reason ? 'no' : undefined}>{method?.reason || '尚未保存这一领域的研究判断。'}</p>}
       </article>
     })}</div></div>
   </section>

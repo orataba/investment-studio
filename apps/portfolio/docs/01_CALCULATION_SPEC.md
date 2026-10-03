@@ -471,6 +471,7 @@ Holdings 是 as-of balance sheet view，展示当前仍然 open 的正式 positi
 
 - FCN 和长期权在没有可靠公允价值时按 remaining transaction basis carried，使用 `holding_kind=derivative_contract`、`valuation_basis=carried_cost`、`fair_value=null`、空 quote identity 和 `quote_status=event-cost`；
 - event-valued purchase 的 fees / taxes 在交易日确认为 expense，不进入 carrying basis；
+- 长期权到期情景图使用剩余权利金成本：每标的单位基础为 remaining cost basis /（剩余合约数量 × multiplier），Call/Put 的盈亏平衡价分别为 strike 加/减该基础；每单位最大损失为该基础。它不包含已费用化的开仓费用税款或未来平仓费用，不是从首次开仓起的含费总收益；净核算结果读取期间损益。多次开仓与部分平仓后，图表沿用账户成本法给出的剩余权利金基础，不把已计费用重复资本化。未确认权利金与行权价的共同币种或缺少成本时不生成净收益曲线；
 - Call / Put 的 sell-to-open 同时增加 settlement cash 和等额 premium-basis liability；short-option row 使用 `holding_kind=option_obligation`、`valuation_basis=premium_liability`、负的 NAV amount，并披露 open contract count、`contract count × multiplier` 的标的数量、remaining premium basis 和 carrying liability。风险读模型可汇总同一组合的现有标的股票或同币种 settled cash，显示 portfolio-level backing ratio/shortfall；该指标不分配具体担保物，也不声明券商保证金或质押状态；
 - partial/full buy-to-close、writer expiry、writer cash settlement 和 assignment 按关闭的合约数量比例释放 premium basis。释放 basis 减去 close cost 与 charges 形成 realized option P&L；
 - FCN 敲入观察只记录已确认的障碍事件，不改变数量、账面本金或现金；敲入后的最终兑付不能早于最终观察日。FCN close 按关闭数量释放 carrying basis，现金金额使用实际回单。实物收股在同一记录的 asset_deliveries 保存数量、接收账户、本币总确认价值及 fx_rate_to_contract；合约处置损益 = 确认收股折算价值 + 实际现金尾差 − 合约处置费用税费 − 所处置合约成本。收到证券按本币确认价值加股票取得费用税费建 lot，取得费用从证券币种现金账户独立扣除一次，不能重复冲减合约损益或虚构本金现金兑付再买股。quantity_fx_rate、fractional_quantity、fractional_reference_price 为回单依据，不生成现金换汇；
@@ -552,11 +553,12 @@ Holdings 行级 `Weight = market_value_base / portfolio NAV`，所以 written li
 - `Price P&L (Local) = MV_local - BookCost_local`；`Price P&L (Base) = PricePnl_local × FX_current`；`FX P&L (Base) = BookCost_local × FX_current - BookCost_historical_base`；`Total Unrealized P&L (Base) = Price P&L (Base) + FX P&L (Base) = MV_base - BookCost_historical_base`；
 - `Price Return (Local)` 以 local book cost 为分母；`Total Unrealized Return (Base)` 以 historical base book cost 为分母。零 book-cost 头寸仍保留金额盈亏，但百分比不因零分母而伪造。
 
-Holdings read model 仍计算 as-of date 当前持仓规模的一天经济市场变动，供组合 headline、快照和其他内部消费者使用；Security 表不再把 Day P&L / Day Return 作为可选字段：
+Holdings read model 计算 as-of date 当前持仓规模的最新报价与 FX 变动，供 Overview Asset Mix、Top Holdings 和内部快照使用；组合 headline 的 `1D P&L` 则读取估值日真实账本单日投资损益及剔除资金流后的收益，包含当日交易和费用。两者可能有不同方向，不得互相替换或要求数值对平。Overview 将持仓测算命名为 `Quote / FX Move`，可展开逐行查看实际观测起止日期；`NAV reconciled` 只证明账面金额合计与组合 NAV 一致。Security 表不再把 Day P&L / Day Return 作为可选字段：
 
 - 非现金资产优先使用 `quote_selection_policy.total_return` 选出的当前点与上一可用同 basis 点；只有 total-return basis 不可用时才回退到 selected valuation basis。这样已确认的拆分、分配或分红不会被误判为单日价格暴跌；
 - `local_day_return = current_return_point / previous_return_point - 1`；本币市场价值变化先形成 `local_day_change_value`。组合币种总变动必须使用当前与上一估值日各自的 FX：`day_change_value_base = current_local_value × current_fx - previous_local_value × previous_fx`，不能把两端都按当前汇率换算；
 - Holdings read model 同时输出 `local_day_change_value_base = (current_local_value - previous_local_value) × current_fx` 与 `fx_day_change_value_base = previous_local_value × (current_fx - previous_fx)`，两者必须精确加总为 `day_change_value_base`。当前/上一 FX rate、rate date 与 source instrument ids 随行保留；
+- `day_change_price_as_of_date`、`previous_day_change_price_as_of_date` 和 `day_change_price_basis` 随快照保留实际收益观测对；不能用估值日、前一个日历日或展示图表倒推。total-return 对完整时记录该对日期，否则记录实际使用的 valuation-price 对；交易成本估值、事件估值和缺点时不虚构报价变动日期；
 - total-return basis 中包含的分配只用于描述当前持仓篮子的单日经济市场收益，不改变 dividend 的已实现 `Income` 分类，也不进入 book `Unrealized P&L`；
 - `carried_cost` 和 `premium_liability` 行的 day change / day return 必须为 `null`，即使旧 payload 或下游聚合传入数值零，UI 与 export 也必须显示 `N/A`；
 - base-currency cash 的 day change 为 `0`；
@@ -583,14 +585,16 @@ Holdings `Forward RC` 是当前正式风险持仓的组合级 forward risk contr
 - 对 active formal `risk_eligible=true` ordinary positions 及非零外币 cash/pending monetary exposure 建立同一个组合本位币协方差矩阵。衍生品不参与，行级 `forward_risk_share`、contribution 和 modeled volatility 留空，状态为 `excluded`。base-currency cash/pending monetary rows 标记 `modeled_zero`；外币 monetary row 的本币价值路径为常数，组合币种收益来自历史 FX，负现金／待付款保留负权重，不因 accounting `risk_eligible=false` 丢弃汇率风险；
 - `risk_eligible` 由真实证券／合约身份、持仓类型、实际估值 basis、完整估值覆盖和价格派生；分类缺失或目标变更不影响这一资格，收益窗口与 FX 覆盖再由风险模型验证；
 - event-valued asset 或 derivative liability 的存在不阻断 eligible market sleeve 的 covariance。输出必须同时披露 `modeled_net_exposure`、`modeled_gross_exposure`、`excluded_carrying_value`、`excluded_liability`、`cash_unallocated_exposure`、coverage ratio 与逐行 `excluded_rows`；modeled exposure 包含外币 monetary exposure，cash_unallocated 仅保留未纳入 FX covariance 的本位币 monetary balance；衍生品以 `N/A / excluded` 表达，不用 0 冒充风险判断；
-- 权重使用 modeled row 的 signed base exposure 除以 total NAV；衍生品与 base-currency monetary rows 不进 covariance。risk-share 分母是同一个 modeled-sleeve variance，以 total NAV 为权重分母，不是 instrument 自身风险或 group-local denominator；衍生品排除仍须披露，不能把未建模衍生品称为实际零风险；
+- 权重使用 modeled row 的 signed base exposure 除以 total NAV；衍生品与 base-currency monetary rows 不进 covariance。signed risk-share 分母是同一个 modeled-sleeve variance，以 total NAV 为权重分母，不是 instrument 自身风险或 group-local denominator；衍生品排除仍须披露，不能把未建模衍生品称为实际零风险；
 - 外币证券的同一期收益为 `(1 + native_return) × FX_end / FX_start - 1`，FX 单位为 base/local；使用规范直接、倒数或 USD 交叉路径，不能以固定汇率、仅终点汇率或相加近似替代。价格和每条 FX leg 先按原来源日历对齐到共同日期，再计算本位币财富路径；本地市场休市但 FX 有观察的日期仍产生汇率收益。缺失预期价格或任一 FX leg 使相邻收益不可用，合法休市 carry 保留原来源日期；
 - 风险读取输出独立 `risk_return_series`，声明组合币种、原收益币种、FX source instrument ids 和组成来源的 observation coverage；所有 aligned period 保留，缺失 value 为 null，不能删点后跨缺口复利。`instrument_return_series_all` 及标的 Return / Vol / Chart 保持原本币语义。Forward RC、风险页面的当前篮子风险／相关性和 Research 使用同一组合币种对齐规则；
 - FX histories 截止请求 as-of date；持久 workspace 的输入代次包括 FX market-data/calculation watermarks。逻辑升级失效并重算派生 workspace，Research solver version 同步升级，使旧算法运行可读但不再标记 current；不修改交易、原行情、账本或 NAV 事实；
 - covariance model、lookback、calculation frequency、missing-return policy 与 contribution mode 必须来自组合级 `Production Risk Model`；
+- 同币种 monetary 账户共享一个 FX 经济因子，证券保留各自 instrument 因子。两账户或三账户拆分不改变净组合方差；signed RC 保留对冲贡献符号，absolute RC 按各行 Euler contribution 的绝对值归一化（如 +150% / −50% 转为 75% / 25%），其毛贡献分母不能与 signed RC 的净方差分母混用。风险矩阵优先显示账户名称，仍保留用途、资产／负债方向及待结算行身份；缺少名称时显示原账户 ID；
 - 窗口固定锚在请求的 holdings as-of date；较早的 latest observation 只能触发 trailing-staleness 诊断，不能把整个 lookback window 一起向前移动；
 - 每个 leaf return 必须有合法且与其他成员一致的 period start/end；taxonomy group 的 Forward RC 只加总 leaf `forward_risk_share` 和 contribution，不重新估计 group covariance；
 - 若没有任何可建模市场敞口（包括外币 monetary），或任一 modeled member 缺少完整收益窗口、base-currency return、权重、共同 period identity 或正的组合 variance，Forward RC 进入 `unavailable`，无法建模的非零普通证券敞口必须使结果不可用，不得用短窗口、0 return、pairwise covariance 或现金归一化兜底；
+- 完整样本实际估计得到净方差恰为零时，保留 `portfolio_variance=0`、`portfolio_volatility=0` 及观察数；比例 RC 仍为 `unavailable` / null，因为其分母为零。缺数据不能进入此分支，微小正方差也不舍入为零；FX 抵销不表示融资、信用、流动性或未建模风险消失；
 - Holdings 普通证券的 `Vol 1M / 3M / 6M / 1Y` 仍是标的自身 trailing sample volatility 观测列，不受 Production Risk Model 的 lookback 或 covariance model 影响，也不能替代 Forward RC；衍生品固定为 `N/A / excluded`。
 
 Holdings group rows 不是后端 period-performance group：
@@ -970,6 +974,7 @@ $$
 - 任何带 `start_date / end_date` 的区间 summary 都必须用区间内 `daily_twr` 重新复合并重算 drawdown，不能直接复用 inception-to-date 的 `cumulative_twr` 或 snapshot-level drawdown；
 - 区间第一笔有效收益如果已经形成回撤，drawdown peak 应以区间起点锚点为基准，而不是把第一条收益观察日误当作峰值日；
 - 若主图显示 `Portfolio Value`，下方 drawdown 仍然使用 `TWR Index`，因为外部出入金不应制造或稀释投资回撤。
+- Overview 下方明确标识 `Portfolio TWR Drawdown`，对应包含费用和事件损益的实际组合收益。`Market Risk Watch` 的当前与最大回撤属于独立市场风险收益链，始终解释费用等排除项，即使组合没有衍生品。`risk_observation_start_date/end_date` 来自后端实际采用的合格风险收益样本，界面显示完整样本起止区间；不能用组合估值日或主图缩放区间冒充。市场回撤为零不表示实际投资没有亏损或全面无风险。
 
 ### 5.8 Volatility / Sharpe / Sortino / Tracking Error
 
@@ -1587,7 +1592,7 @@ daily snapshot、holding snapshot、contribution slice 是可重建的读模型�
 - 交易、账户、共享行情或 FX 变化先写入源事实，再把受影响组合标记为 `stale`；
 - 每次 stale 标记生成新的 `refresh_request_id`，用于表示“至少需要覆盖到这次事实更新之后”；
 - 物化 payload schema 或核心计算口径改变时必须提升 `calculation_version`，让旧 read model 自动失效并重建；不能在 daily snapshot、contribution regroup 或 calculation detail 聚合中长期保留旧字段兼容逻辑。
-- 当前版本身份唯一由 `daily_snapshots.py::DAILY_SNAPSHOT_CALCULATION_VERSION`、`workspace_read_models.py::WORKSPACE_ANALYSIS_VERSION` 和 `research_solver.py::RESEARCH_TARGET_SOLVER_VERSION` 定义，不在文档复制随发布变化的数值。仅风险分析或投影变化时提升工作区版本并重新发布，不重述未改变的账本；核算口径变化才按 daily snapshot 版本重建。旧研究方案保留审计价值，版本变化后明确 stale，当前应用前重新求解。版本标记本身不证明运行环境已完成重建。
+- 当前版本身份唯一由 `daily_snapshots.py::DAILY_SNAPSHOT_CALCULATION_VERSION`、`workspace_read_models.py::WORKSPACE_ANALYSIS_VERSION` 和 `research_solver.py::RESEARCH_TARGET_SOLVER_VERSION` 定义，不在文档复制随发布变化的数值。仅风险分析或投影变化时提升工作区版本并重新发布，不重述未改变的账本；核算口径或快照中必须保留的来源字段变化时按 daily snapshot 版本重建。只补来源字段时必须核对重建前后 NAV、现金、成本、损益和收益历史数值保持一致，不将元数据升级当作财务重述。旧研究方案保留审计价值，版本变化后明确 stale，当前应用前重新求解。版本标记本身不证明运行环境已完成重建。
 - risk-context 从 taxonomy 服务读取当前分类，不调用 HTTP route。相关性直接由同次生产 RC 的已物化协方差投影，不再独立估计；current 只保留 tail-risk 所需完整收益历史与实时风险观察，prior comparison 不重做实时任务、衍生品状态或 position-cycle 成本装配。协方差 artifact 属于内部可重建分析数据，不暴露成第二套客户端模型配置。
 - 组合 summary、Overview 与默认 Holdings 的 as-of 选择必须复用同一套 latest fresh complete snapshot 规则；不得在不同读路径各自实现日期兜底，也不得因浏览器日期、服务器当前日期或部分资产已更新而改变组合层窗口终点。
 - 同一组合的物化刷新串行执行；如果刷新期间又收到新的 `refresh_request_id`，当前计算结果不得把状态置为 `current` 或清空 `dirty_from`，必须继续按最新事实再计算一轮；

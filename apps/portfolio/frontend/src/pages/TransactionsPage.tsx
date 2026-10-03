@@ -397,6 +397,14 @@ function parsePositiveFormNumber(value: string) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null
 }
 
+function fxAmountInputIssue(value: string): 'positive' | 'precision' | null {
+  if (!(Number(value) > 0) || !Number.isFinite(Number(value))) return 'positive'
+  const [coefficient, exponent = '0'] = value.toLowerCase().split('e')
+  const fractionPlaces = (coefficient.split('.')[1] ?? '').length
+  const trailingZeros = coefficient.match(/0+$/)?.[0].length ?? 0
+  return fractionPlaces - Number(exponent) - trailingZeros > 8 ? 'precision' : null
+}
+
 function formatCalculatedFormNumber(value: number, decimals: number) {
   if (!Number.isFinite(value)) {
     return ''
@@ -1831,7 +1839,12 @@ export default function TransactionsPage() {
       return resolved == null ? '' : formatCalculatedFormNumber(resolved, 2)
     })()
   const computedCounterAmount = form.counter_amount.trim()
-  const resolvedFxRate = Number(computedGrossAmount) > 0 && Number(computedCounterAmount) > 0
+  const fxSourceIssue = isFxConversion && computedGrossAmount ? fxAmountInputIssue(computedGrossAmount) : null
+  const fxTargetIssue = isFxConversion && computedCounterAmount ? fxAmountInputIssue(computedCounterAmount) : null
+  const fxAmountIssueMessage = (issue: 'positive' | 'precision') => issue === 'precision'
+    ? fcnLabel('FX amounts support up to 8 decimal places. Keep the confirmed amount; do not round it.', '换汇金额最多支持 8 位小数。请核对原始确认金额，不要擅自四舍五入。')
+    : fcnLabel('Enter a positive cash amount.', '请输入大于零的现金金额。')
+  const resolvedFxRate = !fxSourceIssue && !fxTargetIssue && Number(computedGrossAmount) > 0 && Number(computedCounterAmount) > 0
     ? (Number(computedCounterAmount) / Number(computedGrossAmount)).toFixed(12) : ''
 
   useEffect(() => {
@@ -3490,6 +3503,10 @@ export default function TransactionsPage() {
       const sourceAmount = Number(computedGrossAmount)
       const targetAmount = Number(computedCounterAmount)
       const fxRate = Number(resolvedFxRate)
+      if (fxSourceIssue || fxTargetIssue) {
+        setFormError(fxAmountIssueMessage((fxSourceIssue || fxTargetIssue)!))
+        return
+      }
       if (!Number.isFinite(sourceAmount) || sourceAmount <= 0) {
         setFormError('Enter a positive source amount.')
         return
@@ -4091,8 +4108,6 @@ export default function TransactionsPage() {
     ticketQuantity,
     positionPreviewAccountRole,
   )
-  const projectedPositionQuantity =
-    positionPreview && ticketQuantityDelta != null ? positionPreview.quantity + ticketQuantityDelta : null
   const quantityUnit = resolvedAssetType === 'option' || resolvedAssetType === 'fcn' ? 'contracts' : 'shares'
   const quantityUnitLabel = fcnLabel(quantityUnit, quantityUnit === 'contracts' ? '份合约' : '份额')
   const availablePositionQuantity = positionPreview
@@ -4104,6 +4119,9 @@ export default function TransactionsPage() {
   const enteredQuantityExceedsPosition =
     limitsPositionQuantity && availablePositionQuantity != null && ticketQuantity != null &&
     ticketQuantity > availablePositionQuantity + 1e-9
+  const projectedPositionQuantity =
+    positionPreview && ticketQuantityDelta != null && !enteredQuantityExceedsPosition
+      ? positionPreview.quantity + ticketQuantityDelta : null
   useEffect(() => {
     setInspectorTab('fact')
   }, [selectedTransactionId])
@@ -4119,8 +4137,10 @@ export default function TransactionsPage() {
       </span>
       <input
         type="number"
-        min="0"
-        step="0.01"
+        min={isFxConversion ? undefined : '0'}
+        step={isFxConversion ? 'any' : '0.01'}
+        aria-invalid={isFxConversion ? Boolean(fxSourceIssue) : undefined}
+        aria-describedby={isFxConversion ? 'transaction-fx-source-help' : undefined}
         aria-label={
           activeAssetDeliveries.length
             ? fcnLabel('Actual residual cash', '实际现金尾差')
@@ -4136,6 +4156,7 @@ export default function TransactionsPage() {
         }
         onChange={(event) => updatePricingField('gross_amount', event.target.value)}
       />
+      {isFxConversion && <span id="transaction-fx-source-help" className="transaction-ticket-hint" role={fxSourceIssue ? 'alert' : undefined}>{fxSourceIssue ? fxAmountIssueMessage(fxSourceIssue) : fcnLabel('Confirmed cash amount, up to 8 decimal places.', '实际确认现金金额，最多 8 位小数。')}</span>}
       {isFundTrade ? (
         <span className="transaction-ticket-hint">
           Enter the confirmed cash amount; unit price is derived from amount and shares.
@@ -7430,8 +7451,9 @@ export default function TransactionsPage() {
                     <span>{fcnLabel('Received Amount', '收到金额')} ({resolvedCounterpartyCurrency || fcnLabel('Target', '目标币种')})</span>
                     <input
                       type="number"
-                      min="0"
-                      step="0.01"
+                      step="any"
+                      aria-invalid={Boolean(fxTargetIssue)}
+                      aria-describedby="transaction-fx-target-help"
                       value={form.counter_amount}
                       placeholder={computedCounterAmount || '0.00'}
                       onChange={(event) =>
@@ -7441,6 +7463,7 @@ export default function TransactionsPage() {
                         }))
                       }
                     />
+                    <span id="transaction-fx-target-help" className="transaction-ticket-hint" role={fxTargetIssue ? 'alert' : undefined}>{fxTargetIssue ? fxAmountIssueMessage(fxTargetIssue) : fcnLabel('Confirmed cash amount, up to 8 decimal places.', '实际确认现金金额，最多 8 位小数。')}</span>
                   </label>
                 ) : shouldUseQuantity ? (
                   <label className="transaction-ticket-field">
@@ -7871,7 +7894,7 @@ export default function TransactionsPage() {
                 <button
                   type="submit"
                   className="toolbar-link button-primary"
-                  disabled={!canEditPortfolio || submittingTransaction || !selectedAccount || enteredQuantityExceedsPosition || (shouldPreviewPosition && (positionPreviewLoading || Boolean(positionPreviewError)))}
+                  disabled={!canEditPortfolio || submittingTransaction || !selectedAccount || enteredQuantityExceedsPosition || Boolean(fxSourceIssue || fxTargetIssue) || (shouldPreviewPosition && (positionPreviewLoading || Boolean(positionPreviewError)))}
                 >
                   {isEditingTransaction
                       ? 'Save Correction'

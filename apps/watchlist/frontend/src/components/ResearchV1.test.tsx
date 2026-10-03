@@ -5,7 +5,9 @@ import InvestmentResearchState from './InvestmentResearchState'
 import ResearchRecentEvents from './ResearchRecentEvents'
 import ResearchEventCard from './ResearchEventCard'
 import ResearchUpdateCard from './ResearchUpdateCard'
-import { EvidenceFigure } from './ResearchModules'
+import { EvidenceFigure, SavedFigure } from './ResearchModules'
+import { LanguageProvider, LanguageSelector } from '../../../../../packages/ui/src/i18n'
+import { researchMessages, researchPatterns } from '../researchMessages'
 import type { InvestmentView, ResearchEventsResponse, ResearchInsight, ResearchUpdate, SavedResearchNotebook } from '../lib/researchDossierApi'
 import { announceResearchPublication } from '../lib/researchUpdates'
 
@@ -20,6 +22,39 @@ const event = (extra: Partial<ResearchUpdate> = {}): ResearchUpdate => ({ update
 const response = (events: ResearchUpdate[], extra: Partial<ResearchEventsResponse> = {}): ResearchEventsResponse => ({ instrument_id: 'stock', events, late_arrivals: [], total: events.length, has_more: false, next_offset: null, ...extra })
 beforeEach(() => { vi.resetAllMocks(); api.role = 'member'; api.events.mockResolvedValue(response([])); api.pin.mockResolvedValue({ event_version_id: 'event:1:v2', follow_up_pinned: true }) })
 afterEach(cleanup)
+
+it('translates fixed research controls and preserves original content, draft and bound version across language switches', async () => {
+  window.history.replaceState(null, '', '/?lang=en')
+  const state = { ...notebook(view({ direction: '原始研究判断', risks: [1, 2, 3, 4].map(insight), coverage_status: 'limited' })), version_id: 'frozen-v1' }
+  api.source.mockResolvedValue({ source_id: 'original', title: 'Risk', data: { analysis_kind: 'watchlist_observations', status: 'unavailable', metrics: {}, limitations: [] } })
+  render(<LanguageProvider messages={researchMessages} patterns={researchPatterns}><LanguageSelector />
+    <InvestmentResearchState instrumentId="stock" compact notebook={state} sources={() => null} />
+    <SavedFigure instrumentId="stock" notebookVersionId="frozen-v1" source={{ source_id: 'original', title: 'Risk' }} />
+  </LanguageProvider>)
+  await screen.findByText('Discuss and record')
+  expect(screen.getByText('Risk', { selector: 'figcaption' })).toBeTruthy()
+  expect(screen.getByText('原始研究判断')).toBeTruthy()
+  expect(screen.getByText('Saved research is partially available. Uncovered areas cannot be assessed from it.')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Show remaining 1 items' }))
+  expect(screen.getByText('风险 4')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Assessment evidence and scope' }))
+  expect(await screen.findByRole('dialog', { name: 'Assessment evidence and scope' })).toBeTruthy()
+  fireEvent.click(await screen.findByRole('button', { name: 'Close Assessment evidence and scope' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Record an investment view' }))
+  const draft = await screen.findByLabelText('My investment view') as HTMLTextAreaElement
+  fireEvent.change(draft, { target: { value: 'Keep original draft 不翻译' } })
+  for (const language of ['zh-Hans', 'en']) {
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: language } })
+    await waitFor(() => expect(screen.getByText(language === 'en' ? 'Discuss and record' : '讨论与记录')).toBeTruthy())
+    expect(draft.value).toBe('Keep original draft 不翻译')
+    expect(screen.getByText('风险 4')).toBeTruthy()
+    expect(screen.getByText('Risk', { selector: 'figcaption' })).toBeTruthy()
+  }
+  expect(api.source).toHaveBeenCalledTimes(1)
+  expect(api.source).toHaveBeenCalledWith('stock', 'original', expect.any(AbortSignal), 'frozen-v1')
+  expect(api.note).not.toHaveBeenCalled()
+  window.history.replaceState(null, '', '/')
+})
 
 it('distinguishes reviewed pending risk from a newer referral retaining an old receipt', () => {
   const assessment = { status: 'pending', event_version_id: 'event:1:v1', run_id: 'risk-run',

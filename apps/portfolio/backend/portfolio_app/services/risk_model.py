@@ -640,6 +640,8 @@ def enrich_holdings_forward_risk(
         missing_return_policy=str(snapshot["missing_return_policy"]),
         labels_by_key=labels_by_key,
     )
+    zero_variance_metrics: dict[str, object] = {}
+    zero_variance_error = "Modeled net variance is zero; proportional risk contributions are undefined. Financing, credit and liquidity risks are not measured by this offset."
     try:
         parameters = dict(snapshot.get("parameters") if isinstance(snapshot.get("parameters"), dict) else {})
         coverage = prepare_return_window_for_covariance(
@@ -686,6 +688,14 @@ def enrich_holdings_forward_risk(
         marginal = covariance_matrix @ weights
         signed_contributions = weights * marginal
         variance = float(weights @ marginal)
+        if variance == 0.0:
+            # Only an actually estimated zero is known. Missing histories and
+            # insufficient observations must retain unavailable measurements.
+            zero_variance_metrics = {
+                "portfolio_variance": 0.0,
+                "portfolio_volatility": 0.0,
+                "observation_count": int(len(coverage.returns)),
+            }
         shares = risk_contribution_shares(
             covariance_matrix,
             weights,
@@ -696,9 +706,10 @@ def enrich_holdings_forward_risk(
             _clear_forward_risk_fields(row)
         workspace["forward_risk"] = {
             "status": "unavailable",
-            "errors": [str(error)],
+            "errors": [zero_variance_error if zero_variance_metrics else str(error)],
             "risk_model": snapshot,
             "coverage": coverage_snapshot,
+            **zero_variance_metrics,
             **coverage_disclosure,
         }
         return workspace
@@ -708,9 +719,10 @@ def enrich_holdings_forward_risk(
             _clear_forward_risk_fields(row)
         workspace["forward_risk"] = {
             "status": "unavailable",
-            "errors": ["Forward RC requires positive finite portfolio variance."],
+            "errors": [zero_variance_error if zero_variance_metrics else "Forward RC requires positive finite portfolio variance."],
             "risk_model": snapshot,
             "coverage": coverage_snapshot,
+            **zero_variance_metrics,
             **coverage_disclosure,
         }
         return workspace

@@ -2,6 +2,7 @@ import WorkspaceSkeleton from './WorkspaceSkeleton'
 import InfoHint from './InfoHint'
 import { researchStamp } from './ResearchRunStatus'
 import RiskChangeAudit from './RiskChangeAudit'
+import { PriceRuleCountsLine, PriceRuleDetails } from './PriceRiskRules'
 import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import RiskOfficerPanel from './RiskOfficerPanel'
 import type { ResearchAssistantReference } from './researchReference'
@@ -490,6 +491,10 @@ function PriceRiskSettings({
   return (
     <details className="risk-price-settings">
       <summary>提醒设置</summary>
+      {asset.price_rule_summary && <>
+        <PriceRuleCountsLine counts={asset.price_rule_summary.counts} />
+        <details><summary>当前规则与观察值</summary><PriceRuleDetails summary={asset.price_rule_summary} /></details>
+      </>}
       <p className="research-muted">
         下跌幅度达到复核线才生成提醒；填正数，留空关闭。设置对该标的生效，在不同观察列表和组合中共用。
       </p>
@@ -554,13 +559,12 @@ function PriceRiskSettings({
         <summary>初值依据</summary>
         <p className="research-muted">
           {calibration?.sample_end
-            ? `初次设定参考 ${calibration.sample_start} 至 ${calibration.sample_end} 的 ${calibration.observations} 个日收益，日波动率 ${percent(calibration.daily_volatility_pct)}。${calibration.manually_edited ? '当前复核线已手动调整。' : ''}`
+            ? <><span>校准样本</span> {calibration.sample_start} → {calibration.sample_end} · {calibration.observations} <span>个日收益观察值</span> · <span>日波动率</span> {percent(calibration.daily_volatility_pct)}。{calibration.manually_edited && <span>当前复核线已手动调整。</span>}</>
             : '日度样本完整且足够时，才按自身历史波动生成初值。'}
-          初值采用最近最多 252 个日对数收益的波动率，至少需要 63
-          个；日、周、月、季度分别取 3／2.5／2／1.5 倍区间波动，对应最低跌幅
-          0.5%／1%／2%／3%，向上取整到 0.5
-          个百分点。保存后固定，不随波动升高自动放宽。这是初始复核容忍度，不是亏损概率或买卖指令；高点回撤线另行设置。
         </p>
+        <p className="research-muted">常规市场使用最近最多 252、至少 63 个日对数收益；24/7 市场最多 365、至少 90 个。</p>
+        <p className="research-muted">日、周、月、季度分别取 3／2.5／2／1.5 倍区间波动，最低跌幅为 0.5%／1%／2%／3%，向上取整到 0.5 个百分点。</p>
+        <p className="research-muted">保存后固定，不随波动升高自动放宽。这是初始复核容忍度，不是亏损概率或买卖指令；高点回撤线另行设置。</p>
       </details>
     </details>
   )

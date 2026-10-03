@@ -24,6 +24,10 @@
 - `/api/research/runs/{run_id}/context`、`/tools` 只向绑定运行的受限工具提供证据；运行失败保留输入，服务重启将未完成运行标为失败。
 - `/api/risk` 只读当前事项；`/api/risk/rules/{instrument_id}`、`/api/risk/cases` 和单事项更新接口管理复核与跟进。
 
+价格复核的 `price_rule_summary` 与事项计数分开：`configured` 为启用复核线数，`evaluable` 为当前数据满足要求的启用规则数，`triggered` 为其中越线数，`unavailable` 为缺读数、样本不足或数据覆盖不合格的启用规则数；没有配置的规则是 `not_configured`，不会记为“未触发”。同一 `period_loss` 事项可以对应多条越线规则，`quantitative` 事项数为零不等于没有默认阈值或没有风险。每条规则保留正数损失限额、实际读数、窗口观察数及起止日，另带来源 `default` / `custom` / `unknown`：未修改的历史波动初值可确认为默认；新手改只把改变的字段标为自定义；旧记录只有“曾手改”标记而无逐项来源时不猜测。高点回撤线没有系统默认，非空时为自定义。
+
+`prepare_run` 将规则摘要、校准与实际观察值一同冻结在现有 `risk_inputs`，工具 `read_risk_instrument(s)` 读取这份快照，根索引提供 `price_rule_counts`。规则的 `settings_updated_at` 表示当前保存配置生效的时间，并非行情日期；任务编号、冻结时刻和完整参数共同确定当时版本，`contract_version` 仅表示摘要结构版本。研判展示投影保存同一份规则事实，运行中更改设置只影响新输入和过期提示。旧报告缺少摘要时保留原结论与原始证据，显示未记录，禁止用当前规则倒填历史。GET 不生成初值、不补写来源。普通市场滚动窗口为 1/5/21/63 个收益观察值，24/7 市场为 1/7/30/90，均非本周／本月累计收益。
+
 原始上传文件位于外部 document storage，数据库保存引用和提取文字。助手没有行情或交易写入工具；其回答是待复核研究内容。Portfolio 的标的风险路由代理同一组 Watchlist 事项 API，组合账本与风险模型保持独立。完整路由见 [workbench.py](../backend/watchlist_app/api/routes/workbench.py)，数值口径见 [Return Series Contract](./RETURN_SERIES_CONTRACT.md)。
 
 ## 2. 当前代码入口

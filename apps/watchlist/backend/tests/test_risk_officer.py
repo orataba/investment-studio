@@ -314,6 +314,33 @@ def test_prepared_snapshot_and_result_scope_and_staleness(client):
         assert not service.begin_run(session, watchlist_id="risk-list", scheduled_dates={"risk-a": "2026-09-08"})[1]
 
 
+def test_late_shared_case_conflict_does_not_partially_publish_other_instrument(client):
+    from copy import deepcopy
+    seed(client)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, watchlist_id="risk-list")
+        run_id = run.entry_id
+    service.prepare_run(run_id)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        before = deepcopy(session.get(RiskCase, 'research').evidence_json)
+        history = deepcopy(session.get(RiskCase, 'research').history_json)
+        assessments = [{'case_id': item['case_id'], 'event_version_id': item['evidence_json']['event_version_id'],
+                        'status': 'active', 'reason': '绑定当时研究证据。'} for item in run.context_json['risk_inputs']['research']]
+        later = session.get(RiskCase, 'uncertain')
+        later.evidence_json = {**later.evidence_json, 'event_version_id': 'newer-research-version'}
+        session.commit()
+        with pytest.raises(ValueError, match='复核期间已有更新'):
+            service.apply_result(session, run, {**reply(), 'case_assessments': assessments})
+        # Even committing the session cannot publish the earlier validated row:
+        # every shared case is checked before any case or run is changed.
+        session.commit()
+        assert session.get(RiskCase, 'research').evidence_json == before
+        assert session.get(RiskCase, 'research').history_json == history
+        assert session.get(RiskCase, 'outside').history_json == []
+        assert run.status == 'queued' and 'result' not in run.context_json
+
+
 def test_portfolio_uses_real_holdings_nav_and_preserves_unknown_values(client, monkeypatch):
     seed(client)
     payload = {"portfolio_id": "p1", "portfolio_name": "真实组合", "as_of_date": "2026-09-05", "base_currency": "CNY", "totals": {"nav": 1000},

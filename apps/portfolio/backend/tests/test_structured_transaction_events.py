@@ -3527,3 +3527,31 @@ def test_transaction_contract_rejects_removed_derivative_grouping_fields() -> No
         TransactionCreateRequest.model_validate(
             {**payload, "lifecycle_event_type": "fcn_physical_settlement"}
         )
+
+
+@pytest.mark.parametrize('option_type,currency', [('call', 'USD'), ('put', 'USD'), ('call', 'HKD'), ('put', 'HKD')])
+@pytest.mark.parametrize('opening_fees', [(0, 0), (10, 3)])
+@pytest.mark.parametrize('cost_method,remaining_basis,close_pnl', [('fifo', 1200, 98), ('moving_average', 3400 / 3, 94 / 3)])
+def test_long_option_remaining_premium_excludes_expensed_opening_charges_after_partial_close(option_type, currency, opening_fees, cost_method, remaining_basis, close_pnl):
+    accounts = [{'account_id': 'broker', 'account_type': 'securities_account', 'account_category': 'option',
+                 'cost_basis_method': cost_method, 'currency': currency}]
+    common = dict(instrument_id='option-long-fee', instrument_type='option', currency=currency,
+                  option_type=option_type, option_underlying_id='equity-1', option_strike='200')
+    transactions = [
+        _transaction('txn-1', 'buy', '2026-01-01', quantity=2, price=5, gross_amount=1000, fees=opening_fees[0], **common),
+        _transaction('txn-2', 'buy', '2026-01-02', quantity=1, price=7, gross_amount=700, fees=opening_fees[1], **common),
+        _transaction('txn-3', 'sell', '2026-01-03', quantity=1, price=6, gross_amount=600, fees=2, **common),
+    ]
+    opening_lots = build_position_lots('portfolio', accounts, transactions[:1], as_of_date=date(2026, 1, 1), resolve_pricing=False)
+    assert sum(lot['remaining_cost_basis'] for lot in opening_lots) == pytest.approx(1000)
+    lots = build_position_lots('portfolio', accounts, transactions, as_of_date=date(2026, 1, 3), resolve_pricing=False)
+    assert sum(lot['remaining_quantity'] for lot in lots) == pytest.approx(2)
+    # Each cost method releases premium only; entry fees never enter the remaining basis.
+    assert sum(lot['remaining_cost_basis'] for lot in lots) == pytest.approx(remaining_basis)
+    assert sum(lot['realized_pnl'] for lot in lots) == pytest.approx(close_pnl)
+    postings = derive_ledger_postings('portfolio', transactions, account_cost_methods={'broker': cost_method},
+                                      account_currency_map={'broker': currency, 'cash': currency})
+    net_cash = sum(float(row.get('cash_amount_delta') or 0) for row in postings)
+    assert net_cash == pytest.approx(-1102 - sum(opening_fees))
+    # Cash plus remaining carried premium reconciles to close P/L less entry expense once.
+    assert net_cash + remaining_basis == pytest.approx(close_pnl - sum(opening_fees))

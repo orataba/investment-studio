@@ -3531,6 +3531,12 @@ export default function WatchlistsPage() {
                                     openRisk,
                                     zh,
                                   )}
+                                  {column === primaryDisplayColumn && <span className="watchlists-mobile-returns">
+                                    {visibleColumns.filter(key => key.startsWith('return_') && !isChartFieldKey(key)).slice(0, 2).map(key => <span key={key}>
+                                      <span>{t(fieldLabelByKey.get(key) || formatLabel(key))}</span>{' '}
+                                      {renderCell(key, row[key], instrumentId, watchlistId, undefined, fieldByKey.get(key), row, openRisk, zh)}
+                                    </span>)}
+                                  </span>}
                                 </td>
                               )
                             })}

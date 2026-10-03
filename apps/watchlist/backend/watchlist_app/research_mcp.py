@@ -362,10 +362,18 @@ def compare_instruments(instrument_ids: list[str] | None = None, start_date: str
         pageable_fields=[(["result"], {**read, "section": "result"})])
 
 
-@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
-def read_portfolio_holdings() -> dict:
-    """CONVERSATION ONLY with a linked portfolio; unavailable in automatic instrument research (sector_run) and risk_run. Read actual holdings at the originating portfolio page's valuation date, or latest when no date is selected. Keep the whole portfolio denominator; selected holding/account details and the risk page's risk context are returned separately. A position reference can be a portfolio-local derivative, not a shared instrument. Historical positions under current configuration are not archived PIT predictions. If valuation is unavailable, valuation_status=unavailable retains the error and returns independently readable ledger_positions and ledger_accounts at the selected date. Those are recorded quantities/cost and settled/pending cash in each account currency, not current valuations; disclose ledger_errors for any missing part. Never sum their reference prices or native currencies into NAV, returns or portfolio weights. Authorization failures are not eligible for this recovery. If no portfolio is linked, ask the user to select one. Market-value weight is not risk contribution."""
-    return request("tools", {"tool": "portfolio"})
+@compact_read_tool
+def read_portfolio_holdings(section: Literal["overview", "accounts", "currency_balances", "workspace", "risk",
+                                             "selected_holding", "selected_account", "ledger_positions"] = "overview",
+                            source_id: str | None = None, offset: int = 0, limit: int = 20,
+                            path: list[str | int] | None = None) -> dict:
+    """CONVERSATION ONLY with a linked portfolio; unavailable in sector_run and risk_run. Start with overview: it contains complete concise account facts (names, currencies, signed native balances, effective date, missing fields), canonical portfolio totals and Forward RC status. Read every account directly; never infer an available account balance from totals. Zero is known zero; missing balances are null. Currency cash netting is distinct from missing risk history, zero-variance undefined RC, or all portfolio risks. Keep the whole portfolio NAV denominator. Large account lists have an explicit accounts pointer; historical paths and detail are separate sections. Continue with the returned source_id and section, following ALL next_offset and deferred.path with that SAME source_id/section until complete. No source_id means the first retained overview, not another live refresh. risk is this conversation's risk evidence; read_portfolio_risk is for automatic risk runs only. Valuation failure preserves account_summary and ledger_positions with explicit gaps, never synthetic NAV. Historical holdings under current configuration are not archived PIT predictions. A holding reference may be a local derivative, not a shared instrument. Every page rechecks the original portfolio permission; never request another portfolio through this tool."""
+    if source_id is None:
+        if section != "overview" or offset or path:
+            raise ValueError("先读取overview，再使用返回的source_id及分区续读。")
+        return request("tools", {"tool": "portfolio"})
+    return request("read", {"resource": "portfolio", "source_id": source_id, "section": section,
+                            "offset": offset, "limit": limit, "path": path})
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))

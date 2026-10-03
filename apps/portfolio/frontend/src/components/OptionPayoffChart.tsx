@@ -174,7 +174,7 @@ export default function OptionPayoffChart({ contract, holding }: OptionPayoffCha
         </div>
       </dl>
       <p className="holding-detail-note">{t('Expiry scenario for the option alone; underlying holdings and other hedges are excluded. This is not the current option value.')}</p>
-      <p className="holding-detail-note">{t(isWritten ? 'Written payoff uses remaining gross premium before fees and taxes.' : 'Long payoff uses remaining cost including allocated opening charges; future closing charges are excluded.')}</p>
+      <p className="holding-detail-note">{t(isWritten ? 'Written payoff uses remaining gross premium before fees and taxes.' : 'Long payoff uses remaining premium cost only. Opening fees and taxes were expensed separately; future closing charges are excluded. See Period P/L for the net accounting result.')}</p>
     </section>
   )
 }

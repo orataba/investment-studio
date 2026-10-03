@@ -13,6 +13,7 @@ import {
   signedValueClass,
 } from '../lib/format'
 import { baseAmountForRow, completeAmountSum } from '../lib/holdingAmounts'
+import InfoHint from './InfoHint'
 import {
   holdingDayChangeUnavailable,
   holdingUsesEventValuation,
@@ -367,8 +368,9 @@ export default function OverviewAssetMix({
       aria-labelledby="overview-asset-mix-title"
     >
       <div className="portfolio-detail-toolbar portfolio-section-toolbar overview-section-toolbar">
-        <div className="panel-title" id="overview-asset-mix-title">
+        <div className="panel-title portfolio-title-with-hint" id="overview-asset-mix-title">
           Asset Mix
+          <InfoHint label="Quote / FX move basis" detail="Applies the latest available price or total-return change and FX change to current quantities. Excludes trades, fees and cash flows; it is not the portfolio's daily P&L. NAV reconciliation checks carrying amounts only." />
         </div>
       </div>
       <div className="overview-asset-mix-grid">
@@ -384,7 +386,7 @@ export default function OverviewAssetMix({
                 <th>Lines</th>
                 <th><span>Carrying Amount</span> ({workspace.base_currency})</th>
                 <th>Current Weight</th>
-                <th><span>Day Change</span> ({workspace.base_currency})</th>
+                <th><span>Quote / FX Move</span> ({workspace.base_currency})</th>
                 <th>Forward RC</th>
                 <th>Valuation Coverage</th>
               </tr>
@@ -424,6 +426,27 @@ export default function OverviewAssetMix({
           </table>
         </HorizontalTableScroll>
       </div>
+      <details className="overview-quote-dates">
+        <summary><span>Quote / FX dates</span> · <span>Valuation date</span> {workspace.as_of_date}</summary>
+        <p>Quote dates can differ by asset and from the portfolio valuation date. Missing observations are not zero moves.</p>
+        <HorizontalTableScroll>
+          <table aria-label="Quote and FX observation dates">
+            <thead><tr><th>Holding</th><th>Price / return observations</th><th>FX observations</th></tr></thead>
+            <tbody>{workspace.rows.map(row => (
+              <tr key={row.line_id}>
+                <th scope="row" translate="no">{row.instrument_core?.instrument_name ?? row.derivative_contract?.contract_name ?? row.line_id}</th>
+                <td>{holdingDayChangeUnavailable(row) ? 'N/A' : row.holding_category === 'cash_and_settlement' ? '—' : (
+                  <><span>{row.day_change_price_basis === 'total_return' ? 'Total return' : 'Price'}</span>{' '}
+                    {row.previous_day_change_price_as_of_date ?? 'N/A'}{' → '}{row.day_change_price_as_of_date ?? 'N/A'}</>
+                )}</td>
+                <td>{holdingDayChangeUnavailable(row) ? 'N/A' : row.instrument_core?.currency === workspace.base_currency ? <span>Base currency</span> : (
+                  <>{row.previous_fx_rate_as_of_date ?? 'N/A'}{' → '}{row.fx_rate_as_of_date ?? 'N/A'}</>
+                )}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </HorizontalTableScroll>
+      </details>
     </section>
   )
 }

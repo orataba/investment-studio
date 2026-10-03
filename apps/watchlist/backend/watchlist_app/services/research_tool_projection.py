@@ -67,6 +67,7 @@ def read_research_context(request, section: str = "overview", offset: int = 0, l
     return {"risk_run": True, "risk_scope": context["risk_scope"], "cutoff": context["cutoff"],
         "risk_inputs": {**{key: snapshot.get(key) for key in (
             "scope", "scope_available", "instrument_ids", "input_as_of", "limitations")},
+            "price_rule_counts": (snapshot.get("price_rule_summary") or {}).get("counts"),
             "portfolio": {key: value for key, value in portfolio.items() if key != "risk_context"} if portfolio else None},
         "portfolio_risk_sections": [key for key in get_args(PortfolioRiskSection) if key in portfolio_context],
         "portfolio_taxonomies": [{key: row.get(key) for key in ("taxonomy_id", "name", "status")}

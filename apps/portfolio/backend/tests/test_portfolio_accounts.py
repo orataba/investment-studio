@@ -107,7 +107,7 @@ def test_directory_filters_before_valuation_and_no_admin_implicit_read(secured, 
     assert client.get(f'/api/portfolios/{a}/access', headers=headers('owner')).status_code == 404
 
 
-@pytest.mark.parametrize('suffix', ['/accounts', '/transactions', '/transactions.csv', '/transactions.xlsx', '/transaction-captures', '/research/workbench', '/risk-context', '/risk-context/version', '/snapshots/daily'])
+@pytest.mark.parametrize('suffix', ['/accounts', '/transactions', '/transactions.csv', '/transactions.xlsx', '/transaction-captures', '/derivative-contracts', '/research/workbench', '/risk-context', '/risk-context/version', '/snapshots/daily'])
 def test_hidden_portfolio_all_real_surfaces_are_denied(secured, suffix):
     client, _, _, b = secured
     assert client.get(f'/api/portfolios/{b}{suffix}', headers=headers()).status_code == 404
@@ -134,7 +134,7 @@ def test_workspace_requires_explicit_accessible_portfolio(secured):
     assert client.get('/api/workspace/summary', params={'portfolio_id': b}, headers=headers()).status_code == 404
 
 
-@pytest.mark.parametrize('method,suffix', [('post', '/accounts'), ('post', '/transactions'), ('put', '/research/settings'), ('patch', ''), ('delete', ''), ('post', '/copy'), ('post', '/transaction-capture-batches')])
+@pytest.mark.parametrize('method,suffix', [('post', '/accounts'), ('post', '/transactions'), ('patch', '/derivative-contracts/private-contract'), ('put', '/research/settings'), ('patch', ''), ('delete', ''), ('post', '/copy'), ('post', '/transaction-capture-batches')])
 def test_viewer_cannot_mutate_business_facts(secured, method, suffix):
     client, _, a, _ = secured
     response = getattr(client, method)(f'/api/portfolios/{a}{suffix}', headers=headers('bob'), **({'json': {}} if method != 'delete' else {}))
@@ -216,6 +216,7 @@ def test_scoped_agent_cannot_enumerate_or_escape_portfolio(secured):
     people['agent'] = Principal('bob', '乙经理', 'default', resource_scope={'kind': 'portfolio', 'id': a})
     assert client.get(f'/api/portfolios/{a}/access', headers=headers('agent')).status_code == 200
     assert client.get(f'/api/portfolios/{b}/access', headers=headers('agent')).status_code == 404
+    assert client.patch(f'/api/portfolios/{a}/derivative-contracts/private-contract', headers=headers('agent'), json={}).status_code == 403
     assert client.post('/api/portfolios', headers=headers('agent'), json={}).status_code == 403
     people['agent'] = Principal('bob', '乙经理', 'default', resource_scope={'kind': 'instrument', 'id': 'gold'})
     assert client.get('/api/portfolios', headers=headers('agent')).status_code == 403
@@ -226,6 +227,7 @@ def test_maintenance_reads_do_not_authorize_ledger_or_membership_write(secured):
     for portfolio_id in (a, b):
         assert client.get(f'/api/portfolios/{portfolio_id}/access', headers=headers('maintenance')).status_code == 200
         assert client.post(f'/api/portfolios/{portfolio_id}/transactions', headers=headers('maintenance'), json={}).status_code == 403
+        assert client.patch(f'/api/portfolios/{portfolio_id}/derivative-contracts/private-contract', headers=headers('maintenance'), json={}).status_code == 403
     assert client.post('/api/portfolios/snapshots/daily/recalculations', headers=headers('bob'), json={'refresh_all': True}).status_code == 403
     people['scoped-maintenance'] = Principal(None, '绑定维护任务', 'default', kind='service', service_id='valuation', scopes=['portfolio:maintain'], resource_scope={'kind': 'portfolio', 'id': a})
     assert client.post('/api/portfolios/snapshots/daily/recalculations', headers=headers('scoped-maintenance'), json={'refresh_all': True}).status_code == 403

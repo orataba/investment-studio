@@ -13,7 +13,7 @@ from watchlist_app.db.models.workbench import ResearchTopic, ResearchEntry, Risk
 from watchlist_app.services.read_models import serialize_payload
 from watchlist_app.services.research_workbench import catalogue, portfolio_options, external_json, conversation_context, instrument_evidence, compare_series
 from watchlist_app.services.risk_workbench import refresh_risk_cases, event, now
-from watchlist_app.services.price_risk import period_loss_readings, series_limitation
+from watchlist_app.services.price_risk import period_loss_readings, period_rule_sources, price_rule_summary, series_limitation
 
 from studio_identity import current_principal
 from watchlist_app.services.research_access import require_topic_access, require_entry_access, visible_topics, require_portfolio
@@ -127,7 +127,7 @@ class ResearchToolInput(BaseModel):
 
 
 class ResearchReadInput(BaseModel):
-    resource: Literal["context", "instrument", "dossier", "estimates"]
+    resource: Literal["context", "instrument", "dossier", "estimates", "portfolio"]
     instrument_id: str | None = None
     section: str = "overview"
     source_id: str | None = None
@@ -170,6 +170,8 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
             fields.add("initialization_candidates")
     elif request.resource == "instrument" and request.section != "overview":
         fields.discard("research_dossiers")
+    elif request.resource == "portfolio":
+        fields = common | {"portfolio_id", "tool_evidence"}
     record = load_run_fields(session, run_id, fields)
     context = record.context_json
 
@@ -203,6 +205,16 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
     try:
         if request.resource == "context":
             result = projection.read_research_context(local_read, **page)
+        elif request.resource == "portfolio":
+            from watchlist_app.services.research_portfolio_projection import read_portfolio_evidence
+            if context.get("risk_run") or context.get("sector_run") or not context.get("portfolio_id"):
+                raise ValueError("组合事实只能在本轮已关联组合的私人对话中读取。")
+            evidence = next((item for item in context.get("tool_evidence", [])
+                             if item.get("source_id") == request.source_id and item.get("tool") == "portfolio"
+                             and item.get("result", {}).get("portfolio_id") == context["portfolio_id"]), None)
+            if evidence is None:
+                raise ValueError("请使用本轮组合读取返回的source_id；不能跨运行或跨组合读取。")
+            result = read_portfolio_evidence(evidence, **page)
         elif not request.instrument_id:
             raise ValueError("读取标的资料需要instrument_id")
         elif request.resource == "instrument":
@@ -645,6 +657,12 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
             series[iid] = (chart.payload_json.get("research_returns") or {}) if known and known <= cutoff else {}
         result = compare_series(series, start, end, request.target_id, request.benchmark_id)
     elif request.tool == "portfolio":
+        from watchlist_app.services.research_portfolio_projection import read_portfolio_evidence
+        retained_portfolio = next((item for item in context.get("tool_evidence", [])
+            if item.get("tool") == "portfolio" and item.get("result", {}).get("portfolio_id") == context.get("portfolio_id")
+            and context.get("portfolio_id")), None)
+        if retained_portfolio is not None:
+            return read_portfolio_evidence(retained_portfolio)
         if not context.get("portfolio_id"):
             result = {"available": False, "reason": "尚未关联组合，请用户在对话中选择组合后继续。"}
         else:
@@ -652,7 +670,8 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
                 from watchlist_app.services.research_workbench import portfolio_page_evidence
                 result = portfolio_page_evidence(context["portfolio_id"], context.get("page_context"))
             except (OSError, ValueError):
-                result = {"available": False, "reason": "未取得组合持仓，不能推断权重或实际持仓。"}
+                result = {"portfolio_id": context["portfolio_id"], "available": False,
+                          "reason": "未取得组合持仓，不能推断权重或实际持仓。"}
     else:
         try:
             result = {"regime": external_json("regime", "/latest"), "limitations": ["仅代表已配置市场，须核对数据日期；不等于完整宏观或全市场资料。"]}
@@ -679,6 +698,8 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
         context["computed_metrics"] = [*context.get("computed_metrics", []), metric]
     record.context_json = context
     session.commit()
+    if request.tool == "portfolio":
+        return read_portfolio_evidence(evidence)
     return evidence
 
 
@@ -740,7 +761,10 @@ def risk_workspace(instrument_id: str | None = None, instrument_ids: str | None 
         item["period_limits"] = rule.period_limits_json if rule else {}
         item["price_risk_calibration"] = rule.calibration_json if rule else {}
         item["period_readings"] = period_loss_readings(series, item["period_limits"])
-        item["price_risk_note"] = series_limitation(series) or ("不足 63 个日收益，尚未生成波动初值" if len(points) < 64 else None)
+        item["price_rule_summary"] = price_rule_summary(item, rule.updated_at if rule else None)
+        minimum_returns = 90 if (series.get("frequency") or {}).get("gap_detection_basis") == "market_calendar:24/7" else 63
+        item["price_risk_note"] = series_limitation(series) or (f"不足 {minimum_returns} 个日收益，尚未生成波动初值"
+            if not item["period_limits"] and len(points) <= minimum_returns else None)
         item["return_kind"] = (series.get("metadata") or {}).get("return_kind")
         current = (payload.get("current_drawdown") if payload else None)
         if current is not None and len(points) >= 3 and (payload.get("data_quality") or {}).get("status") == "ready":
@@ -776,7 +800,11 @@ def set_rule(instrument_id: str, request: RuleInput, session: Session = Depends(
     if request.period_limits is not None:
         limits = {key: request.period_limits.get(key) for key in ("day", "week", "month", "quarter")}
         if limits != rule.period_limits_json:
-            rule.calibration_json = {**(rule.calibration_json or {}), "manually_edited": True}
+            prior_limits = rule.period_limits_json or {}
+            calibration = rule.calibration_json or {}
+            sources = period_rule_sources(prior_limits, calibration)
+            sources.update({key: "custom" for key, value in limits.items() if value != prior_limits.get(key)})
+            rule.calibration_json = {**calibration, "manually_edited": True, "rule_sources": sources}
         rule.period_limits_json = limits
     refresh_risk_cases(session, [instrument_id])
     session.commit()

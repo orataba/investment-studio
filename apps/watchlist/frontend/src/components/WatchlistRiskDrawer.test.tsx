@@ -11,6 +11,7 @@ import {
 import WatchlistRiskDrawer from './WatchlistRiskDrawer'
 import InstrumentRiskDrawer from './InstrumentRiskDrawer'
 import { riskPendingState } from '../../../../../packages/ui/src/instrumentRisk'
+import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 const request = vi.hoisted(() => vi.fn())
 const officer = vi.hoisted(() => ({ onCompleted: undefined as undefined | (() => void) }))
 const permission = vi.hoisted(() => ({ canWrite: true }))
@@ -208,6 +209,34 @@ it('shows rolling losses and saves instrument-wide review lines, including an ex
   fireEvent.click(screen.getByRole('button', { name: '保存提醒设置' }))
   await screen.findByText('提醒设置已保存')
   expect(request).toHaveBeenCalledWith('/api/risk/rules/a', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ drawdown_limit: 10, period_limits: { day: null, week: 2, month: 5, quarter: 8 } }) }))
+})
+
+it('shows English rule provenance, counts and calibration without changing instrument settings', async () => {
+  window.history.replaceState(null, '', '/?lang=en')
+  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: 'Asset A', instrument_type: 'equity',
+    freshness: 'fresh', risk: { data_quality: { status: 'ready' }, current_drawdown: -1 },
+    price_rule_summary: { contract_version: 1, settings_updated_at: '2026-10-02T00:00:00Z',
+      counts: { configured: 1, evaluable: 1, triggered: 0, unavailable: 0, default: 1, custom: 0, unknown: 0 },
+      rules: [{ key: 'day', source: 'default', state: 'not_triggered', limit_pct: 5, value_pct: 1.02, observations: 1,
+        start_date: '2026-10-01', end_date: '2026-10-02', limitation: null }] },
+    price_risk_calibration: { sample_start: '2026-01-02', sample_end: '2026-10-02', observations: 180, daily_volatility_pct: 1.5 },
+    period_limits: { day: 5 }, period_readings: [],
+  }], cases: [] })
+  render(<LanguageProvider><WatchlistRiskDrawer watchlistId="3" watchlistName="Scope" focusInstrumentId="a" onClose={vi.fn()} onAskAssistant={vi.fn()} onChanged={vi.fn()} /></LanguageProvider>)
+  fireEvent.click(await screen.findByText('Price risk and alert settings'))
+  fireEvent.click(await screen.findByText('Alert settings'))
+  fireEvent.click(await screen.findByText('Current rules and observations'))
+  fireEvent.click(await screen.findByText('Initial calibration'))
+  await screen.findByText('Configured rules')
+  const settings = screen.getByText('Alert settings').closest('details')!
+  await waitFor(() => expect(settings.textContent).not.toMatch(/[\u4e00-\u9fff]/))
+  expect(screen.getByRole('spinbutton', { name: 'Asset A Daily loss review level' })).toBeTruthy()
+  expect(screen.getByRole('spinbutton', { name: 'Asset A Drawdown from peak review level' })).toBeTruthy()
+  expect(settings.textContent).toContain('2026-10-02')
+  expect(settings.textContent).toContain('1.02%')
+  expect(settings.textContent).toContain('24/7')
+  expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
+  window.history.replaceState(null, '', '/')
 })
 
 it.each([

@@ -2576,15 +2576,18 @@ describe('Transactions rendered page contract', () => {
     const hint = language === 'en' ? /Open short available to cover/ : /可回补空头数量/
     await waitFor(() => expect(within(dialog).getByText(hint)).toHaveTextContent(new RegExp(`${Math.max(-held, 0)}(?:\\.00)? ${language === 'en' ? 'shares' : '份额'}`)))
     if (language === 'zh-Hans') {
-      expect(within(dialog).getByText(hint)).toHaveTextContent('交易后：61.00 份额（多头）')
+      expect(within(dialog).getByText(hint)).not.toHaveTextContent('交易后')
       expect(within(dialog).getByText(hint)).not.toHaveTextContent('Open short')
     }
     expect(quantity).toHaveAttribute('max', String(Math.max(-held, 0)))
     expect(quantity).toHaveAttribute('aria-invalid', String(held >= 0))
     if (held >= 0) expect(within(dialog).getByRole('button', { name: 'Record Transaction' })).toBeDisabled()
+    if (held >= 0) expect(within(dialog).getByText(hint)).not.toHaveTextContent(/After:|交易后/)
+    else expect(within(dialog).getByText(hint)).toHaveTextContent('After: -1.00 shares short')
     fireEvent.change(quantity, { target: { value: '3' } })
     expect(quantity).toHaveAttribute('aria-invalid', 'true')
     expect(quantity).toHaveValue(3)
+    expect(within(dialog).getByText(hint)).not.toHaveTextContent(/After:|交易后/)
     await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'short_sell')
     await waitFor(() => expect(quantity).toHaveAttribute('aria-invalid', 'false'))
     expect(quantity).not.toHaveAttribute('max')
@@ -2613,7 +2616,12 @@ describe('Transactions rendered page contract', () => {
     expect(within(dialog).getByRole('button', { name: 'Record Transaction' })).toBeDisabled()
   })
 
-  it('derives a readonly FX rate from confirmed cash amounts without rounding either leg', async () => {
+  it.each([
+    ['780', '100', '.128205128205'],
+    ['0.01', '0.07812346', '7.812346000000'],
+    ['0.07812346', '0.01', '0.128002523186'],
+    ['1000e-10', '0.00000078', '7.800000000000'],
+  ])('preserves FX cash amounts %s → %s through native validity and submission', async (source, target, derivedRate) => {
     const hkd = { ...cashAccount, account_id: 'cash-hkd', account_name: 'HKD Cash', currency: 'HKD' }
     apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [hkd, cashAccount] })
     apiMocks.createPortfolioTransaction.mockRejectedValue(new Error('Inspect request only'))
@@ -2623,16 +2631,75 @@ describe('Transactions rendered page contract', () => {
     const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
     await user.click(within(dialog).getByRole('button', { name: /^Cash/ }))
     await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'fx_conversion')
-    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Source Amount' }), { target: { value: '780' } })
-    fireEvent.change(within(dialog).getByRole('spinbutton', { name: /^Received Amount/ }), { target: { value: '100' } })
+    const sourceInput = within(dialog).getByRole('spinbutton', { name: 'Source Amount' }) as HTMLInputElement
+    const targetInput = within(dialog).getByRole('spinbutton', { name: /^Received Amount/ }) as HTMLInputElement
+    fireEvent.change(sourceInput, { target: { value: source } })
+    fireEvent.change(targetInput, { target: { value: target } })
+    expect(sourceInput.checkValidity()).toBe(true)
+    expect(targetInput.checkValidity()).toBe(true)
     const rate = within(dialog).getByRole('spinbutton', { name: /^FX Rate/ })
-    expect(rate).toHaveValue(.128205128205)
+    expect(rate).toHaveValue(Number(derivedRate))
     expect(rate).toHaveAttribute('readonly')
     expect(rate).toHaveAttribute('step', 'any')
     await user.click(within(dialog).getByRole('button', { name: 'Record Transaction' }))
     await waitFor(() => expect(apiMocks.createPortfolioTransaction).toHaveBeenCalledWith('3', expect.objectContaining({
-      gross_amount: '780', counter_amount: '100', fx_rate: null,
+      gross_amount: source, counter_amount: target, fx_rate: null,
     }), expect.any(String)))
+    expect(apiMocks.createPortfolioTransaction).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['Source Amount', 'Received Amount'])('keeps invalid %s drafts with a product explanation and permits cancellation', async (field) => {
+    const hkd = { ...cashAccount, account_id: 'cash-hkd', account_name: 'HKD Cash', currency: 'HKD' }
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [hkd, cashAccount] })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.click(within(dialog).getByRole('button', { name: /^Cash/ }))
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'fx_conversion')
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Source Amount' }), { target: { value: '1' } })
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: /^Received Amount/ }), { target: { value: '1' } })
+    const input = within(dialog).getByRole('spinbutton', { name: new RegExp(`^${field}`) })
+    for (const value of ['0.078123461', '1e-9', '0', '-1']) {
+      fireEvent.change(input, { target: { value } })
+      expect(input).toHaveValue(Number(value))
+      expect(input).toHaveAttribute('aria-invalid', 'true')
+      expect(within(dialog).getByRole('alert')).toHaveTextContent(Number(value) > 0 ? 'up to 8 decimal places' : 'positive cash amount')
+      expect(within(dialog).getByRole('button', { name: 'Record Transaction' })).toBeDisabled()
+    }
+    fireEvent.change(input, { target: { value: '0.010000000' } })
+    expect(input).toHaveAttribute('aria-invalid', 'false')
+    expect(within(dialog).getByRole('button', { name: 'Record Transaction' })).toBeEnabled()
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog', { name: 'Record transaction' })).not.toBeInTheDocument()
+    expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+  })
+
+  it('preserves the original FX amounts and confirmed quote when correcting only a note', async () => {
+    const hkd = { ...cashAccount, account_id: 'cash-hkd', account_name: 'HKD Cash', currency: 'HKD' }
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [cashAccount, hkd] })
+    const transaction = { ...selectedTransaction, transaction_type: 'fx_conversion', asset_domain: 'cash', asset_subtype: 'cash', account: cashAccount,
+      account_id: cashAccount.account_id, counterparty_account: hkd, counterparty_account_id: hkd.account_id,
+      instrument_ref: null, instrument_id: null, quantity: null, price: null, settlement_cash_account: null,
+      gross_amount: .01, source_gross_amount: '0.01000000', counter_amount: .07812346,
+      source_counter_amount: '0.07812346', fx_rate: 7.8123456789, source_fx_rate: '7.812345678900',
+      fees: 0, source_fees: '0', taxes: 0, source_taxes: '0', currency: 'USD', net_cash_effect: -.01 }
+    const workspace = await apiMocks.getPortfolioTransactionsWorkspace()
+    apiMocks.getPortfolioTransactionsWorkspace.mockResolvedValue({ ...workspace, transactions: [transaction], selected_transaction: transaction })
+    apiMocks.updatePortfolioTransaction.mockResolvedValue(transaction)
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions?transaction_id=txn-1', '/portfolios/:portfolioId/transactions')
+    const inspector = await screen.findByRole('complementary', { name: 'Selected transaction details' })
+    await user.click(within(inspector).getByRole('button', { name: 'Edit' }))
+    const dialog = screen.getByRole('dialog', { name: 'Correct transaction' })
+    await user.clear(within(dialog).getByRole('textbox', { name: 'Note' }))
+    await user.type(within(dialog).getByRole('textbox', { name: 'Note' }), 'Confirmed quote retained')
+    await user.click(within(dialog).getByRole('button', { name: 'Save Correction' }))
+    await waitFor(() => expect(apiMocks.updatePortfolioTransaction).toHaveBeenCalledWith('3', 'txn-1', expect.objectContaining({
+      gross_amount: '0.01000000', counter_amount: '0.07812346', fx_rate: '7.812345678900', note: 'Confirmed quote retained',
+    })))
+    expect(apiMocks.updatePortfolioTransaction).toHaveBeenCalledTimes(1)
+    expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
   })
 
   it('links an account-free portfolio to account creation', async () => {

@@ -9,6 +9,7 @@ import DerivativeHoldingOverview from './DerivativeHoldingOverview'
 import { holdingFixture, instrumentFixture, optionContractFixture, fcnContractFixture } from '../test/portfolioFixtures'
 import { renderPortfolioPage } from '../test/renderPortfolioPage'
 import type { PortfolioInstrumentPriceChartResponse, PortfolioTransactionRecord } from '../lib/api'
+import { LANGUAGE_STORAGE_KEY } from '../../../../../packages/ui/src/i18n'
 
 const api = vi.hoisted(() => ({ getPortfolioPerformanceCalculationGroups: vi.fn(), getPortfolioInstrumentEventTasks: vi.fn(), getPortfolioInstrumentPriceChart: vi.fn() }))
 vi.mock('../lib/api', () => api)
@@ -21,6 +22,7 @@ const chart: PortfolioInstrumentPriceChartResponse = {
 }
 beforeEach(() => {
   vi.clearAllMocks()
+  window.localStorage.setItem(LANGUAGE_STORAGE_KEY, 'en')
   api.getPortfolioInstrumentEventTasks.mockResolvedValue({ tasks: [] })
   api.getPortfolioInstrumentPriceChart.mockResolvedValue(chart)
 })
@@ -77,6 +79,37 @@ describe('Holding detail investment semantics', () => {
     expect(screen.getByText('Break-even').parentElement).toHaveTextContent('$115.0000')
     expect(screen.getByRole('img')).toHaveAttribute('aria-label', 'Standalone option expiry payoff based on remaining premium basis')
     expect(document.querySelector('.option-payoff-line')?.getAttribute('d')).not.toMatch(/NaN|Infinity/)
+  })
+
+  it.each([
+    ['call', 'USD', 2, 1000, '$205.0000', '$5.0000', 'en'],
+    ['put', 'USD', 2, 1000, '$195.0000', '$5.0000', 'en'],
+    ['call', 'HKD', 3, 1700, 'HK$205.6667', 'HK$5.6667', 'en'],
+    ['put', 'HKD', 2, 1200, 'HK$194.0000', 'HK$6.0000', 'en'],
+    ['call', 'USD', 2, 1000, '$205.0000', '$5.0000', 'zh-Hans'],
+  ] as const)('discloses remaining premium-only %s payoff in %s after opening or partial close', (optionType, currency, quantity, basis, breakEven, premium, language) => {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language)
+    const contract = optionContractFixture({ currency, terms: { underlying_instrument_id: 'asset-1', option_type: optionType, strike: 200, contract_multiplier: 100, expiry_date: '2026-12-18' } })
+    const holding = holdingFixture({ quantity, cost_basis: basis, option_risk: { underlying_instrument_id: 'asset-1', underlying_name: 'Alpha', underlying_quote_currency: currency, underlying_spot: 200, underlying_quote_as_of_date: '2026-07-15', underlying_quote_status: 'complete', intrinsic_value_per_share: 0, moneyness_pct: 0, max_loss_local: basis, days_to_expiry: 156, risk_state: 'at_the_money', backing: null } })
+    const { unmount } = render(<OptionPayoffChart contract={contract} holding={holding} />)
+    expect(screen.getByText('Break-even').parentElement).toHaveTextContent(breakEven)
+    expect(screen.getByText('Premium basis / share').parentElement).toHaveTextContent(premium)
+    expect(screen.getByText('Maximum loss / share').parentElement).toHaveTextContent(premium)
+    expect(screen.getByText(language === 'en' ? /Long payoff uses remaining premium cost only/ : /买方收益仅按剩余权利金成本/)).toHaveTextContent(language === 'en' ? 'future closing charges are excluded' : '未来平仓费用不包含在内')
+    const path = document.querySelector('.option-payoff-line')!.getAttribute('d')
+    // A later snapshot with the same remaining basis cannot re-add opening fees.
+    unmount()
+    render(<OptionPayoffChart contract={contract} holding={{ ...holding, option_risk: { ...holding.option_risk!, underlying_quote_as_of_date: '2026-07-16' } }} />)
+    expect(document.querySelector('.option-payoff-line')!.getAttribute('d')).toBe(path)
+  })
+
+  it.each(['missing-cost', 'missing-currency', 'different-currency'] as const)('keeps option payoff unavailable with %s', (reason) => {
+    const contract = optionContractFixture()
+    const holding = holdingFixture({ quantity: 2, cost_basis: reason === 'missing-cost' ? null : 1000, option_risk: { underlying_instrument_id: 'asset-1', underlying_name: 'Alpha', underlying_quote_currency: reason === 'different-currency' ? 'HKD' : reason === 'missing-currency' ? '' : 'USD', underlying_spot: 200, underlying_quote_as_of_date: '2026-07-15', underlying_quote_status: 'complete', intrinsic_value_per_share: null, moneyness_pct: null, max_loss_local: null, days_to_expiry: 156, risk_state: 'unavailable', backing: null } })
+    render(<OptionPayoffChart contract={contract} holding={holding} />)
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    expect(screen.getByText('Break-even').parentElement).toHaveTextContent('—')
+    expect(screen.getByText(reason === 'missing-cost' ? 'Remaining premium basis is unavailable.' : 'Payoff needs a confirmed common currency for premium and strike.')).toBeInTheDocument()
   })
 
   it('draws decimal-string reference lines and uses calendar spacing for irregular fund observations', () => {

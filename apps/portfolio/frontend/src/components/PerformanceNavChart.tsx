@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from 'react'
+
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
 import { formatCurrency, formatNumber, formatPercent, formatSignedCurrency } from '../lib/format'
 import { rebasePerformanceSeriesTo100 } from '../lib/performanceSeries'
@@ -498,6 +500,8 @@ export default function PerformanceNavChart({
   const [showDrawdownPanel, setShowDrawdownPanel] = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const settingsMenuRef = useRef<HTMLDivElement | null>(null)
+  const settingsDialogRef = useModalDialog(settingsOpen, () => setSettingsOpen(false))
+  const settingsDialogId = useId()
 
   const sortedValuePoints = useMemo(() => normalizePoints(points), [points])
   const sortedTwrPoints = useMemo(() => normalizePoints(twrPoints), [twrPoints])
@@ -730,7 +734,8 @@ export default function PerformanceNavChart({
 
   const settingsMenu =
     isOverview && settingsOpen ? (
-      <div className="portfolio-nav-settings-panel">
+      <div className="portfolio-nav-settings-panel" ref={settingsDialogRef} id={settingsDialogId}
+        role="dialog" aria-label="Chart settings" tabIndex={-1}>
         <div className="portfolio-nav-settings-layout">
           <section className="portfolio-nav-settings-block">
             <div className="portfolio-nav-settings-block-head">
@@ -839,6 +844,9 @@ export default function PerformanceNavChart({
                     : 'portfolio-nav-settings-trigger'
                 }
                 aria-label="Chart settings"
+                aria-haspopup="dialog"
+                aria-expanded={settingsOpen}
+                aria-controls={settingsOpen ? settingsDialogId : undefined}
                 onClick={() => setSettingsOpen((current) => !current)}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1025,7 +1033,7 @@ export default function PerformanceNavChart({
         <div className="portfolio-nav-drawdown-shell">
           {isOverview ? (
             <div className="portfolio-nav-drawdown-header">
-              <span>Drawdown</span>
+              <span>{useTwrDrawdown ? 'Portfolio TWR Drawdown' : 'Portfolio NAV Drawdown'}</span>
               <strong className="portfolio-nav-chart-change-negative">{formatPercent(activeDrawdown)}</strong>
               <em>
                 {useTwrDrawdown ? 'Based on TWR' : 'Based on NAV'} · Max {formatPercent(maxDrawdown)}

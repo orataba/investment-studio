@@ -82,3 +82,52 @@ def period_loss_readings(series: dict, limits: dict) -> list[dict]:
             "limitation": reason,
         })
     return rows
+
+
+def period_rule_sources(limits: dict, calibration: dict) -> dict:
+    """Only attribute origins supported by retained settings, including legacy edits."""
+    retained = calibration.get("rule_sources") or {}
+    initial = calibration.get("method") == "volatility_review_v1" and not calibration.get("manually_edited")
+    return {key: (retained.get(key) or ("default" if initial else "unknown"))
+            for key in PERIODS if limits.get(key) is not None}
+
+
+def price_rule_summary(asset: dict, updated_at=None) -> dict:
+    """The actual configured rules and their evaluation, independent of case counts.
+
+    Settings timestamps describe when this retained configuration took effect;
+    they are not observation dates. A run freezes this object with its inputs.
+    """
+    sources = period_rule_sources(asset.get("period_limits") or {}, asset.get("price_risk_calibration") or {})
+    risk = asset.get("risk") or {}
+    coverage = ("行情新鲜度不足" if asset.get("freshness") != "fresh" else
+                "风险数据尚未就绪" if (risk.get("data_quality") or {}).get("status") != "ready" else None)
+    readings = [{**row, "key": row["period"], "source": sources.get(row["period"], "none")}
+                for row in asset.get("period_readings") or []]
+    readings.append({"key": "drawdown", "source": "custom" if asset.get("drawdown_limit") is not None else "none",
+        "limit_pct": asset.get("drawdown_limit"), "return_pct": risk.get("current_drawdown"),
+        "end_date": next((row.get("end_date") for row in readings if row.get("end_date")), None),
+        "observations": None, "start_date": None, "limitation": None})
+    counts = dict.fromkeys(("configured", "evaluable", "triggered", "unavailable", "default", "custom", "unknown"), 0)
+    rules = []
+    for reading in readings:
+        configured = reading["limit_pct"] is not None
+        limitation = coverage or reading.get("limitation") or ("缺少当前读数" if reading.get("return_pct") is None else None)
+        state = ("not_configured" if not configured else "unavailable" if limitation else
+                 "triggered" if reading["return_pct"] <= -reading["limit_pct"] else "not_triggered")
+        if configured:
+            counts["configured"] += 1
+            counts[reading["source"]] += 1
+            counts["unavailable" if state == "unavailable" else "evaluable"] += 1
+            counts["triggered"] += state == "triggered"
+        rules.append({"key": reading["key"], "source": reading["source"], "state": state,
+            "limit_pct": reading["limit_pct"], "value_pct": reading.get("return_pct"),
+            "observations": reading.get("observations"), "start_date": reading.get("start_date"),
+            "end_date": reading.get("end_date"), "limitation": limitation if configured else None})
+    return {"contract_version": 1, "settings_updated_at": updated_at, "counts": counts, "rules": rules}
+
+
+def scope_price_rule_summary(instruments: list[dict]) -> dict:
+    summaries = [item["price_rule_summary"] for item in instruments]
+    return {"contract_version": 1, "counts": {key: sum(item["counts"][key] for item in summaries)
+        for key in ("configured", "evaluable", "triggered", "unavailable", "default", "custom", "unknown")}}

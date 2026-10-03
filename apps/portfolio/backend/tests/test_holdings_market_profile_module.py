@@ -111,6 +111,28 @@ def test_holding_day_change_never_mixes_total_return_and_valuation_pairs() -> No
     assert change_value == pytest.approx(20.0)
 
 
+@pytest.mark.parametrize("total_return_pair", [True, False])
+def test_quote_move_keeps_actual_observation_dates_separate_from_valuation(total_return_pair) -> None:
+    # A Saturday valuation need not imply Friday-to-Saturday market returns.
+    window = holdings_market_profile.holding_day_change_price_window(
+        day_change_pct=0.1,
+        price_point={"value": 110, "as_of_date": "2026-10-02"},
+        previous_price_point={"value": 100, "as_of_date": "2026-10-01"},
+        return_price_point={"value": 55, "as_of_date": "2026-10-01"},
+        previous_return_price_point={"value": 50, "as_of_date": "2026-09-30"} if total_return_pair else None,
+    )
+    assert window == {
+        "day_change_price_as_of_date": "2026-10-01" if total_return_pair else "2026-10-02",
+        "previous_day_change_price_as_of_date": "2026-09-30" if total_return_pair else "2026-10-01",
+        "day_change_price_basis": "total_return" if total_return_pair else "price_return",
+    }
+    missing = holdings_market_profile.holding_day_change_price_window(
+        day_change_pct=None, price_point={"value": 110, "as_of_date": "2026-10-02"},
+        previous_price_point=None, return_price_point=None, previous_return_price_point=None,
+    )
+    assert all(value is None for value in missing.values())
+
+
 def test_cash_profile_uses_injected_fx_and_identity_dependencies() -> None:
     def resolve_fx(**kwargs):
         as_of_date = kwargs["as_of_date"]

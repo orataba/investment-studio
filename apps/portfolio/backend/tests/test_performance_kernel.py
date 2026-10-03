@@ -1437,6 +1437,14 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
     abbv_row = next(row for row in holdings_rows if row["instrument_core"]["instrument_id"] == "equity-us-abbv")
     assert abbv_row["day_change_pct"] == pytest.approx(206.47 / 207.18 - 1)
     assert abbv_row["day_change_value"] == pytest.approx(abbv_row["quantity"] * (206.47 - 207.18))
+    assert abbv_row["day_change_price_as_of_date"] == "2026-04-15"
+    # _with_daily_test_history defines Apr 14 as an explicit test observation;
+    # Apr 8 is the start of the fixture's fixed-price segment.
+    assert abbv_row["previous_day_change_price_as_of_date"] == "2026-04-14"
+    assert abbv_row["day_change_price_basis"] == "total_return"
+    assert any(payload.get("day_change_price_as_of_date") == "2026-04-15"
+               and payload.get("previous_day_change_price_as_of_date") == "2026-04-14"
+               for payload in persisted_payloads)
     expected_day_change_base = sum(row["day_change_value_base"] for row in holdings_rows)
     expected_prior_market_value = holdings_payload["totals"]["market_value"] - expected_day_change_base
     assert holdings_payload["totals"]["day_change_value"] == pytest.approx(expected_day_change_base)
@@ -1755,6 +1763,8 @@ def test_inception_day_twr_includes_bod_funding_and_first_day_pnl(client, monkey
     assert payload["summary"]["total_pnl"] == pytest.approx(10.0)
     assert payload["summary"]["cumulative_twr"] == pytest.approx(0.10)
     assert payload["summary"]["risk_return_observation_count"] == 1
+    assert payload["summary"]["risk_observation_start_date"] == "2026-01-01"
+    assert payload["summary"]["risk_observation_end_date"] == "2026-01-01"
     assert payload["summary"][
         "risk_annualization_periods_per_year"
     ] == pytest.approx(period_metrics.DAYS_PER_YEAR)

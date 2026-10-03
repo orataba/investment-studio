@@ -3,6 +3,21 @@ import type { LanguageMessages, LanguagePatternMessages } from '../../../../pack
 export const researchMessages: LanguageMessages = { 'zh-Hans': {
   'Configured search endpoint did not execute native web search': '本轮公开网页搜索未能完成，相关信息覆盖受限。',
 }, en: {
+  '判断依据与适用范围': 'Assessment evidence and scope',
+  '讨论与记录': 'Discuss and record',
+  '已保存的研究部分可用，未覆盖部分不能据此判断。': 'Saved research is partially available. Uncovered areas cannot be assessed from it.',
+  '研究基线尚未建立，不能据此作出判断。': 'The research baseline is not established; no assessment can be made from it.',
+  '收起更多观察': 'Show fewer observations',
+  '收起': 'Show less',
+  '主题基线尚待建立。': 'The theme baseline is pending.',
+  '尚待明确。': 'To be determined.',
+  '资料或覆盖范围不足，尚不能形成明确判断。': 'Evidence or coverage is insufficient for a clear assessment.',
+  '尚未保存这一领域的研究判断。': 'No assessment has been saved for this domain.',
+  '研究预测': 'Research forecast',
+  '研究正文和引用保留原语言。': 'Research text and quotations retain their original language.',
+  '事件与持续主题': 'Developments and ongoing themes',
+  '近 7 天的重要事件、基本面变化与市场信号，按信息日期排列；持续跟进及补录记录单独保留。': 'Material events, fundamental changes and market signals from the last 7 days, ordered by information date; ongoing follow-ups and backfilled records are kept separately.',
+  '数值依据读取失败': 'Unable to load numeric evidence',
   '样本区间': 'Sample period', '来源计算摘要': 'Source calculation summary',
   '与中证1000相关系数': 'Correlation with CSI 1000', '中证1000 Beta': 'CSI 1000 beta', '下跌日捕获率': 'Down-day capture', '上涨日捕获率': 'Up-day capture',
   '产品累计净值收益（%）': 'Product cumulative NAV return (%)', '指数价格收益（%）': 'Index price return (%)', '产品最大回撤（%）': 'Product maximum drawdown (%)', '指数最大回撤（%）': 'Index maximum drawdown (%)', '产品当前回撤（%）': 'Product current drawdown (%)', '一期自相关': 'Lag-one autocorrelation',
@@ -259,6 +274,10 @@ export const researchMessages: LanguageMessages = { 'zh-Hans': {
   '关键假设': 'Key assumptions', '主题背景': 'Theme background', '资料限制': 'Coverage limitations', '撤回原因': 'Reason for withdrawal', '复核条件': 'Review conditions', '复盘结果': 'Review outcome', '经验': 'Lesson',
 } }
 export const researchPatterns: LanguagePatternMessages = { en: [
+  { match: /^在已检查范围内，未发现足够明确的新(机会|风险)线索。$/, replace: kind => `No sufficiently clear new ${kind === '机会' ? 'opportunity' : 'risk'} leads were found within the reviewed scope.` },
+  { match: /^展开其余 (\d+) 项$/, replace: 'Show remaining $1 items' },
+  { match: /^查看其余 (\d+) 份观察$/, replace: 'Show remaining $1 observations' },
+  { match: /^关闭(判断依据与适用范围|查看数据缺口|量化解释与依据|数据覆盖与口径|计算口径与输入依据)$/, replace: label => `Close ${researchMessages.en?.[label] || label}` },
   { match: /^(全样本|近期样本|基准|产品) · (.+)$/, replace: (group, label) => `${({ 全样本: 'Full sample', 近期样本: 'Recent sample', 基准: 'Benchmark', 产品: 'Product' } as Record<string, string>)[group]} · ${researchMessages.en?.[label] || label}` },
   { match: /^查看全部演变 · (\d+)$/, replace: 'All developments · $1' },
   { match: /^关闭研究档案$/, replace: 'Close research archive' },

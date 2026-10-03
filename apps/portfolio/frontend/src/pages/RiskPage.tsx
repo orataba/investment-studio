@@ -348,8 +348,9 @@ type MarketInstrumentHoldingRow = HoldingsRow & { instrument_core: InstrumentCor
 
 function holdingRiskLabel(row: HoldingsRow) {
   if (isMonetaryRiskRow(row)) {
+    const accountLabels = row.account_ids?.map((id, index) => row.account_names?.[index]?.trim() || id)
     const account = row.account_ids?.length
-      ? `${row.account_ids.join(', ')}${isPendingMonetaryHoldingRow(row) ? ` · ${row.line_id}` : ''}`
+      ? `${accountLabels?.join(', ')}${isPendingMonetaryHoldingRow(row) ? ` · ${row.line_id}` : ''}`
       : row.position_reference_id || row.line_id
     const side = (row.market_value_base ?? 0) < 0 ? 'Liability' : 'Asset'
     return `${row.instrument_core?.currency || 'Cash'} · ${side} · ${row.cash_purpose || row.holding_kind || 'cash'} · ${account}`
@@ -1511,6 +1512,7 @@ export default function RiskPage() {
   const { language, t } = useLanguage()
   const zh = language === 'zh-Hans'
   const [holdingsWorkspace, setHoldingsWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
+  const knownZeroModelVariance = holdingsWorkspace?.forward_risk?.portfolio_variance === 0
   const [accountsWorkspace, setAccountsWorkspace] = useState<PortfolioAccountsWorkspaceResponse | null>(null)
   const [taxonomyCatalog, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
   const targetTaxonomyStorageKey = `investment_studio.portfolio.risk.target-taxonomy.${portfolioId}`
@@ -2246,7 +2248,7 @@ export default function RiskPage() {
                     aria-label={`${holdingsWorkspace.as_of_date}; ${portfolioRiskFrequency.statusLabel}. ${riskHealthDetail}`}
                     tabIndex={0}
                   >
-                    {holdingsWorkspace.as_of_date} · {holdingsWorkspace.forward_risk?.status === 'ok' ? (zh ? '模型可用' : 'Model available') : (zh ? '模型不可用' : 'Model unavailable')} · {productionRiskDescription}
+                    {holdingsWorkspace.as_of_date} · {knownZeroModelVariance ? (zh ? '净方差为零，比例风险贡献无定义' : 'Zero net variance; proportional RC undefined') : holdingsWorkspace.forward_risk?.status === 'ok' ? (zh ? '模型可用' : 'Model available') : (zh ? '模型不可用' : 'Model unavailable')} · {productionRiskDescription}
                   </div>
                 </div>
                 {targetTaxonomies.length ? <>
@@ -2272,8 +2274,8 @@ export default function RiskPage() {
                 >
                   <span className="summary-card-label">Modeled Portfolio Volatility</span>
                   <strong className="summary-card-value">
-                    {holdingsWorkspace.forward_risk?.status === 'ok' &&
-                    holdingsWorkspace.forward_risk.portfolio_volatility != null
+                    {(holdingsWorkspace.forward_risk?.status === 'ok' || knownZeroModelVariance) &&
+                    holdingsWorkspace.forward_risk?.portfolio_volatility != null
                       ? formatPercent(holdingsWorkspace.forward_risk.portfolio_volatility)
                       : 'Unavailable'}
                   </strong>

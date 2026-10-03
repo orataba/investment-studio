@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import RiskOfficerPanel, { type RiskOfficerReview } from '../../../../../packages/ui/src/RiskOfficerPanel'
+import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 
 beforeEach(() => { vi.useFakeTimers() })
 afterEach(() => { cleanup(); vi.useRealTimers() })
@@ -30,6 +31,76 @@ function deferred<T>() {
   return { promise, resolve }
 }
 const load = async () => { await act(async () => {}) }
+
+it('localizes the case-count tooltip without calling zero triggers unconfigured', async () => {
+  window.history.replaceState(null, '', '/?lang=en')
+  const request = vi.fn().mockResolvedValue(payload('a'))
+  render(<LanguageProvider><RiskOfficerPanel request={request} scopeQuery="instrument_id=a" /></LanguageProvider>)
+  await load()
+  fireEvent.click(screen.getByRole('button', { name: /^Risk inputs:/ }))
+  await load()
+  expect(screen.getByRole('tooltip').textContent).toContain('Quantitative trigger cases: 1')
+  expect(screen.getByRole('tooltip').textContent).not.toMatch(/[\u4e00-\u9fff]/)
+  expect(request).toHaveBeenCalledTimes(1)
+  window.history.replaceState(null, '', '/')
+})
+
+it('keeps unknown status read-only, polls its original run and never resubmits', async () => {
+  const onCompleted = vi.fn()
+  const saved = completed('a')
+  const run = { run_id: 'unconfirmed-run', status: 'unrecognized', created_at: '2026-10-02', completed_at: null, message: '' } as unknown as NonNullable<RiskOfficerReview['latest_run']>
+  const request = vi.fn().mockResolvedValue(payload('a', { latest_completed: saved, latest_run: run }))
+  render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" onCompleted={onCompleted} />)
+  await load()
+  expect(screen.getByText(saved.summary)).toBeTruthy()
+  expect(screen.getByText(/任务状态暂未确认/)).toBeTruthy()
+  expect((screen.getByRole('button', { name: '更新研判' }) as HTMLButtonElement).disabled).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: '更新研判' }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(4000) })
+  expect(request).toHaveBeenCalledTimes(2)
+  expect(onCompleted).not.toHaveBeenCalled()
+  request.mockResolvedValue(payload('a', { latest_completed: saved, latest_run: { ...run, status: 'failed' } }))
+  fireEvent.click(screen.getByRole('button', { name: '刷新状态' }))
+  await load()
+  expect(screen.queryByText(/任务状态暂未确认/)).toBeNull()
+  expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
+  expect(onCompleted).toHaveBeenCalledTimes(1)
+})
+
+it.each(['unrecognized', 'running', 'read-failure'])('blocks an already-open confirmation when status becomes %s', async status => {
+  const request = vi.fn().mockResolvedValue(payload('a'))
+  const { rerender } = render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" refreshToken={0} />)
+  await load()
+  fireEvent.click(screen.getByRole('button', { name: '更新研判' }))
+  expect(screen.getByRole('alertdialog')).toBeTruthy()
+  if (status === 'read-failure') request.mockRejectedValue(new Error('暂时无法读取'))
+  else request.mockResolvedValue(payload('a', { latest_run: { run_id: 'other-run', status, created_at: '2026-10-02', completed_at: null, message: '' } as NonNullable<RiskOfficerReview['latest_run']> }))
+  rerender(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" refreshToken={1} />)
+  await load()
+  expect(screen.queryByRole('alertdialog')).toBeNull()
+  expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
+})
+
+it('shows frozen rule counts with the saved run and never reconstructs legacy counts', async () => {
+  const counts = { configured: 4, evaluable: 4, triggered: 0, unavailable: 0, default: 4, custom: 0, unknown: 0 }
+  const saved = { ...completed('a'), prepared_at: '2026-10-02T00:00:00Z', price_rule_summary: { contract_version: 1, counts, instruments: [] } }
+  const request = vi.fn().mockResolvedValue(payload('a', { counts: { research: 0, quantitative: 0, coverage: 0 }, latest_completed: saved }))
+  render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" />)
+  await load()
+  fireEvent.click(screen.getByText('本轮价格复核规则'))
+  const details = screen.getByText('本轮价格复核规则').closest('details')!
+  expect(details.textContent).toContain('已配置规则 4')
+  expect(details.textContent).toContain('触发规则 0')
+  expect(details.textContent).toContain('默认 4')
+  expect(details.textContent).toContain('saved-a')
+  expect(details.textContent).toContain('不随当前设置变化')
+  cleanup()
+  request.mockResolvedValue(payload('a', { latest_completed: completed('a') }))
+  render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" />)
+  await load()
+  expect(screen.getByText(/旧报告未留存规则统计/)).toBeTruthy()
+  expect(screen.queryByText('已配置规则')).toBeNull()
+})
 
 it('shows existing officer conclusions but does not submit for a team reader', async () => {
   const request = vi.fn().mockResolvedValue(payload('a', { latest_completed: completed('a') }))
@@ -125,7 +196,7 @@ it('starts only on request, polls running work every four seconds and notifies o
   await load()
   expect(screen.getByText('尚未研判。点击“更新研判”发起首次研判。')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: /风控输入/ }))
-  expect(screen.getByRole('tooltip').textContent).toContain('研究上报 2 · 量化触发 1 · 监测受限 1')
+  expect(screen.getByRole('tooltip').textContent).toContain('研究上报: 2 · 量化触发事项: 1 · 监测受限: 1')
   fireEvent.keyDown(document, { key: 'Escape' })
   expect(request).toHaveBeenCalledTimes(1)
   await act(async () => { await vi.advanceTimersByTimeAsync(8000) })

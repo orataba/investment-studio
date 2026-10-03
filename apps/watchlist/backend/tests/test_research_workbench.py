@@ -174,11 +174,16 @@ def test_portfolio_assistant_binds_selected_holding_account_and_valuation_day(cl
         assert query["as_of_date"] == ["2026-08-31"]
         if parsed.path == "/workspace/holdings":
             assert query["include_details"] == ["true"] and "account_id" not in query
-            return {"portfolio_id": "portfolio-a", "portfolio_nav": 1000, "holdings": [{"holding_id": "fcn-local"}]}
+            return {"portfolio_id": "portfolio-a", "as_of_date": "2026-08-31", "base_currency": "USD",
+                    "totals": {"nav": 1000}, "rows": [{"holding_id": "fcn-local"}]}
         if parsed.path == "/workspace/holdings/position":
             assert query["position_reference_id"] == ["fcn-local"]
             return {"position_reference_id": "fcn-local", "instrument_id": None, "instrument_type": "fcn"}
         if parsed.path == "/portfolios/portfolio-a/accounts/workspace":
+            if query.get("include_valuation") == ["false"]:
+                assert "account_id" not in query
+                return {"accounts": [{"account": {"account_id": "account-a", "account_name": "Cash", "currency": "USD"},
+                                      "derived_cash_balance": 250, "pending_settlement": 0}]}
             assert query["account_id"] == ["account-a"]
             return {"account_id": "account-a", "nav": 250}
         if parsed.path == "/portfolios/portfolio-a/risk-context":
@@ -198,13 +203,19 @@ def test_portfolio_assistant_binds_selected_holding_account_and_valuation_day(cl
     assert run["context_json"]["instrument_ids"] == []  # A local contract never enters the registry catalogue.
     tool = client.post(f"/api/research/runs/{run['entry_id']}/tools", json={"tool": "portfolio"})
     assert tool.status_code == 200, tool.text
-    evidence = tool.json()["result"]
-    assert evidence["portfolio_nav"] == 1000 and evidence["selected_account"]["nav"] == 250
+    overview = tool.json()
+    assert overview["totals"]["nav"] == 1000 and overview["account_summary"]["rows"][0]["settled_cash"] == 250
+    detail = client.post(f"/api/research/runs/{run['entry_id']}/read", json={"resource": "portfolio",
+        "source_id": overview["source_id"], "section": "workspace"})
+    assert detail.status_code == 200, detail.text
+    evidence = detail.json()["data"]
+    assert evidence["selected_account"]["nav"] == 250
     assert evidence["selected_holding"]["position_reference_id"] == "fcn-local"
     assert evidence["risk_context"]["as_of_date"] == "2026-08-31"
     with get_session_factory()() as session:
         saved = session.get(ResearchEntry, run["entry_id"])
-        assert saved.context_json["tool_evidence"][0]["result"] == evidence
+        assert {key: value for key, value in saved.context_json["tool_evidence"][0]["result"].items()
+                if key != "account_summary"} == evidence
 
 
 def test_portfolio_page_fields_cannot_relabel_an_instrument_conversation(client, monkeypatch):
@@ -468,10 +479,12 @@ def test_unavailable_valuation_keeps_confirmed_quantities_cost_and_native_cash(m
     evidence = research_workbench.portfolio_page_evidence('portfolio-a', page)
     assert evidence['valuation_status'] == 'unavailable'
     assert evidence['ledger_positions'] == [{'instrument_id': 'aapl', 'quantity': 60, 'cost_basis': 603, 'currency': 'USD'}]
-    assert evidence['ledger_accounts'] == [{'account': {'account_id': 'cash-usd', 'currency': 'USD'}, 'settled_cash': 14224, 'pending_settlement': 0}]
+    assert evidence['account_summary']['total_rows'] == 1
+    assert evidence['account_summary']['rows'][0]['settled_cash'] == 14224
+    assert evidence['account_summary']['rows'][0]['pending_settlement'] == 0
     assert evidence['as_of_date'] == '2026-08-31' and evidence['page_scope'] == page
     assert evidence['ledger_errors'] == {}
-    assert 'portfolio_nav' not in evidence and 'net_asset_value' not in evidence['ledger_accounts'][0]
+    assert 'portfolio_nav' not in evidence and 'net_asset_value' not in evidence['account_summary']['rows'][0]
     assert 'current NAV' in evidence['ledger_note']
     assert len(calls) == 3
 
@@ -506,5 +519,5 @@ def test_ledger_part_failure_remains_explicit_without_erasing_other_facts(monkey
     evidence = research_workbench.portfolio_page_evidence('portfolio-a', {'as_of_date': '2026-08-31'})
     assert 'ledger_positions' not in evidence
     assert evidence['ledger_errors'] == {'ledger_positions': 'Position ledger unavailable'}
-    assert evidence['ledger_accounts'][0]['settled_cash'] == 14224
+    assert evidence['account_summary']['rows'][0]['settled_cash'] == 14224
     assert evidence['valuation_status'] == 'unavailable'

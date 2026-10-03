@@ -73,6 +73,7 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-fcn-settlement-cashflow-recognition-v1"
     "-incremental-source-prefix-v1"
     "-observed-session-risk-short-expense-transfer-fx-netting-v1"
+    "-holding-quote-change-provenance-v1"
 )
 
 
@@ -2008,6 +2009,9 @@ def _aggregate_holding_rows(
                 "quantity": _sum_complete([row.get("quantity") for row in instrument_rows]),
                 "last_price": _first_present(instrument_rows, "last_price"),
                 "quote_as_of_date": _first_present(instrument_rows, "quote_as_of_date"),
+                "day_change_price_as_of_date": _first_present(instrument_rows, "day_change_price_as_of_date"),
+                "previous_day_change_price_as_of_date": _first_present(instrument_rows, "previous_day_change_price_as_of_date"),
+                "day_change_price_basis": _first_present(instrument_rows, "day_change_price_basis"),
                 "quote_metric_family": _first_present(instrument_rows, "quote_metric_family"),
                 "quote_basis": _first_present(instrument_rows, "quote_basis"),
                 "quote_provider": _first_present(instrument_rows, "quote_provider"),
@@ -2373,6 +2377,9 @@ _INSTRUMENT_HOLDING_PROJECTION_FIELDS = (
     "quantity",
     "last_price",
     "quote_as_of_date",
+    "day_change_price_as_of_date",
+    "previous_day_change_price_as_of_date",
+    "day_change_price_basis",
     "quote_metric_family",
     "quote_basis",
     "quote_provider",

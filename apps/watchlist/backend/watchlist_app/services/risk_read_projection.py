@@ -156,7 +156,7 @@ def _risk_instrument_packet(context, instrument_id, *, section="overview", offse
         return {**base, "current": current,
             "previous": {"unchanged": True} if previous == current else previous,
             "offset": offset, "next_offset": end if end < total else None, "total": total,
-            "read_note": "按overview计数，前后均为0的分区可跳过；有内容的cases/research_context从offset=0读至next_offset=null。cases包含完整风险事项；research_context保留PM档案、观点原文、当前问题与预测，不能当作已核实事实；comparisons按需读完各页后依各自共同样本比较，不合成排名。sample_dates按comparison_source_id另读实际共同日期。"
+            "read_note": "current_counts/previous_counts计数为事项而非规则；quantitative=0不代表未配置复核线。overview.instrument.price_rule_summary区分默认/自定义/来源未知及configured/evaluable/triggered/unavailable；period_limits、period_readings、price_risk_calibration均为本轮冻结输入，旧快照缺少摘要时不可用当前设置反推。按overview计数，前后均为0的分区可跳过；有内容的cases/research_context从offset=0读至next_offset=null。cases包含完整风险事项；research_context保留PM档案、观点原文、当前问题与预测，不能当作已核实事实；comparisons按需读完各页后依各自共同样本比较，不合成排名。sample_dates按comparison_source_id另读实际共同日期。"
                 + ("same_as_path指向同一原页内完全相同的完整依据，保留本页offset（续读时为page_offset），沿目标的next_offset/deferred读完，引用本身不代表原件已读。" if section == "cases" else "")}
 
     if section == "overview":

@@ -365,6 +365,8 @@ def test_forward_risk_is_unavailable_for_non_base_monetary_exposure_without_fx_r
     )
 
     assert result["forward_risk"]["status"] == "unavailable"
+    assert result["forward_risk"].get("portfolio_variance") is None
+    assert result["forward_risk"].get("portfolio_volatility") is None
     assert result["forward_risk"]["errors"] == [
         "Forward RC requires an FX total-return series for non-base monetary exposure USD cash (USD versus CNY)."
     ]

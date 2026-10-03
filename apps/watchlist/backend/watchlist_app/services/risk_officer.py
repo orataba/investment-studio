@@ -295,10 +295,12 @@ def read_snapshot(session, **scope):
                          affected_scope_note="仅统计现有风险事项关联的持仓；为零不代表没有业绩问题，应同时检查全部持仓的真实损益、回撤和相对表现。")
         if amount is None or nav is None or nav <= 0:
             limitations.append("相关持仓市值或有效净值不足，未计算涉及敞口占比。")
+    from watchlist_app.services.price_risk import scope_price_rule_summary
     return serialize_payload({"scope": {"kind": kind, "id": identifier, "name": name}, "scope_available": available,
         "input_retryable": input_retryable,
         "instrument_ids": ids, "input_as_of": max(dates, default=None), "instruments": instruments,
         "research": research, "quantitative": quantitative, "coverage": coverage,
+        "price_rule_summary": scope_price_rule_summary(instruments),
         "portfolio": portfolio, "limitations": limitations})
 
 
@@ -562,7 +564,11 @@ def apply_result(session, run, payload):
             for row in bound_version["cases"]]}
     run.context_json = {**run.context_json, "result": saved,
         "risk_input_version": bound_version,
-        "risk_review_view": {"input_as_of": snapshot["input_as_of"], "evidence_sources": evidence_sources(snapshot)}}
+        "risk_review_view": {"input_as_of": snapshot["input_as_of"], "evidence_sources": evidence_sources(snapshot),
+            "price_rule_summary": {**snapshot["price_rule_summary"], "instruments": [
+                {"instrument_id": item["instrument_id"], "name": item["name"], **item["price_rule_summary"]}
+                for item in snapshot["instruments"]]} if snapshot.get("price_rule_summary") else None,
+            "prepared_at": run.context_json.get("prepared_at")}}
     run.body = saved["summary"]
     run.status = "completed"
     run.completed_at = datetime.now(UTC)
@@ -631,7 +637,8 @@ def review_workspace(session, **scope):
             # snapshot, never reconstruct it using today's inputs or prior runs.
             from watchlist_app.services.research_run_context import load_run_fields
             old = load_run_fields(session, completed.entry_id, {"risk_inputs"}).context_json["risk_inputs"]
-            view = {"input_as_of": old["input_as_of"], "evidence_sources": evidence_sources(old)}
+            view = {"input_as_of": old["input_as_of"], "evidence_sources": evidence_sources(old),
+                "price_rule_summary": old.get("price_rule_summary")}
         version = input_version(session, state) if completed.risk_input_version is not None else None
         stale = (completed.risk_input_version != version
                  if version is not None and completed.risk_input_version is not None else None)

@@ -78,6 +78,7 @@ def portfolio_options():
 def portfolio_page_evidence(portfolio_id: str, page_context: dict | None):
     """Retain the portfolio denominator while reading the actual selected page."""
     from urllib.parse import quote
+    from watchlist_app.services.research_portfolio_projection import account_summary
     page = page_context or {}
     scope = {"portfolio_id": portfolio_id}
     if page.get("as_of_date"):
@@ -92,30 +93,42 @@ def portfolio_page_evidence(portfolio_id: str, page_context: dict | None):
         result = {"valuation_status": "unavailable", "valuation_error": str(error), "as_of_date": ledger_date,
                   "ledger_note": "Recorded quantities, cost and local cash only. Do not total reference prices into current NAV or infer portfolio returns.",
                   "ledger_errors": {}}
-        for key, path in (
-            ("ledger_positions", f"/portfolios/{quote(portfolio_id, safe='')}/positions{suffix}&include_valuation=false"),
-            ("ledger_accounts", f"/portfolios/{quote(portfolio_id, safe='')}/accounts/workspace{suffix}&include_valuation=false"),
-        ):
-            try:
-                payload = external_json("portfolio", path)
-                result[key] = payload.get("positions", []) if key == "ledger_positions" else [{
-                    "account": row["account"], "settled_cash": row.get("derived_cash_balance"),
-                    "pending_settlement": row.get("pending_settlement"),
-                } for row in payload.get("accounts", [])]
-            except (ResearchInputUnavailable, ValueError) as ledger_error:
-                result["ledger_errors"][key] = str(ledger_error)
-        return {**result, "portfolio_id": portfolio_id, "page_scope": page}
+        try:
+            payload = external_json("portfolio", f"/portfolios/{quote(portfolio_id, safe='')}/positions{suffix}&include_valuation=false")
+            result["ledger_positions"] = payload.get("positions", [])
+        except (ResearchInputUnavailable, ValueError) as ledger_error:
+            result["ledger_errors"]["ledger_positions"] = str(ledger_error)
 
-    if page.get("holding_id"):
-        result["selected_holding"] = external_json("portfolio", "/workspace/holdings/position?" + urlencode({
-            **scope, "position_reference_id": page["holding_id"]}))
-    if page.get("account_id"):
-        query = {"account_id": page["account_id"], **({"as_of_date": page["as_of_date"]} if page.get("as_of_date") else {})}
-        result["selected_account"] = external_json("portfolio", f"/portfolios/{quote(portfolio_id, safe='')}/accounts/workspace?" + urlencode(query))
-    if page.get("tab") == "risk":
-        suffix = "?" + urlencode({"as_of_date": page["as_of_date"]}) if page.get("as_of_date") else ""
-        result["risk_context"] = external_json("portfolio", f"/portfolios/{quote(portfolio_id, safe='')}/risk-context" + suffix)
-    return {**result, "portfolio_id": portfolio_id, "page_scope": page,
+    # Always read every canonical account independently of market valuation.
+    # Request the same effective date as Holdings, not today's default date.
+    effective_date = result.get("as_of_date") or scope.get("as_of_date") or date.today().isoformat()
+    scope["as_of_date"] = effective_date
+    try:
+        accounts = external_json("portfolio", f"/portfolios/{quote(portfolio_id, safe='')}/accounts/workspace?" +
+            urlencode({"as_of_date": effective_date, "include_valuation": "false"}))
+        result["account_summary"] = account_summary(accounts, as_of_date=effective_date)
+        result.setdefault("base_currency", accounts.get("base_currency"))
+    except (ResearchInputUnavailable, ValueError) as account_error:
+        result["account_summary"] = {"status": "unavailable", "total_rows": None, "returned_rows": 0,
+            "as_of_date": effective_date, "rows": [], "currency_balances": [], "reason": str(account_error)}
+
+    if result.get("valuation_status") != "unavailable":
+        details = []
+        if page.get("holding_id"):
+            details.append(("selected_holding", "/workspace/holdings/position?" + urlencode({
+                **scope, "position_reference_id": page["holding_id"]})))
+        if page.get("account_id"):
+            details.append(("selected_account", f"/portfolios/{quote(portfolio_id, safe='')}/accounts/workspace?" +
+                urlencode({"account_id": page["account_id"], "as_of_date": effective_date})))
+        if str(page.get("tab", "")).lower() == "risk":
+            details.append(("risk_context", f"/portfolios/{quote(portfolio_id, safe='')}/risk-context?" +
+                urlencode({"as_of_date": effective_date})))
+        for key, path in details:
+            try:
+                result[key] = external_json("portfolio", path)
+            except (ResearchInputUnavailable, ValueError) as detail_error:
+                result.setdefault("detail_errors", {})[key] = str(detail_error)
+    return {**result, "portfolio_id": portfolio_id, "as_of_date": effective_date, "page_scope": page,
             "scope_note": "整体持仓保留组合口径；所选账户或持仓作为单独明细。持仓引用可能是组合本地合约，不等于共享标的编码。历史估值按选定日期读取，研究及解释仍是本轮形成。"}
 
 

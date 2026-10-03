@@ -1,5 +1,8 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
+import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 
 import PerformanceNavChart, { type PerformanceNavChartPoint } from './PerformanceNavChart'
 
@@ -100,6 +103,47 @@ describe('PerformanceNavChart Overview TWR boundaries', () => {
 })
 
 describe('PerformanceNavChart responsive reading', () => {
+  it('leaves chart settings open when Escape closes a newer dialog', async () => {
+    function NestedSettings() {
+      const [nested, setNested] = useState(false)
+      return <>
+        <PerformanceNavChart currency="USD" variant="overview" points={[]}
+          twrPoints={[{ date: '2026-10-02', value: 100 }, { date: '2026-10-03', value: 99 }]} />
+        <button onClick={() => setNested(true)}>Open newer dialog</button>
+        <ConfirmDialog open={nested} title="Newer dialog" description="Nested focus check"
+          confirmLabel="Done" onConfirm={() => setNested(false)} onCancel={() => setNested(false)} />
+      </>
+    }
+    const user = userEvent.setup()
+    render(<NestedSettings />)
+    await user.click(screen.getByRole('button', { name: 'Chart settings' }))
+    // Open programmatically, as an overlay action would, without an outside pointer dismissal.
+    fireEvent.click(screen.getByRole('button', { name: 'Open newer dialog' }))
+    await waitFor(() => expect(screen.getByRole('alertdialog', { name: 'Newer dialog' })).toContainElement(document.activeElement as HTMLElement))
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('alertdialog', { name: 'Newer dialog' })).not.toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Chart settings' })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', { name: 'Chart settings' })).not.toBeInTheDocument()
+  })
+
+  it.each(['trigger', 'setting'])('closes settings with Escape from the %s and restores trigger focus', async (target) => {
+    const user = userEvent.setup()
+    renderOverviewChart([{ date: '2026-10-02', value: 100 }, { date: '2026-10-03', value: 99.57 }])
+    const trigger = screen.getByRole('button', { name: 'Chart settings' })
+    await user.click(trigger)
+    const dialog = screen.getByRole('dialog', { name: 'Chart settings' })
+    await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement))
+    if (target === 'trigger') trigger.focus()
+    else await user.click(within(dialog).getByRole('button', { name: 'Line' }))
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', { name: 'Chart settings' })).not.toBeInTheDocument()
+    await waitFor(() => expect(trigger).toHaveFocus())
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('Portfolio TWR Drawdown')).toBeInTheDocument()
+    expect(screen.getByText('Based on TWR · Max -0.43%')).toBeInTheDocument()
+  })
+
   it('measures the chart when a TWR-only series arrives after an empty render', () => {
     const observe = vi.fn()
     vi.stubGlobal('ResizeObserver', class {

@@ -24,6 +24,30 @@ const dossier = (): ResearchDossier => ({
 })
 beforeEach(() => { request.mockResolvedValue(dossier()) })
 
+it('localizes loading, failure, read-only retry and empty research without starting a run', async () => {
+  window.history.replaceState(null, '', '/?lang=en')
+  let reject!: (error: Error) => void
+  request.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail }))
+  const tree = <LanguageProvider messages={researchMessages} patterns={researchPatterns}><LanguageSelector /><ResearchDossierPanel instrumentId="fund-1" reviewRunId="same-run" /></LanguageProvider>
+  const { unmount } = render(tree)
+  expect(await screen.findByRole('status')).toHaveProperty('textContent', 'Loading')
+  await act(async () => { reject(new Error('研究档案读取失败')) })
+  const alert = await screen.findByRole('alert')
+  await waitFor(() => expect(alert.textContent).not.toMatch(/[\u4e00-\u9fff]/))
+  request.mockResolvedValue({ ...dossier(), notebook: null })
+  fireEvent.click(within(alert).getByRole('button'))
+  expect(await screen.findByText('Research text and quotations retain their original language.')).toBeTruthy()
+  expect(screen.getByText(/The research baseline has not been established/)).toBeTruthy()
+  expect(request.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true)
+  fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+  await screen.findByText('研究正文和引用保留原语言。')
+  unmount()
+  render(tree)
+  expect(await screen.findByText('研究正文和引用保留原语言。')).toBeTruthy()
+  expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('zh-Hans')
+  window.history.replaceState(null, '', '/')
+})
+
 it('orders the four areas and opens profile analysis and historical versions only on demand', async () => {
   const module = { key: 'business-fundamentals', summary: '增长开始兑现，现金回报仍需验证。', analysis: '收入增长不能替代资本回报，需要把新增投入与回款匹配。', coverage: 'partial' as const, gaps: [], next_check: '', source_ids: [], figure_source_ids: [], evidence_as_of: '2026-09-05' }
   const quant = { ...module, key: 'market-quantitative', summary: '量化对照使用实际共同样本。' }

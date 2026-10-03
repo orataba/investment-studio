@@ -134,7 +134,7 @@ const TOP_HOLDING_COLUMN_LABELS: Record<TopHoldingColumnKey, string> = {
   market_value: 'Carrying Amount',
   cost_basis: 'Cost Basis',
   unrealized_pnl: 'Unrealized P&L',
-  day_change: 'Day Change',
+  day_change: 'Quote / FX Move',
   weight: 'Current Weight',
   coverage: 'Coverage',
   return_1w: '1W Return',
@@ -1340,7 +1340,7 @@ export default function OverviewPage() {
   )
   const monthlyMatrixRows = useMemo(() => buildMonthlyReturnMatrixRows(monthlyBuckets), [monthlyBuckets])
 
-  const overviewMetricGroups: Array<{ label: string; rows: OverviewMetricRow[] }> = [
+  const overviewMetricGroups: Array<{ label: string; detail?: string; rows: OverviewMetricRow[] }> = [
     {
       label: performanceIsOperational ? 'Operational Performance' : 'Performance',
       rows: [
@@ -1406,9 +1406,10 @@ export default function OverviewPage() {
     },
     {
       label: 'Market Risk Watch',
+      detail: 'Market-risk returns exclude recorded fees and other non-market P&L; derivatives and base-currency cash are modeled at zero return. Portfolio TWR and its drawdown include those effects. Zero market drawdown does not mean zero investment loss or no risk.',
       rows: [
         {
-          label: 'Current DD',
+          label: 'Market Current DD',
           value: signedPercent(performanceWorkspace?.summary.current_drawdown),
           benchmark: benchmarkNote(
             selectedBenchmarkInstrument,
@@ -1419,7 +1420,7 @@ export default function OverviewPage() {
           toneClassName: signedValueClass(performanceWorkspace?.summary.current_drawdown),
         },
         {
-          label: 'Max DD',
+          label: 'Market Max DD',
           value: signedPercent(performanceWorkspace?.summary.max_drawdown),
           benchmark: benchmarkNote(
             selectedBenchmarkInstrument,
@@ -1737,6 +1738,7 @@ export default function OverviewPage() {
                               <th colSpan={2}>
                                 <span className="portfolio-title-with-hint">
                                   <span>{group.label}</span>
+                                  {group.detail ? <InfoHint label="Market-risk return basis" detail={group.detail} /> : null}
                                   {performanceIsOperational && group.label === 'Operational Performance' ? (
                                     <InfoHint
                                       label="Operational performance basis"
@@ -1745,6 +1747,13 @@ export default function OverviewPage() {
                                     />
                                   ) : null}
                                 </span>
+                                {group.label === 'Market Risk Watch' ? (
+                                  <div className="overview-metric-basis">
+                                    <span>Eligible market observations</span>{' '}
+                                    {performanceWorkspace?.summary.risk_observation_start_date ?? 'N/A'}{' → '}
+                                    {performanceWorkspace?.summary.risk_observation_end_date ?? 'N/A'}
+                                  </div>
+                                ) : null}
                               </th>
                             </tr>
                           </thead>

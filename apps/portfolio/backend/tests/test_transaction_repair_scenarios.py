@@ -509,12 +509,20 @@ def test_contract_amendment_is_audited_and_cannot_invalidate_existing_outcome(cl
     assert response.json()["row_version"] == 2
     assert response.json()["amendments"][0]["before"]["settlement_type"] is None
     assert response.json()["amendments"][0]["reviewed_by"] == "Test Manager"
+    saved = response.json()
+    amendment = saved["amendments"][0]
+    assert amendment["after"]["settlement_type"] == "cash"
+    assert amendment["reason"] == payload["reason"]
+    assert amendment["changed_at"] and amendment["row_version"] == 2
     assert client.patch(f"{BASE}/derivative-contracts/scenario-option", json=payload).status_code == 409
     response = client.patch(f"{BASE}/derivative-contracts/scenario-option", json={
         **payload, "expected_row_version": 2, "terms": {**payload["terms"], "settlement_type": "physical"},
     })
     assert response.status_code == 409
     assert "cash settlement" in response.text
+    reloaded = client.get(f"{BASE}/derivative-contracts")
+    assert reloaded.status_code == 200, reloaded.text
+    assert next(record for record in reloaded.json()["derivative_contracts"] if record["derivative_contract_id"] == "scenario-option") == saved
     assert cash_balance(history(cash, holder), cash) == 9900
 
 
