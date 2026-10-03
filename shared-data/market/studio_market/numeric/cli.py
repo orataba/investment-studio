@@ -2,6 +2,7 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import date
+from pathlib import Path
 
 from studio_market.config import MarketSettings
 from .store import NumericStore,serializable
@@ -23,6 +24,7 @@ def main(argv=None):
     i=commands.add_parser("import-bundle");i.add_argument("source")
     r=commands.add_parser("read-source");r.add_argument("source_id")
     recovery=commands.add_parser("recover-price-revisions");recovery.add_argument("--since",required=True);recovery.add_argument("--end",required=True,type=date.fromisoformat);recovery.add_argument("--symbols");recovery.add_argument("--apply",action="store_true")
+    identities=commands.add_parser("price-identities");identities.add_argument("source");identities.add_argument("--apply",action="store_true")
     args=parser.parse_args(argv)
     if args.command=="migrate-source" and not args.apply:
         from .migrate import migration_plan
@@ -32,6 +34,11 @@ def main(argv=None):
         if args.command=="status":result=NumericStore(settings).status()
         elif args.command=="query":result=NumericStore(settings).query(args.dataset,symbols=csv_values(args.symbols),start=args.start,end=args.end,as_of=args.as_of,observed_at=args.observed_at,batch_id=args.batch_id,versions=args.versions,limit=args.limit,offset=args.offset)
         elif args.command=="read-source":result=NumericStore(settings).read_source(args.source_id)
+        elif args.command=="price-identities":
+            from .price_identities import record_price_identities
+            store=NumericStore(settings)
+            try:result=record_price_identities(store,json.loads(Path(args.source).read_text()),apply=args.apply)
+            finally:store.close()
         elif args.command=="recover-price-revisions":
             from .price_revisions import recover_legacy_revisions
             from .collect import Collector

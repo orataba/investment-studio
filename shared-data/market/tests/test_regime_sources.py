@@ -141,14 +141,68 @@ def test_fx_uses_raw_shared_series_and_preserves_response(source):
 
 def test_official_hk_history_and_holiday_values_are_archived(source, monkeypatch):
     import studio_market.numeric.regime_sources as module
-    hsi = {"indexCode":"00011.00", "indexLevels-5y":[[1704153600000, 3200.5]]}
+    hsi = {"code": "0", "data": [{"indexCode": "00011.00", "valueHistory": [{"date": "2024-01-02", "close": "3200.5"}]}]}
     monkeypatch.setattr(module, "get_public_bytes", lambda url: response(hsi, url))
-    source.hk_public_payload("https://www.hsi.com.hk/data/eng/indexes/00011.00/chart.json")
+    source.hsil_close_rows("HSCI.HI")
     assert source.store.query("regime_market_daily",symbols=["hsil:HSCI.HI"])["rows"][0]["close"] == 3200.5
     monkeypatch.setattr(module, "get_public_bytes", lambda url: response({"isHoliday": True,"1 Month": "0"}, url))
     source.hk_public_payload("https://www.hkab.org.hk/api/hibor?year=2024&month=01&day=01")
     hibor = source.store.query("regime_market_daily", symbols=["hkab:hibor"])["rows"][0]
     assert hibor["hibor_1m"] is None and hibor["is_holiday"] is True
+
+
+def test_hsil_replica_reads_existing_canonical_history_without_reinterpreting_raw(source, monkeypatch):
+    import studio_market.numeric.regime_sources as module
+    from studio_market.numeric.raw import archive_response
+
+    # Historical raw wire formats remain immutable evidence, not a replica API.
+    raw = b'{"retained_historical_wire_format": true}'
+    _, raw_ref = archive_response(source.settings, "hsil", raw)
+    captured = datetime(2024, 1, 4, tzinfo=UTC)
+    batch = source.store.ingest("regime_market_daily", [[
+        {"series_id": "hsil:HSCI.HI", "date": date(2024, 1, day),
+         "close": 3200 + day, "raw_ref": raw_ref} for day in [2, 3]
+    ]], source="hsil", observed_at=captured)
+    source.role = "replica"
+    monkeypatch.setattr(module, "get_public_bytes", lambda *_: pytest.fail("Replica must not call provider"))
+    rows = source.hsil_close_rows("HSCI.HI")
+    assert {row["date"]: row["close"] for row in rows} == {"2024-01-02": 3202, "2024-01-03": 3203}
+    assert {row["batch_id"] for row in rows} == {batch["batch_id"]}
+    assert all(datetime.fromisoformat(row["observed_at"]) == captured for row in rows)
+    assert source.provenance == [{"batch_id": batch["batch_id"], "raw_ref": raw_ref,
+                                  "observed_at": rows[0]["observed_at"]}]
+    assert gzip.decompress((source.settings.data_root / raw_ref).read_bytes()) == raw
+
+
+def test_hsil_new_capture_preserves_raw_identity_and_rejects_wrong_index_before_publication(source, monkeypatch):
+    import studio_market.numeric.regime_sources as module
+    from studio_market.numeric.providers.hsil import hsil_history_url
+
+    payload = {"code": "0", "data": [{"indexCode": "00011.01", "valueHistory": [
+        {"date": "2026-09-30", "close": "14087.04"},
+        {"date": "2026-10-02", "close": "13829.77"},
+    ]}]}
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        result = response(payload, url)
+        result.received_at = datetime(2026, 10, 3, tzinfo=UTC)
+        return result
+
+    monkeypatch.setattr(module, "get_public_bytes", fetch)
+    rows = source.hsil_close_rows("HSCIEN.HI")
+    assert calls == [hsil_history_url("HSCIEN.HI")]
+    assert len(rows) == 2
+    assert {row["series_id"] for row in rows} == {"hsil:HSCIEN.HI"}
+    assert json.loads(gzip.decompress((source.settings.data_root / rows[0]["raw_ref"]).read_bytes())) == payload
+    assert source.store.query("regime_market_daily", as_of="2026-10-02T23:59:59Z")["total"] == 0
+    payload["data"][0]["indexCode"] = "10069.01"  # A total-return identity cannot replace PI.
+    with pytest.raises(ValueError, match="identity mismatch"):
+        source.hsil_close_rows("HSCIEN.HI")
+    assert source.store.query("regime_market_daily", versions=True)["total"] == 2
+    with pytest.raises(ValueError, match="HKAB"):
+        source.hk_public_payload("https://www.hsi.com.hk/data/eng/indexes/00011.01/chart.json")
 
 
 def test_datahub_key_is_separate_and_full_response_precedes_read(source, monkeypatch, tmp_path):

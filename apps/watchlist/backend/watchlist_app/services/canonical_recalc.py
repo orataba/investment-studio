@@ -77,6 +77,7 @@ from watchlist_app.services.shared_instrument_registry import (
     SharedInstrumentRegistryError,
     get_shared_instrument,
     get_shared_instrument_summaries,
+    get_shared_no_trade_evidence,
     list_shared_instruments,
 )
 
@@ -2315,6 +2316,9 @@ class CanonicalRecalcService:
             source_settings=source_settings,
             source_cutoff_at=materialized_market_source_cutoff,
             now=now,
+            no_trade_evidence=get_shared_no_trade_evidence(shared_instrument,
+                latest_date=nav_selection["points"][-1]["as_of_date"] if nav_selection["points"] else None,
+                as_of=now),
         )
         chart_payload = _build_chart_payload(
             instrument_id,
@@ -2680,6 +2684,7 @@ class CanonicalRecalcService:
         now: datetime,
         calculation_frequency_profile: dict[str, object] | None = None,
         source_settings: dict[str, object] | None = None,
+        no_trade_evidence: list[dict] | None = None,
     ) -> dict[str, object]:
         calculation_frequency_profile = calculation_frequency_profile or {}
         source_settings = source_settings or {}
@@ -2740,6 +2745,7 @@ class CanonicalRecalcService:
             release_lag_days=source_settings.get("release_lag_days"),
             source_mode=source_settings.get("source_mode"),
             instrument_type=instrument.instrument_type,
+            confirmed_no_trade_dates=tuple(date.fromisoformat(str(row["date"])) for row in no_trade_evidence or []),
         )
         freshness_status = (
             "unavailable"
@@ -2848,6 +2854,11 @@ class CanonicalRecalcService:
                     "expected_latest_date"
                 ),
                 "observation_lag_days": observation_freshness.get("lag_days"),
+                "no_trade_evidence": [
+                    {key: row.get(key) for key in ("date", "official_close", "currency", "source_id", "source_url", "observed_at")}
+                    for row in no_trade_evidence or []
+                    if str(row["date"]) in observation_freshness.get("confirmed_no_trade_dates", [])
+                ],
                 "release_lag_trading_days": observation_freshness.get("release_lag_trading_days"),
             },
             "quick_monitoring_items": [],

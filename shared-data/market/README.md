@@ -102,12 +102,51 @@ rebuild. A newly changed raw overlap publishes its evidence and durable rebuild
 request without publishing partial adjusted prices. Missing adjusted prices,
 retained dates, or all history remain explicit source coverage failures.
 
+`price_series_identities` records reviewed security identities, provider symbols,
+history boundaries and ticker validity intervals with source references and a real
+observation clock. New reference conflicts quarantine the affected price series;
+a ticker's name alone never proves continuity. A verified identity requires a
+complete history capture whose `price_series_capture` metadata binds the exact
+identity source ID. Subsequent `price_series_updates` bind that same identity and
+base capture. Changing the identity or rebuilding the base excludes older
+generations from ordinary price queries, including latest reads and pagination.
+Unverified identities and missing complete captures expose
+`provenance.price_series_unavailable`; they do not fall back to mixed history.
+Historical `as_of` uses only identity evidence known at its cutoff. Explicit
+`versions` queries and immutable source reads retain the original audit evidence.
+Corporate actions outside the reviewed security/ticker interval cannot create a
+price revision obligation. Blocked series are reported separately as quarantined;
+they are not permanently retried as rebuild obligations. A successful maintenance
+run does not certify quarantined history as available. Invalid adjusted values retain the response and failure
+evidence without certifying the history or substituting unadjusted prices.
+
+For a missing HK stock tail after FMP supplementation, `hkex_security_sessions`
+archives the official HKEX daily quotation table and normalized per-security
+session status. The freshness exemption requires every missing closed exchange
+session to be explicitly no-trade, with matching quotation currency and official
+close equal to the last actual raw close. Suspensions, traded sessions, missing
+evidence, parse failures and changed prices remain unavailable. No OHLC is
+fabricated and the last actual price date is unchanged. Date archives are reused
+under the existing file lock; requests are limited to the missing tail sessions.
+
 Regime reads each completed price acquisition from its fixed set of immutable
 batch IDs, resolving revisions with the store's latest-observed-per-fact policy
 inside the requested symbol and date range. A dividend-triggered history rebuild
 therefore replaces overlapping observations without duplicating dates or mixing
 in concurrent captures. Selected rows retain their original source IDs, capture
 clocks and raw-response references; earlier versions remain available to PIT queries.
+
+Hang Seng industry indexes and the HSCI benchmark use the official website's
+public `valueHistoryPub` history API. `numeric/providers/hsil.py` owns the 13
+explicit PI identities, request URL and validation for both Studio and Regime.
+The response must succeed and identify exactly the requested index; history
+contains unique ISO session dates and finite positive closes. Total-return
+identities, rebased charts, malformed rows and duplicate dates are rejected.
+These are close-only index levels; the acquisition clock remains their observed
+and available time. Date filtering cannot bypass validation of the response.
+Replicas read existing canonical `regime_market_daily` facts and their original
+capture lineage, independently of the archived response's historical wire format.
+There is no old-URL or alternate-host fallback.
 
 ## Maintenance
 
@@ -118,6 +157,9 @@ bin/investment-studio market numeric status
 bin/investment-studio market numeric query analyst_estimates --symbols AAPL --as-of 2026-09-07T08:00:00+08:00
 bin/investment-studio market numeric collect --groups raw_eod --symbols SPY,QQQ --start 2026-09-01 --end 2026-09-04
 bin/investment-studio market numeric collect --groups financial_details,rating_history --symbols AAPL --start 2025-01-01
+bin/investment-studio market numeric price-identities /absolute/verified-identities.json
+bin/investment-studio market numeric price-identities /absolute/verified-identities.json --apply
+bin/investment-studio market numeric collect --groups price_revisions --symbols REVIEWED_SYMBOL --end 2026-10-02
 bin/investment-studio market pipeline daily
 bin/investment-studio market pipeline weekly
 bin/investment-studio market pipeline registered-prices --market hk
@@ -125,6 +167,15 @@ bin/investment-studio market pipeline publish
 bin/investment-studio market pipeline sync
 bin/investment-studio market pipeline status
 ```
+
+Identity maintenance defaults to validation and preview. The input is an array
+(or an object containing `identities`) of reviewed records: `symbol`, `status`
+(`verified` or `blocked`), `security_id`, `provider_symbol`, `history_start`,
+optional `history_end`, `symbol_start`, `symbol_end`, `reason`, and `source_refs`.
+Verified records require an explicit identity, provider symbol and history start;
+references must be credential-free HTTPS or immutable numeric references. Apply
+appends evidence and does not fetch prices. Review the subsequent rebuild outcome:
+applying an identity is not proof that the provider supplied usable history.
 
 The daily and weekly pipelines share one collection lock. A conflicting bulk run
 returns temporary exit 75, not successful completion of the other schedule. The

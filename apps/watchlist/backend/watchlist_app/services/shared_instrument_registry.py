@@ -1,12 +1,53 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 
 from investment_studio_instrument_core import instrument_store as shared_store
 from sqlalchemy import select
 
 from watchlist_app.db.session import get_session_factory
 from investment_studio_instrument_core.db_models import InstrumentReferenceObservation, InstrumentReferenceSnapshot
+
+
+def get_shared_no_trade_evidence(
+    instrument: dict[str, object] | None, *, latest_date: date | None, as_of: datetime,
+) -> list[dict]:
+    """Read retained exchange evidence; never fetch a provider while reading UI."""
+    if not instrument or latest_date is None or instrument.get("exchange_code") != "XHKG":
+        return []
+    identifiers = instrument.get("identifiers") or []
+    symbol = next((str(row.get("identifier_value", ""))[4:] for row in identifiers
+                   if row.get("identifier_type") == "provider_symbol"
+                   and str(row.get("identifier_value", "")).startswith("fmp:")), None)
+    raw_close = next((row.get("value") for row in instrument.get("market_data", [])
+                      if row.get("metric_family") == "price" and row.get("quote_basis") == "close"
+                      and str(row.get("as_of_date")) == latest_date.isoformat()
+                      and row.get("currency") == instrument.get("currency") and row.get("status") == "complete"), None)
+    if not symbol or raw_close is None:
+        return []
+    try:
+        multiplier = Decimal(str((instrument.get("source_settings") or {}).get("source_price_multiplier", "1")))
+        if not multiplier.is_finite() or multiplier <= 0:
+            return []
+        raw_close = Decimal(str(raw_close)) / multiplier
+    except (InvalidOperation, ValueError, TypeError):
+        return []
+    from studio_market.numeric.hkex_sessions import read_no_trade_evidence
+    from studio_market.numeric.price_identities import price_identities
+    from studio_market.numeric.price_revisions import pending_revisions
+    from watchlist_app.services import sector_market_data
+    from watchlist_app.services.calculation_frequency import source_calendar_date
+    store = sector_market_data.numeric_store()
+    through = source_calendar_date(as_of, "XHKG")
+    identity = price_identities(store, symbols=[symbol], as_of=as_of).get(symbol)
+    if identity and identity.get("status") == "blocked":
+        return []
+    if pending_revisions(store, dataset="raw_eod_daily", symbols=[symbol], end=through, as_of=as_of):
+        return []
+    return read_no_trade_evidence(store, symbol=symbol,
+        currency=str(instrument.get("currency") or ""), last_close=raw_close,
+        after=latest_date, through=through, as_of=as_of)
 
 
 def get_shared_fund_actions(instrument_id: str, *, as_of: datetime | None = None) -> dict[str, object] | None:

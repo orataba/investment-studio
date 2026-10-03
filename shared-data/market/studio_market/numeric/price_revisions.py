@@ -6,9 +6,10 @@ from sqlalchemy import select
 
 from .schema import batches
 from .store import cutoff_instant, instant
+from .price_identities import action_in_identity, price_identities, price_capture_bases
 
 
-def pending_revisions(store, *, dataset: str, symbols, end: date) -> dict[str, str]:
+def pending_revisions(store, *, dataset: str, symbols, end: date, as_of=None) -> dict[str, str]:
     """Acknowledge only the exact request completed by a full-history capture.
 
     Future announced actions become due on their effective day. A concurrent
@@ -18,6 +19,12 @@ def pending_revisions(store, *, dataset: str, symbols, end: date) -> dict[str, s
     wanted = set(symbols)
     if not wanted:
         return {}
+    cutoff = cutoff_instant(as_of) if as_of is not None else None
+    identities = price_identities(store, symbols=sorted(wanted), as_of=cutoff)
+    source_targets = {symbol: {symbol} for symbol in wanted}
+    for symbol, identity in identities.items():
+        if identity.get("provider_symbol"):
+            source_targets.setdefault(identity["provider_symbol"], set()).add(symbol)
     families = {"dividends", "stock_splits", dataset}
     query = select(batches.c.id, batches.c.dataset, batches.c.details, batches.c.started_at).where(
         batches.c.status == "ready", batches.c.dataset.in_(families),
@@ -29,22 +36,45 @@ def pending_revisions(store, *, dataset: str, symbols, end: date) -> dict[str, s
         for capture in connection.execute(query).mappings():
             details = capture["details"]
             observed = instant(details.get("observed_at") or capture["started_at"])
+            if cutoff and observed > cutoff:
+                continue
             for request in details.get("price_revision_requests", []):
-                symbol, effective = request["symbol"], date.fromisoformat(request["effective_date"])
-                if symbol not in wanted or effective > end:
+                source_symbol, effective = request["symbol"], date.fromisoformat(request["effective_date"])
+                if source_symbol not in source_targets or effective > end:
                     continue
-                identity = request.get("request_id") or f"{capture['id']}:{effective.isoformat()}"
+                request_id = request.get("request_id") or f"{capture['id']}:{effective.isoformat()}"
                 # A future announcement comes due after an earlier completed run
                 # even when that run observed a later correction to an old event.
                 request_observed = instant(request.get("observed_at") or observed)
+                if cutoff and request_observed > cutoff:
+                    continue
                 due = max(request_observed, datetime.combine(effective, time.max, timezone.utc))
-                rank = (due, request_observed, identity)
-                if symbol not in requests or rank > requests[symbol][0]:
-                    requests[symbol] = (rank, identity)
+                rank = (due, request_observed, request_id)
+                for symbol in source_targets[source_symbol]:
+                    control = identities.get(symbol)
+                    if control:
+                        if capture['dataset'] == dataset:
+                            # An observed overlap correction belongs to its
+                            # reviewed price identity, including an expired
+                            # display alias routed to a current provider code.
+                            proof = details.get('price_series_updates', {}).get(source_symbol, {})
+                            if proof.get('identity_source_id') != control['source_id']:
+                                continue
+                        elif not action_in_identity(control, source_symbol=source_symbol, effective_date=effective):
+                            continue
+                    if symbol not in requests or rank > requests[symbol][0]:
+                        requests[symbol] = (rank, request_id)
             if capture["dataset"] == dataset:
                 completed.update(details.get("price_revision_completed", {}).items())
-    return {symbol: identity for symbol, (_rank, identity) in requests.items()
-            if (symbol, identity) not in completed}
+    result = {symbol: request_id for symbol, (_rank, request_id) in requests.items()
+              if (symbol, request_id) not in completed}
+    bases = price_capture_bases(store, dataset, identities, as_of=cutoff)
+    for symbol, identity in identities.items():
+        # Quarantine is not a retryable job. Only a verified identity can create
+        # a rebuild obligation; blocked reads remain explicitly unavailable.
+        if identity['status'] == 'verified' and symbol not in bases:
+            result.setdefault(symbol, 'identity:' + identity['source_id'])
+    return result
 
 
 def _versions(store, dataset, **filters):
@@ -59,6 +89,9 @@ def _versions(store, dataset, **filters):
 
 def history_start(store, dataset, symbol):
     """A rebuild must also refresh retained prices before the usual 2000 start."""
+    identity = price_identities(store, symbols=[symbol]).get(symbol)
+    if identity and identity.get('history_start'):
+        return date.fromisoformat(identity['history_start'])
     earlier = store.query(dataset, symbols=[symbol], end="2000-01-02", limit=1)
     if not earlier["total"]:
         return date(2000, 1, 3)

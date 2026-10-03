@@ -957,6 +957,9 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
 
   const latestOpinion = currentInvestmentOpinion(research)
   const zh = language === 'zh-Hans'
+  const noTradeConfirmation = summary?.freshness.data_freshness_status === 'fresh'
+    ? [...(summary.freshness.no_trade_evidence || [])].sort((a, b) => b.date.localeCompare(a.date))[0]
+    : undefined
 
   const loadingLabel = zh ? '加载中…' : 'Loading…'
   const sectionLoading = (label: string) => <LoadingNotice active message={`${label} · ${loadingLabel}`} />
@@ -1210,6 +1213,12 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
               </section>
               {standardizedError && <p className="listed-overview-quality" role="status">{zh ? '部分绩效或风险数据无法读取，相应指标暂不展示。' : standardizedError}</p>}
               {summary?.freshness.staleness_reason && <p className="listed-overview-quality" role="status"><FreshnessNote reason={summary.freshness.staleness_reason} observationDate={chart?.date_range?.end || latest?.date} /></p>}
+              {noTradeConfirmation && <p className="listed-overview-quality" role="status">
+                <a href={noTradeConfirmation.source_url} target="_blank" rel="noreferrer">{zh ? '港交所确认' : 'HKEX confirms'}</a>
+                {zh
+                  ? `：截至 ${formatDate(noTradeConfirmation.date)}，新增交易日均无成交、收市价未变。最近行情日期仍为 ${formatDate(summary?.freshness.latest_observation_date)}。`
+                  : ` no trades and an unchanged close through ${formatDate(noTradeConfirmation.date)}. The latest price observation remains ${formatDate(summary?.freshness.latest_observation_date)}.`}
+              </p>}
               {usesCanonicalPriceSeries ? indexChartPanel : chartPanel}
             </div>
             <aside className="listed-overview-judgments" aria-label={zh ? '研究与投资判断' : 'Research & investment judgment'}>

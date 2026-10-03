@@ -165,6 +165,23 @@ const loadingInstrument = {
 }
 
 describe('independent detail loading', () => {
+  it('explains source-confirmed no-trade freshness without relabelling the last price date', async () => {
+    const summary = await apiMocks.getInstrumentSummary()
+    apiMocks.getInstrumentSummary.mockResolvedValue({ ...summary, freshness: {
+      ...summary.freshness, data_freshness_status: 'fresh', latest_observation_date: '2026-09-30',
+      no_trade_evidence: [{ date: '2026-10-02', official_close: '0.265', currency: 'HKD',
+        source_id: 'numeric:official:1', observed_at: '2026-10-03T08:00:00Z',
+        source_url: 'https://www.hkex.com.hk/eng/stat/smstat/dayquot/d261002e.htm' }],
+    } })
+    render(<LanguageProvider enableDomTranslation={false}><MemoryRouter>
+      <ListedInstrumentDetailPage instrument={loadingInstrument} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    const link = await screen.findByRole('link', { name: 'HKEX confirms' })
+    expect(link.getAttribute('href')).toBe('https://www.hkex.com.hk/eng/stat/smstat/dayquot/d261002e.htm')
+    expect(link.parentElement?.textContent).toContain('latest price observation remains 2026-09-30')
+    expect(link.parentElement?.textContent).toContain('no trades and an unchanged close through 2026-10-02')
+  })
+
   it('opens research while every market and supporting request is still pending', async () => {
     for (const name of ['getInstrumentPriceBars', 'getInstrumentSummary', 'getInstrumentChart', 'getInstrumentPerformance',
       'getInstrumentRisk', 'getInstrumentResearch', 'getInstrumentAttributes'] as const) {

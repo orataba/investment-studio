@@ -72,12 +72,14 @@ def refresh_fmp_eod(
     symbol = provider_identifier.removeprefix("fmp:")
     # Equity/ETF registration and scheduled refresh share this acquisition
     # boundary. An explicitly supplied store always stays an offline replay.
+    no_trade_evidence = []
     if acquire_history and store is None:
-        ensure_fmp_security_history(
+        no_trade_evidence = ensure_fmp_security_history(
             instrument_id,
             symbol=symbol,
             exchange_code=str(instrument.get("exchange_code") or ""),
-        )
+            currency=str(instrument.get("currency") or ""),
+        ) or []
     start_date = date(1900, 1, 1)
     end_date = date.today()
     market = store or NumericStore(MarketSettings.from_environment())
@@ -173,7 +175,10 @@ def refresh_fmp_eod(
     record = update_refresh_status(
         instrument_id=instrument_id,
         status="refreshed" if any(changes) else "no_new_data",
-        message=f"Projected {len(price_bars)} shared FMP EOD rows for {symbol}.",
+        message=(f"Projected {len(price_bars)} shared FMP EOD rows for {symbol}."
+                 + (f" HKEX confirms {len(no_trade_evidence)} no-trade session(s) through "
+                    f"{max(str(row['date']) for row in no_trade_evidence)}; last traded price date is unchanged."
+                    if no_trade_evidence else "")),
         updated_by=updated_by,
         mode="api",
     )

@@ -229,3 +229,31 @@ def test_regime_replica_scopes_delivered_partial_evidence_and_keeps_original_rec
     finally:
         collector.close()
         replica.close()
+
+
+def test_reviewed_price_identity_filters_postgres_current_and_capture_metadata(publication_settings):
+    from studio_market.numeric.price_identities import record_price_identities
+    store = NumericStore(publication_settings)
+    first = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    reviewed = first + timedelta(days=1)
+    captured = first + timedelta(days=2)
+    try:
+        store.ingest('us_eod_daily', [[dict(symbol='REUSED', date=date(2026, 9, 8),
+            close=100, adjusted_close=100)]], source='fixture', observed_at=first)
+        record_price_identities(store, [dict(symbol='REUSED', status='verified',
+            security_id='new-issue', provider_symbol='REUSED', history_start='2026-09-02',
+            reason='Reviewed ticker reuse', source_refs=['https://example.org/filing'])],
+            apply=True, observed_at=reviewed)
+        control = store.latest('price_series_identities')['rows'][0]
+        assert store.latest('us_eod_daily')['rows'] == []
+        store.ingest('us_eod_daily', [[dict(symbol='REUSED', date=date(2026, 9, 2),
+            close=25, adjusted_close=25)]], source='fixture', observed_at=captured,
+            details={'observed_at': captured, 'price_series_capture': {'REUSED': {
+                'identity_source_id': control['source_id'], 'security_id': 'new-issue',
+                'provider_symbol': 'REUSED', 'history_start': '2026-09-02', 'history_end': '2026-09-02'}}})
+        assert store.latest('us_eod_daily')['rows'][0]['close'] == 25
+        assert store.latest('us_eod_daily', as_of=first)['rows'][0]['close'] == 100
+        assert store.query('us_eod_daily')['total'] == 1
+        assert store.query('us_eod_daily', versions=True)['total'] == 2
+    finally:
+        store.close()

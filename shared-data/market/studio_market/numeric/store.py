@@ -293,7 +293,7 @@ class NumericStore:
         with self.engine.connect() as conn:
             return [str(self.settings.data_root/r[0]) for r in conn.execute(query)]
 
-    def query(self, dataset: str, *, symbols: list[str] | None = None, start: str | None = None, end: str | None = None, as_of: str | datetime | None = None, limit: int = 1000, offset: int = 0, versions: bool = False, batch_id: str | None = None, batch_ids: list[str] | None = None, observed_at: str | datetime | None = None, _latest: bool = False) -> dict:
+    def query(self, dataset: str, *, symbols: list[str] | None = None, start: str | None = None, end: str | None = None, as_of: str | datetime | None = None, limit: int = 1000, offset: int = 0, versions: bool = False, batch_id: str | None = None, batch_ids: list[str] | None = None, observed_at: str | datetime | None = None, _latest: bool = False, _exclude_symbols: list[str] | None = None) -> dict:
         get_dataset(dataset)
         if limit < 1 or limit > 100000 or offset < 0:
             raise ValueError("limit must be 1..100000 and offset nonnegative")
@@ -302,14 +302,29 @@ class NumericStore:
         if start: _day(start)
         if end: _day(end)
         cutoff = cutoff_instant(as_of) if as_of else None
-        paths=self._paths(dataset,start,end,batch_id,batch_ids,symbols=symbols)
         result={"dataset":dataset,"rows":[],"total":0,"limit":limit,"offset":offset,"provenance":{"as_of":serializable(cutoff),"version_policy":"all_captures" if versions else "latest_observed_per_fact","historical_use":get_dataset(dataset).historical_use}}
+        identities, allowed, unavailable = self._price_read_scope(dataset, symbols, cutoff) if not versions else ({}, [], [])
+        if identities:
+            result["provenance"]["price_series_unavailable"] = unavailable
+            result["provenance"]["price_series_identity_sources"] = {symbol: row["source_id"] for symbol, row in identities.items()}
+        selected_batches = batch_ids
+        if symbols is not None and identities and set(symbols) <= identities.keys():
+            eligible = {row["allowed_batch_id"] for row in allowed}
+            selected_batches = sorted(eligible if batch_ids is None else eligible.intersection(batch_ids))
+        paths=self._paths(dataset,start,end,batch_id,selected_batches,symbols=symbols)
         if not paths:
             return result
         clauses=[]; params=[]
         if symbols is not None:
             if not symbols: return result
             clauses.append("symbol IN (SELECT unnest(?))");params.append(symbols)
+        if _exclude_symbols:
+            clauses.append("symbol NOT IN (SELECT unnest(?))");params.append(_exclude_symbols)
+        if identities:
+            # Filter before fact ranking, counts and pagination. A failed or
+            # incomplete identity rebuild must not reveal the older mixed series.
+            clauses.append("(symbol NOT IN (SELECT unnest(?)) OR EXISTS (SELECT 1 FROM price_read_batches p WHERE p.allowed_symbol=facts.symbol AND p.allowed_batch_id=facts.batch_id AND facts.date>=p.history_start AND (p.history_end IS NULL OR facts.date<=p.history_end)))")
+            params.append(list(identities))
         if start: clauses.append("date >= ?::DATE");params.append(start)
         if end: clauses.append("date <= ?::DATE");params.append(end)
         if observed_at:
@@ -325,6 +340,10 @@ class NumericStore:
         with duckdb.connect(":memory:") as db:
             relation=db.from_parquet(paths,union_by_name=True)
             relation.create_view("facts")
+            if identities:
+                db.register("price_read_batches", pa.Table.from_pylist(allowed, schema=pa.schema([
+                    ("allowed_symbol", pa.string()), ("allowed_batch_id", pa.string()),
+                    ("history_start", pa.date32()), ("history_end", pa.date32())])))
             if not versions and dataset in ("analyst_estimates","etf_holdings"):
                 chosen=self._snapshot_rows(dataset,symbols,cutoff,limit=1,at=observed_at,batch_id=batch_id,batch_ids=batch_ids)
                 if not chosen:return result
@@ -337,6 +356,37 @@ class NumericStore:
             names=[d[0] for d in cursor.description]
             result["rows"]=[serializable(dict(zip(names,row))) for row in cursor.fetchall()]
         return result
+
+    def _price_read_scope(self, dataset, symbols, cutoff):
+        if dataset not in {"raw_eod_daily", "us_eod_daily"}:
+            return {}, [], []
+        from .price_identities import price_identities, price_capture_bases
+        identities = price_identities(self, symbols=symbols, as_of=cutoff)
+        if not identities:
+            return {}, [], []
+        bases = price_capture_bases(self, dataset, identities, as_of=cutoff)
+        allowed, unavailable = [], []
+        for symbol, identity in identities.items():
+            base = bases.get(symbol) if identity["status"] == "verified" else None
+            if base is None:
+                unavailable.append({"symbol": symbol, "identity_source_id": identity["source_id"],
+                    "reason": identity.get("reason") if identity["status"] == "blocked" else "verified_identity_history_not_captured"})
+                continue
+            allowed.append({"allowed_symbol": symbol, "allowed_batch_id": base["id"],
+                "history_start": _day(identity["history_start"]), "history_end": _day(identity.get("history_end"))})
+        statement = select(batches.c.id, batches.c.details).where(
+            batches.c.dataset == dataset, batches.c.status == "ready",
+            batches.c.details["price_series_updates"].as_string().is_not(None))
+        with self.engine.connect() as conn:
+            for capture_id, details in conn.execute(statement):
+                for symbol, update in (details.get("price_series_updates") or {}).items():
+                    identity, base = identities.get(symbol), bases.get(symbol)
+                    if (identity and identity["status"] == "verified" and base
+                            and update.get("identity_source_id") == identity["source_id"]
+                            and update.get("base_capture_id") == base["id"]):
+                        allowed.append({"allowed_symbol": symbol, "allowed_batch_id": capture_id,
+                            "history_start": _day(identity["history_start"]), "history_end": _day(identity.get("history_end"))})
+        return identities, allowed, unavailable
 
     def _snapshot_rows(self,dataset,symbols,as_of,limit=2,at=None,batch_id=None,batch_ids=None):
         rank=func.dense_rank().over(partition_by=snapshots.c.scope_key,order_by=snapshots.c.snapshot_at.desc()).label("capture_rank")
@@ -375,6 +425,13 @@ class NumericStore:
 
     def latest(self, dataset: str, symbols: list[str] | None = None, as_of: str | datetime | None = None, limit: int = 1000) -> dict:
         spec=get_dataset(dataset)
+        if limit < 1 or limit > 100000:
+            raise ValueError("limit must be 1..100000")
+        if dataset in {"raw_eod_daily", "us_eod_daily"}:
+            from .price_identities import price_identities
+            controlled = price_identities(self, symbols=symbols, as_of=as_of)
+            if controlled:
+                return self._price_latest(dataset, symbols, as_of, limit, controlled)
         if as_of is not None and spec.current_keys and dataset != "analyst_estimates" and (
             spec.date is None or spec.date in spec.keys
         ):
@@ -395,7 +452,35 @@ class NumericStore:
             total=conn.execute(count_query).scalar_one()
         return {"dataset":dataset,"rows":rows,"total":total,"limit":limit,"offset":0,"provenance":{"as_of":None,"version_policy":"current_projection","historical_use":spec.historical_use}}
 
-    def _visible_current(self, dataset, symbols, cutoff, limit):
+    def _price_latest(self, dataset, symbols, as_of, limit, controlled):
+        # Keep the bounded SQL projection for the unaffected universe. Re-reading
+        # every historical Parquet file for a handful of quarantined symbols would
+        # turn directory and operational reads into full-market history scans.
+        corrected = self.query(dataset, symbols=list(controlled), as_of=as_of, limit=limit, _latest=True)
+        excluded = list(controlled)
+        if as_of:
+            other = self._visible_current(dataset, symbols, cutoff_instant(as_of), limit, excluded)
+            if other is None:
+                other = self.query(dataset, symbols=symbols, as_of=as_of, limit=limit,
+                    _latest=True, _exclude_symbols=excluded)
+        else:
+            statement = select(current.c.payload, func.count().over().label("total")).where(
+                current.c.dataset == dataset, current.c.symbol.not_in(excluded))
+            if symbols is not None:
+                statement = statement.where(current.c.symbol.in_(symbols))
+            with self.engine.connect() as conn:
+                page = conn.execute(statement.order_by(current.c.symbol, current.c.key).limit(limit)).all()
+            other = {"rows": [row.payload for row in page], "total": page[0].total if page else 0}
+        rows = other["rows"] + corrected["rows"]
+        if as_of:
+            rows.sort(key=lambda row: (-_day(row["date"]).toordinal(), row["symbol"],
+                -instant(row["observed_at"]).timestamp(), row["batch_id"], row["row_index"]))
+        else:
+            rows.sort(key=lambda row: (row["symbol"], row["_current_key"]))
+        corrected.update(rows=rows[:limit], total=other["total"] + corrected["total"])
+        return corrected
+
+    def _visible_current(self, dataset, symbols, cutoff, limit, exclude_symbols=None):
         """Use the current winners only when every winner was visible at cutoff.
 
         For immutable fact dates (or dates derived from the observation clock),
@@ -418,6 +503,8 @@ class NumericStore:
         ).where(current.c.dataset == dataset)
         if symbols is not None:
             query = query.where(current.c.symbol.in_(symbols))
+        if exclude_symbols:
+            query = query.where(current.c.symbol.not_in(exclude_symbols))
         query = query.order_by(current.c.payload["date"].as_string().desc().nulls_last(),
             current.c.symbol, current.c.observed_at.desc(), current.c.batch_id, current.c.row_index).limit(limit)
         with self.engine.connect() as conn:

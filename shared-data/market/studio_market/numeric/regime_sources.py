@@ -15,23 +15,17 @@ import json
 import math
 from collections.abc import Mapping
 from urllib.parse import parse_qs, urlsplit
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
 from .collect import Collector
 from .providers.http_client import get_public_bytes
+from .providers.hsil import hsil_history_url, parse_hsil_history
 from .raw import archive_response
 from .store import NumericStore
 from .schema import batches
 
 UTC = timezone.utc
-HSIL_CODES = {
-    "HSCI.HI": "00011.00", "HSCIEN.HI": "00011.01", "HSCIMT.HI": "00011.02",
-    "HSCIIN.HI": "00011.03", "HSCITC.HI": "00011.06", "HSCIUT.HI": "00011.07",
-    "HSCIFN.HI": "00011.08", "HSCIPC.HI": "00011.09", "HSCIIT.HI": "00011.10",
-    "HSCICO.HI": "00011.11", "HSCICD.HI": "00011.12", "HSCICS.HI": "00011.13", "HSCIH.HI": "00011.14",
-}
 
 
 class DataHubIntermittentPermissionError(RuntimeError):
@@ -221,18 +215,30 @@ class RegimeSources:
             cursor = stop + timedelta(days=1)
         return [{**row, "symbol": row["provider_symbol"]} for row in captured_rows]
 
-    def hk_public_payload(self, url: str) -> dict:
-        hsi_urls = {f"https://www.hsi.com.hk/data/eng/indexes/{code}/chart.json": symbol for symbol, code in HSIL_CODES.items()}
-        parsed = urlsplit(url)
-        if url not in hsi_urls and not (parsed.scheme == "https" and parsed.netloc == "www.hkab.org.hk" and parsed.path == "/api/hibor"):
-            raise ValueError("Regime HK source must be a configured official index or HIBOR URL")
+    def hsil_close_rows(self, symbol: str) -> list[dict]:
+        """Return archived PI closes; replicas never reinterpret old HTTP bodies."""
+        url = hsil_history_url(symbol)
+        series = "hsil:" + symbol
         if self.role == "replica":
-            if url in hsi_urls:
-                rows = self.store.latest("regime_market_daily", symbols=["hsil:" + hsi_urls[url]])["rows"]
-            else:
-                query = parse_qs(parsed.query)
-                day = date(int(query["year"][0]), int(query["month"][0]), int(query["day"][0])).isoformat()
-                rows = self._rows("regime_market_daily", symbols=["hkab:hibor"], start=day, end=day)
+            rows = self._rows("regime_market_daily", symbols=[series])
+            if not rows:
+                raise ValueError("Shared Hang Seng history is unavailable; wait for collector delivery")
+            self._record_read(rows)
+            return rows
+        response = get_public_bytes(url)
+        _, reference = archive_response(self.settings, "hsil", response.body)
+        rows = parse_hsil_history(json.loads(response.body), symbol=symbol)
+        return self._publish(response, rows, source="hsil", series=series, raw_ref=reference)
+
+    def hk_public_payload(self, url: str) -> dict:
+        """Read HKAB's fixing response; index histories use hsil_close_rows."""
+        parsed = urlsplit(url)
+        if not (parsed.scheme == "https" and parsed.netloc == "www.hkab.org.hk" and parsed.path == "/api/hibor"):
+            raise ValueError("Regime HIBOR source must be a configured official HKAB URL")
+        query = parse_qs(parsed.query)
+        day = date(int(query["year"][0]), int(query["month"][0]), int(query["day"][0]))
+        if self.role == "replica":
+            rows = self._rows("regime_market_daily", symbols=["hkab:hibor"], start=day.isoformat(), end=day.isoformat())
             if not rows:
                 raise ValueError("Shared HK source is unavailable; wait for collector delivery")
             self._record_read(rows)
@@ -241,30 +247,16 @@ class RegimeSources:
         payload = json.loads(response.body)
         if not isinstance(payload, dict):
             raise ValueError("HK official response must be an object")
-        if url in hsi_urls:
-            symbol = hsi_urls[url]
-            if str(payload.get("indexCode", "")).strip() != HSIL_CODES[symbol]:
-                raise ValueError("HSIL response identity mismatch")
-            points = payload.get("indexLevels-5y")
-            if not isinstance(points, list) or not points:
-                raise ValueError("HSIL official five-year history is empty")
-            rows = [{"date": datetime.fromtimestamp(float(point[0]) / 1000, UTC).astimezone(ZoneInfo("Asia/Hong_Kong")).date(), "close": float(point[1])} for point in points]
-            if any(not math.isfinite(row["close"]) or row["close"] <= 0 for row in rows):
-                raise ValueError("HSIL levels must be finite and positive")
-            self._publish(response, rows, source="hsil", series="hsil:" + symbol)
-        else:
-            query = parse_qs(parsed.query)
-            day = date(int(query["year"][0]), int(query["month"][0]), int(query["day"][0]))
-            holiday = bool(payload.get("isHoliday"))
-            rows = [{"date": day, "hibor_1m": None if holiday else payload.get("1 Month"), "hibor_3m": None if holiday else payload.get("3 Months"), "is_holiday": holiday}]
-            for field in ("hibor_1m", "hibor_3m"):
-                value = rows[0][field]
-                if value is not None:
-                    value = float(value)
-                    if not math.isfinite(value) or value < 0:
-                        raise ValueError("HIBOR must be finite and nonnegative")
-                    rows[0][field] = value
-            self._publish(response, rows, source="hkab", series="hkab:hibor")
+        holiday = bool(payload.get("isHoliday"))
+        rows = [{"date": day, "hibor_1m": None if holiday else payload.get("1 Month"), "hibor_3m": None if holiday else payload.get("3 Months"), "is_holiday": holiday}]
+        for field in ("hibor_1m", "hibor_3m"):
+            value = rows[0][field]
+            if value is not None:
+                value = float(value)
+                if not math.isfinite(value) or value < 0:
+                    raise ValueError("HIBOR must be finite and nonnegative")
+                rows[0][field] = value
+        self._publish(response, rows, source="hkab", series="hkab:hibor")
         return payload
 
     def fred_rows(self, series: str, start: date, end: date) -> list[dict]:

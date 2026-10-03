@@ -32,6 +32,7 @@ from watchlist_app.services.shared_instrument_registry import (
     SharedInstrumentRegistryError,
     get_shared_instrument,
     get_shared_instrument_summaries,
+    get_shared_no_trade_evidence,
 )
 
 
@@ -498,6 +499,8 @@ def _freshness_needs_refresh(
         release_lag_days=source_settings.get("release_lag_days"),
         source_mode=source_settings.get("source_mode"),
         instrument_type=shared_instrument.get("instrument_type") if shared_instrument else None,
+        confirmed_no_trade_dates=tuple(date.fromisoformat(str(row["date"])) for row in
+            get_shared_no_trade_evidence(shared_instrument, latest_date=local_latest_date, as_of=datetime.now(UTC))),
     )
     return assessment["status"] != str(local_data_freshness_status).strip().lower()
 

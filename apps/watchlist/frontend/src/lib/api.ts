@@ -478,6 +478,8 @@ export type InstrumentSummaryResponse = {
     last_recalculated_at: string | null
     last_successful_snapshot_at: string | null
     staleness_reason: string | null
+    latest_observation_date?: string | null
+    no_trade_evidence?: Array<{ date: string; official_close: string; currency: string; source_id: string; source_url: string; observed_at: string }>
   }
   quick_monitoring_items: string[]
   tabs: string[]

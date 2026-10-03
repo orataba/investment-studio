@@ -170,6 +170,7 @@ def assess_latest_observation_freshness(
     release_lag_days: object = None,
     source_mode: object = None,
     instrument_type: object = None,
+    confirmed_no_trade_dates: tuple[date, ...] = (),
 ) -> dict[str, object]:
     """Assess source-date freshness without imposing a shared Watchlist as-of.
 
@@ -226,11 +227,19 @@ def assess_latest_observation_freshness(
 
     if expected_latest_date is not None:
         stale = latest_observation_date < expected_latest_date
+        confirmed = []
+        if stale and normalized_market_calendar == "XHKG" and confirmed_no_trade_dates:
+            missing = _market_calendar_sessions(normalized_market_calendar,
+                latest_observation_date + timedelta(days=1), expected_latest_date)
+            if missing and set(missing).issubset(confirmed_no_trade_dates):
+                stale = False
+                confirmed = [day.isoformat() for day in missing]
         return {
             "status": "stale" if stale else "fresh",
             "expected_latest_date": expected_latest_date.isoformat(),
             "release_lag_trading_days": normalized_release_lag,
             "lag_days": max((current_date - latest_observation_date).days, 0),
+            "confirmed_no_trade_dates": confirmed,
             "reason": (
                 f"Latest observation {latest_observation_date.isoformat()} is older "
                 f"than expected completed session {expected_latest_date.isoformat()}."

@@ -14,6 +14,8 @@ from studio_market.config import MarketSettings
 from .raw import archive_response
 from .store import NumericStore
 from .price_revisions import history_start, pending_revisions
+from .price_identities import (PriceIdentityUnavailable, guard_reference_changes,
+                               price_identities, price_capture_bases, action_in_identity)
 from .providers import analyst, directory, etf, events, financials, indexes, macro, market_series, profiles, ratings, treasury, us_market
 from .providers.fmp import FmpClient, FmpHttpError, FmpResponseError, FmpTransportError
 from .providers.cn_futures import CnFuturesError
@@ -32,7 +34,7 @@ def failure_summary(exc):
     result={'error_type':kind,'error':kind}
     if isinstance(status,int):result.update(http_status=status,error=f'{kind}: HTTP {status}')
     if isinstance(exc,(FmpResponseError,FmpTransportError,PublicHttpError,CnFuturesError)):result['error']=str(exc)
-    if isinstance(exc, us_market.PriceHistoryUnavailable):
+    if isinstance(exc, (us_market.PriceHistoryUnavailable, PriceIdentityUnavailable)):
         result.update(error=str(exc), **exc.details)
     frames = traceback.extract_tb(exc.__traceback__)
     if frames:
@@ -86,6 +88,7 @@ class Collector:
 
     def publish(self,name,rows,response,ref,**details):
         for row in rows: row["raw_ref"]=ref
+        guard_reference_changes(self.store,name,rows,observed_at=response.received_at)
         result=self.store.ingest(name,(rows[i:i+65536] for i in range(0,len(rows),65536)),source=details.pop("provider","fmp"),observed_at=response.received_at,details={"endpoint":response.endpoint,"parameters":response.params,"raw_ref":ref,"observed_at":response.received_at,"response_empty":getattr(response,"payload",None)==[],**details})
         self.results.append(result)
         return result
@@ -139,6 +142,8 @@ class Collector:
             return
         allowed=self.universe()
         deferred = pending_revisions(self.store, dataset='us_eod_daily', symbols=allowed, end=end)
+        identities = price_identities(self.store, symbols=sorted(allowed))
+        bases = price_capture_bases(self.store, 'us_eod_daily', identities)
         # Provider SPY daily history supplies actual sessions, including holidays.
         response=self.fmp.get_json("historical-price-eod/full",{"symbol":"SPY","from":start.isoformat(),"to":end.isoformat()})
         _,calendar_ref=self.archive(response)
@@ -152,10 +157,32 @@ class Collector:
             if not rows:raise ValueError(f"EOD bulk returned no usable rows for observed session {day}")
             # A new split-adjusted close cannot be combined with the old history.
             # The complete symbol rebuild below owns publication while it is due.
-            withheld = sorted({row['symbol'] for row in rows} & deferred.keys())
-            rows = [row for row in rows if row['symbol'] not in deferred]
+            withheld, accepted, updates = set(), [], {}
+            for row in rows:
+                symbol = row['symbol']
+                identity = identities.get(symbol)
+                if symbol in deferred or (identity and (
+                        identity['status'] != 'verified' or symbol not in bases
+                        or identity['provider_symbol'] != symbol
+                        or (identity.get('symbol_start') and day.isoformat() < identity['symbol_start'])
+                        or (identity.get('symbol_end') and day.isoformat() > identity['symbol_end'])
+                        or (identity.get('history_end') and day.isoformat() > identity['history_end']))):
+                    withheld.add(symbol)
+                    continue
+                if identity:
+                    updates[symbol] = {'identity_source_id':identity['source_id'],
+                                       'base_capture_id':bases[symbol]['id']}
+                accepted.append(row)
+            rows = accepted
             self.publish("us_eod_daily",rows,response,ref,trading_sessions_raw_ref=calendar_ref,
-                         deferred_price_revision_symbols=withheld)
+                         deferred_price_revision_symbols=sorted(withheld),price_series_updates=updates)
+        # An expired alias is never fed from stale bulk rows under its old name.
+        # Read the reviewed current provider symbol with an observed overlap.
+        for symbol, identity in identities.items():
+            if identity['status'] == 'verified' and identity['provider_symbol'] != symbol and symbol not in deferred:
+                latest = self.store.latest('us_eod_daily',symbols=[symbol],limit=1)['rows']
+                begin = min(start,date.fromisoformat(latest[0]['date'])) if latest else start
+                self.symbol_prices([symbol],begin,end)
         coverage=json.loads((Path(__file__).parent/"providers/us_etf_coverage.json").read_text())
         direct=[item["symbol"] for item in coverage["symbols"] if item["symbol"] not in {r["symbol"] for r in self.store.latest("security_directory",limit=100000)["rows"]}]
         direct_pending = pending_revisions(self.store, dataset='us_eod_daily', symbols=direct, end=end)
@@ -165,6 +192,9 @@ class Collector:
     def reconcile_price_revisions(self, end, *, symbols=None, raw=False):
         targets = symbols if symbols is not None else sorted(self.universe())
         dataset = 'raw_eod_daily' if raw else 'us_eod_daily'
+        identities = price_identities(self.store, symbols=targets)
+        quarantined = [{'symbol':symbol,'reason':identity['reason'],'identity_source_id':identity['source_id']}
+                       for symbol,identity in identities.items() if identity['status'] == 'blocked']
         requests = pending_revisions(self.store, dataset=dataset, symbols=targets, end=end)
         results = []
         for symbol, request_id in sorted(requests.items()):
@@ -176,7 +206,9 @@ class Collector:
                 results.append({'symbol':symbol,'status':'ready'})
             except Exception as exc:
                 results.append({'symbol':symbol,'status':'failed',**failure_summary(exc)})
-        return {'status':'failed' if any(r['status']=='failed' for r in results) else 'ready','price_revisions':results}
+        return {'status':'failed' if any(r['status']=='failed' for r in results) else 'ready',
+                'price_revisions':results,'quarantined':quarantined,
+                'coverage':'quarantined' if quarantined else 'eligible_identities'}
 
     def price_revisions(self, start, end, symbols):
         return self.reconcile_price_revisions(min(end, closed_us_date(datetime.now(UTC))), symbols=symbols)
@@ -209,78 +241,131 @@ class Collector:
 
     def symbol_prices(self,symbols,start,end,raw=False,revision_requests=None):
         dataset = "raw_eod_daily" if raw else "us_eod_daily"
-        endpoint = "historical-price-eod/non-split-adjusted" if raw else "historical-price-eod/full"
+        identities = price_identities(self.store, symbols=symbols)
+        bases = price_capture_bases(self.store, dataset, identities)
         for symbol in symbols:
-            cursor=start
-            chunks, source_parts, missing_dates = [], [], []
-            adjustment_changed = False
+            identity = identities.get(symbol)
+            if identity and identity['status'] != 'verified':
+                raise PriceIdentityUnavailable(symbol, identity['reason'], identity_source_id=identity['source_id'])
             revision_id = (revision_requests or {}).get(symbol)
-            while cursor<=end:
-                stop=min(cursor+timedelta(days=1459),end)
-                params={"symbol":symbol,"from":cursor.isoformat(),"to":stop.isoformat()}
-                full=self.fmp.get_json(endpoint,params)
-                adjusted=self.fmp.get_json("historical-price-eod/dividend-adjusted",params)
-                clock,ref=self.archive(full);_,adjusted_ref=self.archive(adjusted)
-                clock["collected_at"]=max(full.received_at,adjusted.received_at)
-                source_parts.append({"parameters": params, "raw_ref": ref,
-                                     "adjusted_raw_ref": adjusted_ref, "observed_at": clock["collected_at"],
-                                     "full_observed_at": full.received_at, "adjusted_observed_at": adjusted.received_at})
-                # FMP's non-split-adjusted endpoint uses adj* wire names for RAW prices.
-                payload=full.payload
-                if raw:
-                    if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
-                        raise ValueError('FMP raw EOD response must contain a list of observations')
-                    payload=[{**row,**{field:row.get("adj"+field.title()) for field in ("open","high","low","close")}} for row in full.payload]
-                rows=us_market.normalize_us_eod_symbol_rows(payload,adjusted.payload,expected_symbol=symbol,start_date=cursor,end_date=stop,**clock)
-                if raw or revision_requests:
-                    prior={row['date']:row for row in self.store.query(dataset,symbols=[symbol],start=cursor.isoformat(),end=stop.isoformat(),limit=100000)['rows']}
-                    missing = sorted(set(prior) - {row['date'].isoformat() for row in rows})
-                    missing_dates.extend(missing)
-                    if revision_id and missing:
-                        raise us_market.PriceHistoryUnavailable('retained_price_dates_missing', symbol, missing)
-                if raw:
-                    if any(row['date'].isoformat() in prior and prior[row['date'].isoformat()].get('adjusted_close') is not None and row.get('adjusted_close')!=prior[row['date'].isoformat()]['adjusted_close'] for row in rows):
-                        adjustment_changed = True
-                adjusted_by_date={str(r.get("date"))[:10]:r for r in adjusted.payload}
-                for row in rows:
-                    row["raw_ref"]=ref
-                    row["adjusted_raw_ref"]=adjusted_ref
-                    original=adjusted_by_date[row["date"].isoformat()]
-                    for field in ("open","high","low"):
-                        value=original.get("adj"+field.title())
-                        row["adjusted_"+field]=float(value) if value is not None else None
-                chunks.append(rows)
-                cursor=stop+timedelta(days=1)
-            if not source_parts:
+            base = bases.get(symbol)
+            full_identity = bool(identity and (revision_id or not base or start <= date.fromisoformat(identity['history_start'])))
+            begin = date.fromisoformat(identity['history_start']) if full_identity else start
+            stop = min(end,date.fromisoformat(identity['history_end'])) if identity and identity.get('history_end') else end
+            if begin > stop:
+                if full_identity:
+                    raise PriceIdentityUnavailable(symbol,'security_history_not_yet_available',identity_source_id=identity['source_id'])
                 continue
+            self._symbol_price_capture(symbol,begin,stop,raw=raw,revision_id=revision_id,
+                                       identity=identity,base=base,full_identity=full_identity)
+
+    def _symbol_price_capture(self,symbol,start,end,*,raw,revision_id,identity,base,full_identity):
+        dataset = "raw_eod_daily" if raw else "us_eod_daily"
+        endpoint = "historical-price-eod/non-split-adjusted" if raw else "historical-price-eod/full"
+        provider_symbol = identity['provider_symbol'] if identity else symbol
+        cursor = start
+        chunks, source_parts, missing_dates = [], [], []
+        adjustment_changed = False
+        try:
+            while cursor <= end:
+                stop = min(cursor+timedelta(days=1459),end)
+                params = {"symbol":provider_symbol,"from":cursor.isoformat(),"to":stop.isoformat()}
+                full = self.fmp.get_json(endpoint,params)
+                clock,ref = self.archive(full)
+                part = {"parameters":params,"raw_ref":ref,"observed_at":full.received_at,
+                        "full_observed_at":full.received_at}
+                source_parts.append(part)
+                adjusted = self.fmp.get_json("historical-price-eod/dividend-adjusted",params)
+                _,adjusted_ref = self.archive(adjusted)
+                clock["collected_at"] = max(full.received_at,adjusted.received_at)
+                part.update(adjusted_raw_ref=adjusted_ref,observed_at=clock['collected_at'],
+                            adjusted_observed_at=adjusted.received_at)
+                payload = full.payload
+                if raw:
+                    if not isinstance(payload,list) or any(not isinstance(row,dict) for row in payload):
+                        raise ValueError('FMP raw EOD response must contain a list of observations')
+                    payload = [{**row,**{field:row.get("adj"+field.title()) for field in ("open","high","low","close")}} for row in payload]
+                rows = us_market.normalize_us_eod_symbol_rows(payload,adjusted.payload,
+                    expected_symbol=provider_symbol,start_date=cursor,end_date=stop,**clock)
+                if identity:
+                    for row in rows:
+                        row.update(symbol=symbol,provider_symbol=provider_symbol,security_id=identity['security_id'],
+                                   price_identity_source_id=identity['source_id'])
+                if raw or identity or revision_id:
+                    # The public read scope selects only the reviewed identity's
+                    # prior coherent generation, never the reused ticker's rows.
+                    prior = {row['date']:row for row in self.store.query(dataset,symbols=[symbol],
+                        start=cursor.isoformat(),end=stop.isoformat(),limit=100000)['rows']}
+                    missing = sorted(set(prior)-{row['date'].isoformat() for row in rows})
+                    missing_dates.extend(missing)
+                    if (revision_id or full_identity) and missing:
+                        raise us_market.PriceHistoryUnavailable('retained_price_dates_missing',symbol,missing)
+                if raw or identity:
+                    if any(row['date'].isoformat() in prior and prior[row['date'].isoformat()].get('adjusted_close') is not None
+                           and (row.get('adjusted_close')!=prior[row['date'].isoformat()]['adjusted_close']
+                                or (identity and row.get('close')!=prior[row['date'].isoformat()].get('close')))
+                           for row in rows):
+                        adjustment_changed = True
+                adjusted_by_date = {str(row.get('date'))[:10]:row for row in adjusted.payload}
+                for row in rows:
+                    row.update(raw_ref=ref,adjusted_raw_ref=adjusted_ref)
+                    original = adjusted_by_date[row['date'].isoformat()]
+                    for field in ('open','high','low'):
+                        value = original.get('adj'+field.title())
+                        row['adjusted_'+field] = float(value) if value is not None else None
+                chunks.append(rows)
+                cursor = stop+timedelta(days=1)
             total_rows = sum(len(rows) for rows in chunks)
-            if revision_id and not total_rows:
-                raise us_market.PriceHistoryUnavailable('price_history_empty', symbol)
+            if (revision_id or full_identity) and not total_rows:
+                raise us_market.PriceHistoryUnavailable('price_history_empty',symbol)
             captured_at = max(part['observed_at'] for part in source_parts)
             publication = {}
-            if adjustment_changed and not revision_id and start > history_start(self.store, dataset, symbol):
-                # Persist the obligation before starting the full rebuild, but do
-                # not publish an overlap with a different adjustment generation.
-                publication['price_revision_requests'] = [{'symbol': symbol, 'effective_date': end.isoformat()}]
+            if adjustment_changed and not revision_id and not full_identity and start > history_start(self.store,dataset,symbol):
+                publication['price_revision_requests'] = [{'symbol':symbol,'effective_date':end.isoformat()}]
                 chunks = []
             elif revision_id:
-                publication['price_revision_completed'] = {symbol: revision_id}
+                publication['price_revision_completed'] = {symbol:revision_id}
             elif adjustment_changed and missing_dates:
-                raise us_market.PriceHistoryUnavailable('retained_price_dates_missing', symbol, missing_dates)
+                raise us_market.PriceHistoryUnavailable('retained_price_dates_missing',symbol,missing_dates)
+            if identity:
+                # Refuse a concurrent newer review. Old facts remain immutable,
+                # but cannot acknowledge or become the new identity's base.
+                current = price_identities(self.store,symbols=[symbol]).get(symbol)
+                if not current or current['source_id'] != identity['source_id']:
+                    raise PriceIdentityUnavailable(symbol,'identity_changed_during_capture',identity_source_id=identity['source_id'])
+                if full_identity:
+                    publication['price_series_capture'] = {symbol:{
+                        'identity_source_id':identity['source_id'],'security_id':identity['security_id'],
+                        'provider_symbol':provider_symbol,'history_start':start.isoformat(),'history_end':end.isoformat()}}
+                elif base:
+                    publication['price_series_updates'] = {symbol:{'identity_source_id':identity['source_id'],
+                                                                  'base_capture_id':base['id']}}
             for rows in chunks:
                 for row in rows:
-                    # This whole history is one observation. Keep each provider
-                    # response's collected_at, but rank all its rows together so
-                    # overlapping captures cannot interleave their generations.
-                    row.update(observed_at=captured_at, available_at=captured_at, availability_precision='capture')
-            result = self.store.ingest(dataset, chunks, source='fmp', observed_at=captured_at, details={
-                'endpoint': endpoint, 'parameters': {'symbol': symbol, 'from': start.isoformat(), 'to': end.isoformat()},
-                'observed_at': captured_at, 'response_empty': total_rows == 0,
-                'source_parts': source_parts, **publication})
+                    row.update(observed_at=captured_at,available_at=captured_at,availability_precision='capture')
+            result = self.store.ingest(dataset,chunks,source='fmp',observed_at=captured_at,details={
+                'endpoint':endpoint,'parameters':{'symbol':symbol,'provider_symbol':provider_symbol,
+                                                'from':start.isoformat(),'to':end.isoformat()},
+                'observed_at':captured_at,'response_empty':total_rows==0,'source_parts':source_parts,**publication})
             self.results.append(result)
+        except Exception as exc:
+            if source_parts:
+                captured_at = max(part['observed_at'] for part in source_parts)
+                # A published evidence receipt is not a published price batch
+                # or a completion acknowledgement. Raw responses replicate.
+                result = self.store.ingest(dataset,[],source='fmp',observed_at=captured_at,details={
+                    'endpoint':endpoint,'parameters':{'symbol':symbol,'provider_symbol':provider_symbol,
+                                                    'from':start.isoformat(),'to':end.isoformat()},
+                    'observed_at':captured_at,'source_parts':source_parts,
+                    'price_capture_failure':failure_summary(exc),
+                    'price_identity_source_id':identity['source_id'] if identity else None,
+                    'revision_request_id':revision_id})
+                self.results.append(result)
+            raise
 
     def actions(self,start,end,symbols):
         allowed=set(symbols) if symbols else self.universe()
+        identities = price_identities(self.store, symbols=sorted(allowed))
         begin=min(start,end-timedelta(days=365));stop=end+timedelta(days=365)
         for name,endpoint,normalizer,datefield in [("dividends","dividends-calendar",us_market.normalize_dividend_rows,"ex_date"),("stock_splits","splits-calendar",us_market.normalize_split_rows,"event_date")]:
             previous=self.store.query(name,start=begin.isoformat(),end=stop.isoformat(),limit=100000)["rows"]
@@ -292,11 +377,18 @@ class Collector:
                     response=self.fmp.get_json(endpoint,{"from":lo.isoformat(),"to":hi.isoformat(),"page":page,"limit":1000})
                     clock,ref=self.archive(response)
                     rows=normalizer(response.payload,allowed_symbols=allowed,start_date=lo,end_date=hi,**clock)
-                    changes=[]
+                    changes, rejected = [], []
                     for r in rows:
                         if prior.get((r["symbol"],r[datefield].isoformat()))!=tuple(r.get(k) for k in fields):
-                            changes.append({'symbol':r['symbol'], 'effective_date':r[datefield].isoformat()})
-                    self.publish(name,rows,response,ref,price_revision_requests=changes)
+                            change = {'symbol':r['symbol'], 'effective_date':r[datefield].isoformat()}
+                            identity = identities.get(r['symbol'])
+                            if identity and not action_in_identity(identity, source_symbol=r['symbol'], effective_date=r[datefield]):
+                                rejected.append({**change,'reason':'outside_reviewed_symbol_lifecycle',
+                                                 'identity_source_id':identity['source_id']})
+                            else:
+                                changes.append(change)
+                    self.publish(name,rows,response,ref,price_revision_requests=changes,
+                                 rejected_price_revision_requests=rejected)
                     if len(response.payload)<1000:break
                 else:raise ValueError("Corporate action pagination incomplete")
 
@@ -497,7 +589,7 @@ class Collector:
                 cursor=hi+timedelta(days=1)
         for series_id,code in market_series.HK_SECTOR_CODES.items():
             if symbols and series_id not in symbols:continue
-            response=get_public_bytes(market_series.HSIL_CHART_URL.format(code=code));clock,ref=self.archive(response,"hang_seng_indexes")
+            response=get_public_bytes(market_series.hsil_history_url(series_id));clock,ref=self.archive(response,"hang_seng_indexes")
             rows=market_series.normalize_hsil_close_series(response.body,series_id=series_id,code=code,start_date=start,end_date=end,**clock)
             self.publish("market_series_daily",rows,response,ref,provider="hang_seng_indexes")
         if source_issues:return {"status":"failed","source_issues":source_issues}

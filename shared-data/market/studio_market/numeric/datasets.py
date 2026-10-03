@@ -21,6 +21,8 @@ DATASETS = {d.name: d for d in [
     D("security_directory", "symbol", current="symbol", table="security_directory_observations"),
     D("delisted_securities", "symbol", date="delisted_date", current="symbol", table="delisted_security_observations"),
     D("symbol_changes", "old_symbol new_symbol event_date", symbol="new_symbol", date="event_date", history="provider_history_with_current_revisions", table="symbol_change_observations"),
+    D("price_series_identities", "symbol", current="symbol", description="Observed security identity and verified history boundaries for price series"),
+    D("hkex_security_sessions", "symbol date", date="date", current="symbol date", history="since_capture", description="HKEX official daily security trading status and closing quotation"),
     D("regime_market_daily", "series_id date", symbol="series_id", date="date", current="series_id", history="provider_history_with_current_revisions"),
     D("raw_eod_daily", "symbol date", date="date", current="symbol", history="provider_history_with_current_revisions"),
     D("cn_security_directory", "symbol", current="symbol"),

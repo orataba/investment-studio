@@ -25,11 +25,14 @@ class PriceHistoryUnavailable(ValueError):
         missing = sorted({str(day) for day in dates})
         explanations = {
             "adjusted_price_missing": "Adjusted close is missing",
+            "adjusted_price_nonpositive": "Adjusted close is zero or negative",
+            "adjusted_price_nonfinite": "Adjusted close is not a finite number",
             "retained_price_dates_missing": "Full price revision response omits retained observation dates",
             "price_history_empty": "Full price revision capture contained no history",
         }
-        self.details = {"reason": reason, "symbol": symbol, "missing_date_count": len(missing),
-                        "missing_dates": missing[:10]}
+        field = "invalid" if reason in {"adjusted_price_nonpositive", "adjusted_price_nonfinite"} else "missing"
+        self.details = {"reason": reason, "symbol": symbol, f"{field}_date_count": len(missing),
+                        f"{field}_dates": missing[:10]}
         suffix = f" ({', '.join(missing[:10])}; {len(missing)} dates)" if missing else ""
         super().__init__(f"{explanations[reason]} for {symbol}{suffix}")
 
@@ -108,6 +111,7 @@ def normalize_us_eod_symbol_rows(
         raise ValueError(f"FMP adjusted EOD response is not a list for {symbol}")
 
     adjusted_by_date: dict[date, float] = {}
+    invalid_adjusted: dict[date, str] = {}
     for item in adjusted_payload:
         if not isinstance(item, dict):
             raise ValueError(f"FMP adjusted EOD contains an invalid row for {symbol}")
@@ -121,8 +125,17 @@ def normalize_us_eod_symbol_rows(
             raise ValueError(f"FMP adjusted EOD has an invalid date for {symbol}")
         if observation_date < start_date or observation_date > end_date:
             continue
-        adjusted_close = _finite_number(item.get("adjClose"))
+        value = item.get("adjClose")
+        if value is None or value == "":
+            invalid_adjusted[observation_date] = "adjusted_price_missing"
+            continue
+        try:
+            adjusted_close = _finite_number(value)
+        except (TypeError, ValueError):
+            invalid_adjusted[observation_date] = "adjusted_price_nonfinite"
+            continue
         if adjusted_close <= 0:
+            invalid_adjusted[observation_date] = "adjusted_price_nonpositive"
             continue
         prior = adjusted_by_date.get(observation_date)
         if prior is not None and prior != adjusted_close:
@@ -146,8 +159,8 @@ def normalize_us_eod_symbol_rows(
             raise ValueError(f"FMP full EOD has an invalid date for {symbol}")
         if observation_date < start_date or observation_date > end_date:
             continue
-        if observation_date not in adjusted_by_date:
-            raise PriceHistoryUnavailable("adjusted_price_missing", symbol, [observation_date])
+        if observation_date in invalid_adjusted or observation_date not in adjusted_by_date:
+            raise PriceHistoryUnavailable(invalid_adjusted.get(observation_date, "adjusted_price_missing"), symbol, [observation_date])
         try:
             open_value = _finite_number(item.get("open"))
             high_value = _finite_number(item.get("high"))

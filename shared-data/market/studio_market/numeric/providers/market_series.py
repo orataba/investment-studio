@@ -1,23 +1,13 @@
 """Provider normalization retained and owned by Investment Studio."""
 from __future__ import annotations
 
-import csv
-
-import io
-
 import json
-
 import math
-
-from collections.abc import Callable, Mapping
-
-from datetime import date, datetime, time, timedelta, timezone
-
+from collections.abc import Mapping
+from datetime import date, datetime
 from typing import Any
 
-from zoneinfo import ZoneInfo
-
-HONG_KONG = ZoneInfo("Asia/Hong_Kong")
+from .hsil import HSIL_INDEX_CODES, hsil_history_url, parse_hsil_history
 
 FMP_PROVIDER_SYMBOLS: Mapping[str, str] = {
     "XAUUSD": "XAUUSD",
@@ -116,39 +106,17 @@ def normalize_hsil_close_series(
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise ValueError(f"Hang Seng Indexes returned invalid JSON for {series_id}") from None
-    if not isinstance(payload, Mapping) or str(payload.get("indexCode", "")).strip() != code:
+    if HSIL_INDEX_CODES.get(series_id) != code:
         raise ValueError(f"Hang Seng Indexes identity mismatch for {series_id}")
-    levels = payload.get("indexLevels-5y")
-    if not isinstance(levels, list) or not levels:
-        raise ValueError(f"Hang Seng Indexes returned no chart data for {series_id}")
-    by_date: dict[date, dict[str, object]] = {}
-    for item in levels:
-        if not isinstance(item, list) or len(item) != 2:
-            raise ValueError(f"Hang Seng Indexes returned a malformed point for {series_id}")
-        try:
-            epoch_seconds = float(item[0]) / 1000.0
-            observed = datetime.fromtimestamp(
-                epoch_seconds,
-                tz=timezone.utc,
-            ).astimezone(HONG_KONG).date()
-        except (TypeError, ValueError, OSError, OverflowError):
-            raise ValueError(f"Hang Seng Indexes returned an invalid date for {series_id}") from None
-        if observed < start_date or observed > end_date:
-            continue
-        close = _positive_number(item[1], f"{series_id} close", observed)
-        row = _close_only_row(
-            series_id,
-            observed,
-            close,
-            source_dataset="hang_seng_indexes_official_chart",
-            raw_sha256=raw_sha256,
-            collected_at=collected_at,
+    return [
+        _close_only_row(
+            series_id, row["date"], row["close"],
+            source_dataset="hang_seng_indexes_official_history",
+            raw_sha256=raw_sha256, collected_at=collected_at,
         )
-        prior = by_date.get(observed)
-        if prior is not None and prior != row:
-            raise ValueError(f"Hang Seng Indexes has conflicting rows on {observed}")
-        by_date[observed] = row
-    return [by_date[key] for key in sorted(by_date)]
+        for row in parse_hsil_history(payload, symbol=series_id)
+        if start_date <= row["date"] <= end_date
+    ]
 
 def _close_only_row(
     series_id: str,
@@ -208,21 +176,8 @@ def _optional_number(
     return number
 
 
-HSIL_CHART_URL = "https://www.hsi.com.hk/data/eng/indexes/{code}/chart.json"
-
 HK_SECTOR_CODES: Mapping[str, str] = {
-    "HSCIEN.HI": "00011.01",
-    "HSCIMT.HI": "00011.02",
-    "HSCIIN.HI": "00011.03",
-    "HSCITC.HI": "00011.06",
-    "HSCIUT.HI": "00011.07",
-    "HSCIFN.HI": "00011.08",
-    "HSCIPC.HI": "00011.09",
-    "HSCIIT.HI": "00011.10",
-    "HSCICO.HI": "00011.11",
-    "HSCICD.HI": "00011.12",
-    "HSCICS.HI": "00011.13",
-    "HSCIH.HI": "00011.14",
+    symbol: code for symbol, code in HSIL_INDEX_CODES.items() if symbol != "HSCI.HI"
 }
 
 _HK_NAMES = {

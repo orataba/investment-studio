@@ -625,6 +625,7 @@ def test_completed_recalc_marks_missing_canonical_series_unavailable() -> None:
         "latest_observation_date": None,
         "expected_latest_date": None,
         "observation_lag_days": None,
+        "no_trade_evidence": [],
         "release_lag_trading_days": None,
     }
 
