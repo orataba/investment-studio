@@ -2790,7 +2790,7 @@ export default function WatchlistsPage() {
         <div className="watchlists-compact-switch">
           <label><span className="sr-only">{zh ? '切换关注列表' : 'Switch watchlist'}</span>
             <select value={watchlistId} onChange={(event) => navigate(buildWatchlistPath(event.target.value))}>
-              {watchlists.map((list) => <option key={list.watchlist_id} value={list.watchlist_id}>{list.name}</option>)}
+              {watchlists.map((list) => <option key={list.watchlist_id} value={list.watchlist_id} translate={list.owner_type === 'system' ? undefined : 'no'}>{list.name}</option>)}
             </select>
           </label>
           <Link to="/watchlists">{zh ? '所有列表' : 'All watchlists'}</Link>
@@ -2905,8 +2905,8 @@ export default function WatchlistsPage() {
                 }}
               >
                 {watchlistDetail?.views.map((view: WatchlistView) => (
-                  <option key={view.view_key} value={view.view_id}>
-                    {`View\u00A0: ${view.name}`}
+                  <option key={view.view_key} value={view.view_id} translate="no">
+                    {`${t('View')}\u00A0: ${view.kind === 'system' ? t(view.name) : view.name}`}
                   </option>
                 ))}
               </select>
@@ -3734,8 +3734,8 @@ export default function WatchlistsPage() {
             </div>
 
             <div className="watchlists-modal-body">
-              <div className="watchlists-move-summary">
-                {selectedRows.length} selected from {activeWatchlist?.name || 'current watchlist'}.
+              <div className="watchlists-move-summary" translate="no">
+                {t('{count} selected from {name}.', { count: selectedRows.length, name: activeWatchlist?.name ? (activeWatchlist.owner_type === 'system' ? t(activeWatchlist.name) : activeWatchlist.name) : t('current watchlist') })}
               </div>
               <label className="form-field">
                 <span>Target Watchlist</span>
@@ -3745,7 +3745,7 @@ export default function WatchlistsPage() {
                   onChange={(event) => setCopyTargetWatchlistId(event.target.value)}
                 >
                   {moveTargetOptions.map((watchlist) => (
-                    <option key={watchlist.watchlist_id} value={watchlist.watchlist_id}>
+                    <option key={watchlist.watchlist_id} value={watchlist.watchlist_id} translate={watchlist.owner_type === 'system' ? undefined : 'no'}>
                       {watchlist.name}
                     </option>
                   ))}
@@ -3842,8 +3842,8 @@ export default function WatchlistsPage() {
             </div>
 
             <div className="watchlists-modal-body">
-              <div className="watchlists-move-summary">
-                {selectedRows.length} selected from {activeWatchlist?.name || 'current watchlist'}.
+              <div className="watchlists-move-summary" translate="no">
+                {t('{count} selected from {name}.', { count: selectedRows.length, name: activeWatchlist?.name ? (activeWatchlist.owner_type === 'system' ? t(activeWatchlist.name) : activeWatchlist.name) : t('current watchlist') })}
               </div>
               <label className="form-field">
                 <span>Target Watchlist</span>
@@ -3853,7 +3853,7 @@ export default function WatchlistsPage() {
                   onChange={(event) => setMoveTargetWatchlistId(event.target.value)}
                 >
                   {moveTargetOptions.map((watchlist) => (
-                    <option key={watchlist.watchlist_id} value={watchlist.watchlist_id}>
+                    <option key={watchlist.watchlist_id} value={watchlist.watchlist_id} translate={watchlist.owner_type === 'system' ? undefined : 'no'}>
                       {watchlist.name}
                     </option>
                   ))}

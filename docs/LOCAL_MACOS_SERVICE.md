@@ -22,6 +22,20 @@ createdb --owner investment_studio investment_studio
 
 ## 安装或更新
 
+### 仅更新界面
+
+不涉及 API、依赖或数据库的界面修改，无需运行下述完整安装器。先从已验证的提交，使用仓库锁定的 Node
+版本和本地应用地址，将受影响前端构建到工作区外的独立目录（`--manifest --outDir <目录>`）；共享 UI
+修改需构建 Home、Watchlist、Portfolio、Briefing 四个前端。保留构建提交、文件校验值与原 Web job 加载状态。
+
+将上一版 manifest 引用的 `assets/` 文件复制到新包中，不覆盖新文件、不改新 manifest，保证已打开页面仍能
+加载旧分块。旧包没有 manifest 时，首次保留其整个 `assets/` 目录；后续按 manifest 保留一代，避免无限累积。
+只卸载原先已加载的 Web job，将旧 `dist` 整体移至持久回滚目录、完整新包移入对应 `dist`，再用原 plist
+恢复原 Web job 集合。校验 HTML、资源及受影响交互后记录结果；失败时恢复旧 `dist` 和原加载状态。
+此路径不改 plist、不重启 API、不迁移数据库，也不触发行情同步或 Regime 重建。
+
+### 完整安装或更新
+
 在项目根目录运行：
 
 ```bash

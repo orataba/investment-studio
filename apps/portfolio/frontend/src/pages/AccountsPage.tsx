@@ -622,7 +622,7 @@ export default function AccountsPage() {
                       </span>
                       <span className="account-directory-meta">
                         {accountCategoryLabel(accountRow.account.account_category)} · {accountRow.account.currency}
-                        {accountRow.account.institution ? ` · ${accountRow.account.institution}` : ''}
+                        {accountRow.account.institution ? <> · <span translate="no">{accountRow.account.institution}</span></> : null}
                       </span>
                       <span className="account-directory-stats">
                         <span>
@@ -784,11 +784,11 @@ export default function AccountsPage() {
                         <dl className="account-profile-grid">
                           <div>
                             <dt>Institution</dt>
-                            <dd>{selectedAccount.account.institution || '—'}</dd>
+                            <dd translate="no">{selectedAccount.account.institution || '—'}</dd>
                           </div>
                           <div>
                             <dt>Default settlement</dt>
-                            <dd>{selectedAccount.default_settlement_cash_account_name || '—'}</dd>
+                            <dd translate="no">{selectedAccount.default_settlement_cash_account_name || '—'}</dd>
                           </div>
                           <div>
                             <dt>Cost method</dt>

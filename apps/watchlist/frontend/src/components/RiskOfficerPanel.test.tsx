@@ -1,11 +1,22 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import type { ReactElement } from 'react'
 import RiskOfficerPanel, { type RiskOfficerReview } from '../../../../../packages/ui/src/RiskOfficerPanel'
 import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 
-beforeEach(() => { vi.useFakeTimers() })
+beforeEach(() => {
+  vi.useFakeTimers()
+  window.history.replaceState(null, '', '/?lang=en')
+  document.cookie = 'investment_studio_language=en; path=/'
+})
 afterEach(() => { cleanup(); vi.useRealTimers() })
+
+function renderPanel(component: ReactElement) {
+  return render(component, {
+    wrapper: ({ children }) => <LanguageProvider enableDomTranslation={false}>{children}</LanguageProvider>,
+  })
+}
 
 function payload(id: string, overrides: Partial<RiskOfficerReview> = {}): RiskOfficerReview {
   return {
@@ -50,7 +61,7 @@ it('keeps unknown status read-only, polls its original run and never resubmits',
   const saved = completed('a')
   const run = { run_id: 'unconfirmed-run', status: 'unrecognized', created_at: '2026-10-02', completed_at: null, message: '' } as unknown as NonNullable<RiskOfficerReview['latest_run']>
   const request = vi.fn().mockResolvedValue(payload('a', { latest_completed: saved, latest_run: run }))
-  render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" onCompleted={onCompleted} />)
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" onCompleted={onCompleted} />)
   await load()
   expect(screen.getByText(saved.summary)).toBeTruthy()
   expect(screen.getByText(/任务状态暂未确认/)).toBeTruthy()
@@ -69,7 +80,7 @@ it('keeps unknown status read-only, polls its original run and never resubmits',
 
 it.each(['unrecognized', 'running', 'read-failure'])('blocks an already-open confirmation when status becomes %s', async status => {
   const request = vi.fn().mockResolvedValue(payload('a'))
-  const { rerender } = render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" refreshToken={0} />)
+  const { rerender } = renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" refreshToken={0} />)
   await load()
   fireEvent.click(screen.getByRole('button', { name: '更新研判' }))
   expect(screen.getByRole('alertdialog')).toBeTruthy()
@@ -85,7 +96,7 @@ it('shows frozen rule counts with the saved run and never reconstructs legacy co
   const counts = { configured: 4, evaluable: 4, triggered: 0, unavailable: 0, default: 4, custom: 0, unknown: 0 }
   const saved = { ...completed('a'), prepared_at: '2026-10-02T00:00:00Z', price_rule_summary: { contract_version: 1, counts, instruments: [] } }
   const request = vi.fn().mockResolvedValue(payload('a', { counts: { research: 0, quantitative: 0, coverage: 0 }, latest_completed: saved }))
-  render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" />)
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" />)
   await load()
   fireEvent.click(screen.getByText('本轮价格复核规则'))
   const details = screen.getByText('本轮价格复核规则').closest('details')!
@@ -96,7 +107,7 @@ it('shows frozen rule counts with the saved run and never reconstructs legacy co
   expect(details.textContent).toContain('不随当前设置变化')
   cleanup()
   request.mockResolvedValue(payload('a', { latest_completed: completed('a') }))
-  render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" />)
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" />)
   await load()
   expect(screen.getByText(/旧报告未留存规则统计/)).toBeTruthy()
   expect(screen.queryByText('已配置规则')).toBeNull()
@@ -104,7 +115,7 @@ it('shows frozen rule counts with the saved run and never reconstructs legacy co
 
 it('shows existing officer conclusions but does not submit for a team reader', async () => {
   const request = vi.fn().mockResolvedValue(payload('a', { latest_completed: completed('a') }))
-  render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" canRun={false} />)
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" canRun={false} />)
   await load()
   expect(screen.getByText('a 的既有研判结论。')).toBeTruthy()
   const button = screen.getByRole('button', { name: '更新研判' }) as HTMLButtonElement
@@ -123,7 +134,7 @@ it('isolates late reads and submissions when the scope changes', async () => {
     return Promise.resolve(payload(id, { latest_completed: completed(id) }))
   })
   const onCompleted = vi.fn()
-  const { rerender } = render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" onCompleted={onCompleted} />)
+  const { rerender } = renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" onCompleted={onCompleted} />)
   rerender(<RiskOfficerPanel request={request} scopeQuery="instrument_id=b&ignored=extra" onCompleted={onCompleted} />)
   await load()
   expect(screen.getByText('b 的既有研判结论。')).toBeTruthy()
@@ -156,7 +167,7 @@ it('keeps the last completed result after failure and honestly shows stale and u
       completed_at: '2026-09-07T08:01:00+08:00', message: '本次核证未完成。' },
   }))
   const onCompleted = vi.fn()
-  render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" onCompleted={onCompleted} />)
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" onCompleted={onCompleted} />)
   await load()
   expect(screen.getByText('本次研判失败：本次核证未完成。')).toBeTruthy()
   expect(screen.getByText('输入版本已有变化，请更新研判。')).toBeTruthy()
@@ -192,7 +203,7 @@ it('starts only on request, polls running work every four seconds and notifies o
     })
   })
   const onCompleted = vi.fn()
-  render(<RiskOfficerPanel request={request} scopeQuery="portfolio_id=p" onCompleted={onCompleted} />)
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="portfolio_id=p" onCompleted={onCompleted} />)
   await load()
   expect(screen.getByText('尚未研判。点击“更新研判”发起首次研判。')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: /风控输入/ }))
@@ -222,7 +233,7 @@ it('starts only on request, polls running work every four seconds and notifies o
 
 it('rereads current inputs after a case changes without creating another analysis', async () => {
   const request = vi.fn().mockResolvedValue(payload('a', { latest_completed: completed('a') }))
-  const { rerender } = render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" refreshToken={0} />)
+  const { rerender } = renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" refreshToken={0} />)
   await load()
   request.mockResolvedValue(payload('a', { latest_completed: { ...completed('a'), stale: true } }))
   rerender(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" refreshToken={1} />)
@@ -252,7 +263,7 @@ it('supports portfolio-level and local derivative priorities without inventing W
       { holding_id: 'option-local', name: '本地卖出期权', detail_path: '/portfolios/p/holdings/option-local' },
     ],
   }))
-  render(<RiskOfficerPanel request={request} scopeQuery="portfolio_id=p" />)
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="portfolio_id=p" />)
   await load()
   const priorities = screen.getByRole('list', { name: '优先事项' })
   expect(within(priorities).getByText('组合整体')).toBeTruthy()
@@ -270,7 +281,7 @@ it('supports portfolio-level and local derivative priorities without inventing W
 
 it('keeps legacy conclusions readable while their current inputs remain unverified', async () => {
   const request = vi.fn().mockResolvedValue(payload('a', { latest_completed: { ...completed('a'), stale: null } }))
-  render(<RiskOfficerPanel request={request} scopeQuery="watchlist_id=a" />)
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="watchlist_id=a" />)
   await load()
   expect(screen.getByText('a 的既有研判结论。')).toBeTruthy()
   expect(screen.getByText('尚未核对已有结论的当前输入，请更新研判。原结论与依据仍保留。')).toBeTruthy()
@@ -286,7 +297,7 @@ it('shows a shared risk receipt with one UTC clock and recovers status without r
     after: { status: 'resolved', trigger_active: false, risk_assessment: { status: 'resolved', reason: '证据已核实' } },
   }] }
   const request = vi.fn().mockResolvedValue(payload('a', { latest_completed: saved }))
-  const { rerender } = render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" refreshToken={0} />)
+  const { rerender } = renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" refreshToken={0} />)
   await load()
   expect(screen.getAllByText('2026-11-01 08:30:00 UTC')).toHaveLength(2)
   expect(screen.getByText('Alice')).toBeTruthy()

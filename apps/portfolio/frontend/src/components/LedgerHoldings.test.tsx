@@ -1,7 +1,7 @@
-import { act, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
+import { LanguageProvider, LanguageSelector } from '../../../../../packages/ui/src/i18n'
 import LedgerHoldings from './LedgerHoldings'
 
 const api = vi.hoisted(() => ({ getPortfolioPositions: vi.fn(), getPortfolioAccountsWorkspace: vi.fn() }))
@@ -32,6 +32,23 @@ describe('Unvalued ledger holdings', () => {
     expect(await screen.findByText('Position ledger unavailable')).toBeInTheDocument()
     expect(screen.getByText('$14,224.00')).toBeInTheDocument()
     expect(screen.queryByText(/No open security/)).not.toBeInTheDocument()
+  })
+  it('keeps security, contract and account names unchanged when translating ledger headings', async () => {
+    api.getPortfolioPositions.mockResolvedValue({ positions: [
+      { ...positions.positions[0], instrument_ref: { instrument_name: 'Return' } },
+      { ...positions.positions[0], position_id: 'option', instrument_ref: null, derivative_contract: { contract_name: 'Interest' } },
+    ] })
+    api.getPortfolioAccountsWorkspace.mockResolvedValue({ accounts: [{ ...accounts.accounts[0], account: { ...accounts.accounts[0].account, account_name: 'Income' } }] })
+    render(<LanguageProvider><LanguageSelector /><MemoryRouter><LedgerHoldings portfolioId="p1" asOfDate="2026-08-31" /></MemoryRouter></LanguageProvider>)
+    await screen.findByText('Return')
+    fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+    await waitFor(() => expect(screen.getByRole('columnheader', { name: '现金账户' })).toBeInTheDocument())
+    expect(screen.getByText('Return')).toBeInTheDocument()
+    expect(screen.getByText('Interest')).toBeInTheDocument()
+    expect(screen.getAllByText('Income')).toHaveLength(3)
+    fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+    await waitFor(() => expect(screen.getByRole('columnheader', { name: 'Cash account' })).toBeInTheDocument())
+    expect(screen.getByText('Return')).toBeInTheDocument()
   })
   it('clears the previous date immediately and ignores its late response', async () => {
     let finishOld!: (value: unknown) => void

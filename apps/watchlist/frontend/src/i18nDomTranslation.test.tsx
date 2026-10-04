@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
 
 import { LanguageProvider, LanguageSelector, matchesSystemLabel } from '../../../../packages/ui/src/i18n'
+import ConfirmDialog from '../../../../packages/ui/src/ConfirmDialog'
 
 beforeEach(() => {
   document.cookie = 'investment_studio_language=en; path=/'
@@ -14,6 +15,31 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe('DOM translation context', () => {
+  it('translates a typed confirmation as an instruction and preserves the exact name across language switches', async () => {
+    const onConfirm = vi.fn()
+    render(<LanguageProvider>
+      <LanguageSelector />
+      <span>Type</span>
+      <ConfirmDialog open title="Delete Watchlist" description="This action cannot be undone."
+        confirmationText="Type · Close · 原始名称" confirmLabel="Delete" onCancel={() => undefined} onConfirm={onConfirm} />
+    </LanguageProvider>)
+    for (let round = 0; round < 2; round += 1) {
+      fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+      const input = await screen.findByRole('textbox', { name: '请输入“Type · Close · 原始名称”以确认。' })
+      expect(screen.getByText('类型')).toBeTruthy()
+      expect((input as HTMLInputElement).value).toBe(round === 0 ? '' : 'Type · Close · 原始名称')
+      fireEvent.change(input, { target: { value: '类型 · 收盘价 · 原始名称' } })
+      expect((screen.getByRole('button', { name: '删除' }) as HTMLButtonElement).disabled).toBe(true)
+      fireEvent.change(input, { target: { value: 'Type · Close · 原始名称' } })
+      expect((screen.getByRole('button', { name: '删除' }) as HTMLButtonElement).disabled).toBe(false)
+      fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+      await screen.findByRole('textbox', { name: 'Type "Type · Close · 原始名称" to confirm.' })
+      expect(screen.getByText('Type', { selector: 'span' })).toBeTruthy()
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(onConfirm).toHaveBeenCalledTimes(1)
+  })
+
   it('finds system fields by either display language', () => {
     expect(matchesSystemLabel('Settlement Cash Account', '结算')).toBe(true)
     expect(matchesSystemLabel('产品形态', 'vehicle')).toBe(true)

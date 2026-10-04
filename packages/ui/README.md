@@ -22,7 +22,7 @@
 - `Sparkline` / `sparkline.css`
   Portfolio 与 Watchlist 共用的小型价格/NAV 趋势图，统一表格内 chart 列的渲染、空态、颜色与尺寸。
 - `ConfirmDialog` / `useModalDialog` / `modalStack`
-  跨 app 的确认弹窗、焦点管理和嵌套弹窗栈。
+  跨 app 的确认弹窗、焦点管理和嵌套弹窗栈。`ConfirmDialog` 在 `LanguageProvider` 内使用；可选的输入确认提示按完整句式翻译后插入原始名称，普通确认不传 `confirmationText`。
 - `RiskOfficerPanel` / `InstrumentRiskPanel` / `RiskChangeAudit`
   Watchlist 与 Portfolio 共用风险工作面。团队范围手动研判先说明共享对象和可能状态变化；组合判断不改团队风险。状态读取失败保留已知任务并只读恢复，完成与变更时间统一 UTC；风险变更从同一留存收据展示发起人、任务、范围及前后状态，不推断旧记录的未知归属。
 - `PriceRiskRules`

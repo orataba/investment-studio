@@ -265,7 +265,7 @@ export default function PortfoliosPage() {
   }
 
   async function handleDeletePortfolio() {
-    if (!pendingDelete || deleting) {
+    if (!pendingDelete?.access?.can_manage || deleting) {
       return
     }
     setDeleting(true)
@@ -639,12 +639,15 @@ export default function PortfoliosPage() {
         title="Delete Portfolio"
         description={
           <>
-            This permanently deletes the portfolio, including its accounts, transactions,
-            classifications, and snapshots. This action cannot be undone.
+            <p><strong translate="no">{pendingDelete?.portfolio_name}</strong></p>
+            <p>
+              This permanently deletes the portfolio, including its accounts, transactions,
+              classifications, and snapshots. This action cannot be undone.
+            </p>
           </>
         }
         confirmLabel="Delete Portfolio"
-        confirmationText={pendingDelete?.portfolio_name}
+        confirmDisabled={!pendingDelete?.access?.can_manage}
         busy={deleting}
         error={deleteError}
         onCancel={() => {

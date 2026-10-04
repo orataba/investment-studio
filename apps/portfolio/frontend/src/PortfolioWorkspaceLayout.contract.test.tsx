@@ -1,8 +1,8 @@
 import { LanguageProvider } from '../../../../packages/ui/src/i18n'
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { useLocation } from 'react-router'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 
 import PortfolioWorkspaceLayout from './components/PortfolioWorkspaceLayout'
 import { PortfolioCapabilitiesContext } from './components/PortfolioCapabilitiesProvider'
@@ -356,14 +356,66 @@ describe('Portfolio workspace loading contract', () => {
     })
     expect(await screen.findByText(/Reporting currency changed to CNY/i)).toBeInTheDocument()
   })
+
+  it('confirms the named portfolio without typing, retains failures, and returns to the list after deletion', async () => {
+    apiMocks.getWorkspaceSummaryForPortfolio.mockResolvedValue(workspaceSummaryFixture())
+    const pending = deferred<void>()
+    apiMocks.deletePortfolio.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(undefined)
+    render(<LanguageProvider enableDomTranslation={false}>
+      <MemoryRouter initialEntries={['/portfolios/3/overview']}>
+        <Routes>
+          <Route path="/portfolios/:portfolioId/overview" element={
+            <PortfolioWorkspaceLayout activeSection="Overview"><div>Portfolio page content</div></PortfolioWorkspaceLayout>
+          } />
+          <Route path="/portfolios" element={<div>Portfolio list destination</div>} />
+        </Routes>
+      </MemoryRouter>
+    </LanguageProvider>)
+    const user = userEvent.setup()
+    await screen.findByText('$1,000.00')
+    await user.click(screen.getByRole('button', { name: 'Portfolio actions' }))
+    await user.click(screen.getByRole('button', { name: 'Delete Portfolio' }))
+    let dialog = screen.getByRole('alertdialog', { name: 'Delete Portfolio' })
+    expect(within(dialog).getByText('Contract Portfolio')).toHaveAttribute('translate', 'no')
+    expect(dialog).toHaveTextContent('accounts, transactions, classifications, and snapshots. This action cannot be undone.')
+    expect(within(dialog).queryByRole('textbox')).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Delete Portfolio' })).toBeEnabled()
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(apiMocks.deletePortfolio).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Portfolio actions' }))
+    await user.click(screen.getByRole('button', { name: 'Delete Portfolio' }))
+    dialog = screen.getByRole('alertdialog', { name: 'Delete Portfolio' })
+    await user.click(within(dialog).getByRole('button', { name: 'Delete Portfolio' }))
+    expect(apiMocks.deletePortfolio).toHaveBeenCalledExactlyOnceWith('3')
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    const deleting = within(dialog).getByRole('button', { name: 'Deleting…' })
+    expect(deleting).toBeDisabled()
+    await user.click(deleting)
+    await user.keyboard('{Escape}')
+    expect(dialog).toBeInTheDocument()
+    expect(apiMocks.deletePortfolio).toHaveBeenCalledTimes(1)
+    await act(async () => { pending.reject(new Error('Portfolio management permission is required.')) })
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Portfolio management permission is required.')
+    expect(screen.getByText('Portfolio page content')).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Delete Portfolio' }))
+    expect(await screen.findByText('Portfolio list destination')).toBeInTheDocument()
+    expect(apiMocks.deletePortfolio).toHaveBeenCalledTimes(2)
+  })
 })
 
 it('keeps assistant available while a viewer cannot open portfolio business settings', async () => {
+  apiMocks.deletePortfolio.mockClear()
   Object.assign(accessMock, { can_edit: false, can_manage: false, role: 'viewer' })
   apiMocks.getWorkspaceSummaryForPortfolio.mockResolvedValue(workspaceSummaryFixture())
   renderLayout()
   await screen.findByText('$1,000.00')
   expect(screen.getByRole('button', { name: 'Portfolio Settings' })).toBeDisabled()
+  const actions = screen.getByRole('button', { name: 'Portfolio actions' })
+  expect(actions).toBeDisabled()
+  await userEvent.setup().click(actions)
+  expect(screen.queryByRole('button', { name: 'Delete Portfolio' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('alertdialog', { name: 'Delete Portfolio' })).not.toBeInTheDocument()
+  expect(apiMocks.deletePortfolio).not.toHaveBeenCalled()
   expect(screen.queryByText('当前为只读权限，可查看组合资料和向研究助手提问。')).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: '成员权限' })).not.toBeInTheDocument()
 })

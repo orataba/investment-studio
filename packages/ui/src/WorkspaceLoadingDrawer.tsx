@@ -23,7 +23,7 @@ export default function WorkspaceLoadingDrawer({ kind, onClose }: { kind: 'risk'
   }, [dialogRef])
   return <div className="assistant-backdrop" onClick={event => { if (event.target === event.currentTarget) onClose() }}>
     <div ref={dialogRef} className="assistant-drawer" role="dialog" aria-modal="true" aria-label={`${title} · ${t('Loading')}`} tabIndex={-1}>
-      <header className="workspace-loading-heading"><h2><WorkspaceToolIcon kind={kind} />{title}</h2><button type="button" onClick={onClose}>{t('Close')}</button></header>
+      <header className="workspace-loading-heading"><h2><WorkspaceToolIcon kind={kind} />{title}</h2><button type="button" onClick={onClose}>{t('Close Panel')}</button></header>
       <LoadingNotice active message={t('Loading')} />
     </div>
   </div>

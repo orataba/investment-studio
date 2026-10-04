@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { LANGUAGE_STORAGE_KEY, LanguageProvider } from '../../../../packages/ui/src/i18n'
+import { LANGUAGE_STORAGE_KEY, LanguageProvider, LanguageSelector } from '../../../../packages/ui/src/i18n'
 import TransactionsPage from './pages/TransactionsPage'
 import type {
   PortfolioTransactionCaptureAnalysisRevision,
@@ -1892,6 +1892,39 @@ describe('Transactions rendered page contract', () => {
     expect(within(dialog).getByRole('searchbox', { name: 'Underlying 1' })).toHaveValue(pendingRow === 1 ? '' : 'PDD · PDD Holdings')
     expect(within(dialog).queryByRole('searchbox', { name: 'Underlying 2' })).not.toBeInTheDocument()
     expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+  })
+
+  it('translates option action groups while preserving account and contract identities', async () => {
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [
+      { ...optionAccount, account_name: 'Income' }, { ...cashAccount, account_name: 'Interest' },
+    ] })
+    apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({ portfolio_id: '3', derivative_contracts: [{ ...optionContract, contract_name: 'Return' }] })
+    const user = userEvent.setup()
+    render(<LanguageProvider><LanguageSelector /><MemoryRouter initialEntries={['/portfolios/3/transactions']}><Routes><Route path="/portfolios/:portfolioId/transactions" element={<TransactionsPage />} /></Routes></MemoryRouter></LanguageProvider>)
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.click(within(dialog).getByRole('button', { name: /^Option/ }))
+    const action = within(dialog).getByRole('combobox', { name: 'Action' })
+    const contracts = within(dialog).getByRole('combobox', { name: 'Option Contract' })
+    fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+    await waitFor(() => expect(within(action).getByRole('group', { name: '建立持仓' })).toBeInTheDocument())
+    expect(within(dialog).getByRole('option', { name: 'Income · USD' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('option', { name: 'Interest · USD' })).toBeInTheDocument()
+    expect(within(contracts).getByRole('option', { name: 'Return · 期权 · USD' })).toHaveValue(optionContract.derivative_contract_id)
+    expect(within(contracts).getByRole('option', { name: '创建新合约' })).toHaveValue('')
+    await user.selectOptions(contracts, optionContract.derivative_contract_id)
+    await waitFor(() => expect(within(action).getByRole('group', { name: '买方处理结果' })).toBeInTheDocument())
+    expect(within(action).getByRole('group', { name: '开仓与平仓' })).toBeInTheDocument()
+    expect(within(action).getByRole('group', { name: '卖方处理结果' })).toBeInTheDocument()
+    expect(within(action).getByRole('option', { name: '买方看涨期权行权' })).toHaveValue('exercise_long')
+    expect(within(action).getByRole('option', { name: '卖方看涨期权被行权' })).toHaveValue('assign_written')
+    await user.selectOptions(action, 'expire_long')
+    fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+    await waitFor(() => expect(within(action).getByRole('group', { name: 'Long outcomes' })).toBeInTheDocument())
+    expect(action).toHaveValue('expire_long')
+    expect(within(contracts).getByRole('option', { name: 'Return · Option · USD' })).toHaveValue(optionContract.derivative_contract_id)
+    expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+    expect(apiMocks.createPortfolioOptionOutcome).not.toHaveBeenCalled()
   })
 
   it('uses one entry-type menu and keeps accounts and derivative actions contextual', async () => {

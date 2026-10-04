@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
+import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 
 import PerformanceNavChart, { type PerformanceNavChartPoint } from './PerformanceNavChart'
 
@@ -115,7 +116,7 @@ describe('PerformanceNavChart responsive reading', () => {
       </>
     }
     const user = userEvent.setup()
-    render(<NestedSettings />)
+    render(<LanguageProvider enableDomTranslation={false}><NestedSettings /></LanguageProvider>)
     await user.click(screen.getByRole('button', { name: 'Chart settings' }))
     // Open programmatically, as an overlay action would, without an outside pointer dismissal.
     fireEvent.click(screen.getByRole('button', { name: 'Open newer dialog' }))

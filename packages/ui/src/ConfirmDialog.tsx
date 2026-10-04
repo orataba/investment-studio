@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 
 import './confirm-dialog.css'
+import { useLanguage } from './i18n'
 import { useModalDialog } from './useModalDialog'
 
 type ConfirmDialogProps = {
@@ -32,6 +33,7 @@ export default function ConfirmDialog({
   onCancel,
   onConfirm,
 }: ConfirmDialogProps) {
+  const { t } = useLanguage()
   const [typedConfirmation, setTypedConfirmation] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const titleId = useId()
@@ -80,8 +82,8 @@ export default function ConfirmDialog({
           <div id={descriptionId}>{description}</div>
           {confirmationText ? (
             <label className="investment-studio-dialog-confirmation">
-              <span>
-                Type <strong>{confirmationText}</strong> to confirm.
+              <span translate="no">
+                {t('Type "{name}" to confirm.', { name: confirmationText })}
               </span>
               <input
                 ref={inputRef}

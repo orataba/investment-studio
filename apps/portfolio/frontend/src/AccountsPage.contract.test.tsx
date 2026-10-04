@@ -1,7 +1,8 @@
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { useLocation } from 'react-router'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
+import { LanguageProvider, LanguageSelector } from '../../../../packages/ui/src/i18n'
 
 import AccountsPage from './pages/AccountsPage'
 import type {
@@ -254,6 +255,27 @@ describe('Accounts rendered page contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     apiMocks.getPortfolioAccountsWorkspace.mockResolvedValue(accountsWorkspaceFixture())
+  })
+
+  it('preserves account and institution names while translating account setup fields', async () => {
+    const workspace = accountsWorkspaceFixture()
+    workspace.accounts = workspace.accounts.map((row) => ({
+      ...row,
+      account: { ...row.account, account_name: row.account.account_id === 'cash-1' ? 'Income' : 'Return', institution: 'Interest' },
+      default_settlement_cash_account_name: row.account.account_id === 'broker-1' ? 'Income' : null,
+    }))
+    apiMocks.getPortfolioAccountsWorkspace.mockResolvedValue(workspace)
+    render(<LanguageProvider><LanguageSelector /><MemoryRouter initialEntries={['/portfolios/3/accounts?account_id=broker-1']}><Routes><Route path="/portfolios/:portfolioId/accounts" element={<AccountsPage />} /></Routes></MemoryRouter></LanguageProvider>)
+    await screen.findByRole('heading', { name: 'Return' })
+    fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+    await waitFor(() => expect(screen.getByRole('heading', { name: '账户设置' })).toBeInTheDocument())
+    expect(screen.getByRole('heading', { name: 'Return' })).toBeInTheDocument()
+    expect(screen.getAllByText('Income')).toHaveLength(2)
+    expect(screen.getAllByText('Interest')).toHaveLength(3)
+    expect(screen.getByText('默认结算')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Account setup' })).toBeInTheDocument())
+    expect(screen.getAllByText('Income')).toHaveLength(2)
   })
 
   it('keeps account identity and balances persistent while separating setup, positions, transactions, and ledger', async () => {

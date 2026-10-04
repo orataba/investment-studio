@@ -58,9 +58,10 @@ Stage Regime's static UI from the source checkout before replacing `apps/regime`
 with the server's installed-release symlink. Nginx serves this UI from
 `/opt/investment-studio/current/deploy/regime-ui`; `/api/` still uses the independent
 Regime service. This allows UI-only releases without modifying the verified
-Regime package or its data. Include `deploy/regime-ui` alongside the four `dist`
-directories when publishing frontends, and reload Nginx after `nginx -t` when
-its configuration changes. Keep the previous UI assets for rollback.
+Regime package or its data. Include `deploy/regime-ui` in complete releases;
+for a focused frontend update, replace only the affected applications. Reload
+Nginx after `nginx -t` when its configuration changes. Keep the previous UI assets
+for rollback.
 
 Nginx reads these files directly as its worker user, independently of the Studio
 service user. A release created under `umask 077` needs explicit traversal
@@ -108,6 +109,30 @@ preceding build's `dist/.vite/manifest.json` (`file`, `css`, and `assets` entrie
 to copy only that build's files; leave the new manifest unchanged so the next
 deployment does not accumulate every historical build. HTML always comes from
 the new release. Do not replace this with frontend exception retries.
+
+### Frontend-only updates
+
+For UI changes with no API, schema, dependency or Regime changes, build from the
+verified commit into a separate output directory with the production URLs above
+and `--manifest --outDir <staging-directory>`. Shared UI changes require all four
+Studio bundles. Record the commit and bundle checksums, then stage the complete
+bundles under `/opt/investment-studio/frontend-releases/<date>-<commit>/` and retain
+the preceding manifest's assets as described above.
+
+Before switching, record the original Web service states and back up their unit
+files. Check that `investment-studio` can read every staged file. Change only the
+four Web units' `--dist` arguments; preserve their backend release, proxy script,
+working directory and API targets. Reload the user service definitions and restart
+only the previously active Web services. Leave `/opt/investment-studio/current`,
+API processes, data schedules and the independent Regime installation in place.
+
+Validate the served HTML and all new/retained assets through the local Web ports,
+check public delivery through Nginx, and inspect the affected browser interaction.
+Record the frontend release independently of the backend release. If validation
+fails, restore the saved Web units and their original active set; no database
+restore belongs to this path. Keep the unit backups and preceding assets until
+the next accepted release. A complete deployment supersedes these frontend paths
+when it installs its own Web units.
 
 Reproduce the locked Python environment (including test tooling):
 

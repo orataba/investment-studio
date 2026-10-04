@@ -1,5 +1,5 @@
 import { LanguageProvider } from '../../../../packages/ui/src/i18n'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -165,8 +165,46 @@ describe('Portfolios rendered page contract', () => {
     const deleteButton = screen.getByRole('button', { name: 'Delete Portfolio' })
     expect(deleteButton).toBeDisabled()
     await user.click(deleteButton)
-    expect(screen.queryByRole('dialog', { name: 'Delete Portfolio' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('alertdialog', { name: 'Delete Portfolio' })).not.toBeInTheDocument()
     expect(apiMocks.deletePortfolio).not.toHaveBeenCalled()
+  })
+
+  it('confirms deletion without typing the name, supports cancel and retry, and prevents duplicate submission', async () => {
+    apiMocks.getPortfolios.mockResolvedValue([editablePortfolio])
+    let rejectDelete!: (reason: Error) => void
+    apiMocks.deletePortfolio.mockReturnValueOnce(new Promise((_, reject) => { rejectDelete = reject }))
+      .mockResolvedValueOnce(undefined)
+    const user = userEvent.setup()
+    render(<LanguageProvider enableDomTranslation={false}><MemoryRouter><PortfoliosPage /></MemoryRouter></LanguageProvider>)
+    await user.click(await screen.findByRole('button', { name: 'Portfolio A actions' }))
+    await user.click(screen.getByRole('button', { name: 'Delete Portfolio' }))
+    let dialog = screen.getByRole('alertdialog', { name: 'Delete Portfolio' })
+    expect(within(dialog).getByText('Portfolio A')).toHaveAttribute('translate', 'no')
+    expect(dialog).toHaveTextContent('accounts, transactions, classifications, and snapshots. This action cannot be undone.')
+    expect(within(dialog).queryByRole('textbox')).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Delete Portfolio' })).toBeEnabled()
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(apiMocks.deletePortfolio).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Portfolio A actions' }))
+    await user.click(screen.getByRole('button', { name: 'Delete Portfolio' }))
+    dialog = screen.getByRole('alertdialog', { name: 'Delete Portfolio' })
+    await user.click(within(dialog).getByRole('button', { name: 'Delete Portfolio' }))
+    expect(apiMocks.deletePortfolio).toHaveBeenCalledExactlyOnceWith('portfolio-a')
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    const deleting = within(dialog).getByRole('button', { name: 'Deleting…' })
+    expect(deleting).toBeDisabled()
+    await user.click(deleting)
+    await user.keyboard('{Escape}')
+    expect(dialog).toBeInTheDocument()
+    expect(apiMocks.deletePortfolio).toHaveBeenCalledTimes(1)
+    await act(async () => { rejectDelete(new Error('Portfolio management permission is required.')) })
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Portfolio management permission is required.')
+    expect(within(dialog).getByText('Portfolio A')).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Delete Portfolio' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(apiMocks.deletePortfolio).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('button', { name: 'Portfolio A actions' })).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Deleted portfolio "Portfolio A".')
   })
 })
 

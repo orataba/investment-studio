@@ -8,6 +8,7 @@ import {
   LanguageProvider,
   LanguageSelector,
 } from '../../../../packages/ui/src/i18n'
+import { transactionActionGroups } from './lib/transactionActions'
 
 beforeEach(() => {
   window.localStorage.setItem(LANGUAGE_STORAGE_KEY, 'en')
@@ -24,12 +25,13 @@ it('localizes the pre-inception holdings boundary without changing the date', as
   await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(error))
 })
 
-it('distinguishes capital weights from carrying amounts in both languages', async () => {
+it('distinguishes capital weights, carrying amounts and returned principal in both languages', async () => {
   const labels = [
     ['Capital Weight', '资金权重'],
     ['Modeled Capital Weight', '建模资金权重'],
     ['Carrying Amount', '账面金额'],
     ['Excluded Carrying Amount', '未建模账面金额'],
+    ['Capital Returned', '本金返还金额'],
   ]
   render(<LanguageProvider><LanguageSelector />{labels.map(([en]) => <span key={en}>{en}</span>)}</LanguageProvider>)
   fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
@@ -112,6 +114,32 @@ it('translates FCN and option account prerequisites and all call/put opening and
   await waitFor(() => { for (const [, zh] of copy) expect(screen.getByText(zh)).toBeTruthy() })
   fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
   await waitFor(() => { for (const [en] of copy) expect(screen.getByText(en)).toBeTruthy() })
+})
+
+it.each([
+  ['call', '看涨期权'], ['put', '看跌期权'], [null, '期权'],
+] as const)('translates actual %s option actions without changing their saved values', async (optionType, name) => {
+  const actions = transactionActionGroups('derivative', 'option', optionType).flatMap(group => group.actions)
+  const expected: Record<string, string> = {
+    buy_to_open: `买入开仓${name}`, sell_to_open: `卖出开仓${name}`,
+    sell_to_close: `卖出平仓${name}`, buy_to_close: `买入平仓${name}`,
+    exercise_long: `买方${name}行权`, expire_long: `买方${name}到期`,
+    cash_settle_long: `买方${name}现金结算`, assign_written: `卖方${name}被行权`,
+    expire_written: `卖方${name}到期`, cash_settle_written: `卖方${name}现金结算`,
+  }
+  render(<LanguageProvider><LanguageSelector /><select defaultValue="exercise_long">
+    {actions.map(action => <option key={action.value} value={action.value}>{action.label}</option>)}
+  </select></LanguageProvider>)
+  fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+  await waitFor(() => {
+    for (const [value, label] of Object.entries(expected)) {
+      expect((screen.getByRole('option', { name: label }) as HTMLOptionElement).value).toBe(value)
+    }
+  })
+  fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+  await waitFor(() => {
+    for (const action of actions) expect(screen.getByRole('option', { name: action.label })).toBeTruthy()
+  })
 })
 
 it('translates singular, plural and filtered transaction activity counts', async () => {

@@ -24,7 +24,7 @@ beforeEach(() => {
   api.updateWatchlistView.mockImplementation(async (_id, _view, p) => ({ ...view, columns: p.columns.map((c: {field_key: string}) => c.field_key), column_meta: p.columns, default_group_by: p.default_group_by, default_filters: p.default_filters, default_sort: p.default_sort }))
 })
 afterEach(cleanup)
-function show() { return render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/watchlists/focus']}><Routes><Route path="/watchlists/:watchlistId" element={<WatchlistsPage />} /></Routes></MemoryRouter></LanguageProvider>) }
+function show(enableDomTranslation = false) { return render(<LanguageProvider enableDomTranslation={enableDomTranslation}><MemoryRouter initialEntries={['/watchlists/focus']}><Routes><Route path="/watchlists/:watchlistId" element={<WatchlistsPage />} /></Routes></MemoryRouter></LanguageProvider>) }
 function toggleColumn(label: string) {
   fireEvent.click(screen.getByRole('button', { name: 'Columns' }))
   const dialog = screen.getByRole('dialog', { name: 'Choose columns' })
@@ -50,6 +50,47 @@ it('mirrors selected return values under the mobile identity without changing th
   expect(api.updateWatchlistView).not.toHaveBeenCalled()
   expect(screen.getByRole('columnheader', { name: /YTD/ })).toBeTruthy()
   expect(screen.getByRole('option', { name: /Research returns/ })).toBeTruthy()
+})
+it('preserves custom list and view names through language switches while localizing system names', async () => {
+  const named = { ...detail, name: 'Risk', views: [{ ...view, name: 'High' }, { ...view, view_id: 'system-overview', view_key: 'system-overview', kind: 'system' }] }
+  api.getWatchlists.mockResolvedValue([named, { ...detail, watchlist_id: 'target', name: 'Return' }, { ...detail, watchlist_id: 'all', name: 'All Instruments', owner_type: 'system' }])
+  api.getWatchlistDetail.mockResolvedValue(named)
+  const { container } = show(true)
+  await screen.findByRole('checkbox', { name: 'Select Alphabet Inc. · GOOG' })
+  const listSelect = screen.getByRole('combobox', { name: 'Switch watchlist' }) as HTMLSelectElement
+  const viewSelect = screen.getByRole('option', { name: /^View\s*: High$/ }).parentElement as HTMLSelectElement
+  for (let round = 0; round < 2; round += 1) {
+    fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+    await waitFor(() => expect(within(listSelect).getByRole('option', { name: '全部标的' })).toBeTruthy())
+    expect(within(listSelect).getByRole('option', { name: 'Risk' }).getAttribute('value')).toBe('focus')
+    expect(within(listSelect).getByRole('option', { name: 'Return' }).getAttribute('value')).toBe('target')
+    expect(within(viewSelect).getByRole('option', { name: /^视图\s*: High$/ }).getAttribute('value')).toBe('overview')
+    expect(within(viewSelect).getByRole('option', { name: /^视图\s*: 总览$/ }).getAttribute('value')).toBe('system-overview')
+    expect(listSelect.value).toBe('focus'); expect(viewSelect.value).toBe('overview')
+    fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+    await waitFor(() => expect(within(listSelect).getByRole('option', { name: 'All Instruments' })).toBeTruthy())
+    expect(within(viewSelect).getByRole('option', { name: /^View\s*: High$/ })).toBeTruthy()
+    expect(within(viewSelect).getByRole('option', { name: /^View\s*: Overview$/ })).toBeTruthy()
+  }
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Select Alphabet Inc. · GOOG' }))
+  for (const action of ['Copy', 'Move']) {
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${action}$`) }))
+    const dialog = screen.getByRole('dialog', { name: `${action} selected instruments` })
+    const target = within(dialog).getByRole('combobox') as HTMLSelectElement
+    expect(target.value).toBe('target')
+    expect(within(dialog).getByText('1 selected from Risk.')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+    await waitFor(() => expect(within(dialog).getByText('目标关注列表')).toBeTruthy())
+    expect(within(dialog).getByText('已从“Risk”选择 1 项。')).toBeTruthy()
+    expect(within(target).getByRole('option', { name: 'Return' }).getAttribute('value')).toBe('target')
+    expect(target.value).toBe('target')
+    expect(container.querySelector('.watchlists-switch-row [translate="no"]')?.textContent).toBe('Risk')
+    fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Close' })).toBeTruthy())
+    expect(within(dialog).getByText('1 selected from Risk.')).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
+  }
+  expect(api.updateWatchlistView).not.toHaveBeenCalled()
 })
 it('keeps a newer column draft through an older save response and saves it in order', async () => {
   let finish!: (v: unknown) => void

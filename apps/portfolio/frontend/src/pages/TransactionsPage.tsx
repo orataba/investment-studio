@@ -737,7 +737,7 @@ function grossAmountLabel(transactionType: string, lifecycleEventType?: string |
   }
 
   if (transactionType === 'return_of_capital') {
-    return 'Return Amount'
+    return 'Capital Returned'
   }
 
   if (transactionType === 'maturity_redemption') {
@@ -1080,7 +1080,7 @@ function resolvePositionLotImpactKinds(
 export default function TransactionsPage() {
   const canEditPortfolio = Boolean(usePortfolioAccess()?.can_edit)
   const { portfolioId = '' } = useParams()
-  const { language } = useLanguage()
+  const { language, t } = useLanguage()
   const fcnLabel = (en: string, zh: string) => language === 'zh-Hans' ? zh : en
   const currentPortfolioIdRef = useRef(portfolioId)
   const [searchParams, setSearchParams] = useSearchParams()
@@ -4241,7 +4241,7 @@ export default function TransactionsPage() {
                               </span>
                               {transaction.instrument_ref ? (
                                 <>
-                                  <strong>{primaryIdentifier(transaction.instrument_ref)}</strong>
+                                  <strong translate="no">{primaryIdentifier(transaction.instrument_ref)}</strong>
                                   <span className="holding-secondary" translate="no">{transaction.instrument_ref.instrument_name}</span>
                                 </>
                               ) : transaction.derivative_contract ? (
@@ -4282,17 +4282,17 @@ export default function TransactionsPage() {
                               </Link>
                               <span className="holding-secondary">
                                 {transaction.counterparty_account_id
-                                  ? `Counterparty ${accountNameById[transaction.counterparty_account_id] || transaction.counterparty_account_id}`
+                                  ? <>{t('Counterparty Account')}: <span translate="no">{accountNameById[transaction.counterparty_account_id] || transaction.counterparty_account_id}</span></>
                                   : transaction.settlement_cash_account
-                                    ? `Settle via ${transaction.settlement_cash_account.account_name}`
+                                    ? <>{t('Settlement Cash Account')}: <span translate="no">{transaction.settlement_cash_account.account_name}</span></>
                                     : formatLabel(transaction.account.account_category)}
                               </span>
                               {linkedStockTransaction ? (
                                 <span className="holding-secondary">
-                                  Delivery via {linkedStockTransaction.account.account_name}
+                                  {t('Security account')}: <span translate="no">{linkedStockTransaction.account.account_name}</span>
                                   {linkedStockTransaction.settlement_cash_account
-                                    ? ` / ${linkedStockTransaction.settlement_cash_account.account_name}`
-                                    : ''}
+                                    ? <> / {t('Settlement Cash Account')}: <span translate="no">{linkedStockTransaction.settlement_cash_account.account_name}</span></>
+                                    : null}
                                 </span>
                               ) : null}
                             </div>
@@ -4536,7 +4536,7 @@ export default function TransactionsPage() {
               >
                 <option value="">All actions</option>
                 {transactionFilterTypeGroups.map((group) => (
-                  <optgroup key={group.label} label={group.label}>
+                  <optgroup key={group.label} label={t(group.label)}>
                     {group.types.map((transactionType) => (
                       <option key={transactionType} value={transactionType}>
                         {transactionActivityLabel(transactionType)}
@@ -4561,19 +4561,19 @@ export default function TransactionsPage() {
               >
                 <option value="">All assets</option>
                 {selectedFilterEntryKind !== 'fcn' && selectedFilterEntryKind !== 'option' ? (
-                  <optgroup label="Registered securities">
+                  <optgroup label={t('Registered securities')}>
                     {transactionFilterInstruments.map((instrument) => (
-                      <option key={instrument.instrument_id} value={instrument.instrument_id}>
+                      <option key={instrument.instrument_id} value={instrument.instrument_id} translate="no">
                         {instrumentSearchLabel(instrument)}
                       </option>
                     ))}
                   </optgroup>
                 ) : null}
                 {selectedFilterEntryKind !== 'security' && selectedFilterEntryKind !== 'cash' ? (
-                  <optgroup label="Portfolio derivative contracts">
+                  <optgroup label={t('Portfolio derivative contracts')}>
                     {transactionFilterContracts.map((contract) => (
-                      <option key={contract.derivative_contract_id} value={contract.derivative_contract_id}>
-                        {contract.contract_name} · {formatLabel(contract.contract_type)}
+                      <option key={contract.derivative_contract_id} value={contract.derivative_contract_id} translate="no">
+                        {contract.contract_name} · {t(formatLabel(contract.contract_type))}
                       </option>
                     ))}
                   </optgroup>
@@ -4632,10 +4632,10 @@ export default function TransactionsPage() {
             ) : null}
             {filters.position_reference_id ? (
               <button type="button" onClick={() => patchSearchParams({ position_reference_id: null, transaction_id: null })}>
-                Asset: {derivativeContracts.find((item) => item.derivative_contract_id === filters.position_reference_id)?.contract_name ?? primaryIdentifier(instruments.find((item) => item.instrument_id === filters.position_reference_id) ?? {
+                Asset: <span translate="no">{derivativeContracts.find((item) => item.derivative_contract_id === filters.position_reference_id)?.contract_name ?? primaryIdentifier(instruments.find((item) => item.instrument_id === filters.position_reference_id) ?? {
                   instrument_id: filters.position_reference_id,
                   identifiers: [],
-                })} <span aria-hidden="true">×</span>
+                })}</span> <span aria-hidden="true">×</span>
               </button>
             ) : null}
             {filters.start_date ? (
@@ -4865,9 +4865,9 @@ export default function TransactionsPage() {
                           </dt>
                           <dd>
                             {selectedTransaction.instrument_ref
-                              ? `${primaryIdentifier(selectedTransaction.instrument_ref)} · ${selectedTransaction.instrument_ref.instrument_name}`
+                              ? <span translate="no">{primaryIdentifier(selectedTransaction.instrument_ref)} · {selectedTransaction.instrument_ref.instrument_name}</span>
                               : selectedTransaction.derivative_contract
-                                ? `${selectedTransaction.derivative_contract.contract_name} · ${formatLabel(selectedTransaction.derivative_contract.contract_type)}`
+                                ? <><span translate="no">{selectedTransaction.derivative_contract.contract_name}</span> · {formatLabel(selectedTransaction.derivative_contract.contract_type)}</>
                                 : 'Cash & Operations'}
                           </dd>
                         </div>
@@ -4877,7 +4877,7 @@ export default function TransactionsPage() {
                         </div>
                         <div>
                           <dt>Settlement</dt>
-                          <dd>{selectedTransaction.settlement_cash_account?.account_name ?? (selectedTransaction.counterparty_account_id ? accountNameById[selectedTransaction.counterparty_account_id] || selectedTransaction.counterparty_account_id : '—')}</dd>
+                          <dd translate="no">{selectedTransaction.settlement_cash_account?.account_name ?? (selectedTransaction.counterparty_account_id ? accountNameById[selectedTransaction.counterparty_account_id] || selectedTransaction.counterparty_account_id : '—')}</dd>
                         </div>
                         <div>
                           <dt>Trade / position effective</dt>
@@ -5543,7 +5543,7 @@ export default function TransactionsPage() {
                                                 )}
                                               >
                                                 {eligibleHoldingAccounts.map((account) => (
-                                                  <option key={account.account_id} value={account.account_id}>
+                                                  <option key={account.account_id} value={account.account_id} translate="no">
                                                     {account.account_name} · {account.currency}
                                                   </option>
                                                 ))}
@@ -5571,7 +5571,7 @@ export default function TransactionsPage() {
                                                 >
                                                   <option value="">Select account</option>
                                                   {eligibleCounterpartyAccounts.map((account) => (
-                                                    <option key={account.account_id} value={account.account_id}>
+                                                    <option key={account.account_id} value={account.account_id} translate="no">
                                                       {account.account_name} · {account.currency}
                                                     </option>
                                                   ))}
@@ -5594,7 +5594,7 @@ export default function TransactionsPage() {
                                                 >
                                                   <option value="">None</option>
                                                   {eligibleCashAccounts.map((account) => (
-                                                    <option key={account.account_id} value={account.account_id}>
+                                                    <option key={account.account_id} value={account.account_id} translate="no">
                                                       {account.account_name} · {account.currency}
                                                     </option>
                                                   ))}
@@ -5765,13 +5765,14 @@ export default function TransactionsPage() {
                                                     <option
                                                       key={contract.derivative_contract_id}
                                                       value={contract.derivative_contract_id}
+                                                      translate="no"
                                                     >
                                                       {contract.contract_name} · {contract.currency}
                                                     </option>
                                                   ))}
                                                 </select>
                                               </label>
-                                              <span translate="no">
+                                              <span translate={selectedDerivativeContract && !record.derivative_contract ? 'no' : undefined}>
                                                 {record.derivative_contract
                                                   ? 'The contract below will be created only with the reviewed transaction.'
                                                   : selectedDerivativeContract
@@ -6722,7 +6723,7 @@ export default function TransactionsPage() {
                         </option>
                       ) : null}
                       {formAccountOptions.map((account) => (
-                        <option key={account.account_id} value={account.account_id}>
+                        <option key={account.account_id} value={account.account_id} translate="no">
                           {account.account_name} · {account.currency}
                         </option>
                       ))}
@@ -6816,8 +6817,9 @@ export default function TransactionsPage() {
                             <option
                               key={contract.derivative_contract_id}
                               value={contract.derivative_contract_id}
+                              translate="no"
                             >
-                              {contract.contract_name} · {formatLabel(contract.contract_type)} · {contract.currency}
+                              {contract.contract_name} · {t(formatLabel(contract.contract_type))} · {contract.currency}
                             </option>
                           ))}
                         </select>
@@ -6851,7 +6853,7 @@ export default function TransactionsPage() {
                       onChange={(event) => updateTransactionAction(event.target.value)}
                     >
                       {formActionGroups.map((group) => (
-                        <optgroup key={group.label} label={group.label}>
+                        <optgroup key={group.label} label={t(group.label)}>
                           {group.actions.map((transactionAction) => (
                             <option key={transactionAction.value} value={transactionAction.value}>
                               {transactionAction.label}
@@ -7221,7 +7223,7 @@ export default function TransactionsPage() {
                         <option value="">No matching security account</option>
                       ) : null}
                       {deliveryStockAccountOptions.map((account) => (
-                        <option key={account.account_id} value={account.account_id}>
+                        <option key={account.account_id} value={account.account_id} translate="no">
                           {account.account_name} · {account.currency}
                         </option>
                       ))}
@@ -7243,7 +7245,7 @@ export default function TransactionsPage() {
                       disabled={counterpartyAccounts.length === 0}
                     >
                       {counterpartyAccounts.map((account) => (
-                        <option key={account.account_id} value={account.account_id}>
+                        <option key={account.account_id} value={account.account_id} translate="no">
                           {account.account_name} · {account.currency}
                         </option>
                       ))}
@@ -7262,7 +7264,7 @@ export default function TransactionsPage() {
                       }
                     >
                       {counterpartyAccounts.map((account) => (
-                        <option key={account.account_id} value={account.account_id}>
+                        <option key={account.account_id} value={account.account_id} translate="no">
                           {account.account_name} · {account.currency}
                         </option>
                       ))}
@@ -7282,7 +7284,7 @@ export default function TransactionsPage() {
                       disabled={settlementAccountOptions.length === 0}
                     >
                       {settlementAccountOptions.map((account) => (
-                        <option key={account.account_id} value={account.account_id}>
+                        <option key={account.account_id} value={account.account_id} translate="no">
                           {account.account_name} · {account.currency}
                         </option>
                       ))}

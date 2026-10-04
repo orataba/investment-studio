@@ -315,7 +315,7 @@ export default function PortfolioWorkspaceLayout({
   }
 
   async function handleConfirmedDelete() {
-    if (!pendingPortfolioDelete || deletingPortfolio) {
+    if (!pendingPortfolioDelete || !access?.can_manage || deletingPortfolio) {
       return
     }
     const target = pendingPortfolioDelete
@@ -819,9 +819,17 @@ export default function PortfolioWorkspaceLayout({
       <ConfirmDialog
         open={Boolean(pendingPortfolioDelete)}
         title="Delete Portfolio"
-        description="This permanently deletes the portfolio and all of its accounts, transactions, classifications, and snapshots. This action cannot be undone."
+        description={
+          <>
+            <p><strong translate="no">{pendingPortfolioDelete?.portfolio_name}</strong></p>
+            <p>
+              This permanently deletes the portfolio, including its accounts, transactions,
+              classifications, and snapshots. This action cannot be undone.
+            </p>
+          </>
+        }
         confirmLabel="Delete Portfolio"
-        confirmationText={pendingPortfolioDelete?.portfolio_name}
+        confirmDisabled={!access?.can_manage}
         busy={deletingPortfolio}
         error={deletePortfolioError}
         onCancel={() => {

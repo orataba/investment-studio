@@ -156,7 +156,7 @@ export function transactionActionGroups(
   if (context.newDerivativeContract) {
     return [
       {
-        label: 'Open position',
+        label: 'Create position',
         actions: [
           action('buy_to_open', `Buy to Open ${name}`, 'buy'),
           action('sell_to_open', `Sell to Open ${name}`, 'option_write'),
