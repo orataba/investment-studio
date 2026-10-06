@@ -21,6 +21,21 @@ def migration():
     return module
 
 
+def migrate_from_original_schema(session):
+    # Exercise the frozen 0061 writer against its original schema, then replay
+    # the later read-projection migration before using current application reads.
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    path = Path(__file__).resolve().parents[1] / "alembic/versions/20261006_0065_research_read_context.py"
+    spec = importlib.util.spec_from_file_location("read_context_migration", path)
+    projection = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(projection)
+    with Operations.context(MigrationContext.configure(session.connection())):
+        projection.downgrade()
+        migration().migrate_focus_themes(session.connection())
+        projection.upgrade()
+
+
 def assert_migration(session, iid):
     old_time = datetime(2026, 9, 1, tzinfo=UTC)
     topic = ResearchTopic(topic_id=f"instrument-events:{iid}", title="旧研究", instrument_ids=[iid], visibility="team")
@@ -47,7 +62,7 @@ def assert_migration(session, iid):
     session.add_all([old_theme, old_run, case])
     session.commit()
     original_context = deepcopy(old_run.context_json)
-    migration().migrate_focus_themes(session.connection())
+    migrate_from_original_schema(session)
     session.commit()
     session.expire_all()
     assert session.get(ResearchEntry, "old-run").context_json == original_context
@@ -115,7 +130,7 @@ def assert_retained_scope_is_not_promoted(session, iid, scope):
             title="原始记录", created_at=stamp, updated_at=stamp, completed_at=stamp, context_json=deepcopy(context)))
     session.commit()
     original_records = {row.entry_id: deepcopy(row.context_json) for row in session.scalars(select(ResearchEntry))}
-    migration().migrate_focus_themes(session.connection())
+    migrate_from_original_schema(session)
     session.commit()
     session.expire_all()
     assert theme_index(session, iid) == []
@@ -183,7 +198,7 @@ def test_migration_keeps_overflow_themes_as_paused_history(research_client):
                 status="recorded", context_json={"role": "research_theme", "instrument_id": iid,
                     "author": "原作者", "managed_by": "user", "theme_status": "active", "versions": []}))
         session.commit()
-        migration().migrate_focus_themes(session.connection())
+        migrate_from_original_schema(session)
         session.commit()
         session.expire_all()
         themes = theme_index(session, iid)

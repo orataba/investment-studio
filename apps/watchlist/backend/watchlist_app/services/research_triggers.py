@@ -55,7 +55,7 @@ def _monitoring_context(session, instrument_id, context):
     # A private query is itself private information even when it searched public
     # documents. Only shared, non-portfolio research establishes automatic scope.
     from watchlist_app.services.research_access import instrument_run_scope, topic_portfolio_ids
-    query = select(ResearchEntry).join(ResearchTopic, ResearchTopic.topic_id == ResearchEntry.topic_id).where(
+    query = select(ResearchEntry.topic_id, ResearchEntry.read_context_json).join(ResearchTopic, ResearchTopic.topic_id == ResearchEntry.topic_id).where(
         ResearchEntry.kind == "analysis", ResearchTopic.visibility == "team", ResearchTopic.portfolio_id.is_(None),
         instrument_run_scope(session, instrument_id),
     ).order_by(ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc())
@@ -65,9 +65,9 @@ def _monitoring_context(session, instrument_id, context):
     # A follow-up without its own query scope must not hydrate the whole team's
     # archived inputs. Read only this instrument, stopping at its first usable
     # retained scope; historical portfolio restrictions still apply to the topic.
-    with closing(session.scalars(query.execution_options(yield_per=1))) as entries:
+    with closing(session.execute(query.execution_options(yield_per=1))) as entries:
         for entry in entries:
-            prior = getattr(entry, "context_json", None) or {}
+            prior = entry.read_context_json or {}
             if (prior.get("sector_run") or prior.get("research_run")) and instrument_id in prior.get("instrument_ids", []):
                 topic = session.get(ResearchTopic, entry.topic_id)
                 if (prior.get("portfolio_id") or (prior.get("risk_scope") or {}).get("portfolio_id")
@@ -76,6 +76,17 @@ def _monitoring_context(session, instrument_id, context):
                 if _queries(prior, instrument_id):
                     return prior
     return context
+
+
+def trigger_dossier(session, instrument_id):
+    """Current schedules and exact source dependencies without retained input trees."""
+    from watchlist_app.services.research_dossier import _notebooks
+    from watchlist_app.services.research_notebook import retained_public_sources
+    from watchlist_app.services.research_themes import theme_summaries
+    notebook, _ = _notebooks(session, instrument_id, False, source_metadata_only=True)
+    return {"instrument_id": instrument_id, "notebook": notebook,
+        "themes": theme_summaries(session, instrument_id)["themes"],
+        "prior_sources": retained_public_sources(session, instrument_id, metadata_only=True)}
 
 
 def _readable(document):

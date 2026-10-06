@@ -75,7 +75,7 @@ def test_monitoring_scope_streams_only_matching_history_and_preserves_originals(
     try:
         with Session(engine) as session:
             actual = _monitoring_context(session, iid, {"instrument_ids": [iid], "research_actor": {"team_id": "default"}})
-            assert actual == current
+            assert actual == {key: value for key, value in current.items() if key != "source"}
             assert cursors and all(cursor.closed for cursor in cursors)
     finally:
         engine.dispose()
@@ -281,6 +281,11 @@ def test_current_status_skips_failed_history_after_latest_checks(postgres_watchl
 
 @pytest.mark.parametrize("postgres_watchlist_env", ["20260920_0059"], indirect=True)
 def test_retained_scope_migration_preserves_originals_and_indexes_generic_plans(postgres_watchlist_env):
+    from watchlist_app.db.research_scope import research_scope_expression
+    from sqlalchemy.dialects.postgresql import ARRAY
+    from sqlalchemy import literal
+    def instrument_run_scope(session, ids):
+        return research_scope_expression(ResearchEntry.context_json).overlap(literal([ids] if isinstance(ids, str) else ids, type_=ARRAY(Text())))
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
     factory = get_session_factory()

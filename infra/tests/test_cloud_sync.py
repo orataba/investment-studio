@@ -327,3 +327,78 @@ def test_unsupported_rsync_fails_before_database_download_or_file_clone(tmp_path
     with pytest.raises(ValueError, match='requires rsync 3'):
         sync.main(['--config', '/unused'])
     assert not list(tmp_path.glob('20*'))
+
+
+@pytest.fixture
+def sync_publication(tmp_path, monkeypatch):
+    config = {'state_root': str(tmp_path / 'state'),
+              'database_url': 'postgresql://studio@127.0.0.1/studio'}
+    agents = tmp_path / 'agents'
+    agents.mkdir()
+    monkeypatch.setenv('REGIME_LAUNCH_AGENT_DIR', str(agents))
+    monkeypatch.setenv('REGIME_LOCAL_AUTOMATION_LABEL_PREFIX', 'test.regime.auto')
+    monkeypatch.setattr(sync, 'load_config', lambda path: config)
+    monkeypatch.setattr(sync, 'rsync_tool', lambda: '/test/rsync')
+    calls = []
+    for name in ('remote_snapshot', 'copy_files', 'restore_stage', 'publish', 'prune_published_snapshots'):
+        monkeypatch.setattr(sync, name, lambda *args, name=name: calls.append(name))
+    return agents, Path(config['state_root']) / 'last-success.json', calls
+
+
+def test_full_snapshot_requests_installed_catch_up_only_after_successful_publish(sync_publication, monkeypatch):
+    agents, receipt, calls = sync_publication
+    (agents / 'test.regime.auto.catch-up.plist').write_text('installed')
+
+    def run(args, **kwargs):
+        assert calls[-1] == 'publish'
+        assert json.loads(receipt.read_text())['regime_catch_up']['status'] == 'pending'
+        assert args == ['launchctl', 'kickstart', f'gui/{sync.os.getuid()}/test.regime.auto.catch-up']
+        calls.append('catch_up')
+
+    monkeypatch.setattr(sync, 'run', run)
+    assert sync.main(['--config', '/unused']) == 0
+    assert calls[-3:] == ['publish', 'catch_up', 'prune_published_snapshots']
+    record = json.loads(receipt.read_text())
+    assert record['regime_catch_up']['status'] == 'requested'
+    assert record['completed_at'] and record['snapshot']
+    # A later daily due-check must not restart an already requested consumer.
+    monkeypatch.setattr(sync, 'run', lambda *args, **kwargs: pytest.fail('duplicate catch-up'))
+    assert sync.main(['--config', '/unused', '--if-due']) == 0
+
+
+def test_full_snapshot_without_regime_installation_records_optional_consumer(sync_publication, monkeypatch):
+    _, receipt, calls = sync_publication
+    monkeypatch.setattr(sync, 'run', lambda *args, **kwargs: pytest.fail('uninstalled consumer'))
+    assert sync.main(['--config', '/unused']) == 0
+    assert json.loads(receipt.read_text())['regime_catch_up']['status'] == 'not_installed'
+    assert calls[-2:] == ['publish', 'prune_published_snapshots']
+
+
+def test_failed_publication_never_requests_regime_or_records_snapshot_success(sync_publication, monkeypatch):
+    _, receipt, _ = sync_publication
+    monkeypatch.setattr(sync, 'publish', lambda *args: (_ for _ in ()).throw(RuntimeError('publication failed')))
+    monkeypatch.setattr(sync, 'request_regime_catch_up', lambda *args: pytest.fail('unpublished consumer'))
+    with pytest.raises(RuntimeError, match='publication failed'):
+        sync.main(['--config', '/unused'])
+    assert not receipt.exists()
+
+
+@pytest.mark.parametrize('failure', [FileNotFoundError('launchctl missing'),
+                                   sync.subprocess.CalledProcessError(113, ['launchctl', 'kickstart'])])
+def test_failed_catch_up_preserves_snapshot_success_and_retries_without_cutover(sync_publication, monkeypatch, failure):
+    agents, receipt, calls = sync_publication
+    (agents / 'test.regime.auto.catch-up.plist').write_text('installed')
+    monkeypatch.setattr(sync, 'run', lambda *args, **kwargs: (_ for _ in ()).throw(failure))
+    with pytest.raises(RuntimeError, match='snapshot is published and retained'):
+        sync.main(['--config', '/unused'])
+    record = json.loads(receipt.read_text())
+    assert record['regime_catch_up']['status'] == 'failed'
+    assert calls[-1] == 'publish'
+    completed_at, snapshot = record['completed_at'], record['snapshot']
+    calls.clear()
+    monkeypatch.setattr(sync, 'run', lambda *args, **kwargs: calls.append('catch_up'))
+    assert sync.main(['--config', '/unused', '--if-due']) == 0
+    assert calls == ['catch_up']
+    record = json.loads(receipt.read_text())
+    assert record['regime_catch_up']['status'] == 'requested'
+    assert (record['completed_at'], record['snapshot']) == (completed_at, snapshot)

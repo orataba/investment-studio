@@ -319,7 +319,7 @@ def notebook_source_ids(notebook: ResearchNotebook | dict) -> set[str]:
     return refs
 
 
-def retained_public_sources(session, instrument_id: str) -> list[dict]:
+def retained_public_sources(session, instrument_id: str, *, metadata_only=False) -> list[dict]:
     """Keep fetched originals usable even when the associated AI draft was rejected."""
     from sqlalchemy import Boolean, JSON, select, true
     from types import SimpleNamespace
@@ -328,7 +328,8 @@ def retained_public_sources(session, instrument_id: str) -> list[dict]:
     from watchlist_app.services.research_access import instrument_run_scope, research_context_projection, research_projection_rows, topic_portfolio_ids_by_topic
     principal = current_principal()
     relation, payload = research_context_projection(session, {"instrument_ids": JSON, "sector_run": Boolean,
-        "research_run": Boolean, "web_evidence": JSON, "market_text_sources": JSON, "submitted_draft": JSON, "reviews": JSON})
+        "research_run": Boolean, "web_evidence": JSON, "market_text_sources": JSON, "submitted_draft": JSON, "reviews": JSON},
+        json_column=ResearchEntry.read_context_json)
     query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchTopic.portfolio_id,
         payload["instrument_ids"].label("instrument_ids"), payload["sector_run"].label("sector_run"),
         payload["research_run"].label("research_run"), payload["web_evidence"].label("web_evidence"),
@@ -343,7 +344,7 @@ def retained_public_sources(session, instrument_id: str) -> list[dict]:
         instrument_run_scope(session, instrument_id),
     ).order_by(ResearchEntry.created_at.desc()),
         {**{name: (name,) for name in ("instrument_ids", "sector_run", "research_run", "web_evidence", "market_text_sources", "submitted_draft")},
-         "review": ("reviews", instrument_id)})
+         "review": ("reviews", instrument_id)}, json_column=ResearchEntry.read_context_json)
     topics = {row.topic_id: SimpleNamespace(topic_id=row.topic_id, portfolio_id=row.portfolio_id) for row in records}
     portfolios = topic_portfolio_ids_by_topic(session, topics.values())
     by_url = {}
@@ -389,7 +390,39 @@ def retained_public_sources(session, instrument_id: str) -> list[dict]:
             original = {**hydrate_source(source), "instrument_id": instrument_id,
                         "source_run_id": record.entry_id, "role": "retained_original"}
             by_url.setdefault(source["version_id"], original)
+    if metadata_only:
+        from watchlist_app.services.research_read_projection import browser_source_view
+        return [browser_source_view(source) for source in by_url.values()]
     return [source_reference(source) for source in by_url.values()]
+
+
+def bind_dossier(dossier: dict) -> dict:
+    """Freeze current themes once; prior versions remain exact version reads.
+
+    Agenda entries used to duplicate entire themes, including every computed
+    source and archived source tree. Historical theme originals already live in
+    immutable revisions and are read with the run's existing cutoff checks.
+    """
+    themes = dossier.get("themes", [])
+    positions = {theme["theme_id"]: index for index, theme in enumerate(themes)}
+    compact = []
+    for theme in themes:
+        versions = [{**{key: value[key] for key in ("revision_number", "created_at", "updated_at", "source_run_id", "author") if key in value},
+            "version_id": f"theme:{theme['theme_id']}:{value.get('revision_number', 1)}"}
+            for value in theme.get("versions", [])]
+        compact.append({**theme, "versions": versions})
+    agenda = dossier.get("review_agenda") or {}
+    focus = []
+    for theme in agenda.get("focus_themes", []):
+        index = positions.get(theme.get("theme_id"))
+        if index is not None and theme == themes[index]:
+            theme = {**{key: theme[key] for key in ("theme_id", "theme_key", "source_version_id") if key in theme},
+                "current_read": {"tool": "read_research_dossier", "instrument_id": dossier["instrument_id"],
+                                 "section": "themes", "path": [index]}}
+        focus.append(theme)
+    return {**dossier, "themes": compact,
+        "review_agenda": {**agenda, "focus_themes": focus},
+        "theme_versions_note": "主题旧版本仅保留版本与时点索引；用read_research_dossier的version_id读取当时完整主题及原始依据。议程current_read指向本轮同一主题快照，索引不代表已读。"}
 
 
 def dossier_outline(dossier: dict) -> dict:

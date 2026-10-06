@@ -448,7 +448,7 @@ def _document_materials(session: Session, instrument_id: str) -> list[dict]:
     return result
 
 
-def _research_records(session: Session, instrument_id: str, *, oldest_first: bool = False):
+def _research_records(session: Session, instrument_id: str, *, oldest_first: bool = False, source_metadata_only=False):
     from contextlib import closing
     from sqlalchemy import Boolean, JSON, String, true
     from types import SimpleNamespace
@@ -472,7 +472,7 @@ def _research_records(session: Session, instrument_id: str, *, oldest_first: boo
     # candidate relation instead of letting PostgreSQL flatten it into the scan.
     candidates = select(ResearchEntry.entry_id, ResearchEntry.team_id, ResearchEntry.topic_id,
         ResearchEntry.status, ResearchEntry.created_at, ResearchEntry.completed_at,
-        ResearchTopic.portfolio_id, ResearchEntry.context_json, stamp.label("history_at"),
+        ResearchTopic.portfolio_id, (ResearchEntry.read_context_json if source_metadata_only else ResearchEntry.context_json).label("context_json"), stamp.label("history_at"),
     ).select_from(ResearchEntry).join(ResearchTopic).where(*scope_filters,
         ResearchEntry.topic_id.in_([topic_id for topic_id, ids in portfolios.items() if not ids])
     ).order_by(*(column.asc() if oldest_first else column.desc() for column in
@@ -482,13 +482,14 @@ def _research_records(session: Session, instrument_id: str, *, oldest_first: boo
         "citation_correction": JSON, "organization_revision": JSON, "reviews": JSON},
         json_column=candidates.c.context_json)
     review = context["reviews"][instrument_id]
+    research = review["research"]
     query = select(candidates.c.entry_id, candidates.c.team_id, candidates.c.topic_id,
         candidates.c.status, candidates.c.created_at, candidates.c.completed_at,
         candidates.c.portfolio_id,
         context["sector_run"].label("sector_run"), context["research_run"].label("research_run"),
         context["cutoff"].label("cutoff"), context["recordkeeping_only"].label("recordkeeping_only"),
         context["citation_correction"].label("citation_correction"), context["organization_revision"].label("organization_revision"),
-        review["status"].as_string().label("review_status"), review["research"].label("research"),
+        review["status"].as_string().label("review_status"), research.label("research"),
     ).select_from(candidates)
     if relation is not None:
         query = query.join(relation, true())
@@ -520,7 +521,7 @@ def _notebooks(session: Session, instrument_id: str, include_history: bool, *, s
     from contextlib import closing
     from watchlist_app.services.research_notebook import notebook_current_view
     notebook, history = None, {}
-    with closing(_research_records(session, instrument_id)) as records:
+    with closing(_research_records(session, instrument_id, source_metadata_only=source_metadata_only)) as records:
         for record, research in records:
             if source_metadata_only:
                 from watchlist_app.services.research_read_projection import browser_source_view
@@ -696,7 +697,7 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
         history_limitations = atlas["reuse_limitations"]
         cases = [{**case, "instrument_id": instrument_id, "atlas_id": atlas["metadata"]["atlas_id"],
                   "reuse_limitations": history_limitations} for case in atlas["cases"]]
-    notebook, notebook_history = _notebooks(session, instrument_id, include_history)
+    notebook, notebook_history = _notebooks(session, instrument_id, include_history, source_metadata_only=not include_working_context)
     cases.extend(_review_cases(instrument_id, notebook))
     # Browser archive reads do not use the analyst's agenda or theme activity.
     # Source resolution and agent calls keep their complete working context.

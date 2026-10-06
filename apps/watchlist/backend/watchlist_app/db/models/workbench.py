@@ -1,7 +1,7 @@
 """Portfolio-oriented research and persistent risk follow-up."""
 from datetime import date, datetime
 from typing import Any
-from sqlalchemy import JSON, DDL, Date, DateTime, ForeignKey, Float, Index, Text, event
+from sqlalchemy import JSON, DDL, Date, DateTime, ForeignKey, Float, Index, Text, event, inspect
 from sqlalchemy.orm import Mapped, mapped_column
 from watchlist_app.db.base import Base
 from watchlist_app.db.models.common import TimestampMixin
@@ -35,7 +35,22 @@ class ResearchEntry(TimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # The run retains the exact analytical inputs and evidence supplied to the assistant.
     context_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Derived in the same write transaction; raw inputs remain version-addressable.
+    read_context_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict, deferred=True)
     status: Mapped[str] = mapped_column(default="recorded")
+
+
+@event.listens_for(ResearchEntry, "before_insert")
+def _initialize_research_read_context(_mapper, _connection, entry):
+    from watchlist_app.db.research_read_context import derive_read_context
+    context = entry.context_json if inspect(entry).attrs.context_json.history.added else {}
+    entry.read_context_json = derive_read_context(context)
+
+
+@event.listens_for(ResearchEntry, "before_update")
+def _update_research_read_context(_mapper, _connection, entry):
+    if inspect(entry).attrs.context_json.history.has_changes():
+        _initialize_research_read_context(_mapper, _connection, entry)
 
 
 from watchlist_app.db.research_scope import (
@@ -43,12 +58,12 @@ from watchlist_app.db.research_scope import (
     RESEARCH_PORTFOLIO_SCOPE_FUNCTION_DDL, RESEARCH_PORTFOLIO_SCOPE_INDEX, research_portfolio_scope_expression,
 )
 
-_scope_index = Index(RESEARCH_SCOPE_INDEX, research_scope_expression(ResearchEntry.context_json),
+_scope_index = Index(RESEARCH_SCOPE_INDEX, research_scope_expression(ResearchEntry.read_context_json),
                      postgresql_using="gin").ddl_if(dialect="postgresql")
 event.listen(_scope_index, "before_create", DDL(RESEARCH_SCOPE_FUNCTION_DDL).execute_if(dialect="postgresql"))
 
 _portfolio_scope_index = Index(RESEARCH_PORTFOLIO_SCOPE_INDEX, ResearchEntry.topic_id,
-    postgresql_where=research_portfolio_scope_expression(ResearchEntry.context_json)).ddl_if(dialect="postgresql")
+    postgresql_where=research_portfolio_scope_expression(ResearchEntry.read_context_json)).ddl_if(dialect="postgresql")
 event.listen(_portfolio_scope_index, "before_create",
     DDL(RESEARCH_PORTFOLIO_SCOPE_FUNCTION_DDL).execute_if(dialect="postgresql"))
 

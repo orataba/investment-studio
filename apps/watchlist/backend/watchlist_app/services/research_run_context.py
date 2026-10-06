@@ -10,15 +10,17 @@ from watchlist_app.services.research_access import (
 )
 
 
-def load_run_fields(session, run_id, fields):
+def load_run_fields(session, run_id, fields, *, summary_only=False):
     names = sorted(set(fields) | {"research_actor"})
-    relation, values = research_context_projection(session, {name: JSON for name in names})
+    from watchlist_app.db.research_read_context import EXACT_FIELDS
+    json_column = ResearchEntry.read_context_json if summary_only or set(names) <= EXACT_FIELDS else ResearchEntry.context_json
+    relation, values = research_context_projection(session, {name: JSON for name in names}, json_column=json_column)
     query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.team_id,
         ResearchEntry.kind, ResearchEntry.status, *(values[name].label(name) for name in names)).select_from(ResearchEntry)
     if relation is not None:
         query = query.join(relation, true())
     rows = research_projection_rows(session, query.where(ResearchEntry.entry_id == run_id),
-                                   {name: (name,) for name in names})
+                                   {name: (name,) for name in names}, json_column=json_column)
     if not rows or rows[0].kind != "analysis":
         raise HTTPException(404, "研究运行不存在")
     row = rows[0]

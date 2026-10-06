@@ -367,7 +367,7 @@ def review_receipts(session, instrument_id):
     from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
     from watchlist_app.services.research_access import instrument_run_scope, research_context_projection, research_projection_rows, topic_portfolio_ids_by_topic
     principal = current_principal()
-    relation, context = research_context_projection(session, {"cutoff": String, "reviews": JSON})
+    relation, context = research_context_projection(session, {"cutoff": String, "reviews": JSON}, json_column=ResearchEntry.read_context_json)
     review = context["reviews"][instrument_id]
     query = select(ResearchEntry.topic_id, ResearchEntry.completed_at,
         context["cutoff"].label("cutoff"), review["reflection"].label("reflection")).select_from(ResearchEntry)
@@ -380,7 +380,7 @@ def review_receipts(session, instrument_id):
             True if principal.local_unrestricted else ResearchEntry.team_id == principal.team_id,
         ).order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc(),
                    ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc()),
-        {"cutoff": ("cutoff",), "reflection": ("reviews", instrument_id, "reflection")})
+        {"cutoff": ("cutoff",), "reflection": ("reviews", instrument_id, "reflection")}, json_column=ResearchEntry.read_context_json)
     topics = list(session.scalars(select(ResearchTopic).where(ResearchTopic.topic_id.in_({row.topic_id for row in rows}),
         True if principal.local_unrestricted else ResearchTopic.team_id == principal.team_id))) if rows else []
     allowed = {topic_id for topic_id, portfolios in topic_portfolio_ids_by_topic(session, topics).items() if not portfolios}

@@ -117,7 +117,7 @@ def input_version(session, state):
         InstrumentResearchNote.deleted_at], ids, true() if principal.local_unrestricted else InstrumentResearchNote.team_id == principal.team_id)
     versions["stances"] = rows(InstrumentInvestmentStance, list(InstrumentInvestmentStance.__table__.columns), ids,
         InstrumentInvestmentStance.team_id == principal.team_id)
-    relation, flags = research_context_projection(session, {"sector_run": Boolean, "research_run": Boolean})
+    relation, flags = research_context_projection(session, {"sector_run": Boolean, "research_run": Boolean}, json_column=ResearchEntry.read_context_json)
     query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.updated_at, ResearchEntry.status,
         ResearchEntry.completed_at).select_from(ResearchEntry)
     if relation is not None:

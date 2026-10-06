@@ -78,12 +78,16 @@ def read_page(value, metadata, *, offset=0, limit=20, path=None):
         raise ValueError("读取元数据超过工具上限，无法完整返回；没有截断资料。")
 
 
-def source_index(source):
-    fields = {"source_id", "source_type", "title", "url", "instrument_id", "instrument_ids", "document_id",
+SOURCE_INDEX_FIELDS = frozenset({"source_id", "source_type", "title", "url", "instrument_id", "instrument_ids", "document_id",
         "version_id", "source_run_id", "run_cutoff", "information_cutoff", "published_at", "occurred_at",
         "observed_at", "received_at", "retrieved_at", "recorded_at", "collected_at", "as_of", "as_of_date",
-        "body_sha256", "content_hash", "body_available", "status", "time_status", "provider", "currency", "unit"}
-    return {key: item for key, item in source.items() if key in fields}
+        "body_sha256", "content_hash", "body_available", "status", "time_status", "provider", "currency", "unit"})
+BROWSER_SOURCE_FIELDS = frozenset({"source", "scope", "published_at_raw", "discovered_at", "time_status",
+    "measurement", "methodology", "pm_binding_note", "current_snapshot", "previous_snapshot", "changes"})
+
+
+def source_index(source):
+    return {key: item for key, item in source.items() if key in SOURCE_INDEX_FIELDS}
 
 
 def browser_source_view(source):
@@ -92,10 +96,7 @@ def browser_source_view(source):
     Computed sources can embed other sources, series and input snapshots. They
     belong to the saved-evidence endpoint, including when nested below a source.
     """
-    fields = {"source", "scope", "published_at_raw", "discovered_at", "time_status",
-              "measurement", "methodology", "pm_binding_note", "current_snapshot",
-              "previous_snapshot", "changes"}
-    result = {**source_index(source), **{key: source[key] for key in fields if key in source}}
+    result = {**source_index(source), **{key: source[key] for key in BROWSER_SOURCE_FIELDS if key in source}}
     if isinstance(source.get("metadata"), dict) and "published_at" in source["metadata"]:
         result["metadata"] = {"published_at": source["metadata"]["published_at"]}
     if source.get("source_type") == "computed_metric":

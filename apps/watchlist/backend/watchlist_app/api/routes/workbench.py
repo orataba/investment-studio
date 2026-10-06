@@ -22,7 +22,8 @@ router = APIRouter()
 
 
 def dump(record):
-    return serialize_payload({column.name: getattr(record, column.name) for column in record.__table__.columns})
+    return serialize_payload({column.name: getattr(record, column.name) for column in record.__table__.columns
+                              if column.name != "read_context_json"})
 
 
 def managed_topic(topic_id):
@@ -269,7 +270,7 @@ def topics(instrument_id: str | None = None, session: Session = Depends(get_db_s
     if visible:
         from watchlist_app.services.research_access import research_context_projection, research_projection_rows
         from sqlalchemy import String
-        relation, values = research_context_projection(session, {"watchlist_id": String})
+        relation, values = research_context_projection(session, {"watchlist_id": String}, json_column=ResearchEntry.read_context_json)
         query = select(ResearchEntry.topic_id, ResearchEntry.entry_id, ResearchEntry.status,
                        ResearchEntry.created_at, values["watchlist_id"].label("watchlist_id")).where(
             ResearchEntry.topic_id.in_([row.topic_id for row in visible]),
@@ -278,7 +279,7 @@ def topics(instrument_id: str | None = None, session: Session = Depends(get_db_s
         if relation is not None:
             from sqlalchemy import true
             query = query.join(relation, true())
-        for run in research_projection_rows(session, query, {"watchlist_id": ("watchlist_id",)}):
+        for run in research_projection_rows(session, query, {"watchlist_id": ("watchlist_id",)}, json_column=ResearchEntry.read_context_json):
             active.setdefault(run.topic_id, serialize_payload({"entry_id": run.entry_id, "status": run.status,
                 "created_at": run.created_at, "watchlist_id": run.watchlist_id}))
     return [{**dump(row), "active_run": active.get(row.topic_id)} for row in visible]
@@ -473,13 +474,13 @@ def _run_source_context(session, run_id):
     from watchlist_app.services.research_access import research_context_projection, research_projection_rows
     from watchlist_app.services.research_read_projection import run_source_index
     relation, values = research_context_projection(session, {
-        "research_actor": JSON, "web_evidence": JSON, "market_text_sources": JSON})
+        "research_actor": JSON, "web_evidence": JSON, "market_text_sources": JSON}, json_column=ResearchEntry.read_context_json)
     query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.team_id, ResearchEntry.kind,
         *(value.label(key) for key, value in values.items())).select_from(ResearchEntry)
     if relation is not None:
         query = query.join(relation, true())
     rows = research_projection_rows(session, query.where(ResearchEntry.entry_id == run_id),
-                                   {name: (name,) for name in values})
+                                   {name: (name,) for name in values}, json_column=ResearchEntry.read_context_json)
     row = rows[0] if rows else None
     if row is None:
         raise HTTPException(404, "Record not found")

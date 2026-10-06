@@ -30,6 +30,7 @@ def capture(store, body, *, observed=1, received=1, url="https://example.com/gol
 
 def session(cases=(), calendar="XNYS"):
     return SimpleNamespace(scalars=lambda statement: (row for row in cases),
+        execute=lambda statement: (row for row in ()),
         get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="sqlite")),
         get=lambda model, iid: SimpleNamespace(instrument_type="etf", source_settings_json={"market_calendar": calendar}, exchange_code=calendar))
 

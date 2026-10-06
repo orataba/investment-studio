@@ -93,6 +93,7 @@ def test_review_receipts_preserve_nul_text_clocks_and_publication_scope(monkeypa
     from watchlist_app.db.models import workbench
     from watchlist_app.services import research_activity as activity
 
+    from watchlist_app.db.research_read_context import derive_read_context
     url = postgres_watchlist_env["database_url"]
     cutoff = "2026-09-03T00:00:00+00:00"
     reflection = {"status": "reviewed", "summary": "retained\x00receipt; literal " + r"\u0000",
@@ -116,7 +117,8 @@ def test_review_receipts_preserve_nul_text_clocks_and_publication_scope(monkeypa
         literal("analysis").label("kind"), literal(status).label("status"),
         literal(completed, type_=DateTime(timezone=True)).label("completed_at"),
         literal(datetime(2026, 9, 3, tzinfo=UTC)).label("created_at"),
-        cast(literal(json.dumps(payload)), JSON).label("context_json"))
+        cast(literal(json.dumps(payload)), JSON).label("context_json"),
+        cast(literal(json.dumps(derive_read_context(payload))), JSON).label("read_context_json"))
         for topic, team, status, completed, payload in fixtures]
     table = selects[0].union_all(*selects[1:]).cte("receipt_fixture")
     for column in table.c:

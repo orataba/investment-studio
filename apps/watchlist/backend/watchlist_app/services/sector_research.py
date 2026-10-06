@@ -22,7 +22,7 @@ from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic, Risk
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services.sector_market_data import read_sector_market_data
 from watchlist_app.services.sector_estimates import retained_estimate_sources, usable_estimate_change
-from watchlist_app.services.research_notebook import ResearchNotebook, research_sources, retain_notebook, validate_notebook
+from watchlist_app.services.research_notebook import ResearchNotebook, bind_dossier, research_sources, retain_notebook, validate_notebook
 from watchlist_app.services.research_themes import AnalystThemeUpdate
 from watchlist_app.services.calculation_frequency import _market_calendar_sessions
 
@@ -66,23 +66,23 @@ def instrument_label(session, iid):
     return session.get(InstrumentDetail, iid).instrument_name
 
 
-def latest_reviews(session, *, completed_only=False, instrument_ids=None):
-    return review_states(session, instrument_ids=instrument_ids)["last_completed" if completed_only else "latest"]
+def latest_reviews(session, *, completed_only=False, instrument_ids=None, summary_only=False):
+    return review_states(session, instrument_ids=instrument_ids, summary_only=summary_only)["last_completed" if completed_only else "latest"]
 
 
-def _risk_notebook(notebook):
+def _risk_notebook(notebook, *, summary_only=False):
     """Keep exactly the current judgment and open checks consumed by risk."""
     if not notebook:
         return notebook
     view = notebook.get("investment_view")
     return {"investment_view": {key: value for key, value in view.items() if key != "versions"} if view else view,
         "source_run_id": notebook.get("source_run_id"),
-        **{field: [{key: value for key, value in item.items() if key not in {"versions", "sources"}}
+        **({} if summary_only else {field: [{key: value for key, value in item.items() if key not in {"versions", "sources"}}
                    for item in notebook.get(field, []) if item.get(status, "active") == "active"]
-           for field, status in (("questions", "tracking_status"), ("forecasts", "status"))}}
+           for field, status in (("questions", "tracking_status"), ("forecasts", "status"))})}
 
 
-def _risk_reviews_projection(reviews, instrument_ids):
+def _risk_reviews_projection(reviews, instrument_ids, *, summary_only=False):
     """Discard notebook originals/history in SQL, before transferring any rows."""
     from sqlalchemy import cast, column
     from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by
@@ -103,8 +103,8 @@ def _risk_reviews_projection(reviews, instrument_ids):
     slim = func.json_build_object(
         "investment_view", case((func.jsonb_typeof(view) == "object", view.op("-")("versions")), else_=view),
         "source_run_id", notebook["source_run_id"],
-        "questions", active_items("questions", "tracking_status"),
-        "forecasts", active_items("forecasts", "status"))
+        *([] if summary_only else ["questions", active_items("questions", "tracking_status"),
+                                  "forecasts", active_items("forecasts", "status")]))
     # A notebook containing only other modules still supersedes an older view.
     keys = func.json_object_keys(case((func.json_typeof(notebook) == "object", notebook),
                                      else_=cast({}, JSON))).table_valued("key")
@@ -120,7 +120,7 @@ def _risk_reviews_projection(reviews, instrument_ids):
     return query.scalar_subquery()
 
 
-def review_states(session, *, instrument_ids=None, for_risk=False):
+def review_states(session, *, instrument_ids=None, for_risk=False, summary_only=False):
     """Build current and last-published states from one authorized history scope."""
     from sqlalchemy import tuple_
     from studio_identity import current_principal
@@ -161,7 +161,8 @@ def review_states(session, *, instrument_ids=None, for_risk=False):
                 tuple_(stamp, ResearchEntry.created_at, ResearchEntry.entry_id) < published_before))
         candidates = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.status,
             case((ResearchEntry.status == "failed", ResearchEntry.body), else_="").label("body"),
-            ResearchEntry.context_json, ResearchEntry.created_at, ResearchEntry.completed_at, stamp.label("history_at"),
+            (ResearchEntry.read_context_json if for_risk or summary_only else ResearchEntry.context_json).label("context_json"),
+            ResearchEntry.created_at, ResearchEntry.completed_at, stamp.label("history_at"),
         ).where(*filters).order_by(stamp.desc(), ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc()
         ).offset(0).subquery("ordered_runs")
         relation, values = research_context_projection(session, {
@@ -169,8 +170,8 @@ def review_states(session, *, instrument_ids=None, for_risk=False):
             "sector_run": Boolean, "research_run": Boolean, "recordkeeping_only": Boolean,
             "execution": JSON, "runtime_error": JSON,
         }, json_column=candidates.c.context_json)
-        if for_risk and session.get_bind().dialect.name == "postgresql":
-            values["reviews"] = _risk_reviews_projection(values["reviews"], requested_ids)
+        if (for_risk or summary_only) and session.get_bind().dialect.name == "postgresql":
+            values["reviews"] = _risk_reviews_projection(values["reviews"], requested_ids, summary_only=summary_only)
         query = select(candidates.c.entry_id, candidates.c.topic_id, candidates.c.status, candidates.c.body,
             candidates.c.history_at, candidates.c.created_at, candidates.c.completed_at,
             *(value.label(name) for name, value in values.items())).select_from(candidates)
@@ -208,10 +209,10 @@ def review_states(session, *, instrument_ids=None, for_risk=False):
                 if requested_ids is not None and iid not in requested_ids:
                     continue
                 review = (context.get("reviews") or {}).get(iid, {})
-                if for_risk:
+                if for_risk or summary_only:
                     # Also narrow exact originals restored after a selected NUL,
                     # and keep SQLite's existing JSON reader behavior equivalent.
-                    review = {**review, "research": _risk_notebook(review.get("research"))}
+                    review = {**review, "research": _risk_notebook(review.get("research"), summary_only=summary_only)}
                 accepted = published and review.get("status") in {"completed", "limited"}
                 # A conversation is not a daily check until it actually publishes research.
                 if not context.get("sector_run") and not accepted:
@@ -304,6 +305,7 @@ def sector_snapshot(iid, session, *, as_of=None):
 
 def begin_run(session, ids, *, scheduled=False, question: str | None = None, commit=True, compiled=False,
               initialization=False, recovery_run_id: str | None = None):
+    from sqlalchemy.orm import defer
     from watchlist_app.services.research_access import instrument_run_scope
     from watchlist_app.services.research_identity import research_identity
     if len(ids) != 1 or not scoped_ids(session, instrument_id=ids[0]):
@@ -348,7 +350,7 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None, com
         session.add(topic)
         session.flush()
     session.refresh(topic, with_for_update=True)
-    latest = session.scalar(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id)
+    latest = session.scalar(select(ResearchEntry).options(defer(ResearchEntry.context_json)).where(ResearchEntry.topic_id == topic_id)
         .order_by(ResearchEntry.created_at.desc()).limit(1))
     if latest and latest.status in {"queued", "running"}:
         return latest, False
@@ -356,50 +358,57 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None, com
     # Raw retained documents can contain NUL; use the same narrow safe projection
     # as other history reads rather than extracting from the full PostgreSQL JSON.
     from watchlist_app.services.research_access import research_context_projection, research_projection_rows
-    relation, values = research_context_projection(session, {"cutoff": String, "sector_run": Boolean, "recordkeeping_only": Boolean})
+    relation, values = research_context_projection(session, {"cutoff": String, "sector_run": Boolean, "recordkeeping_only": Boolean}, json_column=ResearchEntry.read_context_json)
     successful = select(ResearchEntry.entry_id, values["cutoff"].label("cutoff")).select_from(ResearchEntry)
     if relation is not None:
         successful = successful.join(relation, true())
     successful = successful.where(ResearchEntry.topic_id == topic_id, ResearchEntry.status == "completed",
         values["sector_run"].is_(True), values["recordkeeping_only"].is_not(True)).order_by(
             func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc(), ResearchEntry.created_at.desc()).limit(1)
-    successful_rows = research_projection_rows(session, successful, {"cutoff": ("cutoff",)})
+    successful_rows = research_projection_rows(session, successful, {"cutoff": ("cutoff",)}, json_column=ResearchEntry.read_context_json)
     last_successful_cutoff = successful_rows[0].cutoff if successful_rows else None
     incremental_trigger = {}
     if scheduled:
         research_dates = _research_dates(session, ids, cutoff)
         recovery_id = automatic_recovery_runs(session, instrument_ids=ids, now=cutoff).get(ids[0])
-        with closing(session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id)
-            .order_by(ResearchEntry.created_at.desc()).execution_options(yield_per=1))) as priors:
-            for prior in priors:
-                if not prior.context_json.get("sector_run") or prior.context_json.get("recordkeeping_only"):
-                    continue
-                checked = datetime.fromisoformat(prior.context_json["cutoff"])
-                if _research_dates(session, ids, checked) != research_dates:
-                    continue
-                if set(ids).issubset(prior.context_json.get("instrument_ids", [])):
-                    from watchlist_app.services.research_runner import queue_retry
-                    if prior.entry_id == recovery_id and queue_retry(session, prior, now=cutoff):
-                        if commit:
-                            session.commit()
-                        return prior, True
-                    from watchlist_app.services.research_triggers import research_trigger
-                    from watchlist_app.services.research_dossier import read_dossier
-                    # A later conversation may have added a forecast or observation date.
-                    trigger_context = {**prior.context_json, "reviews": {}, "last_successful_review_cutoff": last_successful_cutoff,
-                        "research_dossiers": [read_dossier(session, iid) for iid in ids],
-                        "attempted_theme_baselines": prior.context_json.get("attempted_theme_baselines", {
-                            theme["theme_id"]: theme.get("baseline_requested_at") or theme.get("created_at")
-                            for dossier in prior.context_json.get("research_dossiers", []) for theme in dossier.get("themes", [])})}
-                    incremental_trigger = {iid: trigger for iid in ids if (
-                        trigger := research_trigger(session, iid, trigger_context, now=cutoff))}
-                    if not incremental_trigger:
-                        return prior, False
-                    break
-    from watchlist_app.services.research_themes import theme_index
+        from watchlist_app.services.research_run_context import load_run_fields
+        # Clock/dedup checks never need retained numerical inputs or notebooks.
+        # Loading the previous whole run here made every scheduler pass decode
+        # hundreds of MB before deciding that there was no new work.
+        prior_ids = session.scalars(select(ResearchEntry.entry_id).where(ResearchEntry.topic_id == topic_id, ResearchEntry.kind == "analysis")
+            .order_by(ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc())).all()
+        for prior_id in prior_ids:
+            prior_fields = load_run_fields(session, prior_id, {"sector_run", "recordkeeping_only", "cutoff", "instrument_ids"})
+            prior_context = prior_fields.context_json
+            if not prior_context.get("sector_run") or prior_context.get("recordkeeping_only"):
+                continue
+            checked = datetime.fromisoformat(prior_context["cutoff"])
+            if _research_dates(session, ids, checked) != research_dates:
+                continue
+            if set(ids).issubset(prior_context.get("instrument_ids", [])):
+                prior = session.scalar(select(ResearchEntry).options(defer(ResearchEntry.context_json)).where(ResearchEntry.entry_id == prior_id))
+                from watchlist_app.services.research_runner import queue_retry
+                if prior.entry_id == recovery_id and queue_retry(session, prior, now=cutoff):
+                    if commit:
+                        session.commit()
+                    return prior, True
+                from watchlist_app.services.research_triggers import research_trigger, trigger_dossier
+                # A later conversation may have added a forecast or observation date.
+                trigger_fields = load_run_fields(session, prior_id, {"sector_run", "recordkeeping_only", "cutoff",
+                    "instrument_ids", "input_snapshot_cutoff", "incremental_trigger", "numeric_monitor_inputs",
+                    "market_queries", "market_text_sources", "web_evidence", "attempted_theme_baselines"}, summary_only=True)
+                trigger_context = trigger_fields.context_json
+                trigger_context = {**trigger_context, "reviews": {}, "last_successful_review_cutoff": last_successful_cutoff,
+                    "research_dossiers": [trigger_dossier(session, iid) for iid in ids]}
+                incremental_trigger = {iid: trigger for iid in ids if (
+                    trigger := research_trigger(session, iid, trigger_context, now=cutoff))}
+                if not incremental_trigger:
+                    return prior, False
+                break
+    from watchlist_app.services.research_themes import theme_summaries
     from watchlist_app.services.research_triggers import numeric_monitor_inputs
     attempted_baselines = {theme["theme_id"]: theme.get("baseline_requested_at") or theme.get("created_at")
-                          for theme in theme_index(session, ids[0])}
+                          for theme in theme_summaries(session, ids[0])["themes"]}
     run = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, kind="analysis", title=title,
         **({"team_id": identity["team_id"]} if compiled else {}),
         body="", source="Investment Studio 标的资料 / DeepSeek", created_at=cutoff,
@@ -480,7 +489,7 @@ def bind_research_instruments(session, run, ids):
             asset["performance_evidence"] = computed["data"]
             computed_metrics.append(computed)
         ensure_mandate(session, iid)
-        dossiers.append(read_dossier(session, iid, actor=run_identity(context)))
+        dossiers.append(bind_dossier(read_dossier(session, iid, actor=run_identity(context))))
         if iid.upper() in SECTORS or (asset.get("analyst_estimate_history") or {}).get("supported"):
             snapshot = sector_snapshot(iid, session, as_of=cutoff)
             if snapshot is None:
@@ -1543,8 +1552,8 @@ def _daily_research_universe(session):
     registered = set(list_shared_active_instrument_ids(instrument_types=set(EVENT_INSTRUMENT_TYPES)))
     selected = active_research_ids(session)
     pending = set()
-    for entry in session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "note")):
-        context = entry.context_json or {}
+    for context in session.scalars(select(ResearchEntry.read_context_json).where(ResearchEntry.kind == "note")):
+        context = context or {}
         if (context.get("role") == "research_theme" and context.get("theme_status") == "active"
                 and context.get("baseline_status") == "pending" and context.get("instrument_id") in registered):
             pending.add(context["instrument_id"])
@@ -1558,7 +1567,7 @@ def _daily_research_universe(session):
 def daily_review_groups(session, *, now=None):
     ids, pending = _daily_research_universe(session)
     now = now or datetime.now(UTC)
-    reviews = latest_reviews(session, instrument_ids=ids)
+    reviews = latest_reviews(session, instrument_ids=ids, summary_only=True)
     # An initial dossier is useful as soon as a new instrument enters Proposed /
     # Invested, including weekends. Once any formal attempt exists, its failure
     # recovery and ordinary market-day cadence own subsequent dispatches; a
@@ -1605,7 +1614,7 @@ def automatic_recovery_runs(session, *, instrument_ids=None, now=None):
             ResearchEntry.kind == "analysis", ResearchEntry.topic_id.in_(topics),
             ResearchEntry.team_id == principal.team_id).subquery()
     relation, values = research_context_projection(session, {"instrument_ids": JSON, "sector_run": Boolean,
-        "recordkeeping_only": Boolean, "research_actor": JSON, "execution": JSON, "runtime_error": JSON})
+        "recordkeeping_only": Boolean, "research_actor": JSON, "execution": JSON, "runtime_error": JSON}, json_column=ResearchEntry.read_context_json)
     query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.status,
         ResearchEntry.completed_at, ResearchEntry.body, *(value.label(key) for key, value in values.items()))
     query = query.join(ranked, ranked.c.entry_id == ResearchEntry.entry_id).where(
@@ -1613,7 +1622,7 @@ def automatic_recovery_runs(session, *, instrument_ids=None, now=None):
     if relation is not None:
         query = query.join(relation, true())
     candidates = {}
-    for row in research_projection_rows(session, query, {key: (key,) for key in values}):
+    for row in research_projection_rows(session, query, {key: (key,) for key in values}, json_column=ResearchEntry.read_context_json):
         context = row._mapping
         iid = topics[row.topic_id]
         if (row.topic_id == f"{INSTRUMENT_TOPIC_PREFIX}{iid}" and row.status == "failed"
@@ -1762,7 +1771,7 @@ def _run_daily_reviews(stop):
                 try:
                     with get_session_factory()() as session:
                         member_ids = set(read_risk_scope(session, scope)["instrument_ids"])
-                        states = latest_reviews(session, instrument_ids=member_ids)
+                        states = latest_reviews(session, instrument_ids=member_ids, summary_only=True)
                     if scope.get("watchlist_id"):
                         covered_ids.update(member_ids)
                     scope_dates = {iid: day for iid, day in research_dates.items() if iid in member_ids}
@@ -1781,7 +1790,7 @@ def _run_daily_reviews(stop):
                 with get_session_factory()() as session:
                     # Include referrals created by this pass's publications.
                     uncovered = _pending_research_risk_ids(session) - covered_ids - blocked_ids
-                    states = latest_reviews(session, instrument_ids=uncovered)
+                    states = latest_reviews(session, instrument_ids=uncovered, summary_only=True)
                     uncovered = {iid for iid in uncovered if (states.get(iid) or {}).get("status") not in {"queued", "running"}}
                     dates = _research_dates(session, sorted(uncovered), datetime.now(UTC))
                 for iid in sorted(uncovered):

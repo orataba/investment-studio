@@ -117,8 +117,8 @@ def instrument_run_scope(session, instrument_id):
     if session.get_bind().dialect.name == "postgresql":
         from sqlalchemy.dialects.postgresql import ARRAY
         ids = [instrument_id] if isinstance(instrument_id, str) else list(instrument_id)
-        return research_scope_expression(ResearchEntry.context_json).overlap(literal(ids, type_=ARRAY(Text())))
-    scope = ResearchEntry.context_json["instrument_ids"]
+        return research_scope_expression(ResearchEntry.read_context_json).overlap(literal(ids, type_=ARRAY(Text())))
+    scope = ResearchEntry.read_context_json["instrument_ids"]
     array = case((func.json_type(scope) == "array", scope), else_="[]")
     elements = func.json_each(array).table_valued("value")
     predicate = (elements.c.value == instrument_id if isinstance(instrument_id, str)
@@ -134,7 +134,7 @@ def topic_portfolio_ids_by_topic(session, topics):
     if not portfolio_ids:
         return portfolio_ids
     from sqlalchemy import JSON, String, true
-    relation, values = research_context_projection(session, {"portfolio_id": String, "risk_scope": JSON})
+    relation, values = research_context_projection(session, {"portfolio_id": String, "risk_scope": JSON}, json_column=ResearchEntry.read_context_json)
     query = select(ResearchEntry.topic_id, values["portfolio_id"].label("portfolio_id"),
                    values["risk_scope"]["portfolio_id"].as_string().label("risk_portfolio_id")).select_from(ResearchEntry)
     if relation is not None:
@@ -145,9 +145,9 @@ def topic_portfolio_ids_by_topic(session, topics):
         # All historical kinds remain eligible. The partial index skips only
         # contexts with no possible portfolio scope; the original projection
         # still supplies exact IDs, including retained NUL/literal escape values.
-        query = query.where(research_portfolio_scope_expression(ResearchEntry.context_json))
+        query = query.where(research_portfolio_scope_expression(ResearchEntry.read_context_json))
     scopes = iter_research_projection_rows(session, query,
-        {"portfolio_id": ("portfolio_id",), "risk_portfolio_id": ("risk_scope", "portfolio_id")})
+        {"portfolio_id": ("portfolio_id",), "risk_portfolio_id": ("risk_scope", "portfolio_id")}, json_column=ResearchEntry.read_context_json)
     for row in scopes:
         portfolio_ids[row.topic_id].update(value for value in (row.portfolio_id, row.risk_portfolio_id) if value)
     return portfolio_ids
@@ -204,13 +204,13 @@ def require_entry_access(session, entry, *, tool_write=False):
 def _entry_access_projection(session, entry_id):
     from types import SimpleNamespace
     from sqlalchemy import JSON, true
-    relation, fields = research_context_projection(session, {"research_actor": JSON})
+    relation, fields = research_context_projection(session, {"research_actor": JSON}, json_column=ResearchEntry.read_context_json)
     query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.team_id,
                    fields["research_actor"].label("research_actor")).select_from(ResearchEntry)
     if relation is not None:
         query = query.join(relation, true())
     rows = research_projection_rows(session, query.where(ResearchEntry.entry_id == entry_id),
-                                    {"research_actor": ("research_actor",)})
+                                    {"research_actor": ("research_actor",)}, json_column=ResearchEntry.read_context_json)
     row = rows[0] if rows else None
     return (SimpleNamespace(entry_id=row.entry_id, topic_id=row.topic_id, team_id=row.team_id,
             context_json={"research_actor": row.research_actor}) if row else None)

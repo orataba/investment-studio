@@ -10,6 +10,7 @@ from studio_runtime import operation
 
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioRecordModel, PortfolioWorkspaceReadModel
 from portfolio_app.db.session import get_session_factory
+from portfolio_app.services.daily_snapshots import PortfolioCalculationPending
 from portfolio_app.services.taxonomy_configuration import taxonomy_configuration_version
 from portfolio_app.services.holdings_workspace import (
     _portfolio_calculation_frequency_profile, read_holdings_analysis,
@@ -95,6 +96,11 @@ def precompute_portfolio_workspace(portfolio_id: str, *, force: bool = False) ->
                 publish_workspace_projection(
                     portfolio_id, surface, key, current_source_key=lambda: current_key(surface), payload=payload,
                 )
+        except PortfolioCalculationPending:
+            # A source update can invalidate accounting while an analysis is
+            # being built. Yield to the accounting queue without recording a
+            # failed projection or applying the worker's outage backoff.
+            return True
         except (SQLAlchemyError, OSError):
             # Connection/DB failures use the worker's bounded backoff; they
             # must not permanently suppress preparation of unchanged inputs.
@@ -117,7 +123,12 @@ def precompute_portfolio_workspace(portfolio_id: str, *, force: bool = False) ->
             logger.exception("Portfolio workspace precomputation failed for %s/%s", portfolio_id, surface)
     # Common Performance is cheap interval aggregation over published days.
     # It remains an in-memory convenience, not another durable financial model.
-    get_cached_materialized_performance_report(portfolio_id)
+    try:
+        get_cached_materialized_performance_report(portfolio_id)
+    except PortfolioCalculationPending:
+        # The same generation change may arrive after both page projections
+        # were prepared but before this optional in-memory warmup.
+        pass
     return True
 
 

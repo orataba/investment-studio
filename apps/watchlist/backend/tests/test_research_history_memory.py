@@ -172,20 +172,22 @@ def test_incremental_monitoring_skips_unrelated_history_and_closes_after_usable_
     closed = []
     try:
         with Session(engine) as session:
-            scalars = session.scalars
+            execute = session.execute
             class Result:
                 def __init__(self, result):
                     self.result = result
+                def __getattr__(self, name):
+                    return getattr(self.result, name)
                 def __iter__(self):
                     return iter(self.result)
                 def close(self):
                     self.result.close()
                     closed.append(self.result.closed)
-            monkeypatch.setattr(session, "scalars", lambda *args, **kwargs: Result(scalars(*args, **kwargs)))
+            monkeypatch.setattr(session, "execute", lambda *args, **kwargs: Result(execute(*args, **kwargs)))
             result = research_triggers._monitoring_context(session, IID,
                 {"instrument_ids": [IID], "research_actor": {"team_id": "default"}})
             assert result["market_queries"][0]["query"] == "Retained issuer disclosure"
-            assert result["retained_input"] == "Original data " * 80000
-            assert closed == [True]
+            assert "retained_input" not in result
+            assert closed and all(closed)
     finally:
         engine.dispose()

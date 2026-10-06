@@ -49,6 +49,26 @@ def test_theme_history_reconstructs_all_fields_and_agenda_references_exact_curre
     assert current["review_agenda"]["focus_themes"][2] == different
 
 
+def test_bound_dossier_keeps_current_evidence_once_and_addresses_original_theme_versions():
+    from watchlist_app.services.research_notebook import bind_dossier
+    theme = {**_theme(), "revision_number": 7, "source_version_id": "theme:theme-a:7",
+        "sources": [{"source_id": "original", "text": "Exact current evidence\x00"}],
+        "versions": [{"revision_number": 6, "synthesis": "Old judgment", "updated_at": "2026-09-20",
+                      "sources": [{"source_id": "old", "text": "Old original" * 10000}]}]}
+    dossier = {"instrument_id": "gold", "themes": [theme], "review_agenda": {"focus_themes": [theme]}}
+    original = deepcopy(dossier)
+    bound = bind_dossier(dossier)
+    assert dossier == original
+    assert {key: value for key, value in bound["themes"][0].items() if key != "versions"} == {
+        key: value for key, value in theme.items() if key != "versions"}
+    assert bound["themes"][0]["versions"] == [{"revision_number": 6, "updated_at": "2026-09-20", "version_id": "theme:theme-a:6"}]
+    read = bound["review_agenda"]["focus_themes"][0]["current_read"]
+    assert read == {"tool": "read_research_dossier", "instrument_id": "gold", "section": "themes", "path": [0]}
+    packet, _ = review._review_dossier_outline(bound, 2)
+    assert packet["review_agenda"]["focus_themes"][0]["current_read"] == {
+        "tool": "read_review_context", "section": "research_dossiers", "path": [2, "themes", 0]}
+
+
 @pytest.mark.parametrize("historical", [{}, {"updates": []}, {"versions": [], "research_progress": []}])
 def test_theme_history_preserves_absent_and_explicitly_empty_arrays(historical):
     theme = {"theme_id": "theme-a", "theme_key": "demand", "notes": [], **historical}

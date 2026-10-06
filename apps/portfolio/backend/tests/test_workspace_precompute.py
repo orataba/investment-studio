@@ -10,6 +10,7 @@ from portfolio_app.db.models import PortfolioWorkspaceReadModel
 from portfolio_app.db.session import get_engine, get_session_factory
 from portfolio_app.services import holdings_workspace, source_cache, workspace_precompute, workspace_read_models
 from portfolio_app.services import instrument_registry
+from portfolio_app.services.daily_snapshots import PortfolioCalculationPending, mark_portfolio_daily_snapshots_stale
 from portfolio_app.services.risk_model import update_portfolio_risk_policy
 
 
@@ -110,6 +111,47 @@ def test_transient_database_failure_does_not_disable_the_generation(client, monk
         workspace_precompute.precompute_portfolio_workspace(PORTFOLIO_ID)
     with get_session_factory()() as session:
         assert session.get(PortfolioWorkspaceReadModel, (PORTFOLIO_ID, "holdings_analytics")) is None
+
+
+@pytest.mark.parametrize("surface", ["holdings_analytics", "portfolio_risk_basis", "performance"])
+def test_source_change_during_precompute_yields_to_accounting_without_failure(client, monkeypatch, caplog, surface):
+    builders = {
+        "holdings_analytics": "read_holdings_analysis",
+        "portfolio_risk_basis": "_portfolio_calculation_frequency_profile",
+        "performance": "get_cached_materialized_performance_report",
+    }
+    invalidated = False
+
+    def source_changed(*args, **kwargs):
+        nonlocal invalidated
+        invalidated = True
+        mark_portfolio_daily_snapshots_stale(PORTFOLIO_ID)
+        raise PortfolioCalculationPending(PORTFOLIO_ID, status="stale")
+
+    def must_yield(*_args, **_kwargs):
+        raise AssertionError("Stale analysis must yield before preparing another surface")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(workspace_precompute, builders[surface], source_changed)
+        if surface == "holdings_analytics":
+            patch.setattr(workspace_precompute, "_portfolio_calculation_frequency_profile", must_yield)
+        if surface != "performance":
+            patch.setattr(workspace_precompute, "get_cached_materialized_performance_report", must_yield)
+        assert workspace_precompute.precompute_portfolio_workspace(PORTFOLIO_ID)
+
+    assert invalidated
+    assert not any("precomputation failed" in record.message for record in caplog.records)
+    with get_session_factory()() as session:
+        rows = list(session.scalars(select(PortfolioWorkspaceReadModel).where(
+            PortfolioWorkspaceReadModel.portfolio_id == PORTFOLIO_ID,
+        )))
+        assert all(row.error_type is None for row in rows)
+
+    # The fixture's financial read drains the queued accounting generation.
+    # Its newly published inputs must still be eligible for preparation.
+    assert client.get(f"/api/portfolios/{PORTFOLIO_ID}/performance").status_code == 200
+    assert workspace_precompute.precompute_portfolio_workspace(PORTFOLIO_ID)
+    assert not workspace_precompute.workspace_precomputation_errors(PORTFOLIO_ID)
 
 
 @pytest.mark.parametrize("cause", [

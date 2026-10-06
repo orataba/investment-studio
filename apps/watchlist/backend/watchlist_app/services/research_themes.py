@@ -170,7 +170,7 @@ def theme_summaries(session, instrument_id, *, actor=None):
         "latest_development", "next_check", "figure_source_ids", "reference", "last_reviewed_at",
         "baseline_status", "baseline_requested_at", "sources", "migration_origin", "lifecycle_owner")}
     fields.update(role=String, theme_status=String)
-    relation, payload = research_context_projection(session, fields)
+    relation, payload = research_context_projection(session, fields, json_column=ResearchEntry.read_context_json)
     columns = ("entry_id", "title", "body", "author_user_id", "responsible_user_id", "team_id", "created_at", "updated_at")
     query = select(*(getattr(ResearchEntry, key) for key in columns),
                    *(value.label(key) for key, value in payload.items())).select_from(ResearchEntry)
@@ -178,7 +178,7 @@ def theme_summaries(session, instrument_id, *, actor=None):
         query = query.join(relation, true())
     query = query.where(ResearchEntry.topic_id == f"dossier:{instrument_id}", payload["role"] == "research_theme",
                        True if current_principal().local_unrestricted else ResearchEntry.team_id == actor["team_id"])
-    records = research_projection_rows(session, query, {key: (key,) for key in fields})
+    records = research_projection_rows(session, query, {key: (key,) for key in fields}, json_column=ResearchEntry.read_context_json)
     summaries = []
     for row in records:
         context = {key: getattr(row, key) for key in fields if getattr(row, key) is not None}
@@ -189,9 +189,8 @@ def theme_summaries(session, instrument_id, *, actor=None):
         if not context.get("lifecycle_owner") and theme["status"] != "active":
             theme["lifecycle_owner"] = None
         theme.pop("versions", None)
-        theme["sources"] = [{key: value for key, value in source.items()
-                             if key not in {"text", "body", "snapshot", "company", "data"}}
-                            for source in theme.get("sources", [])]
+        from watchlist_app.services.research_read_projection import browser_source_view
+        theme["sources"] = [browser_source_view(source) for source in theme.get("sources", [])]
         summaries.append(theme)
     summaries.sort(key=lambda row: (row["status"] != "active", row["priority"] != "core", row["title"], row["theme_id"]))
     return {"identity": actor, "themes": summaries, "active_limit": ACTIVE_THEME_LIMIT, "target_count": 5}

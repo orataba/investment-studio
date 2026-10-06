@@ -34,8 +34,9 @@ def test_portfolio_scope_migration_preserves_originals_and_generic_index_plan(po
         session.add(ResearchTopic(topic_id="portfolio-scope", title="Scope", visibility="team", portfolio_id="current"))
         session.flush()
         for key, context in contexts.items():
-            session.add(ResearchEntry(entry_id=key, topic_id="portfolio-scope", kind="note", title=key,
-                context_json=context))
+            session.execute(text("INSERT INTO research_entry (entry_id,topic_id,kind,title,body,source,context_json,status,team_id,created_at,updated_at) "
+                "VALUES (:key,'portfolio-scope','note',:key,'','',CAST(:context AS json),'recorded','default',now(),now())"),
+                {"key": key, "context": json.dumps(context)})
         session.commit()
 
     def originals():
@@ -77,10 +78,6 @@ def test_portfolio_scope_migration_preserves_originals_and_generic_index_plan(po
             ), {"context": json.dumps(context, ensure_ascii=True)})
             assert actual is (context in candidates), context
 
-        topic = session.get(ResearchTopic, "portfolio-scope")
-        assert topic_portfolio_ids_by_topic(session, [topic]) == {
-            "portfolio-scope": {"current", "old", "risk-old", r"literal\u0000", "scope\x00id"},
-        }
         session.execute(text("SET LOCAL plan_cache_mode=force_generic_plan"))
         session.execute(text("SET LOCAL enable_seqscan=off"))  # Force an eligible index for this tiny fixture.
         session.execute(text(
@@ -98,15 +95,13 @@ def test_portfolio_scope_migration_preserves_originals_and_generic_index_plan(po
     # The database maintains membership on writes; no application cache or
     # secondary scope record needs invalidation or synchronization.
     with factory() as session, session.begin():
-        row = session.get(ResearchEntry, "public")
-        original = row.context_json
-        row.context_json = {"risk_scope": {"portfolio_id": "new-boundary"}}
-        session.flush()
+        original = dict(before)["public"]
+        session.execute(text("UPDATE research_entry SET context_json=CAST(:context AS json) WHERE entry_id='public'"),
+            {"context": json.dumps({"risk_scope": {"portfolio_id": "new-boundary"}})})
         selected = select(ResearchEntry.entry_id).where(
             ResearchEntry.entry_id == "public", research_portfolio_scope_expression(ResearchEntry.context_json))
         assert session.scalar(selected) == "public"
-        row.context_json = original
-        session.flush()
+        session.execute(text("UPDATE research_entry SET context_json=CAST(:context AS json) WHERE entry_id='public'"), {"context": original})
         assert session.scalar(selected) is None
     assert originals() == before
     get_engine().dispose()
@@ -119,6 +114,12 @@ def test_portfolio_scope_migration_preserves_originals_and_generic_index_plan(po
         )) is None
     command.upgrade(config, "head")
     assert originals() == before
+    with factory() as session:
+        topic = session.get(ResearchTopic, "portfolio-scope")
+        assert topic_portfolio_ids_by_topic(session, [topic]) == {
+            "portfolio-scope": {"current", "old", "risk-old", r"literal\u0000", "scope\x00id"},
+        }
+
 
 
 def test_indexed_acl_does_not_decode_unscoped_originals(postgres_watchlist_env, monkeypatch):

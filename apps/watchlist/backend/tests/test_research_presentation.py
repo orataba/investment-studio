@@ -43,7 +43,8 @@ def test_browser_reads_leave_agent_inputs_and_versioned_originals_complete(activ
     for field, key in (("latest_review", "latest"), ("last_completed_review", "last_completed")):
         shown = status[field]
         assert "research" not in shown
-        assert shown["current_research"] == {"investment_view": notebook["investment_view"]}
+        assert shown["current_research"] == {"investment_view": {
+            key: value for key, value in notebook["investment_view"].items() if key != "versions"}}
         assert {k: v for k, v in shown.items() if k != "current_research"} == serialize_payload({
             k: v for k, v in states[key]["xlk"].items() if k not in {"current_research", "research"}})
 

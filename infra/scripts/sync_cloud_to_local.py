@@ -595,6 +595,31 @@ def weekly_sync_due(previous, now):
     return previous < cutoff
 
 
+def request_regime_catch_up(receipt, record):
+    """Request the installed replica consumer after publication, never roll back."""
+    label = os.environ.get("REGIME_LOCAL_AUTOMATION_LABEL_PREFIX", "com.orataba.asset-regime-dashboard.auto") + ".catch-up"
+    agents = Path(os.environ.get("REGIME_LAUNCH_AGENT_DIR", Path.home() / "Library/LaunchAgents"))
+    result = {"status": "not_installed", "checked_at": datetime.now(timezone.utc).isoformat()}
+    failure = None
+    if (agents / (label + ".plist")).is_file():
+        try:
+            run(["launchctl", "kickstart", f"gui/{os.getuid()}/{label}"], capture_output=True, text=True)
+            result["status"] = "requested"
+        except (OSError, subprocess.CalledProcessError) as error:
+            result.update(status="failed", error=str(error))
+            failure = error
+    record["regime_catch_up"] = result
+    temporary = receipt.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, indent=2))
+    temporary.replace(receipt)
+    if failure:
+        raise RuntimeError(
+            "Cloud snapshot is published and retained, but Regime catch-up could not be requested. "
+            "The next scheduled check will retry catch-up without replacing the snapshot. "
+            f"Details: {receipt}"
+        ) from failure
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
@@ -621,8 +646,11 @@ def main(argv=None):
         check_unfinished_cutovers(state)
         receipt = state / "last-success.json"
         if args.if_due and receipt.exists():
-            previous = datetime.fromisoformat(json.loads(receipt.read_text())["completed_at"])
+            previous_record = json.loads(receipt.read_text())
+            previous = datetime.fromisoformat(previous_record["completed_at"])
             if not weekly_sync_due(previous, datetime.now().astimezone()):
+                if previous_record.get("regime_catch_up", {}).get("status") in {"pending", "failed"}:
+                    request_regime_catch_up(receipt, previous_record)
                 return 0
         rsync_path = rsync_tool()
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -633,7 +661,12 @@ def main(argv=None):
         copy_files(config, directory, rsync_path)
         restore_stage(config, stage_name, dump, directory)
         publish(config, directory, stage_name)
-        receipt.write_text(json.dumps({"completed_at": datetime.now(timezone.utc).isoformat(), "snapshot": str(directory)}, indent=2))
+        record = {"completed_at": datetime.now(timezone.utc).isoformat(), "snapshot": str(directory),
+                  "regime_catch_up": {"status": "pending"}}
+        receipt.write_text(json.dumps(record, indent=2))
+        # This consumer may write immediately. Keep it outside publish's rollback
+        # handling and preserve snapshot success even if launchd rejects it.
+        request_regime_catch_up(receipt, record)
         prune_published_snapshots(config, state)
         print("Cloud snapshot is active locally; previous database and files retained", flush=True)
     return 0

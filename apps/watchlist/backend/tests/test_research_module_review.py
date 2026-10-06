@@ -176,7 +176,7 @@ def test_module_version_read_keeps_original_cutoff_while_current_view_shows_the_
                                 completed_at=cutoff, created_at=cutoff), paper)
                for run, cutoff, paper in (("check", later_cutoff, quiet), ("old", CUTOFF, old))]
     monkeypatch.setattr(dossiers, "require_instrument", lambda *_: None)
-    def saved_records(*_, oldest_first=False):
+    def saved_records(*_, oldest_first=False, source_metadata_only=False):
         yield from reversed(records) if oldest_first else records
     monkeypatch.setattr(dossiers, "_research_records", saved_records)
     current, history = dossiers._notebooks(None, "xlk", True)

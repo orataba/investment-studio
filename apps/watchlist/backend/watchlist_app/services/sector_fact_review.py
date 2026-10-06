@@ -472,7 +472,9 @@ def _review_dossier_outline(dossier, dossier_index):
             {**{key: theme[key] for key in ("theme_id", "theme_key") if key in theme},
              "current_read": {"tool": "read_review_context", "section": "research_dossiers",
                               "path": [dossier_index, "themes", positions[theme["theme_id"]]]}}
-            if theme.get("theme_id") in positions and theme == themes[positions[theme["theme_id"]]] else theme
+            if theme.get("theme_id") in positions and (theme == themes[positions[theme["theme_id"]]]
+                or theme.get("current_read") == {"tool": "read_research_dossier", "instrument_id": dossier["instrument_id"],
+                    "section": "themes", "path": [positions[theme["theme_id"]]]}) else theme
             for theme in agenda["focus_themes"]]}
     history = {}
     current_themes = []

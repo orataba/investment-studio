@@ -720,7 +720,7 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch, request) -> TestClient:
         if workbench.managed_topic(topic.topic_id):
             topic.visibility = "team"
     event.listen(ResearchTopic, "before_insert", identify_test_topic)
-    event.listen(ResearchEntry, "before_insert", identify_test_entry)
+    event.listen(ResearchEntry, "before_insert", identify_test_entry, insert=True)
     try:
         with TestClient(main_module.app) as test_client:
             yield test_client

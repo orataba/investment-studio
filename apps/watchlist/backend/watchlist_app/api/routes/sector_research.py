@@ -62,7 +62,7 @@ def sector_estimates(instrument_id: str, session: Session = Depends(get_db_sessi
 @router.get("/sector-research")
 def sector_research(instrument_id: str | None = None, watchlist_id: str | None = None, include_events: bool = True, session: Session = Depends(get_db_session)):
     ids = service.scoped_ids(session, instrument_id, watchlist_id)
-    states = service.review_states(session, instrument_ids=ids)
+    states = service.review_states(session, instrument_ids=ids, summary_only=True)
     reviews, completed = states["latest"], states["last_completed"]
     sectors = [{"instrument_id": iid, "ticker": iid.upper(), "sector_name": service.instrument_label(session, iid),
                 "latest_review": review_status_view(reviews.get(iid)),
