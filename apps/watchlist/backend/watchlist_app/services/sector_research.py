@@ -1674,6 +1674,7 @@ def _pending_research_risk_ids(session):
 
 def _run_daily_reviews(stop):
     from studio_identity import current_principal
+    from watchlist_app.services.research_access import research_context_projection, research_projection_rows
     from watchlist_app.services.research_runner import run_analysis, same_research_initiator
     from watchlist_app.services.research_workbench import portfolio_options
     from watchlist_app.services.risk_officer import begin_run as begin_risk_run
@@ -1734,6 +1735,17 @@ def _run_daily_reviews(stop):
         while not stop.is_set():
             with get_session_factory()() as session:
                 recoveries = automatic_recovery_runs(session)
+                recovery_attempts = {}
+                if recoveries:
+                    relation, values = research_context_projection(session, {"execution": JSON},
+                        json_column=ResearchEntry.read_context_json)
+                    query = select(ResearchEntry.entry_id, values["execution"].label("execution")).where(
+                        ResearchEntry.entry_id.in_(recoveries.values()))
+                    if relation is not None:
+                        query = query.join(relation, true())
+                    recovery_attempts = {row.entry_id: (row.execution or {}).get("attempt", 1)
+                        for row in research_projection_rows(session, query, {"execution": ("execution",)},
+                            json_column=ResearchEntry.read_context_json)}
                 groups = daily_review_groups(session)
                 groups = [[iid] for iid in recoveries] + [ids for ids in groups if ids[0] not in recoveries]
                 referrals = _pending_research_risk_ids(session)
@@ -1743,7 +1755,10 @@ def _run_daily_reviews(stop):
                 candidates = []
                 for ids in groups:
                     recovery_id = recoveries.get(ids[0])
-                    key = (tuple(ids), tuple(dates.get(iid) for iid in ids), recovery_id)
+                    # The same run can fail again while this pass is assessing
+                    # risk. Deduplicate that failure, not every future attempt.
+                    recovery_key = (recovery_id, recovery_attempts.get(recovery_id, 1)) if recovery_id else None
+                    key = (tuple(ids), tuple(dates.get(iid) for iid in ids), recovery_key)
                     if key not in considered and not active_ids.intersection(ids):
                         candidates.append((ids, recovery_id, key))
                 if not research_dates and not active:

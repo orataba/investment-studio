@@ -3,6 +3,7 @@ from watchlist_app.services import risk_review_state
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select
@@ -75,6 +76,57 @@ def test_worker_recovers_cross_day_weekend_original_once_without_new_generation(
     service.run_daily_reviews(Event())
     assert calls == [RID]
     with get_session_factory()() as session:
+        assert session.scalar(select(func.count()).select_from(ResearchEntry).where(ResearchEntry.kind == 'analysis')) == 1
+
+
+@pytest.mark.parametrize('advance_attempt', [True, False], ids=['next-failure', 'same-failure'])
+def test_recovery_during_risk_pass_tracks_actual_failure_and_cooldown(saved_retry, monkeypatch, advance_attempt):
+    from watchlist_app.services import research_workbench, risk_officer
+    clock = [NOW]
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+    monkeypatch.setattr(service, 'datetime', Clock)
+    monkeypatch.setattr(runner, 'datetime', Clock)
+    monkeypatch.setattr(service, 'daily_review_groups', lambda session: [[IID]])
+    monkeypatch.setattr(research_workbench, 'portfolio_options', lambda: {
+        'portfolios': [{'portfolio_id': key} for key in ('one', 'two', 'three')]})
+    monkeypatch.setattr(risk_review_state, 'current_scope', lambda session, scope: {
+        'instrument_ids': [IID] if scope.get('portfolio_id') else []})
+    monkeypatch.setattr(risk_officer, 'begin_run', lambda session, **scope: (
+        SimpleNamespace(entry_id='risk:' + scope['portfolio_id'], status='queued'), True))
+    calls = []
+    def analyze(run_id):
+        if run_id.startswith('risk:'):
+            calls.append(run_id)
+            # The first risk job ends before the retry cooldown; the second
+            # reaches it. A third job keeps the same worker pass open.
+            clock[0] += timedelta(seconds={'risk:one': 299, 'risk:two': 1, 'risk:three': 300}[run_id])
+            return
+        assert run_id == RID
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, run_id)
+            context = deepcopy(run.context_json)
+            attempt = context['execution']['attempt'] + int(advance_attempt)
+            context['execution'].update(attempt=attempt, resume=False)
+            context['runtime_error'] = saved_retry['runtime_error']
+            run.context_json, run.status = context, 'failed'
+            run.completed_at = clock[0] if advance_attempt else NOW - timedelta(minutes=2)
+            calls.append(f'recovery:{attempt}')
+            session.commit()
+    monkeypatch.setattr(runner, 'run_analysis', analyze)
+
+    service.run_daily_reviews(Event())
+
+    expected = (['recovery:2', 'risk:one', 'risk:two', 'recovery:3', 'risk:three'] if advance_attempt
+                else ['recovery:1', 'risk:one', 'risk:two', 'risk:three'])
+    assert calls == expected
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, RID)
+        for key in ('cutoff', 'input_snapshot_cutoff', 'instrument_inputs', 'submitted_draft'):
+            assert run.context_json[key] == saved_retry[key]
+        assert service.automatic_recovery_runs(session) == ({} if advance_attempt else {IID: RID})
         assert session.scalar(select(func.count()).select_from(ResearchEntry).where(ResearchEntry.kind == 'analysis')) == 1
 
 

@@ -1,6 +1,7 @@
 """Exercise retained JSON, successful coverage and batch access in a disposable DB."""
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from threading import Event
 
 import pytest
 import studio_identity
@@ -91,6 +92,42 @@ def test_automatic_service_cannot_adopt_user_failure_in_postgres(postgres_watchl
             same, created = sector_research.begin_run(session, [iid], scheduled=True, recovery_run_id="user-failed")
             assert not created and same.entry_id == "user-failed" and same.status == "failed"
             assert same.context_json == original
+
+
+def test_worker_attempt_projection_handles_nul_in_unrelated_retained_source(postgres_watchlist_env, monkeypatch):
+    from watchlist_app.services import research_runner, research_workbench, risk_review_state, shared_instrument_registry
+    iid, now = postgres_watchlist_env['instrument_id'], datetime.now(UTC)
+    actor = studio_identity.service_principal('watchlist')
+    original = {'sector_run': True, 'instrument_ids': [iid], 'research_actor': actor.to_dict(),
+        'execution': {'attempt': 1}, 'runtime_error': {'retryable': True},
+        'web_evidence': [{'operation': 'fetch', 'sources': [{'source_id': 'retained', 'text': 'exact\x00original'}]}]}
+    with get_session_factory()() as session:
+        add_instrument_detail(session, iid)
+        session.add(InstrumentAttributeValue(instrument_id=iid, attribute_key='coverage_status', value_json='Invested', adopted_at=now))
+        session.add(ResearchTopic(topic_id='instrument-events:' + iid, title='Recovery', visibility='team'))
+        session.flush()
+        session.add(ResearchEntry(entry_id='nul-recovery', topic_id='instrument-events:' + iid, kind='analysis',
+            title='Recovery', status='failed', completed_at=now-timedelta(minutes=2), context_json=deepcopy(original)))
+        session.commit()
+    monkeypatch.setattr(shared_instrument_registry, 'list_shared_active_instrument_ids', lambda **kw: [iid])
+    monkeypatch.setattr(sector_research, '_research_market', lambda session, identifier: 'cn')
+    monkeypatch.setattr(sector_research, 'daily_review_groups', lambda session: [])
+    monkeypatch.setattr(research_workbench, 'portfolio_options', lambda: {'portfolios': []})
+    monkeypatch.setattr(risk_review_state, 'current_scope', lambda session, scope: {'instrument_ids': []})
+    calls = []
+    def analyze(run_id):
+        calls.append(run_id)
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, run_id)
+            assert run.context_json['execution']['attempt'] == 1
+            assert run.context_json['execution']['resume'] is True
+            run.status = 'completed'
+            session.commit()
+    monkeypatch.setattr(research_runner, 'run_analysis', analyze)
+    sector_research.run_daily_reviews(Event())
+    assert calls == ['nul-recovery']
+    with get_session_factory()() as session:
+        assert session.get(ResearchEntry, 'nul-recovery').context_json['web_evidence'] == original['web_evidence']
 
 
 def test_batch_run_projection_retains_no_change_report_and_checks_original_access(postgres_watchlist_env):
