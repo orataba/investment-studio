@@ -102,6 +102,7 @@ def test_reference_validation_reads_exact_judgment_metadata_without_decoding_ret
     from sqlalchemy.orm import Session
     from watchlist_app.db.models.workbench import ResearchTopic
     from watchlist_app.services.research_activity import research_activity
+    from watchlist_app.services.research_identity import research_identity
 
     iid = postgres_watchlist_env['instrument_id']
     clock = '2026-09-27T00:00:00+00:00'
@@ -117,6 +118,10 @@ def test_reference_validation_reads_exact_judgment_metadata_without_decoding_ret
                     'sources': [source], 'forecasts': [{'key': 'capacity', 'version_id': 'original-forecast',
                         'theme_id': 'original-theme', 'claim': 'Retained\u0000judgment', 'horizon': 'Next disclosure',
                         'updated_at': clock, 'source_ids': [source['source_id']]}]}}}}))
+        session.add(ResearchEntry(entry_id='validation-reader', topic_id='validation-reference',
+            kind='analysis', title='Bound reference reader', context_json={'research_run': True,
+                'research_actor': research_identity(), 'instrument_ids': [iid], 'cutoff': clock, 'research_dossiers': [{'instrument_id': iid,
+                    'notebook': {'sources': [source]}}]}))
         session.commit()
 
     def deserialize(value):
@@ -133,5 +138,11 @@ def test_reference_validation_reads_exact_judgment_metadata_without_decoding_ret
             assert original['body'] == 'Retained\u0000judgment' and original['recorded_at'] == clock
             assert original['run_id'] == 'validation-original' and original['theme_ids'] == ['original-theme']
             assert original['reference']['forecast_version_id'] == 'original-forecast'
+            from watchlist_app.api.routes.workbench import run_dossier
+            indexed = run_dossier('validation-reader', iid, update_id='research:original-forecast',
+                source_metadata_only=True, session=session)['value']
+            assert indexed['body'] == original['body'] and indexed['recorded_at'] == clock
+            assert indexed['reference'] == original['reference']
+            assert indexed['sources'][0]['source_id'] == source['source_id']
     finally:
         engine.dispose()

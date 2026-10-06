@@ -597,7 +597,10 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
             # silently turn historical evidence into a new current citation.
             prior_judgment_versions.append(original)
         for update_id in sorted(update_ids):
-            value = _api_request(run_id, f"dossier/{quote(review['instrument_id'], safe='')}?" + urlencode({"update_id": update_id}))
+            # Only the dated judgment and source identities enter prior_updates.
+            # Exact source/version reads below retain their original evidence.
+            value = _api_request(run_id, f"dossier/{quote(review['instrument_id'], safe='')}?" + urlencode(
+                {"update_id": update_id, "source_metadata_only": "true"}))
             original = value["value"]
             references_by_instrument[review["instrument_id"]].update(source["source_id"] for source in original.get("sources", []))
             prior_updates.append({**original, **({"sources": [_source_index(source) for source in original["sources"]]}

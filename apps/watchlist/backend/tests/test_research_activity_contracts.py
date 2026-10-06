@@ -8,12 +8,15 @@ from watchlist_app.services.research_activity import research_activity, resolve_
 from .test_research_activity import activity_client, event, publish
 
 
-def test_historical_update_route_keeps_original_judgment_without_later_withdrawal_metadata(client):
+@pytest.mark.parametrize('source_metadata_only', [False, True])
+def test_historical_update_route_keeps_original_judgment_without_later_withdrawal_metadata(client, source_metadata_only):
     instrument_id = "fund-us-agg"
     original_at = "2026-09-01T00:00:00+00:00"
     later_at = "2026-09-09T00:00:00+00:00"
     original = {"title": "最初披露", "body": "当时仍需核实后续影响", "recorded_at": original_at,
-        "follow_up": "watch", "next_watch": "核实后续披露", "event_version_id": "dated-event:1"}
+        "follow_up": "watch", "next_watch": "核实后续披露", "event_version_id": "dated-event:1",
+        "sources": [{"source_id": "original", "version_id": "original-version", "as_of": original_at,
+                     "source_type": "computed_metric", "data": {"current": 1}}]}
     later = {**original, "title": "后续更正", "body": "新证据改变了判断", "recorded_at": later_at,
         "event_version_id": "dated-event:2", "follow_up": "resolved"}
     with get_session_factory()() as session:
@@ -34,7 +37,8 @@ def test_historical_update_route_keeps_original_judgment_without_later_withdrawa
         session.commit()
 
     path = f"/api/research/runs/historical-update-run/dossier/{instrument_id}"
-    response = client.get(path, params={"update_id": "event:dated-event:1"})
+    params = {"source_metadata_only": source_metadata_only}
+    response = client.get(path, params={**params, "update_id": "event:dated-event:1"})
     assert response.status_code == 200, response.text
     record = response.json()["value"]
     assert record["title"] == original["title"] and record["body"] == original["body"]
@@ -43,7 +47,20 @@ def test_historical_update_route_keeps_original_judgment_without_later_withdrawa
     assert not {"withdrawn", "withdrawal_reason", "withdrawn_at", "superseded"}.intersection(record)
     assert "later-only-withdrawal-reason" not in response.text
     assert "新证据改变了判断" not in response.text
-    assert client.get(path, params={"update_id": "event:dated-event:2"}).status_code == 404
+    assert len(record["sources"]) == 1
+    source = record["sources"][0]
+    assert (source["source_id"], source["version_id"], source["as_of"]) == ('original', 'original-version', original_at)
+    if source_metadata_only:
+        assert 'measurement' not in source
+    else:
+        assert source['measurement']['current'] == 1
+    assert client.get(path, params={**params, "update_id": "event:dated-event:2"}).status_code == 404
+    assert client.get(path.replace(instrument_id, 'unbound'), params={**params, "update_id": "event:dated-event:1"}).status_code == 404
+    if source_metadata_only:
+        for selector in ({}, {"source_id": "original"}, {"version_id": "pm:original:1"}):
+            assert client.get(path, params={**params, **selector}).status_code == 422
+        for selector in ({"source_id": "original"}, {"version_id": "pm:original:1"}):
+            assert client.get(path, params={**params, "update_id": "event:dated-event:1", **selector}).status_code == 422
 
 
 @pytest.mark.parametrize('source_metadata_only', [False, True])

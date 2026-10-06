@@ -551,10 +551,13 @@ def run_computed_source(run_id: str, source_id: str, session: Session = Depends(
 
 @router.get("/research/runs/{run_id}/dossier/{instrument_id}")
 def run_dossier(run_id: str, instrument_id: str, source_id: str | None = None, version_id: str | None = None, update_id: str | None = None,
-                session: Session = Depends(get_db_session)):
+                source_metadata_only: bool = False, session: Session = Depends(get_db_session)):
     from watchlist_app.services.research_notebook import dossier_outline, dossier_source
     from watchlist_app.services.research_run_context import load_run_fields
-    record = load_run_fields(session, run_id, {"sector_run", "research_run", "cutoff", "research_dossiers"})
+    if source_metadata_only and (not update_id or source_id or version_id):
+        raise HTTPException(422, "来源索引模式只用于读取单个研究更新；原文和底稿版本仍需完整读取")
+    record = load_run_fields(session, run_id, {"sector_run", "research_run", "cutoff", "research_dossiers"},
+                             summary_only=source_metadata_only)
     if not (record.context_json.get("sector_run") or record.context_json.get("research_run")):
         raise HTTPException(404, "本轮研究没有该标的的档案快照")
     dossier = next((d for d in record.context_json.get("research_dossiers", []) if d["instrument_id"] == instrument_id), None)
@@ -564,15 +567,21 @@ def run_dossier(run_id: str, instrument_id: str, source_id: str | None = None, v
         if sum(bool(value) for value in (source_id, version_id, update_id)) > 1:
             raise ValueError("请选择一个原文、底稿版本或研究更新读取")
         if update_id:
-            from watchlist_app.services.research_activity import resolve_research_update
+            from watchlist_app.services.research_activity import research_activity, resolve_research_update
             from watchlist_app.services.research_identity import run_identity
-            update = resolve_research_update(session, instrument_id, update_id, actor=run_identity(record.context_json))
+            actor = run_identity(record.context_json)
+            activity = research_activity(session, instrument_id, actor=actor, source_metadata_only=True) if source_metadata_only else None
+            update = resolve_research_update(session, instrument_id, update_id, actor=actor, activity=activity)
             if datetime.fromisoformat(update["recorded_at"]) > datetime.fromisoformat(record.context_json["cutoff"]):
                 raise ValueError("该研究更新在本轮截止时间之后形成，请在新一轮读取")
             # Current supersession/withdrawal flags may reflect later research.
             # Return the dated record, without asserting its state at an earlier cutoff.
-            return {"kind": "research_update", "value": {key: value for key, value in update.items()
-                    if key not in {"superseded", "withdrawn", "withdrawal_reason", "withdrawn_at"}}}
+            value = {key: value for key, value in update.items()
+                     if key not in {"superseded", "withdrawn", "withdrawal_reason", "withdrawn_at"}}
+            if source_metadata_only:
+                from watchlist_app.services.research_read_projection import source_index
+                value["sources"] = [source_index(source) for source in value.get("sources", [])]
+            return {"kind": "research_update", "value": value}
         if version_id:
             from watchlist_app.services.research_dossier import read_dossier_version
             from watchlist_app.services.research_identity import run_identity

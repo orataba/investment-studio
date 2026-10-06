@@ -594,7 +594,8 @@ def test_sparse_reflection_reads_inherited_original_before_review_without_expand
             return deepcopy(context)
         if suffix.startswith("dossier/stock?"):
             from urllib.parse import parse_qs, urlsplit
-            assert parse_qs(urlsplit(suffix).query) == {"update_id": [original_update["update_id"]]}
+            assert parse_qs(urlsplit(suffix).query) == {"update_id": [original_update["update_id"]],
+                                                       "source_metadata_only": ["true"]}
             reads.append(suffix)
             return {"kind": "research_update", "value": deepcopy(original_update)}
         assert suffix == "sector-evidence"
@@ -820,7 +821,7 @@ def test_reflection_original_sources_join_selected_evidence_once(monkeypatch):
         query = parse_qs(urlsplit(suffix).query)
         calls.append(query)
         if "update_id" in query:
-            return {"value": original}
+            return {"value": {**original, "sources": [review._source_index(source)]}}
         assert query == {"source_id": [source["source_id"]]}
         return source
     monkeypatch.setattr(review, "_api_request", api)
@@ -828,7 +829,8 @@ def test_reflection_original_sources_join_selected_evidence_once(monkeypatch):
     packet = review._evidence_packet(context, [{"instrument_id": "xlk", "events": [], "reflection": {
         "status": "reviewed", "summary": "核对原判断", "reviewed_update_ids": [original["update_id"]]}}], "bounded-run")
 
-    assert calls == [{"update_id": [original["update_id"]]}, {"source_id": [source["source_id"]]}]
+    assert calls == [{"update_id": [original["update_id"]], "source_metadata_only": ["true"]},
+                     {"source_id": [source["source_id"]]}]
     assert packet["sources"] == [source]
     assert packet["prior_research_updates"][0]["body"] == original["body"]
     assert packet["prior_research_updates"][0]["sources"][0]["source_id"] == source["source_id"]
