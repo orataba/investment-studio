@@ -338,7 +338,9 @@ def _raw_market(instrument, cutoff, store, as_of_date):
     info = store.latest("etf_info", symbols=[symbol], as_of=cutoff)["rows"] if holdings else []
     # This read horizon covers 63 daily returns, 50-observation breadth and 1M endpoints. All rows are
     # paged, not silently truncated when the fund holds many securities.
-    prices = all_rows(store, "us_eod_daily", symbols=symbols, as_of=cutoff,
+    # Use NumericStore.query's full page capacity: each page scans and ranks the
+    # same retained files. all_rows still follows every page for larger baskets.
+    prices = all_rows(store, "us_eod_daily", symbols=symbols, as_of=cutoff, page_size=100000,
         start=(as_of_date - timedelta(days=200)).isoformat(), end=as_of_date.isoformat())
     calendar = (instrument.source_settings_json or {}).get("market_calendar") or instrument.exchange_code
     prices = [r for r in prices if _completed(date.fromisoformat(r["date"]), calendar, cutoff)]
