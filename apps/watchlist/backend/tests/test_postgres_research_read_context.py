@@ -94,3 +94,44 @@ def test_malformed_retained_scope_is_preserved_and_does_not_become_public(postgr
         assert session.scalar(select(ResearchEntry.read_context_json).where(ResearchEntry.entry_id == "malformed-run")) == malformed
         with pytest.raises(DataError):
             topic_portfolio_ids_by_topic(session, [topic])
+
+
+def test_reference_validation_reads_exact_judgment_metadata_without_decoding_retained_sources(postgres_watchlist_env):
+    from datetime import datetime
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from watchlist_app.db.models.workbench import ResearchTopic
+    from watchlist_app.services.research_activity import research_activity
+
+    iid = postgres_watchlist_env['instrument_id']
+    clock = '2026-09-27T00:00:00+00:00'
+    source = {'source_id': 'computed:original', 'source_type': 'computed_metric',
+        'title': 'Original evidence', 'sources': [{'text': 'unneeded-validation-original' * 10000}]}
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id='validation-reference', title='Original judgment', visibility='team'))
+        session.flush()
+        session.add(ResearchEntry(entry_id='validation-original', topic_id='validation-reference',
+            kind='analysis', title='Original judgment', status='completed', completed_at=datetime.fromisoformat(clock),
+            context_json={'research_run': True, 'instrument_ids': [iid], 'cutoff': clock,
+                'reviews': {iid: {'status': 'completed', 'research': {'version_id': 'original-notebook',
+                    'sources': [source], 'forecasts': [{'key': 'capacity', 'version_id': 'original-forecast',
+                        'theme_id': 'original-theme', 'claim': 'Retained\u0000judgment', 'horizon': 'Next disclosure',
+                        'updated_at': clock, 'source_ids': [source['source_id']]}]}}}}))
+        session.commit()
+
+    def deserialize(value):
+        if isinstance(value, bytes):
+            value = value.decode()
+        assert 'unneeded-validation-original' not in value
+        return json.loads(value)
+    engine = create_engine(get_engine().url, json_deserializer=deserialize,
+        connect_args={'options': '-c search_path=watchlist,instrument_data,public -c default_transaction_read_only=on'})
+    try:
+        with Session(engine) as session:
+            updates = research_activity(session, iid, source_metadata_only=True)['updates']
+            original = next(row for row in updates if row['update_id'] == 'research:original-forecast')
+            assert original['body'] == 'Retained\u0000judgment' and original['recorded_at'] == clock
+            assert original['run_id'] == 'validation-original' and original['theme_ids'] == ['original-theme']
+            assert original['reference']['forecast_version_id'] == 'original-forecast'
+    finally:
+        engine.dispose()

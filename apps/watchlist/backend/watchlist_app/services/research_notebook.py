@@ -10,7 +10,10 @@ from watchlist_app.services.market_evidence import hydrate_source, retained_sour
 
 
 class ResearchCatalyst(BaseModel):
-    theme_id: str | None = None
+    theme_id: str | None = Field(default=None, description=
+        "Required for an effective status=scheduled catalyst: use an active theme in this instrument's bound dossier, "
+        "or the theme_key of a new active theme in the same reviews[].themes submission. "
+        "Omit in a sparse update to retain the existing binding; existing theme lifecycle rules still apply.")
     key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     title: str = Field(min_length=1, max_length=250)
     scheduled_at: str = Field(description="YYYY-MM-DD日期，或含数字时区偏移的ISO8601时间。不得包含ET/盘前等缩写、括号或解释；说明写入relevance。",
@@ -38,7 +41,10 @@ from watchlist_app.services.sector_estimates import retained_estimate_sources
 
 class ResearchQuestion(BaseModel):
     module_key: str | None = None
-    theme_id: str | None = None
+    theme_id: str | None = Field(default=None, description=
+        "Required for an effective tracking_status=active question: use an active theme in this instrument's bound dossier, "
+        "or the theme_key of a new active theme in the same reviews[].themes submission. "
+        "Omit in a sparse update to retain the existing binding; evidence status does not end active tracking.")
     event_key: str | None = None
     pm_note_id: str | None = None
     pm_note_revision: int | None = Field(default=None, ge=1)
@@ -159,7 +165,10 @@ class ResearchChange(BaseModel):
 
 
 class ResearchForecast(BaseModel):
-    theme_id: str | None = None
+    theme_id: str | None = Field(default=None, description=
+        "Required for an effective status=active forecast: use an active theme in this instrument's bound dossier, "
+        "or the theme_key of a new active theme in the same reviews[].themes submission. "
+        "Omit in a sparse update to retain the existing binding; reviews of earlier forecasts retain their original references.")
     event_key: str | None = None
     key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     claim: str = Field(min_length=1, max_length=4000)

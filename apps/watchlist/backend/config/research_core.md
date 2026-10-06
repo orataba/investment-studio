@@ -410,7 +410,12 @@ observation conditions. A pending or failed risk assessment is not a completed r
 publish. Opportunity-only and merely uncertain/watch events are not confirmed risk cases.
 
 The instrument activity and each theme thread are projections of these SAME published records; do not submit
-duplicate prose for each display surface. Link questions/forecasts/reviews/lessons with theme_id/event_key where useful.
+duplicate prose for each display surface. Questions with effective tracking_status=active, forecasts with effective
+status=active, and catalysts with effective status=scheduled require theme_id. Use an active theme from this
+instrument's bound dossier, or the theme_key of a new active theme in the same reviews[].themes submission.
+Sparse updates may omit theme_id to retain the existing binding. Preserve the existing theme lifecycle and
+historical-reference rules; reviews and lessons may link theme_id/event_key where useful. This requirement does
+not make a theme mandatory for independent short-term event follow-up.
 
 Use read_research_numbers(action="observations", instrument_id=...) for the applicable fixed daily panel;
 use action="event_reaction" with a verified event_date and no guessed event_timing for daily market reactions.

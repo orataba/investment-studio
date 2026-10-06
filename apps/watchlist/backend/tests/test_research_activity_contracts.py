@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import pytest
 
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic, RiskCase
 from watchlist_app.db.session import get_session_factory
@@ -45,7 +46,8 @@ def test_historical_update_route_keeps_original_judgment_without_later_withdrawa
     assert client.get(path, params={"update_id": "event:dated-event:2"}).status_code == 404
 
 
-def test_forecast_review_and_lesson_inherit_original_version_theme_after_forecast_changes(activity_client):
+@pytest.mark.parametrize('source_metadata_only', [False, True])
+def test_forecast_review_and_lesson_inherit_original_version_theme_after_forecast_changes(activity_client, source_metadata_only):
     client = activity_client
     themes = [client.post("/api/research/instruments/xlk/themes", json={"title": title, "question": title}).json()
               for title in ("原融资判断", "新的经营问题")]
@@ -63,7 +65,7 @@ def test_forecast_review_and_lesson_inherit_original_version_theme_after_forecas
             "lessons": [{"key": "capacity-lesson", "forecast_key": "capacity", "forecast_version_id": version_id,
                 "lesson": "融资完成不等于产能约束已经解除", "source_ids": ["original"]}],
         })
-        updates = research_activity(session, "xlk")["updates"]
+        updates = research_activity(session, "xlk", source_metadata_only=source_metadata_only)["updates"]
         reflected = [row for row in updates if row["kind"] in {"review", "lesson"}]
         assert {row["kind"] for row in reflected} == {"review", "lesson"}
         for row in reflected:
@@ -78,7 +80,8 @@ def test_forecast_review_and_lesson_inherit_original_version_theme_after_forecas
     assert expected_ids.isdisjoint({row["update_id"] for row in projected[later_theme]["updates"]})
 
 
-def test_review_inherits_theme_through_pm_opinion_without_retargeting_old_event(activity_client):
+@pytest.mark.parametrize('source_metadata_only', [False, True])
+def test_review_inherits_theme_through_pm_opinion_without_retargeting_old_event(activity_client, source_metadata_only):
     client = activity_client
     themes = [client.post("/api/research/instruments/xlk/themes", json={"title": title, "question": title}).json()
               for title in ("融资条款的最初影响", "后续资金运用")]
@@ -97,7 +100,7 @@ def test_review_inherits_theme_through_pm_opinion_without_retargeting_old_event(
         publish(session, events=[event(action="updated", theme_ids=[later_theme], body="新的披露转向资金使用效果")])
         publish(session, research={"forecast_reviews": [{"key": "pm-financing-review",
             "related_research_update_id": opinion_id, "outcome": "PM当时的判断仍需经营数据验证", "source_ids": ["original"]}]})
-        updates = research_activity(session, "xlk")["updates"]
+        updates = research_activity(session, "xlk", source_metadata_only=source_metadata_only)["updates"]
         reviewed = next(row for row in updates if row["kind"] == "review")
         opinion = resolve_research_update(session, "xlk", opinion_id)
         retained_event = resolve_research_update(session, "xlk", original["update_id"])

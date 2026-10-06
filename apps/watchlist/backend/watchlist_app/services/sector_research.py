@@ -956,7 +956,9 @@ def _previously_recorded_progress(case, item, sources):
 
 
 def _theme_scope(session, run, review):
-    from watchlist_app.services.research_themes import analyst_theme_target, analyst_theme_values, theme_index
+    from watchlist_app.services.research_themes import (
+        analyst_theme_target, analyst_theme_values, theme_summaries, get_theme, _lifecycle_owner,
+    )
     from watchlist_app.services.research_identity import research_identity
     team_id = research_identity()["team_id"]
     dossier = next((d for d in run.context_json.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
@@ -964,7 +966,13 @@ def _theme_scope(session, run, review):
     keys = [item.theme_key for item in review.themes]
     if len(keys) != len(set(keys)):
         raise ValueError("同一关注主题在本轮重复出现")
-    current_themes = theme_index(session, review.instrument_id) if review.themes else []
+    current_themes = theme_summaries(session, review.instrument_id)["themes"] if review.themes else []
+    # Current identity/content is enough to validate a sparse theme update. A
+    # legacy inactive theme without recorded ownership still needs its exact
+    # status transitions, so retain that narrow lifecycle authority check.
+    for theme in current_themes:
+        if theme["status"] != "active" and theme.get("lifecycle_owner") is None:
+            theme["lifecycle_owner"] = _lifecycle_owner(get_theme(session, review.instrument_id, theme["theme_id"]).context_json)
     normalized = lambda value: " ".join(value.split()).casefold()
     for update in review.themes:
         previous = analyst_theme_target(session, review.instrument_id, update, themes=current_themes)
@@ -1023,7 +1031,9 @@ def _validate_research_links(session, run, review, themes):
             from watchlist_app.services.research_activity import research_activity
             # One authorized, instrument-bound history per validation, not one
             # full notebook/theme reconstruction for every cited judgment.
-            activity = research_activity(session, review.instrument_id)
+            # IDs, clocks and thematic links are exact in the compact notebooks.
+            # Citation validation separately uses the run's original evidence.
+            activity = research_activity(session, review.instrument_id, source_metadata_only=True)
         return _validate_update_reference(session, run, review.instrument_id, update_id,
                                           judgment=True, field=field, activity=activity)
 
@@ -1038,14 +1048,18 @@ def _validate_research_links(session, run, review, themes):
     if review.research is not None:
         view = review.research.investment_view
         if view is not None:
-            for item in [*(getattr(view, "opportunities", None) or []), *(getattr(view, "risks", None) or [])]:
-                for theme_id in item.theme_ids:
-                    check_theme(theme_id, field=f"research.investment_view[key={item.key}].theme_ids", retained_reference=True)
-                if not set(item.event_keys).issubset(event_keys):
-                    raise ValueError("机会或风险引用的事件不属于当前标的")
-                bound_events = {row["event_key"] for row in context.get("prior_events", []) if row["instrument_id"] == review.instrument_id}
-                if not set(item.event_keys).issubset(bound_events | {row.event_key for row in review.events}):
-                    raise ValueError("机会或风险引用了本轮未读取的事件，请先绑定当前事件版本")
+            for field in ("opportunities", "risks"):
+                for item in getattr(view, field, None) or []:
+                    location = f"research.investment_view.{field}[key={item.key}]"
+                    for theme_id in item.theme_ids:
+                        check_theme(theme_id, field=f"{location}.theme_ids", retained_reference=True)
+                    invalid = set(item.event_keys) - event_keys
+                    if invalid:
+                        raise ValueError(f"{location}.event_keys: 机会或风险引用的事件不属于当前标的：{', '.join(sorted(invalid))}")
+                    bound_events = {row["event_key"] for row in context.get("prior_events", []) if row["instrument_id"] == review.instrument_id}
+                    unread = set(item.event_keys) - (bound_events | {row.event_key for row in review.events})
+                    if unread:
+                        raise ValueError(f"{location}.event_keys: 机会或风险引用了本轮未读取的事件，请先绑定当前事件版本：{', '.join(sorted(unread))}")
         forecast_versions = _forecast_versions(dossier.get("notebook") or {})
         for field in ("questions", "forecasts", "forecast_reviews", "lessons", "catalysts"):
             previous = {item["key"]: item for item in (dossier.get("notebook") or {}).get(field, [])}
@@ -1062,7 +1076,7 @@ def _validate_research_links(session, run, review, themes):
                     and themes.get(row["theme_id"], {}).get("theme_id", row["theme_id"]) == prior.get("theme_id"))
                 check_theme(row.get("theme_id"), field=f"{location}.theme_id", retained_reference=bool(retained_question))
                 if active and not row.get("theme_id"):
-                    raise ValueError("持续跟踪的问题和量化判断必须归入重点主题；请关联或建立主题，避免独立跟进事项。")
+                    raise ValueError(f"{location}.theme_id: 持续跟踪的问题、量化判断和预定催化剂必须归入重点主题；请关联或建立主题，避免独立跟进事项。")
                 if row.get("event_key") and row["event_key"] not in event_keys:
                     raise ValueError("研究判断关联的事件不属于当前标的")
                 if row.get("related_research_update_id"):
@@ -1258,7 +1272,9 @@ def validate_result(session, run, parsed: ReviewResult):
                             or data.get("analysis_kind") != "event_market_reaction"):
                         raise ValueError("市场反应必须引用当前标的留存的事件窗口计算")
                     if data.get("status") != reaction.status:
-                        raise ValueError("市场反应可用状态必须与留存计算一致")
+                        raise ValueError(f"events[event_key={item.event_key}].market_reaction.status: "
+                            f"市场反应可用状态必须与留存计算一致；提交 {reaction.status}，"
+                            f"来源 {sid} 的留存状态为 {data.get('status')}。")
                     factual_time = effective.occurred_at or effective.published_at
                     if existing:
                         previous = existing.evidence_json or {}

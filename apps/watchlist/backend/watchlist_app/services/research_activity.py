@@ -171,7 +171,7 @@ def question_progress_value(question):
         "evidence_for", "evidence_against", "pm_note_id", "pm_note_revision")}
 
 
-def _notebook_updates(session, iid, events, *, theme_progress=None, actor=None):
+def _notebook_updates(session, iid, events, *, theme_progress=None, actor=None, source_metadata_only=False):
     from watchlist_app.services.research_dossier import _research_records
     from watchlist_app.services.sector_research import _source_views
     updates, previous, chains = [], {}, {}
@@ -185,7 +185,7 @@ def _notebook_updates(session, iid, events, *, theme_progress=None, actor=None):
     }
     metadata = {"version_id", "versions", "created_at", "updated_at", "source_run_id", "publication"}
     progress_last = {}
-    for run, notebook in _research_records(session, iid, oldest_first=True):
+    for run, notebook in _research_records(session, iid, oldest_first=True, source_metadata_only=source_metadata_only):
         if theme_progress is not None and (current_principal().local_unrestricted or run.team_id == actor["team_id"]):
             for question in notebook.get("questions", []):
                 theme_id = question.get("theme_id")
@@ -336,11 +336,13 @@ def _opinion_updates(session, iid, actor):
     return updates
 
 
-def research_activity(session, instrument_id, *, actor=None, include_recent_events=False, include_theme_progress=False):
+def research_activity(session, instrument_id, *, actor=None, include_recent_events=False, include_theme_progress=False,
+                      source_metadata_only=False):
     actor = actor or research_identity()
     events = _event_updates(session, instrument_id)
     theme_progress = {} if include_theme_progress else None
-    updates = [*events, *_notebook_updates(session, instrument_id, events, theme_progress=theme_progress, actor=actor),
+    updates = [*events, *_notebook_updates(session, instrument_id, events, theme_progress=theme_progress, actor=actor,
+                                        source_metadata_only=source_metadata_only),
                *_theme_updates(session, instrument_id, actor), *_opinion_updates(session, instrument_id, actor)]
     by_id = {row["update_id"]: row for row in updates}
     for row in sorted(updates, key=lambda row: row["recorded_at"]):

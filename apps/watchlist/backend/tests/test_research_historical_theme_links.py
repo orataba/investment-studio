@@ -48,7 +48,7 @@ def test_prior_judgment_reference_preserves_cutoff_and_kind_checks(research_clie
     run, themes = bound_run()
     original = {'kind': 'forecast', 'run_id': 'prior-run', 'recorded_at': '2026-09-26T00:00:00+00:00',
                 'reference': {'theme_id': 'old-theme'}}
-    monkeypatch.setattr(research_activity, 'research_activity', lambda *args: {
+    monkeypatch.setattr(research_activity, 'research_activity', lambda *args, **kwargs: {
         'instrument_id': 'fund-us-agg', 'updates': [{'update_id': 'research:prior', **original}]})
     if field == 'reflection':
         submission = review(reflection={'status': 'reviewed', 'reviewed_update_ids': ['research:prior']})
@@ -77,7 +77,8 @@ def test_multiple_references_share_one_authorized_history_only_within_validation
     activity = {'instrument_id': 'fund-us-agg', 'updates': originals}
     before = deepcopy(activity)
     reads = []
-    def read_activity(session, instrument_id):
+    def read_activity(session, instrument_id, *, source_metadata_only=False):
+        assert source_metadata_only is True
         reads.append(instrument_id)
         return deepcopy(activity)
     monkeypatch.setattr(research_activity, 'research_activity', read_activity)
@@ -99,6 +100,27 @@ def test_multiple_references_share_one_authorized_history_only_within_validation
         with pytest.raises(ValueError, match='本轮开始前'):
             sector_research._validate_research_links(session, run, submission, themes)
         assert reads == ['fund-us-agg', 'fund-us-agg']
+
+
+def test_invalid_view_event_error_identifies_the_item_and_reference(research_client):
+    run, themes = bound_run()
+    submission = review(research={'investment_view': {'opportunities': [
+        {'key': 'capacity-opportunity', 'title': '产能兑现', 'explanation': '需要后续披露', 'next_watch': '核对公告',
+         'event_keys': ['unknown-event']}]}})
+    with get_session_factory()() as session, pytest.raises(ValueError) as raised:
+        sector_research._validate_research_links(session, run, submission, themes)
+    message = str(raised.value)
+    assert 'research.investment_view.opportunities[key=capacity-opportunity].event_keys' in message
+    assert 'unknown-event' in message and '当前标的' in message
+
+
+def test_missing_catalyst_theme_error_identifies_the_scheduled_item(research_client):
+    run, themes = bound_run()
+    submission = review(research={'catalysts': [{'key': 'calendar-release', 'title': '下次披露',
+        'scheduled_at': '2026-09-30', 'relevance': '检验原判断', 'next_check': '核对公告', 'source_ids': ['calendar']}]})
+    with get_session_factory()() as session, pytest.raises(ValueError) as raised:
+        sector_research._validate_research_links(session, run, submission, themes)
+    assert 'research.catalysts[key=calendar-release].theme_id' in str(raised.value)
 
 
 @pytest.mark.parametrize('field,item', [

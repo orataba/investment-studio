@@ -86,15 +86,16 @@ def test_submission_resolves_theme_batch_once_and_reloads_next_validation(resear
             {'instrument_id': 'fund-us-agg', 'themes': originals}]})
         updates = [{'theme_id': item['theme_id'], 'theme_key': item['theme_key']} for item in (first, second)]
         review = sector_research.SectorReview.model_validate({'instrument_id': 'fund-us-agg', 'themes': updates})
-        read_index, reads = research_themes.theme_index, []
+        read_index, reads = research_themes.theme_summaries, []
         def tracked(session, instrument_id, **kwargs):
             reads.append(instrument_id)
             return read_index(session, instrument_id, **kwargs)
-        monkeypatch.setattr(research_themes, 'theme_index', tracked)
+        monkeypatch.setattr(research_themes, 'theme_summaries', tracked)
         resolved = sector_research._theme_scope(session, run, review)
         assert reads == ['fund-us-agg']
         for item in originals:
-            assert resolved[item['theme_id']] == {**item, '_closing_in_run': False}
+            assert resolved[item['theme_id']] == {**{key: value for key, value in item.items() if key != 'versions'},
+                                                  '_closing_in_run': False}
         bad = research_themes.AnalystThemeUpdate(theme_id=foreign['theme_id'], theme_key=foreign['theme_key'])
         with pytest.raises(ValueError, match='本标的'):
             research_themes.analyst_theme_target(session, 'fund-us-agg', bad, themes=originals)
@@ -108,6 +109,31 @@ def test_submission_resolves_theme_batch_once_and_reloads_next_validation(resear
         with pytest.raises(ValueError, match='已固定'):
             sector_research._theme_scope(session, run, changed)
         assert reads == ['fund-us-agg']
+
+
+def test_theme_scope_preserves_legacy_inactive_lifecycle_owner(research_client):
+    from types import SimpleNamespace
+    from watchlist_app.db.models.workbench import ResearchEntry
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services import research_themes, sector_research
+
+    theme = _theme(research_client)
+    with get_session_factory()() as session:
+        entry = session.get(ResearchEntry, theme['theme_id'])
+        context = {**entry.context_json, 'theme_status': 'paused', 'updated_by_role': 'researcher',
+            'versions': [{'status': 'active', 'updated_by_role': 'researcher'},
+                         {'status': 'paused', 'updated_by_role': 'user'}]}
+        context.pop('lifecycle_owner', None)
+        entry.context_json = context
+        session.commit()
+        originals = research_themes.theme_index(session, 'fund-us-agg')
+        assert originals[0]['lifecycle_owner'] == 'user'
+        run = SimpleNamespace(context_json={'sector_run': True, 'research_dossiers': [
+            {'instrument_id': 'fund-us-agg', 'themes': originals}]})
+        review = sector_research.SectorReview.model_validate({'instrument_id': 'fund-us-agg', 'themes': [
+            {'theme_id': theme['theme_id'], 'theme_key': theme['theme_key'], 'status': 'active'}]})
+        with pytest.raises(ValueError, match='投资经理已暂停'):
+            sector_research._theme_scope(session, run, review)
 
 
 def test_analyst_theme_stable_key_closure_and_user_takeover(research_client):

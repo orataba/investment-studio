@@ -135,6 +135,13 @@ def test_market_views_and_reaction_survive_publication_history_and_exact_source_
         metric = {"source_id": "computed:reaction", "source_type": "computed_metric", "scope": "instrument", "instrument_id": "xlk",
             "as_of": run.context_json["cutoff"], "methodology": "固定样例：事件后完整日频窗口。", "data": {"analysis_kind": "event_market_reaction", "status": "available", "event_date": "2026-01-01", "target_return_pct": 1.2}}
         run.context_json = {**run.context_json, "computed_metrics": [metric]}
+        with pytest.raises(ValueError) as raised:
+            publish(session, run, published_at="2026-01-01",
+                market_reaction={"status": "partial", "figure_source_ids": [metric["source_id"]]})
+        message = str(raised.value)
+        assert "events[event_key=new-policy].market_reaction.status" in message
+        assert "computed:reaction" in message and "提交 partial" in message and "available" in message
+        assert session.scalar(select(RiskCase).where(RiskCase.signal == "sector:new-policy")) is None
         case = publish(session, run, published_at="2026-01-01", market_views=[{"publisher": "独立研究机构", "published_at": "2026-01-01",
             "view": "这项政策可能影响现金流，尚有分歧。", "source_ids": ["web-one"]}],
             market_reaction={"status": "available", "figure_source_ids": [metric["source_id"]], "explanation": "同期表现不能证明事件因果。"})
