@@ -197,7 +197,7 @@ export type ResearchThemesResponse = {
   active_limit?: number; target_count?: number
 }
 const themesPath = (instrumentId: string) => `/api/research/instruments/${encodeURIComponent(instrumentId)}/themes`
-export function getResearchThemes(instrumentId: string, signal?: AbortSignal, includeHistory = true) {
+export function getResearchThemes(instrumentId: string, signal?: AbortSignal, includeHistory = false) {
   return fetchJson<ResearchThemesResponse>(`${themesPath(instrumentId)}${includeHistory ? '' : '?include_history=false'}`, { signal })
 }
 export function getResearchTheme(instrumentId: string, themeId: string, signal?: AbortSignal) {
