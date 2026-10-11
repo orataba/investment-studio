@@ -20,7 +20,12 @@ def get_shared_no_trade_evidence(
     symbol = next((str(row.get("identifier_value", ""))[4:] for row in identifiers
                    if row.get("identifier_type") == "provider_symbol"
                    and str(row.get("identifier_value", "")).startswith("fmp:")), None)
-    raw_close = next((row.get("value") for row in instrument.get("market_data", [])
+    # Reconciliation reads bounded Registry summaries; detail recalculation reads
+    # history. Both carry the latest close, under their respective contracts.
+    market_data = instrument.get("market_data")
+    if not isinstance(market_data, list):
+        market_data = instrument.get("latest_market_data") or []
+    raw_close = next((row.get("value") for row in market_data
                       if row.get("metric_family") == "price" and row.get("quote_basis") == "close"
                       and str(row.get("as_of_date")) == latest_date.isoformat()
                       and row.get("currency") == instrument.get("currency") and row.get("status") == "complete"), None)
