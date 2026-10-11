@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 import re
-import signal
 import subprocess
 from studio_identity import resolve_token, revoke_delegation
+from studio_runtime.processes import stop_process_group as _stop_process_group
 from portfolio_app.services.portfolio_access import require_access
 
 from portfolio_app.core.settings import get_settings
@@ -18,18 +19,6 @@ from portfolio_app.services.transaction_captures import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 HARNESS_RUNNER = BACKEND_ROOT / "scripts" / "run_portfolio_copilot_harness.sh"
-
-
-def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-        process.wait(timeout=5)
-    except (ProcessLookupError, subprocess.TimeoutExpired):
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
 
 
 def _harness_failure(stderr: str, return_code: int) -> str:
@@ -65,10 +54,18 @@ def _run_harness_process(*, portfolio_id: str, batch_id: str, run_token: str) ->
             timeout=get_settings().copilot_analysis_timeout_seconds,
         )
         return process.returncode, False, _harness_failure(stderr, process.returncode) if process.returncode else None
-    except subprocess.TimeoutExpired:
-        _stop_process_group(process)
-        process.communicate()
-        return process.returncode or -1, True, None
+    except BaseException as exc:
+        try:
+            _stop_process_group(process)
+        except Exception as cleanup_error:
+            logging.getLogger(__name__).error(
+                "Harness process-group cleanup failed (%s)", type(cleanup_error).__name__)
+        if isinstance(exc, subprocess.TimeoutExpired):
+            return process.returncode or -1, True, None
+        raise
+    finally:
+        # Timeout output is not used. Do not wait again for inherited pipes.
+        process.stderr.close()
 
 
 def run_transaction_capture_analysis(

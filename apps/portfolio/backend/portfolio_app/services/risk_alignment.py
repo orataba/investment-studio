@@ -77,9 +77,6 @@ def align_risk_navs(
         aligned_by_key[key] = aligned.reindex(index)
     navs = pd.DataFrame(aligned_by_key, index=index)
     returns = navs.pct_change(fill_method=None)
-    returns.attrs["return_period_starts"] = {
-        day.isoformat(): previous.isoformat() for previous, day in zip(index, index[1:])
-    }
     for key, ends in invalid_return_ends.items():
         returns.loc[returns.index.isin(ends), key] = np.nan
     for key, contract in (return_contracts_by_key or {}).items():
@@ -99,4 +96,9 @@ def align_risk_navs(
                     and return_interval_unavailable_reason(source_start, source_end, source_settings=contract,
                                                            quote_basis=contract.get("quote_basis"))):
                 returns.at[end, key] = np.nan
+    # Attach interval metadata only after matrix operations. Pandas propagates
+    # attrs by deepcopy even on temporary column selections and masks.
+    returns.attrs["return_period_starts"] = {
+        day.isoformat(): previous.isoformat() for previous, day in zip(index, index[1:])
+    }
     return navs, returns

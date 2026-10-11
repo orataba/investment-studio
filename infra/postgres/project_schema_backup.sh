@@ -356,6 +356,14 @@ investment_studio_create_project_schema_backup() {
       rm -rf "$work_dir" "$backup_path" "$manifest_path" "$checksum_path" "$manifest_checksum_path"
       return 1
     fi
+    # A readable TOC and checksum do not prove compressed table data decodes.
+    # Check the full archive before any caller can mark backup complete or
+    # begin migrations. Never materialize the SQL stream in memory or on disk.
+    if ! "$pg_restore_bin" --file=/dev/null "$backup_path"; then
+      echo "Project-schema backup failed complete archive decoding." >&2
+      rm -rf "$work_dir" "$backup_path" "$manifest_path" "$checksum_path" "$manifest_checksum_path"
+      return 1
+    fi
   else
     printf '%s\n' '# No project schemas existed before this operation.' > "$manifest_path"
     backup_path=""

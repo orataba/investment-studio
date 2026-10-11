@@ -30,6 +30,8 @@ AUDIT_RUNNER="$PROJECT_ROOT/infra/scripts/audit_live_data.py"
 SNAPSHOT_REFRESH_RUNNER="$PROJECT_ROOT/apps/portfolio/backend/scripts/refresh_release_snapshots.py"
 WATCHLIST_REFRESH_RUNNER="$PROJECT_ROOT/apps/watchlist/backend/scripts/refresh_release_watchlists.py"
 CATALOG_REFRESH_RUNNER="$PROJECT_ROOT/shared-data/scripts/refresh_release_catalogs.py"
+FMP_RECONCILE_SCOPE="${INVESTMENT_STUDIO_RELEASE_FMP_SCOPE_FILE:-}"
+FMP_RECONCILE_RUNNER="$PROJECT_ROOT/shared-data/scripts/reconcile_release_fmp_prices.py"
 SERVICE_CONTROL="$SCRIPT_DIR/control_local_services.sh"
 LOG_COMPACTOR="$SCRIPT_DIR/compact_local_logs.sh"
 BACKUP_HELPER="$PROJECT_ROOT/infra/postgres/project_schema_backup.sh"
@@ -57,6 +59,8 @@ retired_services=(us-reference-data-refresh)
 if [[ -f "$ENV_ROOT/cloud-sync.json" ]]; then
   services=("${services[@]/market-sync/cloud-sync}")
   retired_services+=(market-sync)
+else
+  retired_services+=(cloud-sync)
 fi
 previous_services=("${services[@]}" "${retired_services[@]}")
 
@@ -77,6 +81,10 @@ for required_executable in "$MIGRATION_RUNNER" "$SERVICE_CONTROL" "$LOG_COMPACTO
     exit 1
   fi
 done
+if [[ -n "$FMP_RECONCILE_SCOPE" && ( ! -r "$FMP_RECONCILE_SCOPE" || ! -f "$FMP_RECONCILE_RUNNER" ) ]]; then
+  echo "Explicit FMP release scope or offline reconciliation helper is unavailable." >&2
+  exit 64
+fi
 for required_file in \
   "$AUDIT_RUNNER" \
   "$CATALOG_REFRESH_RUNNER" \
@@ -389,6 +397,11 @@ investment_studio_load_env_file "$ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
 echo "Refreshing release-required FMP security catalogs."
 PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
   "$PYTHON_BIN" "$CATALOG_REFRESH_RUNNER"
+if [[ -n "$FMP_RECONCILE_SCOPE" ]]; then
+  echo "Replaying the reviewed FMP canonical price scope from immutable local history."
+  PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python:$PROJECT_ROOT/shared-data/market${PYTHONPATH:+:$PYTHONPATH}" \
+    "$PYTHON_BIN" "$FMP_RECONCILE_RUNNER" --scope-file "$FMP_RECONCILE_SCOPE"
+fi
 PYTHONPATH="$PROJECT_ROOT/apps/watchlist/backend:$PROJECT_ROOT/packages/identity:$PROJECT_ROOT/shared-data/instruments/python:$PROJECT_ROOT/shared-data/market${PYTHONPATH:+:$PYTHONPATH}" \
   "$PYTHON_BIN" "$WATCHLIST_REFRESH_RUNNER" --recover-interrupted
 PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \

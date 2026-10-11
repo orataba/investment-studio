@@ -12,6 +12,24 @@ from studio_market.calendars import confirmed_market_closures, closed_market_ses
 
 CalculationFrequency = Literal["daily", "weekly", "monthly", "event_driven", "unknown"]
 
+
+def listed_session_points(points, *, instrument_type, market_calendar):
+    """Historical listed observations must belong to their listing's sessions.
+
+    Fund NAVs are publisher observations, not exchange closes; crypto has its
+    own 24/7 contract. Neither inherits the listed-security filter.
+    """
+    if instrument_type not in {"equity", "etf"} or not points:
+        return points
+    dates = [point["as_of_date"] for point in points]
+    sessions = _market_calendar_sessions(str(market_calendar or ""), min(dates), max(dates))
+    # Unknown schedules retain the existing unverified-frequency semantics;
+    # absence of a calendar is not evidence that an observed date was closed.
+    if sessions is None:
+        return points
+    allowed = set(sessions)
+    return [point for point in points if point["as_of_date"] in allowed]
+
 _MARKET_CALENDAR_ALIASES = {
     # Shenzhen and Shanghai share the mainland trading-session calendar.  The
     # exchange_calendars package currently exposes XSHG but not XSHE.
@@ -81,6 +99,7 @@ def build_calculation_frequency_context(
     *,
     expected_frequency: object = None,
     market_calendar: str | None = None,
+    instrument_type: object = None,
 ) -> dict[str, Any]:
     raw_points = sorted(
         [point for point in nav_points if isinstance(point.get("as_of_date"), date)],
@@ -93,7 +112,8 @@ def build_calculation_frequency_context(
     resolved_frequency = (declared_frequency if declared_frequency in {"daily", "weekly", "monthly", "event_driven"}
         else next(iter(known_source_frequencies)) if len(known_source_frequencies) == 1
         and next(iter(known_source_frequencies)) in {"daily", "weekly", "monthly"} else "daily")
-    calculation_points = raw_points
+    calculation_points = listed_session_points(raw_points, instrument_type=instrument_type,
+                                              market_calendar=market_calendar)
 
     gaps = [
         (calculation_points[index]["as_of_date"] - calculation_points[index - 1]["as_of_date"]).days
@@ -141,6 +161,7 @@ def build_calculation_frequency_context(
         "frequency_source": "source_contract" if declared_frequency else "observation_metadata",
         "return_interval_basis": "actual_observation_endpoints",
         "raw_observation_count": len(raw_points),
+        "excluded_non_session_count": len(raw_points) - len(calculation_points),
         "observation_count": len(calculation_points),
         "start_date": calculation_points[0]["as_of_date"].isoformat() if calculation_points else None,
         "end_date": calculation_points[-1]["as_of_date"].isoformat() if calculation_points else None,

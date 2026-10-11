@@ -134,6 +134,10 @@ runner 都会拒绝任一 backend 目录中存在
 `market.env` 明确 `ROLE=replica`；本地不排入全市场来源采集。Studio 完整数据使用下文的每周
 云端快照同步，市场数值、原始资讯与业务数据在同一次切换中发布。完整同步启用后，停用旧的
 `market-sync` 小时复制计划。安装器发现外部 `cloud-sync.json` 时自动使用完整同步定义。
+如果本地保留独立业务数据，应将完整同步配置移出这个约定路径，并停用、卸载
+`cloud-sync`，使用 `market-sync` 每小时接收公共行情与文本；成功接收行情后会触发
+现有 Regime catch-up。仅禁用完整同步任务而保留配置不会自动恢复公共数据接收。
+安装器只保留选定模式的任务定义，并删除另一模式的旧定义；切换模式前保留私有配置备份。
 Regime 安装器沿用市场 `replica` 角色，只加载 API、清理和由同步成功触发的补算任务；不注册本地每日来源采集或训练。
 `briefing.env` 设置 `EDITION_ROLE=preview`，正式报告的定时器仅在云端启用。
 PostgreSQL 备份还需要配套公开数据目录，详见 [Market Data Pipeline](MARKET_DATA_PIPELINE.md)。

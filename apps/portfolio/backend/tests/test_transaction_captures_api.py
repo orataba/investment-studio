@@ -527,6 +527,9 @@ def test_screenshot_analysis_runner_requires_an_agent_revision(
         queue_transaction_capture_analysis_run,
     )
 
+    revoked = []
+    monkeypatch.setattr(transaction_capture_runner, "revoke_delegation", revoked.append)
+
     capture = _upload_capture(client)
     batch = _create_batch(client, [capture["capture_id"]])
     queued = queue_transaction_capture_analysis_run(
@@ -583,6 +586,7 @@ def test_screenshot_analysis_runner_requires_an_agent_revision(
     assert detail.status_code == 200, detail.text
     assert detail.json()["analysis_run_status"] == expected_status
     assert detail.json()["latest_analysis_revision"] == 1
+    assert revoked == ["test-run:" + batch["batch_id"] + ":1"]
     if source == "assistant" and expected_status == "failed":
         assert "草稿仍保留" in detail.json()["analysis_run_error"]
 

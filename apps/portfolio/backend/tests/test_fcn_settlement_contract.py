@@ -155,4 +155,19 @@ def test_account_dates_cannot_exclude_bound_stock_or_fee_settlements(client):
     for account_id, close_date in ((hkd, "2026-04-02"), (stock, "2026-04-06")):
         changed = client.patch(BASE + "/accounts/" + account_id, json={"closed_at": close_date})
         assert changed.status_code == 400, changed.text
-        assert "FCN settlement history" in changed.text
+        assert "recorded history" in changed.text
+
+
+def test_account_dates_include_independent_fcn_cashflow_recognition_and_settlement(client):
+    usd, hkd, holder, stock, payload = settlement_case(client)
+    coupon_cash = account(client, "cash")
+    payload["settlement_cashflows"][0]["cash_account_id"] = coupon_cash
+    post(client, **payload)
+    for change in ({"opened_at": "2026-04-03"}, {"closed_at": "2026-04-06"}):
+        response = client.patch(BASE + "/accounts/" + coupon_cash, json=change)
+        assert response.status_code == 400, response.text
+        assert "recorded history" in response.text
+    response = client.patch(BASE + "/accounts/" + coupon_cash, json={
+        "opened_at": "2026-04-02", "closed_at": "2026-04-07", "status": "closed",
+    })
+    assert response.status_code == 200, response.text

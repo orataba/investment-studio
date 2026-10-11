@@ -30,6 +30,7 @@ from portfolio_app.services.market_data import (
     quote_policy_bases, resolve_quote_point,
 )
 from portfolio_app.services.transaction_dates import (
+    transaction_acquisition_sort_key,
     transaction_ledger_activity_date,
     transaction_performance_effective_date,
     transaction_position_effective_date,
@@ -527,15 +528,6 @@ def _transaction_timeline_sort_key(
         canonical_key[3],
         canonical_key[4],
     )
-
-
-def _fifo_acquisition_sort_key(transaction: dict[str, object]) -> tuple[object, ...]:
-    acquisition_date = (
-        transaction.get("acquisition_date")
-        or transaction_position_effective_date(transaction)
-        or transaction.get("trade_date")
-    )
-    return (str(acquisition_date or ""), *transaction_sort_key(transaction)[1:])
 
 
 def _resolved_corporate_actions(
@@ -1979,7 +1971,7 @@ def _build_position_state(
                 cost_basis=gross_amount,
                 cost_basis_method=cost_basis_method,
                 opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
-                acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
+                acquisition_sort_key=transaction_acquisition_sort_key(transaction),
             )
             continue
 
@@ -1997,7 +1989,7 @@ def _build_position_state(
                 cost_basis=bought_cost_basis,
                 cost_basis_method=cost_basis_method,
                 opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
-                acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
+                acquisition_sort_key=transaction_acquisition_sort_key(transaction),
             )
             continue
 
@@ -2034,7 +2026,7 @@ def _build_position_state(
                 cost_basis=gross_amount,
                 cost_basis_method=cost_basis_method,
                 opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
-                acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
+                acquisition_sort_key=transaction_acquisition_sort_key(transaction),
             )
             continue
 
@@ -2071,7 +2063,7 @@ def _build_position_state(
                 cost_basis=received_cost_basis,
                 cost_basis_method=cost_basis_method,
                 opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
-                acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
+                acquisition_sort_key=transaction_acquisition_sort_key(transaction),
                 incoming_lots=incoming_lots,
             )
 
@@ -2331,7 +2323,7 @@ def derive_ledger_postings(
                     cost_basis=gross_amount,
                     cost_basis_method=cost_basis_method,
                     opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
-                    acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
+                    acquisition_sort_key=transaction_acquisition_sort_key(transaction),
                 )
             else:
                 append_posting(
@@ -2406,7 +2398,7 @@ def derive_ledger_postings(
                 cost_basis=bought_cost_basis,
                 cost_basis_method=cost_basis_method,
                 opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
-                acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
+                acquisition_sort_key=transaction_acquisition_sort_key(transaction),
             )
             if isinstance(settlement_cash_account_id, str) and settlement_cash_account_id:
                 append_posting(
@@ -2565,7 +2557,7 @@ def derive_ledger_postings(
                 cost_basis=gross_amount,
                 cost_basis_method=cost_basis_method,
                 opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
-                acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
+                acquisition_sort_key=transaction_acquisition_sort_key(transaction),
             )
             continue
 
@@ -2714,7 +2706,7 @@ def derive_ledger_postings(
                     cost_basis=received_cost_basis,
                     cost_basis_method=cost_basis_method,
                     opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
-                    acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
+                    acquisition_sort_key=transaction_acquisition_sort_key(transaction),
                     incoming_lots=incoming_lots,
                 )
             continue
@@ -3518,7 +3510,7 @@ def build_position_lots(
         if account.get("account_type") == "securities_account"
     }
     fifo_order_by_transaction = {
-        str(transaction.get("transaction_id") or ""): _fifo_acquisition_sort_key(transaction)
+        str(transaction.get("transaction_id") or ""): transaction_acquisition_sort_key(transaction)
         for transaction in transactions
         if not transaction.get("fcn_settlement_cashflow")
     }

@@ -94,6 +94,22 @@ PY
     '    handle.write("catalog-refresh\n")' \
     'raise SystemExit(1 if os.environ.get("CATALOG_REFRESH_FAIL") == "true" else 0)' \
     > "$project_root/shared-data/scripts/refresh_release_catalogs.py"
+
+cat > "$project_root/shared-data/scripts/reconcile_release_fmp_prices.py" <<'PYREPLAY'
+import argparse
+import json
+import os
+from pathlib import Path
+parser = argparse.ArgumentParser()
+parser.add_argument('--scope-file', required=True, type=Path)
+args = parser.parse_args()
+assert json.loads(args.scope_file.read_text())['instrument_ids'] == ['reviewed']
+with Path(os.environ['EVENT_LOG']).open('a') as log:
+    log.write('fmp-reconcile\n')
+with Path(os.environ['DATABASE_STATE_FILE']).open('a') as state:
+    state.write('fmp-replayed\n')
+raise SystemExit(1 if os.environ.get('FMP_RECONCILE_FAIL') == 'true' else 0)
+PYREPLAY
   printf '%s\n' \
     'from __future__ import annotations' \
     'import os' \
@@ -167,6 +183,11 @@ PY
     'if [[ "$1" == "--list" ]]; then' \
     '  printf "%s\n" "1; 0 0 SCHEMA - instrument_registry owner" "2; 0 0 SCHEMA - platform owner" "3; 0 0 SCHEMA - portfolio owner" "4; 0 0 SCHEMA - watchlist owner"' \
     '  exit 0' \
+    'fi' \
+    'if [[ "$1" == "--file=/dev/null" ]]; then' \
+    '  printf "backup-decode\n" >> "$EVENT_LOG"' \
+    '  [[ "${FAIL_BACKUP_DECODE:-false}" != "true" ]]' \
+    '  exit' \
     'fi' \
     'archive="${@: -1}"' \
     'output=""' \
@@ -357,6 +378,23 @@ fi
 [[ "$(cat "$EARLY_STOP_CASE/LaunchAgents/test.investment-studio.home-api.plist")" == "old-home-api" ]]
 [[ ! -e "$EARLY_STOP_CASE/LaunchAgents/test.investment-studio.portfolio-web.plist" ]]
 
+DECODE_CASE="$TEST_ROOT/backup-decode-failure"
+prepare_case "$DECODE_CASE"
+export EVENT_LOG="$DECODE_CASE/events"
+if FAIL_BACKUP_DECODE=true run_installer "$DECODE_CASE" > "$DECODE_CASE/output" 2>&1; then
+  echo "Installer accepted an archive whose table data cannot decode." >&2
+  exit 1
+fi
+grep -q '^backup-decode$' "$EVENT_LOG"
+grep -q 'failed complete archive decoding' "$DECODE_CASE/output"
+if grep -q '^migrate$\|^restore$' "$EVENT_LOG"; then
+  echo "Installer mutated the database after backup decode failure." >&2
+  exit 1
+fi
+assert_old_plists_restored "$DECODE_CASE"
+grep -Fxq pre-install-record "$DECODE_CASE/database"
+test -z "$(find "$DECODE_CASE/backups" -name '*.pgdump' -type f -print -quit)"
+
 MIGRATION_CASE="$TEST_ROOT/migration-failure"
 prepare_case "$MIGRATION_CASE"
 export EVENT_LOG="$MIGRATION_CASE/events"
@@ -370,6 +408,9 @@ set -e
 [[ $migration_status -eq 9 ]]
 grep -q '^backup$' "$EVENT_LOG"
 grep -q '^migrate$' "$EVENT_LOG"
+decode_line="$(grep -n '^backup-decode$' "$EVENT_LOG" | cut -d: -f1)"
+migrate_line="$(grep -n '^migrate$' "$EVENT_LOG" | cut -d: -f1)"
+[[ "$decode_line" -lt "$migrate_line" ]]
 if grep -q '^audit$' "$EVENT_LOG"; then
   echo "Installer ran the data audit after a failed migration." >&2
   exit 1
@@ -554,6 +595,19 @@ if grep -q 'startup-write:test.investment-studio.cloud-sync' "$DISABLED_CLOUD_CA
   exit 1
 fi
 
+# Removing the full-snapshot config selects public replication. Retire an old
+# loaded full-snapshot agent before starting the public-only schedule.
+PUBLIC_SYNC_CASE="$TEST_ROOT/public-sync"
+prepare_case "$PUBLIC_SYNC_CASE"
+printf '%s\n' old-cloud-sync > "$PUBLIC_SYNC_CASE/LaunchAgents/test.investment-studio.cloud-sync.plist"
+printf '%s\n' test.investment-studio.cloud-sync >> "$PUBLIC_SYNC_CASE/loaded"
+export EVENT_LOG="$PUBLIC_SYNC_CASE/events"
+HEALTH_FAIL=false run_installer "$PUBLIC_SYNC_CASE" > "$PUBLIC_SYNC_CASE/output" 2>&1
+grep -Fxq test.investment-studio.market-sync "$PUBLIC_SYNC_CASE/loaded"
+! grep -Fxq test.investment-studio.cloud-sync "$PUBLIC_SYNC_CASE/loaded"
+test ! -e "$PUBLIC_SYNC_CASE/LaunchAgents/test.investment-studio.cloud-sync.plist"
+! grep -q 'startup-write:test.investment-studio.cloud-sync' "$PUBLIC_SYNC_CASE/database"
+
 DISABLED_ROLLBACK_CASE="$TEST_ROOT/disabled-schedule-rollback"
 prepare_case "$DISABLED_ROLLBACK_CASE"
 printf '%s\n' '{}' > "$DISABLED_ROLLBACK_CASE/env/cloud-sync.json"
@@ -620,5 +674,30 @@ if grep -q '^credential-in-argv$' "$EVENT_LOG"; then
   echo "Launchd rollback put database credentials in a child-process argument." >&2
   exit 1
 fi
+
+# Reviewed FMP replay is optional, ordered after the checked backup/catalog,
+# and covered by the existing pre-writer transaction rollback.
+for replay_failure in false true; do
+  REPLAY_CASE="$TEST_ROOT/fmp-replay-$replay_failure"
+  prepare_case "$REPLAY_CASE"
+  printf '%s\n' '{"clock":"2026-10-11T00:00:00Z","instrument_ids":["reviewed"]}' > "$REPLAY_CASE/scope.json"
+  export EVENT_LOG="$REPLAY_CASE/events"
+  if INVESTMENT_STUDIO_RELEASE_FMP_SCOPE_FILE="$REPLAY_CASE/scope.json" FMP_RECONCILE_FAIL="$replay_failure" HEALTH_FAIL=false run_installer "$REPLAY_CASE" > "$REPLAY_CASE/output" 2>&1; then
+    [[ "$replay_failure" == false ]]
+    previous_line=0
+    for stage in backup migrate catalog-refresh fmp-reconcile watchlist-refresh snapshot-refresh audit; do
+      stage_line="$(grep -n "^$stage\(:\|$\)" "$REPLAY_CASE/events" | head -n 1 | cut -d: -f1)"
+      [[ -n "$stage_line" && "$stage_line" -gt "$previous_line" ]]
+      previous_line="$stage_line"
+    done
+  else
+    [[ "$replay_failure" == true ]]
+    grep -q '^fmp-reconcile$' "$REPLAY_CASE/events"
+    ! grep -Eq '^(watchlist-refresh|snapshot-refresh|audit)$' "$REPLAY_CASE/events"
+    [[ "$(cat "$REPLAY_CASE/database")" == pre-install-record ]]
+    assert_old_plists_restored "$REPLAY_CASE"
+  fi
+done
+
 
 echo "launchd install database rollback ordering and fail-closed service test passed."

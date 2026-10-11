@@ -536,7 +536,9 @@ The installer generates all nine replacement units privately before changing
 systemd state. It snapshots the previous unit files, enablement, and active set,
 including the market-data refresh service/timer. Before migration it stops every
 database writer and creates a verified backup of the project schemas with
-the shared archive/manifest/checksum primitive, then runs
+the shared archive/manifest/checksum primitive. The primitive also decodes the
+entire archive with `pg_restore --file=/dev/null` before declaring it complete;
+a readable table of contents alone is insufficient. It then runs
 `infra/scripts/migrate_all.sh`. After migration it refreshes the FMP stock and
 ETF search catalogs required by the current exchange contract, reconciles the four
 system Watchlists from the shared registry, and rebuilds only Portfolio snapshots
@@ -545,6 +547,17 @@ Portfolio holdings/risk page projections, then runs the read-only live-data audi
 Watchlist reconciliation also backfills the compact screener projections from
 stored charts. A failed projection or incomplete backfill fails readiness; do not
 bypass this preparation and leave the first browser request to rebuild it.
+For a reviewed canonical FMP repair, both installers accept the optional external
+`INVESTMENT_STUDIO_RELEASE_FMP_SCOPE_FILE`. Its JSON contains `clock` (an explicit
+UTC instant) and `instrument_ids` (the exact approved, unique IDs). The offline
+`shared-data/scripts/reconcile_release_fmp_prices.py` runs after the checked backup,
+migrations and catalog refresh, before Watchlist and Portfolio derived rebuilds.
+It validates actual FMP ownership and rejects mixed-provider canonical prices,
+then replays complete immutable local histories through the normal projection
+service. It does not collect provider data or alter raw files. Missing history
+or any replay failure aborts installation under the existing pre-writer rollback
+contract. Retain the scope file and its printed checksum with the release receipt;
+omitting the variable performs no forced FMP replay.
 Watchlist reconciliation uses the same membership and row
 materialization as normal directory reads, preserving user lists, views and
 research; a registry or materialization error fails the install and rolls back.

@@ -118,7 +118,7 @@ def test_missing_due_sessions_publish_real_prices_but_remain_failed(capture_env,
     monkeypatch.setattr(eod, "ensure_fmp_security_history", capture)
     monkeypatch.setattr(eod, "NumericStore", lambda _: store)
     publish = Mock(return_value=(1, 1))
-    monkeypatch.setattr(eod, "upsert_price_history", publish)
+    monkeypatch.setattr(eod, "publish_price_history", publish)
     monkeypatch.setattr(eod, "update_refresh_status", lambda **kwargs: kwargs)
     result = eod.refresh_fmp_eod("shv", instrument_type="etf", acquire_history=True, now=NOW)
     assert result["status"] == "failed"
@@ -269,7 +269,7 @@ def test_instrument_refresh_acquires_prices_unless_store_is_explicitly_injected(
     monkeypatch.setattr(eod, "ensure_fmp_security_history", lambda _id, **_kwargs: ensure(store, collector))
     monkeypatch.setattr(eod, "NumericStore", lambda _settings: store)
     publish = Mock(return_value=(1, 1))
-    monkeypatch.setattr(eod, "upsert_price_history", publish)
+    monkeypatch.setattr(eod, "publish_price_history", publish)
     monkeypatch.setattr(eod, "update_refresh_status", lambda **kwargs: kwargs)
 
     refresh = equities.refresh_equity_eod if instrument_type == "equity" else etfs.refresh_etf_eod

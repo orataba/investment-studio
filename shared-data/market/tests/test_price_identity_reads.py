@@ -45,6 +45,8 @@ def test_quarantine_is_visible_in_current_reads_but_does_not_rewrite_pit_or_sour
     for result in (store.query('us_eod_daily'), store.latest('us_eod_daily')):
         assert result['rows'] == [] and result['total'] == 0
         assert result['provenance']['price_series_unavailable'][0]['symbol'] == 'REUSED'
+        generation = result['provenance']['price_series_generations']['REUSED']
+        assert generation['status'] == 'blocked' and generation['base_capture_id'] is None
     assert store.query('us_eod_daily', as_of=stamp(1))['rows'][0]['source_id'] == old_source
     assert store.latest('us_eod_daily', as_of=stamp(1))['rows'][0]['source_id'] == old_source
     assert store.query('us_eod_daily', versions=True)['total'] == 1
@@ -69,6 +71,10 @@ def test_rebuilds_replace_generation_and_pagination_counts_filter_before_ranking
         'REUSED': {'identity_source_id': control['source_id'], 'base_capture_id': first['batch_id']}}})
     price(store, 4, symbol='NORMAL', dates=('2026-09-04',), value=99)
     before = store.query('us_eod_daily', symbols=['REUSED'], as_of=stamp(4))
+    generation = before['provenance']['price_series_generations']['REUSED']
+    assert generation['identity_source_id'] == control['source_id']
+    assert generation['base_capture_id'] == first['batch_id']
+    assert generation['security_id'] == 'new-security'
     assert {row['date'] for row in before['rows']} == {'2026-09-02', '2026-09-04'}
     assert store.latest('us_eod_daily')['total'] == 2
     second = price(store, 5, dates=('2026-09-02', '2026-09-03'), value=30, details=capture(control))
@@ -77,6 +83,7 @@ def test_rebuilds_replace_generation_and_pagination_counts_filter_before_ranking
     price(store, 6, dates=('2026-09-04',), value=888, details={'price_series_updates': {
         'REUSED': {'identity_source_id': control['source_id'], 'base_capture_id': first['batch_id']}}})
     result = store.query('us_eod_daily', symbols=['REUSED'], limit=1, offset=1)
+    assert result['provenance']['price_series_generations']['REUSED']['base_capture_id'] == second['batch_id']
     assert result['total'] == 2 and result['rows'][0]['date'] == '2026-09-02'
     assert result['rows'][0]['batch_id'] == second['batch_id']
     assert store.query('us_eod_daily', symbols=['REUSED'], batch_id=first['batch_id'])['rows'] == []

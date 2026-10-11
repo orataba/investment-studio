@@ -42,7 +42,6 @@ from portfolio_app.services.instrument_event_tasks import (
     instrument_event_task_quality_warnings,
 )
 from portfolio_app.services.ledger import (
-    _fifo_acquisition_sort_key,
     _split_lot_quantity_allocations,
     build_monetary_subledger,
     build_position_lots,
@@ -69,6 +68,7 @@ from portfolio_app.services.market_data import (
     resolve_quote_point,
 )
 from portfolio_app.services.transaction_dates import (
+    transaction_acquisition_sort_key,
     transaction_cash_activity_date,
     transaction_external_flow_date,
     transaction_ledger_activity_date,
@@ -1782,7 +1782,7 @@ def _period_unrealized_capital_gains_by_group(
                 currency=currency,
                 quantity=quantity,
                 cost_local=gross_amount,
-                acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
+                acquisition_sort_key=transaction_acquisition_sort_key(transaction),
             )
             continue
 
@@ -1867,7 +1867,7 @@ def _period_unrealized_capital_gains_by_group(
                 currency=currency,
                 quantity=quantity,
                 cost_local=gross_amount,
-                acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
+                acquisition_sort_key=transaction_acquisition_sort_key(transaction),
             )
 
     detail_parent_axis = attribution.calculation_detail_parent_axis(axis)

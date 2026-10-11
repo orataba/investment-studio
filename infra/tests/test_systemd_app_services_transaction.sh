@@ -65,6 +65,22 @@ printf '%s\n' \
   'raise SystemExit(1 if environ.get("CATALOG_REFRESH_FAIL") == "true" else 0)' \
   > "$PROJECT_ROOT/shared-data/scripts/refresh_release_catalogs.py"
 
+cat > "$PROJECT_ROOT/shared-data/scripts/reconcile_release_fmp_prices.py" <<'PYREPLAY'
+import argparse
+import json
+import os
+from pathlib import Path
+parser = argparse.ArgumentParser()
+parser.add_argument('--scope-file', required=True, type=Path)
+args = parser.parse_args()
+assert json.loads(args.scope_file.read_text())['instrument_ids'] == ['reviewed']
+with Path(os.environ['EVENT_LOG']).open('a') as log:
+    log.write('fmp-reconcile\n')
+with Path(os.environ['DATABASE_STATE_FILE']).open('a') as state:
+    state.write('fmp-replayed\n')
+raise SystemExit(1 if os.environ.get('FMP_RECONCILE_FAIL') == 'true' else 0)
+PYREPLAY
+
 printf '%s\n' \
   '#!/usr/bin/env python3' \
   'from os import environ' \
@@ -539,5 +555,30 @@ for unit in "${MANAGED_UNITS[@]}"; do
 done
 grep -q '^startup-write:' "$APP_ONLY_START_FAILURE/database"
 grep -q 'automatic database and unit rollback is disabled' "$APP_ONLY_START_FAILURE/output"
+
+# Reviewed FMP replay is optional, ordered after the checked backup/catalog,
+# and covered by the existing pre-writer transaction rollback.
+for replay_failure in false true; do
+  REPLAY_CASE="$TEST_ROOT/fmp-replay-$replay_failure"
+  prepare_case "$REPLAY_CASE"
+  printf '%s\n' '{"clock":"2026-10-11T00:00:00Z","instrument_ids":["reviewed"]}' > "$REPLAY_CASE/scope.json"
+  export EVENT_LOG="$REPLAY_CASE/events"
+  if INVESTMENT_STUDIO_RELEASE_FMP_SCOPE_FILE="$REPLAY_CASE/scope.json" FMP_RECONCILE_FAIL="$replay_failure" HEALTH_FAIL=false run_case "$REPLAY_CASE" > "$REPLAY_CASE/output" 2>&1; then
+    [[ "$replay_failure" == false ]]
+    previous_line=0
+    for stage in backup migrate catalog-refresh fmp-reconcile watchlist-refresh snapshot-refresh audit; do
+      stage_line="$(grep -n "^$stage\(:\|$\)" "$REPLAY_CASE/events" | head -n 1 | cut -d: -f1)"
+      [[ -n "$stage_line" && "$stage_line" -gt "$previous_line" ]]
+      previous_line="$stage_line"
+    done
+  else
+    [[ "$replay_failure" == true ]]
+    grep -q '^fmp-reconcile$' "$REPLAY_CASE/events"
+    ! grep -Eq '^(watchlist-refresh|snapshot-refresh|audit)$' "$REPLAY_CASE/events"
+    [[ "$(cat "$REPLAY_CASE/database")" == pre-install-record ]]
+    assert_original_state_restored "$REPLAY_CASE"
+  fi
+done
+
 
 echo "systemd app install transaction and fail-closed rollback test passed."

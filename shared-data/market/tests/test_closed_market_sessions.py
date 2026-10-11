@@ -1,8 +1,29 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+
+import exchange_calendars
 
 import pytest
 
 from studio_market.calendars import closed_market_sessions
+
+
+@pytest.mark.parametrize("market", ["XSHG", "XSHE"])
+def test_bounded_calendar_padding_preserves_supported_full_history(market):
+    start, end = date(2000, 1, 1), date(2026, 10, 9)
+    calendar = exchange_calendars.get_calendar("XSHG", start="1999-12-01", end="2026-12-31")
+    expected = tuple(day.date() for day in calendar.sessions_in_range(start, end))
+    actual = closed_market_sessions(market, start, end, datetime(2026, 10, 11, tzinfo=UTC))
+    assert actual == expected
+    assert actual[0] == date(2000, 1, 4) and actual[-1] == end
+
+
+def test_bounded_calendar_padding_does_not_certify_actual_out_of_bounds_requests():
+    calendar = exchange_calendars.get_calendar("XSHG")
+    first, last = calendar.bound_min().date(), calendar.bound_max().date()
+    clock = datetime(2050, 1, 1, tzinfo=UTC)
+    assert closed_market_sessions("XSHG", first, first, clock) == (first,)
+    assert closed_market_sessions("XSHG", first - timedelta(days=1), first, clock) is None
+    assert closed_market_sessions("XSHG", date(2000, 1, 4), last + timedelta(days=1), clock) is None
 
 
 @pytest.mark.parametrize('market', ['XHKG', 'XNYS'])

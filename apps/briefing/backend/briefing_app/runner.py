@@ -2,11 +2,11 @@
 from datetime import datetime, UTC
 import logging
 from studio_runtime import operation
+from studio_runtime.processes import stop_process_group as _stop_process_group
 import os
 from pathlib import Path
 import re
 import shutil
-import signal
 import subprocess
 
 from sqlalchemy import select, update
@@ -47,14 +47,18 @@ def _run_harness(report_id: str, mode: str, token: str) -> dict:
                                env={**os.environ, "INVESTMENT_STUDIO_BRIEFING_RUN_TOKEN": token})
     try:
         _reply, errors = process.communicate(timeout=1800)
-    except subprocess.TimeoutExpired as exc:
-        os.killpg(process.pid, signal.SIGTERM)
+    except BaseException as exc:
         try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
-        raise ValueError(f"本轮{label}超时，未发布报告。") from exc
+            _stop_process_group(process)
+        except Exception as cleanup_error:
+            logging.getLogger(__name__).error(
+                "Harness process-group cleanup failed (%s)", type(cleanup_error).__name__)
+        if isinstance(exc, subprocess.TimeoutExpired):
+            raise ValueError(f"本轮{label}超时，未发布报告。") from exc
+        raise
+    finally:
+        process.stdout.close()
+        process.stderr.close()
     if process.returncode:
         diagnostic = re.sub(r"(?im)^.*(?:api[_-]?key|authorization|password|secret|token).*$", "[credential-bearing diagnostic omitted]", errors)
         diagnostic = re.sub(r"\bsk-[A-Za-z0-9_-]+", "[redacted]", diagnostic)

@@ -13,6 +13,7 @@ def projection(request, monkeypatch):
     module = eod if request.param == "listed" else crypto
     symbol = "REVIEW" if module is eod else "BTCUSD"
     instrument = {
+        "instrument_id": "review",
         "instrument_type": "equity" if module is eod else "crypto",
         "currency": "USD",
         "exchange_code": "XNAS" if module is eod else None,
@@ -21,7 +22,7 @@ def projection(request, monkeypatch):
     publish = Mock(return_value=(1, 1))
     status = Mock(side_effect=lambda **kwargs: kwargs)
     monkeypatch.setattr(module, "get_instrument", lambda _: instrument)
-    monkeypatch.setattr(module, "upsert_price_history", publish)
+    monkeypatch.setattr(module, "publish_price_history" if module is eod else "upsert_price_history", publish)
     monkeypatch.setattr(module, "update_refresh_status", status)
 
     def refresh(store):
@@ -63,7 +64,9 @@ def test_one_file_view_keeps_history_consistent_during_source_revision(projectio
             payload = publish.call_args.kwargs
             basis = "adjusted_close" if module is eod else "close"
             points = [row for row in payload["market_data_rows"] if row["quote_basis"] == basis]
-            assert len(points) == len(payload["price_bar_rows"]) == 10001
+            expected_count = (len(eod.closed_market_sessions("XNAS", start, date(2026, 9, 7),
+                datetime(2026, 9, 8, tzinfo=UTC))) if module is eod else 10001)
+            assert len(points) == len(payload["price_bar_rows"]) == expected_count
             assert {row["value"] for row in points} == {expected}
             if module is eod:
                 assert {row["adjustment_factor"] for row in payload["price_bar_rows"]} == {expected / 100}
@@ -105,7 +108,7 @@ def test_listed_projection_excludes_unclosed_rows_and_shares_capture_clock(monke
     monkeypatch.setattr(eod.MarketSettings, "from_environment", lambda: object())
     capture, publish = Mock(return_value=[]), Mock(return_value=(1, 1))
     monkeypatch.setattr(eod, "ensure_fmp_security_history", capture)
-    monkeypatch.setattr(eod, "upsert_price_history", publish)
+    monkeypatch.setattr(eod, "publish_price_history", publish)
     monkeypatch.setattr(eod, "update_refresh_status", lambda **kwargs: kwargs)
     try:
         result = eod.refresh_fmp_eod("fixture", instrument_type="equity", acquire_history=True, now=clock)
@@ -131,7 +134,7 @@ def test_index_projection_uses_source_calendar_without_listing_mic(monkeypatch, 
         open=100, high=110, low=90, close=100, adjusted_close=100)], "total": 1}
     monkeypatch.setattr(eod, "get_instrument", lambda _: instrument)
     monkeypatch.setattr(service, "get_instrument", lambda _: instrument)
-    monkeypatch.setattr(eod, "upsert_price_history", publish)
+    monkeypatch.setattr(eod, "publish_price_history", publish)
     monkeypatch.setattr(eod, "update_refresh_status", status)
     clock = datetime(2026, 10, 8, 20, 30, tzinfo=UTC)
     monkeypatch.setattr(eod, "datetime", Mock(now=Mock(return_value=clock)))

@@ -1,6 +1,7 @@
 from io import BytesIO
 import json
 from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.testclient import TestClient
@@ -87,6 +88,44 @@ def test_multipart_preserves_filename_and_bytes_and_download_stays_same_origin(m
     assert download.headers["content-disposition"] == disposition
 
 
+def test_evidence_preserves_original_identity_opaque_source_and_complete_snapshot(monkeypatch, assistant_client):
+    source_id = "computed:portfolio/a b?currency=HKD&snapshot=原件+#1"
+    # Pagination is a UI view of the full frozen receipt, not a new upstream query.
+    receipt = {"source_id": source_id, "result": {"text": "完整原件" * 24000}}
+    calls = []
+
+    def upstream(request, timeout):
+        calls.append(request)
+        assert request.method == "GET"
+        assert request.get_header("Authorization") == "Bearer viewer-session"
+        url = urlsplit(request.full_url)
+        assert url.path.endswith("/research/runs/run-fixture/evidence")
+        assert parse_qs(url.query) == {"source_id": [source_id]}
+        return Upstream(json.dumps(receipt).encode())
+
+    monkeypatch.setattr(research_assistant, "urlopen", upstream)
+    response = assistant_client.get("/api/research-assistant/runs/run-fixture/evidence", params={"source_id": source_id})
+    assert response.status_code == 200
+    assert response.json() == receipt
+    assert len(calls) == 1
+    assert assistant_client.get("/api/research-assistant/runs/run-fixture/evidence").status_code == 422
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+def test_evidence_retains_downstream_auth_and_source_ownership_failures(monkeypatch, assistant_client, status):
+    body = {"detail": "source unavailable to current user"}
+
+    def denied(request, timeout):
+        assert request.get_header("Authorization") == "Bearer viewer-session"
+        raise HTTPError(request.full_url, status, "Rejected", {"Content-Type": "application/json"}, BytesIO(json.dumps(body).encode()))
+
+    monkeypatch.setattr(research_assistant, "urlopen", denied)
+    response = assistant_client.get("/api/research-assistant/runs/other-run/evidence", params={"source_id": "private-source"})
+    assert response.status_code == status
+    assert response.json() == body
+
+
 @pytest.mark.parametrize("status,detail", [(403, "当前用户无权访问此对话"), (422, "所选组合当前不可访问")])
 def test_downstream_ownership_and_validation_errors_are_preserved(monkeypatch, assistant_client, status, detail):
     def denied(request, timeout):
@@ -120,6 +159,7 @@ def test_service_and_bound_model_credentials_cannot_access_personal_conversation
     monkeypatch.setattr(research_assistant, "urlopen", forbidden_upstream)
     assert assistant_client.get("/api/research-assistant/topics").status_code == 403
     assert assistant_client.post("/api/research-assistant/topics", json={"title": "question"}).status_code == 403
+    assert assistant_client.get("/api/research-assistant/runs/private-run/evidence", params={"source_id": "private-source"}).status_code == 403
 
 
 def test_anonymous_request_is_rejected_and_bridge_does_not_expose_research_tools(assistant_client):
@@ -127,4 +167,5 @@ def test_anonymous_request_is_rejected_and_bridge_does_not_expose_research_tools
         raise HTTPException(401, "请先登录 Investment Studio")
     assistant_client.app.dependency_overrides[authenticated_principal] = anonymous
     assert assistant_client.get("/api/research-assistant/topics").status_code == 401
+    assert assistant_client.get("/api/research-assistant/runs/private-run/evidence", params={"source_id": "private-source"}).status_code == 401
     assert assistant_client.post("/api/research-assistant/runs/task/tools", json={}).status_code == 404

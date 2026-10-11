@@ -116,3 +116,8 @@ def upload(topic_id: str, file: UploadFile = File(...)):
 @router.get("/entries/{entry_id}/file")
 def download(entry_id: str):
     return _forward("/entries/" + quote(entry_id, safe="") + "/file")
+
+
+@router.get("/runs/{run_id}/evidence")
+def evidence(run_id: str, source_id: str):
+    return _forward("/runs/" + quote(run_id, safe="") + "/evidence?" + urlencode({"source_id": source_id}))

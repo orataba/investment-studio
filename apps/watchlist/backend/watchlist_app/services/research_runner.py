@@ -2,11 +2,11 @@
 import json
 import logging
 from studio_runtime import operation
+from studio_runtime.processes import stop_process_group as _stop_process_group
 import os
 from pathlib import Path
 import re
 import shutil
-import signal
 import subprocess
 import time
 from types import SimpleNamespace
@@ -78,7 +78,7 @@ def _wait_harness(process, *, cancellation=None, accepted=None, timeout=1800):
                     # Stop unnecessary acknowledgements/tool loops before publication.
                     cleanup_started = True
                     _stop_process_group(process)
-                    reply, errors = process.communicate()
+                    reply, errors = process.communicate(timeout=5)
                     returncode = 0
                 else:
                     continue
@@ -99,34 +99,6 @@ def _wait_harness(process, *, cancellation=None, accepted=None, timeout=1800):
                 logging.getLogger(__name__).error(
                     "Harness process-group cleanup failed (%s)", type(cleanup_error).__name__)
         raise
-
-
-def _stop_process_group(process, *, grace_seconds=5):
-    """Give the whole Harness group its grace period, even if its shell exits first."""
-    deadline = time.monotonic() + grace_seconds
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        process.wait()
-        return
-    try:
-        process.wait(timeout=grace_seconds)
-    except subprocess.TimeoutExpired:
-        pass
-    while True:
-        try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            break
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            break
-        time.sleep(min(0.05, remaining))
-    process.wait()
 
 
 def _provider_failure(errors):

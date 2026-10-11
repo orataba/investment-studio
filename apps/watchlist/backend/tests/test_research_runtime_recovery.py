@@ -418,8 +418,8 @@ def test_timeout_cleanup_accepts_an_already_exited_process_group(monkeypatch):
     def gone(pid, sig):
         raise ProcessLookupError
     monkeypatch.setattr(runner.os, 'killpg', gone)
-    runner._stop_process_group(SimpleNamespace(pid=123, wait=lambda: waited.append(True)))
-    assert waited == [True]
+    runner._stop_process_group(SimpleNamespace(pid=123, wait=lambda *, timeout: waited.append(timeout)))
+    assert waited == [5]
 
 
 @pytest.mark.parametrize('run_kind', ['sector_run', 'risk_run'])

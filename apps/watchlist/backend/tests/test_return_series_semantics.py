@@ -321,3 +321,32 @@ def test_nav_endpoint_retains_return_segment_identity_for_fund_and_benchmark_con
     assert all(identities)
     assert client.get(f"/api/instruments/{iid}/summary").json()["tabs"] == [
         "overview", "risk", "investment-research", "views", "info"]
+
+
+@pytest.mark.parametrize('kind', ['equity', 'etf'])
+def test_listed_weekend_observation_cannot_change_monday_return(kind):
+    from watchlist_app.services.price_risk import period_loss_readings
+    quotes = points('adjusted_close', (100, 50, 100), ('2026-10-02', '2026-10-03', '2026-10-05'))
+    detail = {'instrument_type':kind, 'exchange_code':'XNAS',
+              'source_settings':{'expected_frequency':'daily', 'market_calendar':'XNAS'},
+              'quote_selection_policy':{'total_return':['adjusted_close'], 'chart':['adjusted_close']}}
+    chosen = _select_quote_series({'adjusted_close': quotes}, shared_instrument=detail,
+        role='total_return', preference='auto', instrument_type=kind)
+    context = build_calculation_frequency_context(chosen['points'], expected_frequency='daily', market_calendar='XNAS')
+    series = _build_return_series(chosen, context)
+    series['points'] = series['wealth_points']
+    assert [point['as_of_date'].isoformat() for point in chosen['points']]==['2026-10-02','2026-10-05']
+    assert period_loss_readings(series, {'day':3})[0]['return_pct']==0
+    assert context['profile']['gap_status']=='aligned'
+    direct = build_calculation_frequency_context(quotes, expected_frequency='daily', market_calendar='XNAS', instrument_type=kind)
+    assert direct['profile']['excluded_non_session_count']==1
+
+
+@pytest.mark.parametrize('kind,calendar', [('crypto','24/7'), ('public_fund','XNYS'), ('private_fund','XNYS')])
+def test_nonlisted_weekend_nav_and_crypto_remain_observed_intervals(kind, calendar):
+    quotes = points('close' if kind=='crypto' else 'total_return_nav', (100, 102, 104),
+                    ('2026-10-02','2026-10-03','2026-10-05'))
+    context = build_calculation_frequency_context(quotes, expected_frequency='daily',
+                                                 market_calendar=calendar, instrument_type=kind)
+    assert len(context['points'])==3
+    assert context['profile']['excluded_non_session_count']==0

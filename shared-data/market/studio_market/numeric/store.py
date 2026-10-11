@@ -311,6 +311,18 @@ class NumericStore:
         if identities:
             result["provenance"]["price_series_unavailable"] = unavailable
             result["provenance"]["price_series_identity_sources"] = {symbol: row["source_id"] for symbol, row in identities.items()}
+            # Canonical consumers must keep the same reviewed identity and base
+            # generation as this exact read, including an unavailable result.
+            # The base is inserted before its incremental captures in allowed.
+            bases = {}
+            for scope in allowed:
+                bases.setdefault(scope["allowed_symbol"], scope["allowed_batch_id"])
+            result["provenance"]["price_series_generations"] = {
+                symbol: {**{key: row.get(key) for key in (
+                    "status", "security_id", "provider_symbol", "history_start", "history_end", "reason")},
+                    "identity_source_id": row["source_id"], "base_capture_id": bases.get(symbol)}
+                for symbol, row in identities.items()
+            }
         selected_batches = batch_ids
         if symbols is not None and identities and set(symbols) <= identities.keys():
             eligible = {row["allowed_batch_id"] for row in allowed}

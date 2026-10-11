@@ -107,6 +107,16 @@ rebuild. A newly changed raw overlap publishes its evidence and durable rebuild
 request without publishing partial adjusted prices. Missing adjusted prices,
 retained dates, or all history remain explicit source coverage failures.
 
+Price query provenance includes each controlled symbol's reviewed identity,
+identity source ID and complete base capture ID. These describe the exact read's
+eligibility, including quarantined/uncaptured results; they do not certify that
+a caller's date window or page is a complete history. The registered FMP
+projector reads the full history, verifies the total, and reconciles its current
+canonical projection atomically. Withdrawn quotes become unavailable; raw
+captures and identity decisions remain immutable audit evidence. The first
+reviewed generation binds the registry's existing `source_provider_security_id`;
+a subsequent different security ID requires an explicit registry migration.
+
 Price acquisition captures one timezone-aware cutoff at the collection entry.
 The registered listing exchange takes precedence over a provider symbol suffix;
 an unknown explicit exchange fails instead of falling back to a guessed market.

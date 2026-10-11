@@ -92,6 +92,12 @@ Performance 页的自然期矩阵另有一条闭合规则：月度收益使用�
 
 ## 3. Watchlist 的逐 instrument as-of
 
+股票／ETF 的行情、收益与图表候选点先按登记交易所日历排除已知休市日。原始供应商观察仍留在公共证据中，
+不能以周末异常价格作为下一交易日的收益基点；剔除休市日不豁免任何真正缺失的交易日。
+基金的 NAV 是披露观察，可合法落在非交易日；crypto 的 24/7 日线也保留周末。未知日历保持原有
+未核验状态，不凭工作日推测补价或宣称完整。FMP 身份隔离会通过 canonical 报价的 `unavailable`
+状态和源水位使旧物化失效，不能因旧日期仍新鲜而继续采用被撤销的价格。
+
 - Watchlist 没有一个强制所有行共用的业务 `as_of_date`。每个 instrument 都以自己所选 calculation series 的最新有效观测日为终点，再独立回看 1W / 1M / 3M / 6M / MTD / YTD / 1Y。
 - Screener 每行始终返回 `metric_as_of_date`。页级 `snapshot_metadata.as_of_date` 定义为当前结果中的最晚行终点，仅用于摘要，不得当成所有行的共同终点；同时返回 `as_of_date_min / as_of_date_max / has_mixed_as_of_dates / as_of_date_missing_count`。
 - Screener 收益火花线只读取已确认的 analytical return series，每个展示窗口先核验完整收益区间。原始报价的显示选择不改变收益图；受影响窗口保留不可用原因并停止绘线，不能跨缺口归一化成一条看似完整的收益路径。

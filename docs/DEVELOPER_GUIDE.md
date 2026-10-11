@@ -57,7 +57,7 @@ Watchlist (`watchlist`)          Portfolio (`portfolio`)
 | 公共数值、PIT、文本原文版本与数据包目录 | `shared-data/market` → `market_data` / `market_text` + 不可变文件 | 其他项目数据库或各 App 私有表 |
 | 日报周报及绑定的证据版本 | Briefing → `briefing` | 采集服务器 |
 | 已经跨 app 稳定复用的 UI 基础能力 | `packages/ui` | 为单一页面预先建立通用框架 |
-| 无业务数据的请求、SQL 与后台操作诊断 | `packages/runtime` | 业务缓存、授权决策或重算调度 |
+| 无业务数据的请求、SQL 与后台操作诊断，以及自有进程组的有界清理 | `packages/runtime` | 业务缓存、授权决策或重算调度 |
 
 FCN 和 Option 是 Portfolio-local 不可变合约，不是共享市场资产。只有 underlying 或 deliverable
 证券引用 Instrument Data。直接债券当前不进入 Instrument Data、Watchlist 或 Portfolio 交易主链路。
@@ -82,7 +82,7 @@ shared-data/market/            公共数值、PIT、文本与数据包
 apps/regime/                  独立 Git 子模块、自有模型与运行；安装 Studio market 包读取公共数据
 shared-data/instruments/       共享资产合同、模型、store helper 与 Alembic 迁移
 packages/ui/                   小而稳定的跨 app UI 基础能力
-packages/runtime/              API 与后台任务的结构化耗时、请求关联及脱敏错误定位
+packages/runtime/              结构化耗时、请求关联、脱敏错误定位与自有进程组清理
 infra/launchd/                 macOS 托管服务和每日刷新
 infra/systemd/                 Linux 用户级 systemd 部署
 infra/scripts/                 统一迁移、审计和质量门

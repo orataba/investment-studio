@@ -126,7 +126,7 @@ printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
   'printf "pg_restore:%s\n" "$*" >> "$EVENT_LOG"' \
-  'if [[ "${FAIL_HELPER_ROLLBACK:-false}" == "true" && "$*" == *-pre-restore-* && "$*" != *--list* ]]; then' \
+  'if [[ "${FAIL_HELPER_ROLLBACK:-false}" == "true" && "$*" == *-pre-restore-* && "$*" != *--list* && "$*" != *--file=/dev/null* ]]; then' \
   '  output=""' \
   '  while [[ $# -gt 0 ]]; do' \
   '    if [[ "$1" == "--file" ]]; then output="$2"; shift 2; else shift; fi' \

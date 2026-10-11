@@ -27,6 +27,15 @@ it('sends JSON and multipart files using the existing user session', async () =>
   expect(init.credentials).toBe('include')
 })
 
+it('retains the encoded evidence source and user session through the Portfolio origin', async () => {
+  const sourceId = 'computed:portfolio/a b?currency=HKD&snapshot=原件+#1'
+  const evidence = { source_id: sourceId, result: { text: '完整原件'.repeat(24000) } }
+  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(evidence)))
+  vi.stubGlobal('fetch', fetcher)
+  expect(await readResearchAssistant(`/research/runs/run-1/evidence?source_id=${encodeURIComponent(sourceId)}`)).toEqual(evidence)
+  expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/research-assistant/runs/run-1/evidence?source_id=${encodeURIComponent(sourceId)}`, expect.objectContaining({ credentials: 'include' }))
+})
+
 it('shows downstream permission failures without treating them as empty conversation history', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"detail":"无权访问该组合"}', { status: 403 })))
   await expect(readResearchAssistant('/research/topics/chat-1')).rejects.toThrow('无权访问该组合')

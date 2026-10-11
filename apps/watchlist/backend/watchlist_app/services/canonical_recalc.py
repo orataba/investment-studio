@@ -56,6 +56,7 @@ from watchlist_app.services.calculation_frequency import (
     source_calendar_date,
     assess_latest_observation_freshness,
     build_calculation_frequency_context,
+    listed_session_points,
 )
 from watchlist_app.services.read_models import (
     build_screener_chart_projection,
@@ -1505,6 +1506,9 @@ def _select_quote_series(
             and str(point.get("metric_family") or "").strip().lower()
             == _quote_basis_metric_family(quote_basis)
         ]
+        points = listed_session_points(points, instrument_type=instrument_type,
+            market_calendar=(shared_instrument or {}).get("exchange_code")
+            or dict((shared_instrument or {}).get("source_settings") or {}).get("market_calendar"))
         if not points:
             continue
         return_kind = _return_kind_for_quote_basis(

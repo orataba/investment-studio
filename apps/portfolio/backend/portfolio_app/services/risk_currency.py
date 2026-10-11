@@ -137,6 +137,10 @@ def align_base_currency_navs(
         calendar=sorted(union), end_date=end_date,
         return_contracts_by_key={native_keys[key]: contract for key, contract in (return_contracts_by_key or {}).items()},
     )
+    # This frame is private to this calculation. Keep its full interval mapping
+    # aside while selecting component columns, so every Pandas mask does not
+    # deepcopy the entire history once per holding. Publish it unchanged below.
+    period_starts = component_returns.attrs.pop("return_period_starts")
     wealth_by_key, invalid_returns, metadata = {}, {}, {}
     for key, native_key in native_keys.items():
         wealth = aligned[native_key].copy()
@@ -176,7 +180,7 @@ def align_base_currency_navs(
     returns = navs.pct_change(fill_method=None)
     # Multiplication preserves the aligned component intervals, including the
     # actual opening boundary of the first native/FX return.
-    returns.attrs["return_period_starts"] = dict(component_returns.attrs["return_period_starts"])
     for key, missing in invalid_returns.items():
         returns.loc[missing, key] = np.nan
+    returns.attrs["return_period_starts"] = period_starts
     return navs, returns, metadata

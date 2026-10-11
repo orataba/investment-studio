@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from functools import lru_cache
 from math import isfinite
+from threading import RLock
 from typing import Callable, Iterable
 
 import exchange_calendars
@@ -29,6 +30,32 @@ USABLE_MARKET_DATA_STATUS = "complete"
 SUPPORTED_PRIMARY_QUOTE_BASES = frozenset(QUOTE_BASIS_METRIC_FAMILY)
 
 
+_MARKET_CALENDARS: dict[str, exchange_calendars.ExchangeCalendar] = {}
+_MARKET_CALENDARS_LOCK = RLock()
+
+
+def _market_calendar_covering(
+    calendar_name: str, start_date: date, end_date: date,
+) -> exchange_calendars.ExchangeCalendar:
+    # The library only retains the last exact constructor arguments per market.
+    # Alternating default and historical ranges otherwise rebuilds its entire
+    # schedule for each holding. Keep one covering instance per registered name;
+    # calendar definitions are versioned code, not cached market observations.
+    with _MARKET_CALENDARS_LOCK:
+        calendar = _MARKET_CALENDARS.get(calendar_name)
+        if calendar is None:
+            calendar = exchange_calendars.get_calendar(calendar_name)
+            _MARKET_CALENDARS[calendar_name] = calendar
+        if start_date < calendar.first_session.date() or end_date > calendar.last_session.date():
+            calendar = exchange_calendars.get_calendar(
+                calendar_name,
+                start=min(start_date, calendar.first_session.date()).isoformat(),
+                end=max(end_date, calendar.last_session.date()).isoformat(),
+            )
+            _MARKET_CALENDARS[calendar_name] = calendar
+        return calendar
+
+
 @lru_cache(maxsize=256)
 def market_calendar_sessions(
     calendar_name: str, start_date: date, end_date: date,
@@ -38,11 +65,9 @@ def market_calendar_sessions(
         # common mainland exchange session schedule under XSHG only.
         if calendar_name == "XSHE":
             calendar_name = "XSHG"
-        calendar = exchange_calendars.get_calendar(calendar_name)
-        if start_date < calendar.first_session.date() or end_date > calendar.last_session.date():
-            calendar = exchange_calendars.get_calendar(
-                calendar_name, start=start_date.isoformat(), end=end_date.isoformat(),
-            )
+        calendar = _market_calendar_covering(
+            exchange_calendars.resolve_alias(calendar_name), start_date, end_date,
+        )
         closures = confirmed_market_closures(calendar_name)
         return tuple(session.date() for session in calendar.sessions_in_range(
             start_date.isoformat(), end_date.isoformat(),

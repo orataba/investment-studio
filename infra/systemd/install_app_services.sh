@@ -18,6 +18,7 @@ BRIEFING_WEB_PORT="${BRIEFING_WEB_PORT:-3103}"
 START_SERVICES="${START_SERVICES:-true}"
 HEALTH_ATTEMPTS="${HEALTH_ATTEMPTS:-60}"
 RUN_MIGRATIONS="${RUN_MIGRATIONS:-true}"
+FMP_RECONCILE_SCOPE="${INVESTMENT_STUDIO_RELEASE_FMP_SCOPE_FILE:-}"
 ENV_ROOT="${ENV_ROOT:-}"
 RUNTIME_ENV_HELPER="$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 if [[ ! -f "$RUNTIME_ENV_HELPER" ]]; then
@@ -82,6 +83,10 @@ fi
 if [[ "$RUN_MIGRATIONS" == "true" && ! -f "$PROJECT_ROOT/apps/watchlist/backend/scripts/refresh_release_watchlists.py" ]]; then
   echo "Cannot find Watchlist release directory reconciliation under PROJECT_ROOT: $PROJECT_ROOT" >&2
   exit 1
+fi
+if [[ -n "$FMP_RECONCILE_SCOPE" && ( "$RUN_MIGRATIONS" != "true" || ! -r "$FMP_RECONCILE_SCOPE" || ! -f "$PROJECT_ROOT/shared-data/scripts/reconcile_release_fmp_prices.py" ) ]]; then
+  echo "Explicit FMP release replay requires migrations, a readable scope and its offline helper." >&2
+  exit 64
 fi
 
 if [[ -z "$ENV_ROOT" ]]; then
@@ -642,6 +647,11 @@ if [[ "$RUN_MIGRATIONS" == "true" ]]; then
   echo "Refreshing release-required FMP security catalogs."
   PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
     "$PYTHON_BIN" "$PROJECT_ROOT/shared-data/scripts/refresh_release_catalogs.py"
+  if [[ -n "$FMP_RECONCILE_SCOPE" ]]; then
+    echo "Replaying the reviewed FMP canonical price scope from immutable local history."
+    PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python:$PROJECT_ROOT/shared-data/market${PYTHONPATH:+:$PYTHONPATH}" \
+      "$PYTHON_BIN" "$PROJECT_ROOT/shared-data/scripts/reconcile_release_fmp_prices.py" --scope-file "$FMP_RECONCILE_SCOPE"
+  fi
   echo "Reconciling release-required Watchlist system directories."
   PYTHONPATH="$PROJECT_ROOT/apps/watchlist/backend:$PROJECT_ROOT/packages/identity:$PROJECT_ROOT/shared-data/instruments/python:$PROJECT_ROOT/shared-data/market${PYTHONPATH:+:$PYTHONPATH}" \
     "$PYTHON_BIN" "$PROJECT_ROOT/apps/watchlist/backend/scripts/refresh_release_watchlists.py" \

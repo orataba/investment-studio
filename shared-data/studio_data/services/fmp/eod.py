@@ -3,16 +3,17 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 
-from studio_market.calendars import latest_closed_market_session
+from studio_market.calendars import latest_closed_market_session, closed_market_sessions
+from investment_studio_instrument_core.listing_contract import session_calendar_name
 from studio_market.config import MarketSettings
 from studio_market.numeric import NumericStore
 from studio_market.numeric.collect import closed_symbol_date
 from studio_data.services.fmp.client import FmpApiError
 from studio_data.services.fmp.eod_capture import FmpHistoryIncomplete, ensure_fmp_security_history
+from studio_data.services.fmp.price_projection import publish_price_history
 from studio_data.services.instrument_store import (
     get_instrument,
     update_refresh_status,
-    upsert_price_history,
 )
 
 
@@ -73,6 +74,13 @@ def refresh_fmp_eod(
     )
     if not provider_identifier:
         raise ValueError(f"{instrument_type.upper()} has no FMP provider_symbol identifier.")
+    def publish(**kwargs):
+        try:
+            return publish_price_history(instrument, **kwargs)
+        except FmpApiError as error:
+            update_refresh_status(instrument_id=instrument_id, status="failed", message=str(error),
+                                  updated_by=f"fmp_{instrument_type}_sync", mode="api")
+            raise
     symbol = provider_identifier.removeprefix("fmp:")
     clock = now or datetime.now(UTC)
     exchange_code = str(instrument.get("exchange_code") or "")
@@ -94,6 +102,7 @@ def refresh_fmp_eod(
     # boundary. An explicitly supplied store always stays an offline replay.
     no_trade_evidence = []
     coverage_error = None
+    acquisition_error = None
     if acquire_history and store is None:
         try:
             no_trade_evidence = ensure_fmp_security_history(
@@ -109,6 +118,11 @@ def refresh_fmp_eod(
             # successful refresh. Transport/revision errors still abort.
             coverage_error = str(error)
             no_trade_evidence = error.no_trade_evidence
+        except FmpApiError as error:
+            # A failed acquisition can reflect a newly quarantined identity.
+            # Read its exact public eligibility below before deciding whether
+            # this is a transient collection error or canonical invalidation.
+            acquisition_error = error
     start_date = date(1900, 1, 1)
     market = store or NumericStore(MarketSettings.from_environment())
     try:
@@ -124,6 +138,38 @@ def refresh_fmp_eod(
     finally:
         if store is None:
             market.close()
+    provenance = history.get("provenance") or {}
+    generation = (provenance.get("price_series_generations") or {}).get(symbol)
+    unavailable = next((item for item in provenance.get("price_series_unavailable", [])
+                        if item.get("symbol") == symbol), None)
+    bound_generation_missing = not generation and bool(dict(instrument.get("source_settings") or {}).get("fmp_price_series"))
+    if unavailable or bound_generation_missing:
+        publish(market_data_rows=[], price_bar_rows=[], generation=generation,
+            unavailable_reason=f"FMP price series unavailable for {symbol}: "
+            + (str(unavailable.get('reason') or 'identity not verified') if unavailable
+               else 'registered identity generation is missing'))
+    if acquisition_error:
+        previous = dict(dict(instrument.get("source_settings") or {}).get("fmp_price_series") or {})
+        if generation and any(generation.get(key) != previous.get(key)
+                              for key in ("identity_source_id", "base_capture_id")):
+            # A tail transport failure must not keep the prior security or
+            # adjustment generation usable. Only an unchanged qualified
+            # generation may survive an ordinary acquisition failure.
+            publish(market_data_rows=[], price_bar_rows=[], generation=generation,
+                    unavailable_reason="Current FMP identity generation is not yet projected; acquisition failed.")
+        raise acquisition_error
+    # Raw provider captures remain immutable evidence. Only actual completed
+    # sessions of the registered listing can enter its canonical daily series.
+    excluded_dates = []
+    if raw_rows:
+        calendar = calendar_name if actual_type == "index" else session_calendar_name(exchange_code)
+        sessions = closed_market_sessions(calendar, min(date.fromisoformat(str(row["date"])) for row in raw_rows),
+                                          end_date, clock)
+        if sessions is None:
+            raise FmpApiError("FMP history has no verified session calendar over its full date range.")
+        session_dates = {day.isoformat() for day in sessions}
+        excluded_dates = sorted({str(row["date"]) for row in raw_rows if str(row["date"]) not in session_dates})
+        raw_rows = [row for row in raw_rows if str(row["date"]) in session_dates]
     currency = str(instrument.get("currency") or "").strip().upper()
     multiplier = _price_multiplier(instrument)
     price_bars: list[dict[str, object]] = []
@@ -182,7 +228,7 @@ def refresh_fmp_eod(
             )
 
     updated_by = f"fmp_{instrument_type}_sync"
-    if not price_bars:
+    if not price_bars and not generation and not excluded_dates:
         record = update_refresh_status(
             instrument_id=instrument_id,
             status="failed" if coverage_error else "no_new_data",
@@ -194,16 +240,19 @@ def refresh_fmp_eod(
             raise RuntimeError(
                 f"Registry {instrument_type} disappeared during refresh: {instrument_id}"
             )
+        record["projection_complete"] = False
         return record
 
-    changes = upsert_price_history(instrument_id=instrument_id,
-        market_data_rows=market_data, price_bar_rows=price_bars)
+    changes = publish(
+        market_data_rows=market_data, price_bar_rows=price_bars, generation=generation)
     if changes is None:
         raise RuntimeError(f"Registry {instrument_type} disappeared during refresh: {instrument_id}")
     record = update_refresh_status(
         instrument_id=instrument_id,
         status="failed" if coverage_error else "refreshed" if any(changes) else "no_new_data",
         message=(f"Projected {len(price_bars)} shared FMP EOD rows for {symbol}."
+                 + (f" Excluded {len(excluded_dates)} off-session observation(s); raw source evidence is retained."
+                    if excluded_dates else "")
                  + (f" HKEX confirms {len(no_trade_evidence)} no-trade session(s) through "
                     f"{max(str(row['date']) for row in no_trade_evidence)}; no prices were synthesized for those sessions."
                     if no_trade_evidence else "")
@@ -215,4 +264,8 @@ def refresh_fmp_eod(
         raise RuntimeError(
             f"Registry {instrument_type} disappeared during refresh: {instrument_id}"
         )
+    # Invocation receipt only; do not add a persistent field to the instrument.
+    # Empty unbound source data and an unchanged complete replay both have the
+    # historical no_new_data refresh status, but differ for release acceptance.
+    record["projection_complete"] = True
     return record

@@ -92,6 +92,46 @@ def transaction_execution_sort_key(
     )
 
 
+def transaction_acquisition_sort_key(transaction: dict[str, object]) -> tuple[object, ...]:
+    """FIFO follows original acquisition, with canonical opening-fact tie breaks."""
+
+    acquisition_date = (
+        transaction.get("acquisition_date")
+        or transaction_position_effective_date(transaction)
+        or transaction.get("trade_date")
+    )
+    return (str(acquisition_date or ""), *transaction_sort_key(transaction)[1:])
+
+
+def transaction_account_fact_dates(transaction: dict[str, object]) -> dict[str, set[date]]:
+    """Account lifecycle dates by actual role, excluding imported acquisition history."""
+
+    dates: dict[str, set[date]] = {}
+
+    def add(account_id: object, *values: object) -> None:
+        if account_id:
+            dates.setdefault(str(account_id), set()).update(
+                day for value in values if (day := _parse_date(value)) is not None
+            )
+
+    trade = transaction.get("trade_date")
+    settlement = transaction.get("settlement_date") or trade
+    economic = transaction.get("position_effective_date") or trade
+    add(transaction.get("account_id"), trade, settlement, economic, transaction.get("entitlement_date"))
+    add(transaction.get("settlement_cash_account_id"), settlement)
+    if transaction.get("transaction_type") == "fx_conversion":
+        add(transaction.get("counterparty_account_id"), settlement)
+    elif transaction.get("transaction_type") in {"transfer_in", "transfer_out"}:
+        add(transaction.get("counterparty_account_id"), trade, settlement, economic)
+    for delivery in transaction.get("asset_deliveries") or []:
+        add(delivery.get("account_id"), economic, delivery.get("delivery_date") or economic)
+        add(delivery.get("settlement_cash_account_id"), economic, delivery.get("fee_settlement_date") or economic)
+    for cashflow in transaction.get("settlement_cashflows") or []:
+        recognition = cashflow.get("recognition_date") or economic
+        add(cashflow.get("cash_account_id"), recognition, cashflow.get("settlement_date") or recognition)
+    return dates
+
+
 def _transaction_sequence(transaction: dict[str, object]) -> int:
     value = transaction.get("transaction_sequence")
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:

@@ -1,5 +1,6 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, UTC
+from io import StringIO
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -273,6 +274,7 @@ def test_runner_publishes_only_structured_success_and_retains_failed_version(fac
     class Process:
         returncode = 0
         def __init__(self, args, **kwargs):
+            self.stdout, self.stderr = StringIO(), StringIO()
             self.mode = args[-1]
             modes.append(self.mode)
         def communicate(self, **kwargs):
@@ -293,7 +295,7 @@ def test_runner_publishes_only_structured_success_and_retains_failed_version(fac
         assert row.result_json["sections"][0]["groups"][0]["items"][0]["analysis"] == "核对原文后，保留其条件与不确定性。"
         second, _ = begin_report(session, "daily", datetime(2026, 9, 7, tzinfo=UTC), "Asia/Shanghai", edition_role="publisher")
         second_id = second.report_id
-    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(returncode=0, communicate=lambda **kw: ("这里只是普通回复", "")))
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=StringIO(), stderr=StringIO(), communicate=lambda **kw: ("这里只是普通回复", "")))
     runner.run_report(second_id, second_id, report_test_actor)
     with factory() as session:
         rows = list(session.scalars(select(Report).order_by(Report.version)))
@@ -301,7 +303,7 @@ def test_runner_publishes_only_structured_success_and_retains_failed_version(fac
         assert rows[1].result_json is None and rows[1].input_json["sources"]
         third, _ = begin_report(session, "daily", datetime(2026, 9, 7, 3, tzinfo=UTC), "Asia/Shanghai", edition_role="publisher")
         third_id = third.report_id
-    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(returncode=1, communicate=lambda **kw: ("", "API_KEY=private-value\nerror EEXIST profile bootstrap\n")))
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout=StringIO(), stderr=StringIO(), communicate=lambda **kw: ("", "API_KEY=private-value\nerror EEXIST profile bootstrap\n")))
     runner.run_report(third_id, third_id, report_test_actor)
     assert third_id in caplog.text and "exit_code=1" in caplog.text and "EEXIST profile bootstrap" in caplog.text
     assert "private-value" not in caplog.text
@@ -317,6 +319,7 @@ def test_runner_never_publishes_writer_draft_when_editor_does_not_submit(factory
         report_id = report.report_id
     class Process:
         def __init__(self, args, **kwargs):
+            self.stdout, self.stderr = StringIO(), StringIO()
             self.mode = args[-1]
             self.returncode = review_exit if self.mode == "review" else 0
         def communicate(self, **kwargs):

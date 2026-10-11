@@ -42,12 +42,20 @@ def closed_market_sessions(calendar_name: str, start: date, end: date, now: date
     try:
         calendar = exchange_calendars.get_calendar(name)
         if start < calendar.first_session.date() or end > calendar.last_session.date():
+            expanded_start = min(start, calendar.first_session.date()) - timedelta(days=31)
+            expanded_end = max(end, calendar.last_session.date()) + timedelta(days=31)
+            # Padding is only for closed-day endpoints, not a request for new
+            # calendar coverage. Bounded schedules (notably XSHG) must not fail
+            # valid historical reads because this padding crosses their bounds.
+            if calendar.bound_min() is not None:
+                expanded_start = max(expanded_start, calendar.bound_min().date())
+            if calendar.bound_max() is not None:
+                expanded_end = min(expanded_end, calendar.bound_max().date())
             calendar = exchange_calendars.get_calendar(name,
                 # Calendar bounds are first/last *sessions*. Include a full
                 # month around requested dates so weekend/holiday endpoints do
                 # not masquerade as unsupported history.
-                start=(min(start, calendar.first_session.date()) - timedelta(days=31)).isoformat(),
-                end=(max(end, calendar.last_session.date()) + timedelta(days=31)).isoformat())
+                start=expanded_start.isoformat(), end=expanded_end.isoformat())
         if start < calendar.first_session.date() or end > calendar.last_session.date():
             return None
         closures = confirmed_market_closures(name)

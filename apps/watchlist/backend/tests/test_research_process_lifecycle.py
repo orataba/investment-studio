@@ -123,6 +123,7 @@ def test_wait_cleanup_occurs_once_and_preserves_completion_semantics(monkeypatch
     def communicate(timeout=None):
         if process.returncode is None:
             raise subprocess.TimeoutExpired(process.args, timeout)
+        assert timeout is not None and timeout > 0
         if kind == "accepted-read-error":
             raise failure
         return "submitted", ""

@@ -59,6 +59,7 @@ from portfolio_app.services.taxonomy_configuration import (
 )
 from portfolio_app.services.snapshot_selection import default_portfolio_snapshot
 from portfolio_app.services.transaction_dates import (
+    transaction_account_fact_dates,
     transaction_affected_dates,
     transaction_performance_effective_date,
 )
@@ -2150,6 +2151,20 @@ def load_locked_portfolio_ledger_state(
     )
 
 
+def _validate_account_history_dates(
+    *, account_id: str, opened_at: date | None, closed_at: date | None, status: str, fact_dates: set[date],
+) -> None:
+    if opened_at is not None and closed_at is not None and closed_at < opened_at:
+        raise ValueError("closed_at must not be earlier than opened_at.")
+    if str(status or "").strip().lower() == "closed" and closed_at is None and fact_dates:
+        raise ValueError(f"Account '{account_id}' requires a closing date that includes its recorded history.")
+    outside = sorted(day for day in fact_dates
+                     if (opened_at is not None and day < opened_at)
+                     or (closed_at is not None and day > closed_at))
+    if outside:
+        raise ValueError(f"Account '{account_id}' dates must include its recorded history on {outside[0].isoformat()}.")
+
+
 def _validate_portfolio_transaction_history(session, portfolio_id: str) -> None:
     accounts = list(
         session.scalars(
@@ -2161,9 +2176,18 @@ def _validate_portfolio_transaction_history(session, portfolio_id: str) -> None:
             TransactionRecordModel.portfolio_id == portfolio_id
         )
     ).all()
+    payloads = [_serialize_transaction_row(record) for record in transactions]
+    account_by_id = {account.account_id: account for account in accounts}
+    # API prevalidation may precede another account edit. Recheck the persisted
+    # dates under the same portfolio lock as every transaction/account mutation.
+    for payload in payloads:
+        for account_id, fact_dates in transaction_account_fact_dates(payload).items():
+            account = account_by_id[account_id]
+            _validate_account_history_dates(account_id=account_id, opened_at=account.opened_at,
+                                            closed_at=account.closed_at, status=account.status, fact_dates=fact_dates)
     validate_transaction_position_history(
         portfolio_id,
-        [_serialize_transaction_row(record) for record in transactions],
+        payloads,
         account_cost_methods={
             account.account_id: str(account.cost_basis_method or "fifo")
             for account in accounts
@@ -4835,25 +4859,39 @@ def update_account(
             return None
 
         previous_account_category = record.account_category
-        settlement_history_dates: list[date] = []
-        for tx in session.scalars(select(TransactionRecordModel).where(
+        account_history_dates: set[date] = set()
+        has_bound_settlement = False
+        # Only date/role facts are needed; do not load instrument/contract detail
+        # or unrelated securities transactions to validate an account edit.
+        for tx in session.execute(select(
+            TransactionRecordModel.account_id,
+            TransactionRecordModel.settlement_cash_account_id,
+            TransactionRecordModel.counterparty_account_id,
+            TransactionRecordModel.transaction_type,
+            TransactionRecordModel.trade_date,
+            TransactionRecordModel.position_effective_date,
+            TransactionRecordModel.entitlement_date,
+            TransactionRecordModel.settlement_date,
+            TransactionRecordModel.asset_deliveries_json.label("asset_deliveries"),
+            TransactionRecordModel.settlement_cashflows_json.label("settlement_cashflows"),
+        ).where(
             TransactionRecordModel.portfolio_id == portfolio_id,
-            TransactionRecordModel.derivative_contract_id.is_not(None),
-        )):
-            economic_date = tx.position_effective_date or tx.trade_date
-            for leg in tx.asset_deliveries_json or []:
-                if leg["account_id"] == account_id:
-                    settlement_history_dates.extend([economic_date, date.fromisoformat(leg["delivery_date"]) if leg.get("delivery_date") else economic_date])
-                if leg.get("settlement_cash_account_id") == account_id:
-                    settlement_history_dates.extend([economic_date, date.fromisoformat(leg["fee_settlement_date"]) if leg.get("fee_settlement_date") else economic_date])
-            for flow in tx.settlement_cashflows_json or []:
+            or_(TransactionRecordModel.account_id == account_id,
+                TransactionRecordModel.settlement_cash_account_id == account_id,
+                TransactionRecordModel.counterparty_account_id == account_id,
+                TransactionRecordModel.derivative_contract_id.is_not(None)),
+        )).mappings():
+            account_history_dates.update(transaction_account_fact_dates(dict(tx)).get(account_id, set()))
+            for leg in tx["asset_deliveries"] or []:
+                if account_id in {leg["account_id"], leg.get("settlement_cash_account_id")}:
+                    has_bound_settlement = True
+            for flow in tx["settlement_cashflows"] or []:
                 if flow["cash_account_id"] == account_id:
-                    recognized = date.fromisoformat(flow["recognition_date"]) if flow.get("recognition_date") else economic_date
-                    settlement_history_dates.extend([recognized, date.fromisoformat(flow["settlement_date"]) if flow.get("settlement_date") else recognized])
-        if settlement_history_dates and (account_category != record.account_category or cost_basis_method != record.cost_basis_method):
+                    has_bound_settlement = True
+        if has_bound_settlement and (account_category != record.account_category or cost_basis_method != record.cost_basis_method):
             raise ValueError("Account category and cost method cannot change after FCN settlement history exists.")
-        if any((opened_at and day < opened_at) or (closed_at and day > closed_at) for day in settlement_history_dates):
-            raise ValueError("Account dates must include its FCN settlement history.")
+        _validate_account_history_dates(account_id=account_id, opened_at=opened_at,
+                                        closed_at=closed_at, status=status, fact_dates=account_history_dates)
         next_account_category = _validate_account_storage_contract(
             session,
             portfolio_id=portfolio_id,

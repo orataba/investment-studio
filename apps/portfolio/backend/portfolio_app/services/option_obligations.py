@@ -14,6 +14,7 @@ from typing import Iterable
 
 from portfolio_app.services.option_actions import resolve_option_action
 from portfolio_app.services.transaction_dates import (
+    transaction_acquisition_sort_key,
     transaction_performance_effective_date,
     transaction_sort_key,
 )
@@ -247,6 +248,7 @@ def derive_option_obligation_events(
 
     ordered = sorted(list(transactions), key=transaction_sort_key)
     obligations: dict[tuple[str, str, str], list[dict[str, object]]] = {}
+    acquisition_order: dict[str, tuple[object, ...]] = {}
     events: list[dict[str, object]] = []
     for transaction in ordered:
         effective_date = transaction_performance_effective_date(transaction) or _date(
@@ -272,6 +274,7 @@ def derive_option_obligation_events(
             ):
                 raise ValueError("Short option open date must not be after contract expiry.")
             obligation = _new_obligation(transaction, quantity)
+            acquisition_order[obligation["obligation_id"]] = transaction_acquisition_sort_key(transaction)
             obligations.setdefault(key, []).append(obligation)
             events.append(
                 {
@@ -308,7 +311,9 @@ def derive_option_obligation_events(
             continue
 
         key = _key(transaction)
-        open_rows = obligations.get(key, [])
+        # Only already-recognized openings participate; imported original dates
+        # rank those lots without moving future facts ahead of their recognition.
+        open_rows = sorted(obligations.get(key, []), key=lambda row: acquisition_order[row["obligation_id"]])
         available = sum(_float(row.get("remaining_quantity")) for row in open_rows)
         requested = quantity if quantity > EPSILON else available
         if requested > available + EPSILON:
