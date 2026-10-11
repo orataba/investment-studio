@@ -23,7 +23,7 @@ router = APIRouter()
 
 def dump(record):
     return serialize_payload({column.name: getattr(record, column.name) for column in record.__table__.columns
-                              if column.name != "read_context_json"})
+                              if column.name not in {"read_context_json", "access_context_json"}})
 
 
 def managed_topic(topic_id):
@@ -336,7 +336,8 @@ def topic_detail(topic_id: str, session: Session = Depends(get_db_session)):
     fields = {name: JSON for name in ("research_publication", "user_records", "execution", "runtime_error",
         "portfolio_id", "instrument_ids", "cutoff", "page_context")}
     relation, values = research_context_projection(session, fields)
-    columns = [column for column in ResearchEntry.__table__.columns if column.name not in {"context_json", "read_context_json"}]
+    columns = [column for column in ResearchEntry.__table__.columns
+               if column.name not in {"context_json", "read_context_json", "access_context_json"}]
     query = select(*columns, *(value.label(key) for key, value in values.items()),
         case((ResearchEntry.kind != "analysis", ResearchEntry.context_json)).label("material_context")).select_from(ResearchEntry)
     if relation is not None:

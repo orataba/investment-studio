@@ -37,20 +37,24 @@ class ResearchEntry(TimestampMixin, Base):
     context_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     # Derived in the same write transaction; raw inputs remain version-addressable.
     read_context_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict, deferred=True)
+    # Authorization must not parse every retained analytical snapshot in a topic.
+    access_context_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict, deferred=True)
     status: Mapped[str] = mapped_column(default="recorded")
 
 
 @event.listens_for(ResearchEntry, "before_insert")
-def _initialize_research_read_context(_mapper, _connection, entry):
+def _initialize_research_projections(_mapper, _connection, entry):
+    from watchlist_app.db.research_access_context import derive_access_context
     from watchlist_app.db.research_read_context import derive_read_context
     context = entry.context_json if inspect(entry).attrs.context_json.history.added else {}
     entry.read_context_json = derive_read_context(context)
+    entry.access_context_json = derive_access_context(context)
 
 
 @event.listens_for(ResearchEntry, "before_update")
-def _update_research_read_context(_mapper, _connection, entry):
+def _update_research_projections(_mapper, _connection, entry):
     if inspect(entry).attrs.context_json.history.has_changes():
-        _initialize_research_read_context(_mapper, _connection, entry)
+        _initialize_research_projections(_mapper, _connection, entry)
 
 
 from watchlist_app.db.research_scope import (
@@ -63,7 +67,7 @@ _scope_index = Index(RESEARCH_SCOPE_INDEX, research_scope_expression(ResearchEnt
 event.listen(_scope_index, "before_create", DDL(RESEARCH_SCOPE_FUNCTION_DDL).execute_if(dialect="postgresql"))
 
 _portfolio_scope_index = Index(RESEARCH_PORTFOLIO_SCOPE_INDEX, ResearchEntry.topic_id,
-    postgresql_where=research_portfolio_scope_expression(ResearchEntry.read_context_json)).ddl_if(dialect="postgresql")
+    postgresql_where=research_portfolio_scope_expression(ResearchEntry.access_context_json)).ddl_if(dialect="postgresql")
 event.listen(_portfolio_scope_index, "before_create",
     DDL(RESEARCH_PORTFOLIO_SCOPE_FUNCTION_DDL).execute_if(dialect="postgresql"))
 

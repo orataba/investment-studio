@@ -44,15 +44,18 @@ def test_backfill_and_live_writes_preserve_originals_and_bound_read_queries(post
     assert originals() == before
     with factory() as session:
         projection = session.scalar(select(ResearchEntry.read_context_json).where(ResearchEntry.entry_id == "projection-row"))
+        access_projection = session.scalar(select(ResearchEntry.access_context_json).where(ResearchEntry.entry_id == "projection-row"))
+        assert access_projection == {"portfolio_id": "portfolio\x00exact"}
         assert projection["portfolio_id"] == "portfolio\x00exact"
         assert projection["sources"] == [browser_source_view(source)]
         assert projection["reviews"]["xlk"]["research"]["modules"][0]["versions"][0]["sources"] == [browser_source_view(source)]
         assert projection["attempted_theme_baselines"] == {"theme": "2026-09-30"}
         assert "versions" not in projection and "sources" not in projection["sources"][0]
         assert len(json.dumps(projection)) < 5000
-        indexes = session.scalars(text("SELECT indexdef FROM pg_indexes WHERE schemaname='watchlist' AND indexname IN "
-            "('ix_research_entry_instrument_scope','ix_research_entry_retained_portfolio_topic')")).all()
-        assert len(indexes) == 2 and all("read_context_json" in value for value in indexes)
+        indexes = dict(session.execute(text("SELECT indexname,indexdef FROM pg_indexes WHERE schemaname='watchlist' AND indexname IN "
+            "('ix_research_entry_instrument_scope','ix_research_entry_retained_portfolio_topic')")).all())
+        assert "read_context_json" in indexes["ix_research_entry_instrument_scope"]
+        assert "access_context_json" in indexes["ix_research_entry_retained_portfolio_topic"]
         assert session.scalar(select(ResearchEntry.entry_id).where(instrument_run_scope(session, "xlk"))) == "projection-row"
 
     # Updating only runtime state must neither hydrate nor recompute the input snapshot.
@@ -71,11 +74,13 @@ def test_backfill_and_live_writes_preserve_originals_and_bound_read_queries(post
         assert session.scalar(select(ResearchEntry.entry_id).where(instrument_run_scope(session, "xlk"))) is None
         assert session.scalar(select(ResearchEntry.entry_id).where(instrument_run_scope(session, "spy"))) == "projection-row"
         assert row.read_context_json["instrument_ids"] == ["spy"]
+        assert row.access_context_json == {"portfolio_id": None}
         assert row.context_json["sources"] == original["sources"]
         session.rollback()
     assert originals() == before
     with factory() as session:
         assert session.scalar(select(ResearchEntry.read_context_json).where(ResearchEntry.entry_id == "projection-row")) == projection
+        assert session.scalar(select(ResearchEntry.access_context_json).where(ResearchEntry.entry_id == "projection-row")) == access_projection
     get_engine().dispose()
 
 

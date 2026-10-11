@@ -15,6 +15,8 @@
 
 研究工作台在 `watchlist` schema 内维护 `research_topic`、`research_entry`、`risk_review_rule` 和 `risk_case`。专题关联标的或组合；entry 保存人工证据、对话、输入快照、工具证据与回答。`risk_review_rule` 保存回撤和各周期跌幅复核线及初始校准；`risk_case` 分别记录客观触发状态、人工跟进、复核日期和历史。
 
+`research_entry.context_json` 保留完整原件，`read_context_json` 提供内容读取投影；`access_context_json` 仅保留精确的 `research_actor / execution / portfolio_id / risk_scope`。两份投影由同一次 ORM 写入事务派生，权限检查与历史组合范围查询只解析窄权限投影，不反复扫描历史分析正文。历史中曾关联的组合仍全部参与授权，运行工具仍在边界与锁定当前记录后检查 actor、attempt 和实时组合权限；没有跨请求权限缓存。新增列通过逐条 backfill 从既有读取投影派生，不改写原件、内容投影或历史时点；导入研究经现有 ORM 入口，恢复 dump 则保留投影列。直接 SQL 修改研究 context 不能绕过这些派生合同。
+
 迁移 `20260920_0060` 为 PostgreSQL `research_entry` 增加基于留存 `context_json.instrument_ids` 的 GIN 表达式索引。读取先按该次运行的原始标的范围筛选，再解析命中记录的研究字段；不能用后来可变的 `research_topic.instrument_ids` 替代历史范围。索引通过同一不可变数据库函数提取文本数组，由 PostgreSQL 随每次写入维护；它不是第二份研究事实或跨请求缓存。原始 context、来源正文、作者及权限判断保持原样。SQL 工作副本仅为处理 PostgreSQL JSON 中保留的 NUL 转义而转换，选中的原始字段仍精确还原。改变提取函数语义必须通过迁移重建依赖索引；SQLite 使用等价的既有逐行范围谓词。
 
 浏览器 HTTP 投影与完整研究输入分开：`/api/sector-research` 的运行状态使用 `include_events=false` 跳过事件与事件历史读取，只携带当前投资判断及其原始版本，不重复附带整份底稿；`/dossier?current_only=true` 只读取当前底稿、基础档案及研究指导，跳过活动历史、PM 修订、主题时间线和历史来源集合；辅助入口展开后读取材料与完整历史，但不计算页面未使用的研究员议程和主题活动；精确来源／版本请求始终走原始路径。`/dossier` 的来源列表保留身份、时钟、归属与展示用的数值／方法，嵌套来源、完整序列、输入版本、正文、快照、公司资料和计算输入不进入首屏来源目录，由既有 `source_id`、`version_id` 查询按需读取。指定来源或版本的查询不使用展示投影，仍受相同标的及历史版本权限约束。领域服务、风险输入与 agent 的已绑定证据保持完整；展示优化不改写存储内容、研究结论或来源时点。

@@ -30,7 +30,9 @@ def test_legacy_conversation_keeps_all_retained_portfolio_scopes(accounts):
     assert client.get("/api/research/topics").json() == []
     # Restoring the actual combination of resource permissions restores history.
     grants["alice"].add("B")
-    assert client.get(f"/api/research/topics/{topic_id}").status_code == 200
+    response = client.get(f"/api/research/topics/{topic_id}")
+    assert response.status_code == 200
+    assert all("access_context_json" not in entry for entry in response.json()["entries"])
     grants["alice"].remove("B")
     assert client.post(f"/api/research/topics/{topic_id}/entries", json={"title": "追加讨论"}).status_code == 404
 
