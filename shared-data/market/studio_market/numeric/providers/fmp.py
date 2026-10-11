@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 from http.client import IncompleteRead
 import random
@@ -7,6 +8,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -160,6 +162,7 @@ class FmpClient:
             headers={
                 "apikey": self._api_key,
                 "Accept": accept,
+                "Accept-Encoding": "gzip",
                 "User-Agent": "investment-studio-market/0.1 personal-research",
             },
         )
@@ -169,7 +172,15 @@ class FmpClient:
                 timeout=self.timeout_seconds,
             ) as response:
                 status = int(response.status)
-                body = response.read(MAX_RESPONSE_BYTES + 1)
+                encoding = response.headers.get("Content-Encoding", "identity").strip().lower()
+                if encoding == "gzip":
+                    # Limit decoded bytes while streaming; bulk CSV compresses well.
+                    with gzip.GzipFile(fileobj=response, mode="rb") as decoded:
+                        body = decoded.read(MAX_RESPONSE_BYTES + 1)
+                elif encoding in ("", "identity"):
+                    body = response.read(MAX_RESPONSE_BYTES + 1)
+                else:
+                    raise FmpResponseError("FMP returned an unsupported content encoding")
                 # Bounded HTTPResponse.read(size) can return a short body without
                 # raising when Content-Length remains. Never publish that CSV.
                 remaining = getattr(response, "length", None)
@@ -177,7 +188,7 @@ class FmpClient:
                     raise IncompleteRead(body, remaining)
         except urllib.error.HTTPError as exc:
             raise FmpHttpError(int(exc.code)) from None
-        except (urllib.error.URLError, TimeoutError, OSError, IncompleteRead) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, EOFError, IncompleteRead, zlib.error) as exc:
             reason = getattr(exc, "reason", exc)
             raise FmpTransportError(
                 "FMP standard HTTPS transport failed: "
