@@ -23,17 +23,23 @@ def migration():
 
 def migrate_from_original_schema(session):
     # Exercise the frozen 0061 writer against its original schema, then replay
-    # the later read-projection migration before using current application reads.
+    # both later projections before using current application reads. Descend in
+    # reverse order because the access projection's index uses the read column.
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
-    path = Path(__file__).resolve().parents[1] / "alembic/versions/20261006_0065_research_read_context.py"
-    spec = importlib.util.spec_from_file_location("read_context_migration", path)
-    projection = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(projection)
+    projections = []
+    for filename in ("20261006_0065_research_read_context.py", "20261012_0069_research_access_context.py"):
+        path = Path(__file__).resolve().parents[1] / "alembic/versions" / filename
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        projection = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(projection)
+        projections.append(projection)
     with Operations.context(MigrationContext.configure(session.connection())):
-        projection.downgrade()
+        for projection in reversed(projections):
+            projection.downgrade()
         migration().migrate_focus_themes(session.connection())
-        projection.upgrade()
+        for projection in projections:
+            projection.upgrade()
 
 
 def assert_migration(session, iid):
@@ -62,10 +68,12 @@ def assert_migration(session, iid):
     session.add_all([old_theme, old_run, case])
     session.commit()
     original_context = deepcopy(old_run.context_json)
+    original_access = deepcopy(old_run.access_context_json)
     migrate_from_original_schema(session)
     session.commit()
     session.expire_all()
     assert session.get(ResearchEntry, "old-run").context_json == original_context
+    assert session.get(ResearchEntry, "old-run").access_context_json == original_access
     theme = session.get(ResearchEntry, "old-theme")
     assert theme.context_json["revision_number"] == 2
     assert theme.context_json["versions"][0]["managed_by"] == "user"
@@ -130,11 +138,13 @@ def assert_retained_scope_is_not_promoted(session, iid, scope):
             title="原始记录", created_at=stamp, updated_at=stamp, completed_at=stamp, context_json=deepcopy(context)))
     session.commit()
     original_records = {row.entry_id: deepcopy(row.context_json) for row in session.scalars(select(ResearchEntry))}
+    original_access = {row.entry_id: deepcopy(row.access_context_json) for row in session.scalars(select(ResearchEntry))}
     migrate_from_original_schema(session)
     session.commit()
     session.expire_all()
     assert theme_index(session, iid) == []
     assert {row.entry_id: row.context_json for row in session.scalars(select(ResearchEntry))} == original_records
+    assert {row.entry_id: row.access_context_json for row in session.scalars(select(ResearchEntry))} == original_access
 
 
 @pytest.mark.parametrize("scope", [{"portfolio_id": "private-portfolio"}, {"risk_scope": {"portfolio_id": "private-portfolio"}}])
