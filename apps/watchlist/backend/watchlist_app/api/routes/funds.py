@@ -5,7 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from studio_identity import current_principal
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from investment_studio_instrument_core.db_models import InstrumentReferenceSnapshot
@@ -27,6 +27,8 @@ from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadMode
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
 from watchlist_app.services.recalc import lock_instrument_configuration, queue_configuration_recalculation
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+from watchlist_app.services.instrument_tail_risk import instrument_tail_risk
+from watchlist_app.services.shared_instrument_registry import get_shared_instrument_summaries
 from watchlist_app.services.instrument_taxonomy import (
     build_taxonomy_context,
     merge_taxonomy_into_summary,
@@ -355,6 +357,23 @@ def get_instrument_chart_data(
     if freshness:
         payload["freshness"] = freshness
     return payload
+
+
+@router.get("/{instrument_id}/tail-risk")
+def get_instrument_tail_risk(
+    instrument_id: str,
+    confidence: float = Query(.95),
+    lookback_days: int = Query(1095),
+    session: Session = Depends(get_db_session),
+) -> dict[str, object]:
+    instrument = _require_instrument(session, instrument_id)
+    if confidence not in {.95, .99} or lookback_days not in {365, 1095, 1825}:
+        raise HTTPException(status_code=422, detail="Choose 95% or 99% and a 1, 3 or 5 year lookback")
+    chart = get_instrument_chart_data(instrument_id, session)
+    detail = get_shared_instrument_summaries([instrument_id]).get(instrument_id) or {}
+    return instrument_tail_risk(chart, instrument_type=instrument.instrument_type,
+                                source_settings=detail.get("source_settings"),
+                                confidence=confidence, lookback_days=lookback_days)
 
 
 @router.get("/{instrument_id}/performance")

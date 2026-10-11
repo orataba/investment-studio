@@ -1,3 +1,4 @@
+import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 import { dayDiff } from '../lib/riskReturnAlignment'
 import { CHART_SERIES_COLORS } from '../lib/chartPalette'
 import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
@@ -576,6 +577,7 @@ function buildBenchmarkMetrics(
     ? sortedPoints.filter((point) => point.date >= firstPoint.date)
     : []
   const latestPoint = metricPoints[metricPoints.length - 1]
+  if (!sameReturnSegment(metricPoints)) return null
   const latestDate = latestPoint ? dateFromString(latestPoint.date) : null
   const requestedEndDate = dateFromString(portfolioEndDate ?? '') ?? latestDate
   if (!firstPoint || !latestPoint || !latestDate || !requestedEndDate) {

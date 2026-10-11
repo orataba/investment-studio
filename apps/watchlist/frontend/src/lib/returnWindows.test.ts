@@ -8,6 +8,7 @@ import {
   normalizeCumulativeReturn,
   periodReturnPercent,
   resolveAlignedReturnWindows,
+  returnWindowObservationLimitation,
   resolveReturnWindow,
 } from './returnWindows'
 
@@ -114,10 +115,12 @@ describe('canonical return window policy', () => {
 
     expect(aligned?.left.points.map((point) => point.date)).toEqual([
       '2026-06-27',
+      '2026-06-30',
       '2026-07-27',
     ])
     expect(aligned?.right.points.map((point) => point.date)).toEqual([
       '2026-06-27',
+      '2026-07-24',
       '2026-07-27',
     ])
     expect(aligned?.left.anchorDate).toBe(aligned?.right.anchorDate)
@@ -156,4 +159,40 @@ describe('canonical return window policy', () => {
       ),
     ).toEqual({ start: '2026-06-27', end: '2026-07-27' })
   })
+})
+
+it('rejects endpoint and aligned comparisons across independent return segments', () => {
+  const points = [
+    { date: '2026-01-01', value: 100, segment_id: 'before' },
+    { date: '2026-01-02', value: 105, segment_id: 'before' },
+    { date: '2026-01-03', value: 100, segment_id: 'after' },
+    { date: '2026-01-04', value: 102, segment_id: 'after' },
+  ]
+  expect(resolveReturnWindow(points, '2026-01-01', '2026-01-04')).toBeNull()
+  expect(resolveReturnWindow(points, '2026-01-03', '2026-01-04')?.points).toHaveLength(2)
+  expect(resolveAlignedReturnWindows(points, points, '2026-01-01', '2026-01-04')).toBeNull()
+})
+
+it('validates each full window without hiding an internal gap or blocking a later complete window', () => {
+  const points = ['2026-09-08', '2026-09-09', '2026-09-10', '2026-09-11'].map((date, index) => ({ date, value: 100 + index }))
+  const source = { calculation_frequency_profile: { resolved_frequency: 'daily', gap_count: 1, gap_detection_basis: 'market_calendar:XNYS' },
+    return_series: { intervals: [
+      { start_date: '2026-08-28', date: '2026-08-31', status: 'unavailable' },
+      ...points.slice(1).map((point, index) => ({ start_date: points[index].date, date: point.date, status: 'complete' })),
+    ] } } as Parameters<typeof returnWindowObservationLimitation>[1]
+  expect(returnWindowObservationLimitation(points, source)).toBeNull()
+  source!.return_series!.intervals[2].status = 'unavailable'
+  expect(returnWindowObservationLimitation(points, source)).toBe('missing_observations')
+  expect(returnWindowObservationLimitation(points.slice(-2), source)).toBeNull()
+  source!.calculation_frequency_profile.gap_detection_basis = 'calendar_day_threshold'
+  expect(returnWindowObservationLimitation(points.slice(-2), source)).toBe('unconfirmed_calendar')
+})
+
+it('does not erase an intermediate return reset merely because the benchmark lacks that day', () => {
+  const left = [
+    { date: '2026-09-08', value: 100, segment_id: 'old' },
+    { date: '2026-09-09', value: 1, segment_id: 'new' },
+    { date: '2026-09-10', value: 101, segment_id: 'old' },
+  ]
+  expect(resolveAlignedReturnWindows(left, [left[0], left[2]], '2026-09-08', '2026-09-10')).toBeNull()
 })

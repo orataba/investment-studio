@@ -37,6 +37,9 @@ from studio_data.services.downstream_notifications import (  # noqa: E402
 from studio_data.services.securities import sync_security_catalogs  # noqa: E402
 from studio_data.services.instrument_reference import refresh_reference_data_batch  # noqa: E402
 from studio_data.services.instrument_store import list_instruments  # noqa: E402
+from studio_data.services.listed_close_acceptance import (  # noqa: E402
+    listed_close_baseline, verify_listed_close_coverage,
+)
 from investment_studio_instrument_core.listing_contract import (  # noqa: E402
     MARKET_SCOPE_TIMEZONES, market_scope_for_calendar,
 )
@@ -200,10 +203,10 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Refresh Investment Studio market data without a browser session.")
     parser.add_argument(
         "--channel",
-        choices=("all", "email", "tushare", "fmp", "projection", "reference", "market", "settlement"),
+        choices=("all", "email", "tushare", "fmp", "futu", "projection", "reference", "market", "settlement"),
         default="all",
         help=(
-            "Data channel to refresh. all refreshes the local FMP stock and ETF catalogs, "
+            "Data channel to refresh. all refreshes the local FMP and authorized Futu security catalogs, "
             "then runs tushare, email, used-security FMP EOD, fund NAV projection "
             "reconciliation, and asset reference snapshots."
         ),
@@ -300,7 +303,7 @@ def _parse_args() -> argparse.Namespace:
 
 def _channels(selected_channel: str) -> list[str]:
     if selected_channel == "all":
-        return ["fmp_catalog", "tushare", "email", "fmp", "fund_nav_projection", "reference"]
+        return ["fmp_catalog", "tushare", "email", "fmp", "futu", "fund_nav_projection", "reference"]
     if selected_channel == "fmp":
         return ["fmp_catalog", "fmp"]
     if selected_channel == "projection":
@@ -344,7 +347,8 @@ def _updated_instrument_ids(results: Iterable[dict[str, object]]) -> list[str]:
     for item in results:
         status = str(item.get("status") or "")
         instrument_id = str(item.get("instrument_id") or "").strip()
-        if status in UPDATED_STATUSES and instrument_id and instrument_id not in seen:
+        changed = status in UPDATED_STATUSES or item.get("canonical_changed") is True
+        if changed and instrument_id and instrument_id not in seen:
             seen.add(instrument_id)
             ids.append(instrument_id)
     return ids
@@ -381,6 +385,7 @@ def _result_from_record(record: dict[str, object]) -> dict[str, object]:
         "source_api_profile": source_settings.get("source_api_profile") or "",
         "status": refresh_status.get("status") or "idle",
         "message": refresh_status.get("message") or "",
+        "canonical_changed": record.get("canonical_changed") is True,
     }
 
 
@@ -481,6 +486,10 @@ def _retry_failed_results(
             if record is None:
                 continue
             result = _result_from_record(record)
+            result["canonical_changed"] = (
+                result["canonical_changed"]
+                or by_instrument_id[instrument_id].get("canonical_changed") is True
+            )
             by_instrument_id[instrument_id] = result
             LOGGER.info(
                 "retry result channel=%s attempt=%s instrument_id=%s status=%s",
@@ -618,6 +627,11 @@ def _run_refresh(
         channels = []
     if requested_instrument_ids:
         channels = [channel for channel in channels if channel != "fmp_catalog"]
+    close_baseline = (
+        listed_close_baseline(requested_instrument_ids or None)
+        if any(channel in {"configured", "tushare", "fmp", "futu"} for channel in channels)
+        else {}
+    )
     for channel in channels:
         LOGGER.info("refreshing channel=%s", channel)
         if channel == "reference":
@@ -778,7 +792,10 @@ def _run_refresh(
     downstream_result = DownstreamRefreshResult()
     should_notify_downstream = bool(all_updated_ids and not args.no_downstream_refresh)
     refresh_all_portfolios = any(
-        str(item.get("status") or "") in UPDATED_STATUSES
+        (
+            str(item.get("status") or "") in UPDATED_STATUSES
+            or item.get("canonical_changed") is True
+        )
         and (
             str(item.get("instrument_type") or "").strip().lower() == "fx"
             or str(item.get("instrument_id") or "").strip().lower().startswith("fx-")
@@ -803,7 +820,12 @@ def _run_refresh(
             downstream_result = error.result
             LOGGER.error("Scheduled downstream refresh failed: %s", error)
 
-    exit_code = 0
+    listed_close_coverage = verify_listed_close_coverage(all_results, cutoff=started_at, baseline=close_baseline)
+    for result in listed_close_coverage["results"]:
+        if result["status"] == "unavailable":
+            LOGGER.warning("scheduled listed close acceptance failed result=%s", result)
+
+    exit_code = 1 if listed_close_coverage["failed_count"] else 0
     if args.fail_on_item_failure and failures:
         exit_code = 1
     if args.require_downstream_success and downstream_result.failures:
@@ -827,6 +849,7 @@ def _run_refresh(
             }
             for item in failures
         ],
+        "listed_close_coverage": listed_close_coverage,
         "downstream_refresh": should_notify_downstream,
         "downstream_delivery_semantics": (
             "portfolio_refresh_response_and_watchlist_recalc_enqueue_acknowledgement"

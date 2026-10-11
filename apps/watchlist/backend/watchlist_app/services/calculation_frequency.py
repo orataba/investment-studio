@@ -2,17 +2,15 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
+from collections import Counter
 from typing import Any, Literal
 
 import exchange_calendars
 from exchange_calendars.errors import CalendarError
+from studio_market.calendars import confirmed_market_closures, closed_market_sessions
 
 
-CalculationFrequency = Literal["daily"]
-
-_EXPECTED_MAX_GAP_DAYS: dict[CalculationFrequency, int] = {
-    "daily": 4,
-}
+CalculationFrequency = Literal["daily", "weekly", "monthly", "event_driven", "unknown"]
 
 _MARKET_CALENDAR_ALIASES = {
     # Shenzhen and Shanghai share the mainland trading-session calendar.  The
@@ -49,6 +47,7 @@ def _market_calendar_sessions(
                 covered_start.isoformat(),
                 covered_end.isoformat(),
             )
+            if session.date() not in confirmed_market_closures(name)
         )
     except (CalendarError, ValueError):
         return None
@@ -87,8 +86,13 @@ def build_calculation_frequency_context(
         [point for point in nav_points if isinstance(point.get("as_of_date"), date)],
         key=lambda point: point["as_of_date"],
     )
-    event_driven = str(expected_frequency or "").strip().lower() == "event_driven"
-    resolved_frequency: CalculationFrequency = "daily"
+    declared_frequency = str(expected_frequency or "").strip().lower()
+    event_driven = declared_frequency == "event_driven"
+    source_counts = Counter(str(point.get("frequency") or "unknown").strip().lower() for point in raw_points)
+    known_source_frequencies = set(source_counts) - {"unknown"}
+    resolved_frequency = (declared_frequency if declared_frequency in {"daily", "weekly", "monthly", "event_driven"}
+        else next(iter(known_source_frequencies)) if len(known_source_frequencies) == 1
+        and next(iter(known_source_frequencies)) in {"daily", "weekly", "monthly"} else "daily")
     calculation_points = raw_points
 
     gaps = [
@@ -104,6 +108,7 @@ def build_calculation_frequency_context(
             calculation_points[-1]["as_of_date"],
         )
         if normalized_market_calendar
+        and resolved_frequency == "daily"
         and calculation_points
         else None
     )
@@ -117,21 +122,24 @@ def build_calculation_frequency_context(
         ]
         gap_count = len(missing_observation_dates)
         gap_detection_basis = f"market_calendar:{normalized_market_calendar}"
-    elif event_driven:
+    elif resolved_frequency != "daily":
         gap_count = 0
-        gap_detection_basis = "event_driven"
+        gap_detection_basis = "event_driven" if event_driven else "observed_intervals"
     else:
-        gap_count = len([gap for gap in gaps if gap > _EXPECTED_MAX_GAP_DAYS["daily"]])
-        gap_detection_basis = "calendar_day_threshold"
-    gap_label = "calendar gaps" if gap_count else "aligned observations"
+        gap_count = None
+        gap_detection_basis = "schedule_unverified"
+    gap_status = ("unverified" if gap_count is None else "calendar_gaps" if gap_count else "aligned")
+    gap_label = ("observation schedule unverified" if gap_count is None
+                 else "calendar gaps" if gap_count else "aligned observations")
 
     profile = {
-        "requested_frequency": "daily",
-        "expected_frequency": "daily",
+        "requested_frequency": declared_frequency or resolved_frequency,
+        "expected_frequency": declared_frequency or resolved_frequency,
         "resolved_frequency": resolved_frequency,
-        "inferred_frequency": "daily",
-        "source_frequency_counts": {"daily": len(raw_points), "unknown": 0},
-        "frequency_source": "daily_policy",
+        "inferred_frequency": resolved_frequency,
+        "source_frequency_counts": dict(source_counts),
+        "frequency_source": "source_contract" if declared_frequency else "observation_metadata",
+        "return_interval_basis": "actual_observation_endpoints",
         "raw_observation_count": len(raw_points),
         "observation_count": len(calculation_points),
         "start_date": calculation_points[0]["as_of_date"].isoformat() if calculation_points else None,
@@ -139,7 +147,7 @@ def build_calculation_frequency_context(
         "annualization_periods_per_year": _annualization_periods_per_year(calculation_points),
         "largest_gap_days": largest_gap_days,
         "gap_count": gap_count,
-        "gap_status": "calendar_gaps" if gap_count else "aligned",
+        "gap_status": gap_status,
         "gap_detection_basis": gap_detection_basis,
         "missing_observation_date_sample": [
             item.isoformat()
@@ -152,11 +160,12 @@ def build_calculation_frequency_context(
                 ]
             )
         ],
-        "status_label": f"Daily risk basis - {gap_label}",
+        "status_label": f"{resolved_frequency.replace('_', ' ').title()} observations - {gap_label}",
     }
     return {
         "points": calculation_points,
         "profile": profile,
+        "missing_observation_dates": missing_observation_dates,
     }
 
 
@@ -171,13 +180,14 @@ def assess_latest_observation_freshness(
     source_mode: object = None,
     instrument_type: object = None,
     confirmed_no_trade_dates: tuple[date, ...] = (),
+    now: datetime | None = None,
 ) -> dict[str, object]:
     """Assess source-date freshness without imposing a shared Watchlist as-of.
 
     Daily exchange-calendar sources are compared with the latest completed
-    session whose trading-session release lag has fully elapsed.  The current day
-    is deliberately excluded because an intraday Watchlist refresh must not
-    require an observation scheduled to become available later that day.
+    session whose trading-session release lag has fully elapsed. An aware now
+    includes today's session only after its actual exchange close. Date-only
+    evaluations represent the start of the specified source-local date.
     """
 
     if latest_observation_date is None:
@@ -198,8 +208,9 @@ def assess_latest_observation_freshness(
             ),
         }
 
-    del resolved_frequency
-    event_driven = str(expected_frequency or "").strip().lower() == "event_driven"
+    declared_frequency = str(expected_frequency or "").strip().lower()
+    event_driven = declared_frequency == "event_driven"
+    non_daily = declared_frequency in {"weekly", "monthly"} or resolved_frequency in {"weekly", "monthly"}
     if release_lag_days is None and source_mode == "email" and instrument_type == "private_fund":
         # User-confirmed email private-fund convention; explicit source settings win.
         release_lag_days = 1
@@ -210,17 +221,15 @@ def assess_latest_observation_freshness(
     normalized_market_calendar = str(market_calendar or "").strip() or None
     expected_latest_date: date | None = None
 
-    if not event_driven and normalized_market_calendar:
+    if not event_driven and not non_daily and normalized_market_calendar:
         sessions = _market_calendar_sessions(
             normalized_market_calendar,
             current_date - timedelta(days=370),
             current_date,
         )
-        completed_sessions = [
-            session_date
-            for session_date in (sessions or ())
-            if session_date < current_date
-        ]
+        completed_sessions = (list(closed_market_sessions(normalized_market_calendar,
+            current_date - timedelta(days=370), current_date, now) or ()) if now is not None
+            else [session_date for session_date in (sessions or ()) if session_date < current_date])
         available_sessions = completed_sessions[:-normalized_release_lag] if normalized_release_lag else completed_sessions
         if available_sessions:
             expected_latest_date = available_sessions[-1]
@@ -256,17 +265,9 @@ def assess_latest_observation_freshness(
             "reason": None,
         }
 
-    maximum_age_days = _EXPECTED_MAX_GAP_DAYS["daily"] + normalized_release_lag
-    lag_days = max((current_date - latest_observation_date).days, 0)
-    stale = lag_days > maximum_age_days
     return {
-        "status": "stale" if stale else "fresh",
-        "expected_latest_date": None,
-        "lag_days": lag_days,
-        "reason": (
-            f"Latest observation is {lag_days} calendar days old; "
-            f"the daily freshness allowance is {maximum_age_days} days."
-            if stale
-            else None
-        ),
+        "status": "unavailable", "expected_latest_date": None,
+        "lag_days": max((current_date - latest_observation_date).days, 0),
+        "reason": ("Publication schedule for this non-daily source is unverified."
+                   if non_daily else "Daily observation calendar is unverified; freshness cannot be established."),
     }

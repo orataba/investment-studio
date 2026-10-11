@@ -39,17 +39,17 @@ describe('shared benchmark comparison guard', () => {
     expect(assessment.warning).toContain('relative results include that difference')
   })
 
-  it('allows price changes even when close has no distribution metadata', () => {
+  it('withholds comparisons when close has no confirmed return semantics', () => {
     const assessment = assessBenchmarkComparisonGuard({
       ...comparableInput,
       chartBasis: 'close',
     })
 
-    expect(assessment.mode).toBe('exploratory')
-    expect(assessment.reason).toBe('benchmark_basis_unconfirmed_comparable')
+    expect(assessment.mode).toBe('unavailable')
+    expect(assessment.reason).toBe('benchmark_basis_unavailable')
     expect(assessment.canonicalComparisonEligible).toBe(false)
-    expect(assessment.relativeComparisonEligible).toBe(true)
-    expect(assessment.warning).toContain('Distribution treatment is unconfirmed')
+    expect(assessment.relativeComparisonEligible).toBe(false)
+    expect(assessment.warning).toContain('treatment is unconfirmed')
   })
 
   it('admits an index close series when its return semantics are explicitly total return', () => {
@@ -143,4 +143,13 @@ describe('shared benchmark comparison guard', () => {
     expect(assessment.missingEligibleDates).toEqual(['2026-09-05', '2026-09-06', '2026-09-07'])
     expect(assessment.warning).toContain('No official market calendar')
   })
+})
+
+it('does not compare a benchmark across independently rebased total-return segments', () => {
+  const assessment = assessBenchmarkComparisonGuard({
+    ...comparableInput,
+    points: comparableInput.points.map((point, index) => ({ ...point, segment_id: index < 2 ? 'old' : 'new' })),
+  })
+  expect(assessment.mode).toBe('unavailable')
+  expect(assessment.reason).toBe('benchmark_return_segment_break')
 })

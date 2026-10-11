@@ -6,7 +6,7 @@ from datetime import date
 import pandas as pd
 
 from investment_studio_instrument_core.fx_contract import FX_INSTRUMENT_IDENTITIES
-from portfolio_app.services.market_data import analytical_return_quote_bases, resolve_quote_series
+from portfolio_app.services.market_data import analytical_return_quote_bases, analytical_return_metadata, resolve_quote_series
 from portfolio_app.services.risk_basis import observation_coverage_from_dates, observation_source_settings
 from portfolio_app.services.risk_currency import RiskFxHistory, align_base_currency_navs, risk_return_series_payload
 
@@ -74,7 +74,8 @@ def base_currency_risk_profiles(
         coverage = observation_coverage_from_dates(
             list(native.index), source_settings=observation_source_settings(detail), end_date=end_date,
         )
-        prepared[key] = (native, coverage, str(detail.get("currency") or ""))
+        prepared[key] = (native, coverage, str(detail.get("currency") or ""),
+                         analytical_return_metadata(detail, quote_basis=resolved.quote_basis, currency=resolved.currency))
         calendar.update(native.index)
         calendar.update(date.fromisoformat(str(day)[:10]) for day in coverage.get("gap_dates", []))
     if not prepared:
@@ -86,12 +87,13 @@ def base_currency_risk_profiles(
                         for day in history.observation_coverage.get("gap_dates", [])
                         if first.isoformat() <= str(day)[:10] <= end_date.isoformat())
     shared_calendar = sorted(day for day in calendar if first <= day <= end_date)
-    for key, (native, coverage, currency) in prepared.items():
+    for key, (native, coverage, currency, contract) in prepared.items():
         try:
             navs, returns, metadata = align_base_currency_navs(
                 {key: native}, currency_by_key={key: currency}, coverage_by_key={key: coverage},
                 base_currency=base_currency, fx_histories=fx_histories,
                 calendar=shared_calendar, end_date=end_date,
+                return_contracts_by_key={key: contract},
             )
         except ValueError as error:
             profiles[key] = {"currency": base_currency, "source_currency": currency,

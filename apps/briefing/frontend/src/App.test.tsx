@@ -628,3 +628,19 @@ it('sends the chosen cutoff as the same instant and creates no request until exp
   const body = fetcher.mock.calls.find(([, options]) => options?.method === 'POST')![1]?.body
   expect(JSON.parse(String(body))).toEqual({ report_type: 'daily', cutoff: '2026-10-02T00:30:00.000Z' })
 })
+
+
+it('shows missing trading sessions before reading the report and lists exact dates', async () => {
+  const report = structuredClone(detail)
+  report.coverage.numeric = [{ symbol: 'SPY', status: 'missing_expected_observations', missing_dates: ['2026-09-08'] },
+    { symbol: 'XAUUSD', status: 'observation_schedule_unverified' }]
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { harness_available: true, can_generate: true, can_read_sources: true }
+    : url.includes('/reports?') ? { rows: [report], total: 1 } : report })))
+  page(<App />)
+  const summary = await screen.findByRole('region', { name: '阅读前的覆盖说明' })
+  expect(summary.textContent).toContain('数值数据有缺口: SPY · XAUUSD')
+  expect(summary.className).toContain('coverage-summary-warning')
+  expect(screen.getByText(/应有交易日行情缺失，涨跌幅不可用.*缺失日期: 2026-09-08/)).toBeTruthy()
+  expect(screen.getByText(/交易日历尚未确认，涨跌幅不可用/)).toBeTruthy()
+})

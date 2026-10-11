@@ -91,6 +91,19 @@ class Instrument(InstrumentRegistryBase):
             name="instrument_currency_contract",
         ),
         CheckConstraint(
+            "instrument_type NOT IN ('equity', 'etf') OR "
+            "coalesce(quote_selection_policy_json::jsonb -> 'total_return' = "
+            "'[\"adjusted_close\"]'::jsonb, false)",
+            name="listed_total_return_policy",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "instrument_type NOT IN ('equity', 'etf') OR coalesce("
+            "json_type(quote_selection_policy_json, '$.total_return') = 'array' AND "
+            "json_array_length(quote_selection_policy_json, '$.total_return') = 1 AND "
+            "json_extract(quote_selection_policy_json, '$.total_return[0]') = 'adjusted_close', 0)",
+            name="listed_total_return_policy",
+        ).ddl_if(dialect="sqlite"),
+        CheckConstraint(
             "((instrument_type IN ("
             + ", ".join(f"'{value}'" for value in sorted(LISTED_INSTRUMENT_TYPES))
             + ") AND exchange_code IS NOT NULL AND exchange_code IN ("

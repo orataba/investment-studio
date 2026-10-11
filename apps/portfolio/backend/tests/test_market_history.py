@@ -143,6 +143,7 @@ def test_holdings_profile_shares_raw_series_and_preserves_chart_and_return_contr
                 as_of_date=as_of_date,
                 range_key=range_key,
                 max_points=48,
+                price_mode="raw",
             )["points"]
             for range_key in instrument_charts.HOLDINGS_PRICE_CHART_RANGE_KEYS
         },
@@ -178,7 +179,8 @@ def test_holdings_profile_shares_raw_series_and_preserves_chart_and_return_contr
         assert actual["price_chart_6m"][-1]["value"] == 550.0
         assert actual["instrument_return_1m"] == pytest.approx(0.3)
     if scenario == "full_history":
-        assert actual["instrument_max_drawdown"] == pytest.approx(-0.75)
+        assert actual["instrument_max_drawdown"] is None
+        assert actual["instrument_return_series_all"]["observation_coverage"]["gap_dates"]
 
     calls.clear()
     compact = build_instrument_holdings_market_profile_from_detail(
@@ -218,6 +220,7 @@ def test_holdings_total_return_does_not_switch_to_a_longer_price_series() -> Non
         instrument_id="equity-history",
         as_of_date=date(2026, 7, 15),
         range_key="all",
+        price_mode="raw",
     )
 
     assert trend["instrument_trend_basis"] == "adjusted_close"
@@ -234,7 +237,7 @@ def test_holdings_total_return_does_not_switch_to_a_longer_price_series() -> Non
     assert chart is not None
     assert chart["chart_basis"] == "close"
     assert chart["return_semantics"] == "unknown"
-    assert chart["selection_reason"] == "selected_more_complete_alternate_series"
+    assert chart["selection_reason"] == "selected_raw_valuation_series"
     assert [point["value"] for point in chart["points"]] == [80.0, 90.0, 95.0, 96.0, 100.0]
 
 
@@ -287,7 +290,7 @@ def test_index_close_chart_reports_explicit_return_semantics(
     )
 
     assert chart is not None
-    assert chart["chart_basis"] == "close"
+    assert chart["chart_basis"] == ("close" if configured_semantics != "unknown" else None)
     assert chart["return_semantics"] == expected_semantics
 
 
@@ -425,7 +428,7 @@ def test_total_return_window_anchor_stays_on_requested_as_of_when_latest_nav_is_
     assert "1m" in trend["instrument_trend_coverage"]["available_return_windows"]
 
 
-def test_raw_close_history_is_adjusted_with_confirmed_split_ratio_within_one_basis() -> None:
+def test_raw_close_display_retains_actual_quotes_without_creating_a_return_source() -> None:
     detail = _detail(
         [
             _point("close", "2026-01-01", "100"),
@@ -446,6 +449,7 @@ def test_raw_close_history_is_adjusted_with_confirmed_split_ratio_within_one_bas
         instrument_id="equity-history",
         as_of_date=date(2026, 1, 3),
         range_key="all",
+        price_mode="raw",
     )
     trend = build_instrument_trend_metrics_from_detail(
         detail,
@@ -454,11 +458,11 @@ def test_raw_close_history_is_adjusted_with_confirmed_split_ratio_within_one_bas
 
     assert chart is not None
     assert chart["chart_basis"] == "close"
-    assert chart["split_adjusted"] is True
-    assert chart["selection_reason"] == "selected_split_adjusted_raw_price_series"
-    assert [point["value"] for point in chart["points"]] == [50.0, 50.0, 55.0]
+    assert chart["split_adjusted"] is False
+    assert chart["selection_reason"] == "selected_raw_valuation_series"
+    assert [point["value"] for point in chart["points"]] == [100.0, 50.0, 55.0]
     assert trend["instrument_trend_basis"] is None
-    assert trend["instrument_trend_reason"] == "total_return_basis_unavailable"
+    assert trend["instrument_trend_reason"] == "quote_policy_unavailable"
     assert trend["instrument_max_drawdown"] is None
 
 
@@ -479,7 +483,7 @@ def test_raw_close_history_is_adjusted_with_confirmed_split_ratio_within_one_bas
         ),
     ],
 )
-def test_raw_price_history_crossing_unsafe_split_is_withheld(
+def test_raw_price_display_does_not_apply_unconfirmed_or_incomplete_adjustments(
     event: dict[str, object],
     expected_reason: str,
 ) -> None:
@@ -496,6 +500,7 @@ def test_raw_price_history_crossing_unsafe_split_is_withheld(
         instrument_id="equity-history",
         as_of_date=date(2026, 1, 2),
         range_key="all",
+        price_mode="raw",
     )
     trend = build_instrument_trend_metrics_from_detail(
         detail,
@@ -503,9 +508,9 @@ def test_raw_price_history_crossing_unsafe_split_is_withheld(
     )
 
     assert chart is not None
-    assert chart["points"] == []
-    assert chart["coverage_state"] == "unavailable"
-    assert chart["selection_reason"] == expected_reason
+    assert [point["value"] for point in chart["points"]] == [100, 50]
+    assert chart["split_adjusted"] is False
+    assert chart["selection_reason"] == "selected_raw_valuation_series"
     assert trend["instrument_trend_basis"] is None
     assert trend["instrument_trend_coverage"]["state"] == "unavailable"
-    assert trend["instrument_trend_reason"] == "total_return_series_unavailable"
+    assert trend["instrument_trend_reason"] == "analytical_return_series_unavailable"

@@ -69,10 +69,6 @@ const RISK_WINDOW_OPTIONS = [
   { value: 366, label: '12M' },
   { value: 730, label: '24M' },
 ] as const
-const RISK_MISSING_RETURN_POLICY_OPTIONS: Array<{ value: PortfolioResearchMissingReturnPolicy; label: string }> = [
-  { value: 'strict', label: 'Strict' },
-  { value: 'complete_case_drop', label: 'Complete Case Drop' },
-]
 const RISK_MODEL_OPTIONS: Array<{ value: PortfolioRiskCovarianceModel; label: string }> = [
   { value: 'ewma_vol_shrinkage_corr_covariance', label: 'EWMA + Shrinkage' },
   { value: 'ewma_covariance', label: 'EWMA' },
@@ -478,7 +474,7 @@ export default function PortfolioWorkspaceLayout({
                 {portfolioName}
               </Link>
               <span className="workspace-breadcrumb-separator">/</span>
-              <span className="workspace-breadcrumb-current">{activeSection}</span>
+              <span className="workspace-breadcrumb-current">{activeSection === 'Investment Views' && language === 'zh-Hans' ? '投资观点' : activeSection}</span>
             </div>
             <LanguageSelector />
           </div>
@@ -728,19 +724,7 @@ export default function PortfolioWorkspaceLayout({
                       </label>
                       <label>
                         <span>Missing Returns</span>
-                        <select
-                          value={riskPolicyMissingReturnPolicy}
-                          onChange={(event) =>
-                            setRiskPolicyMissingReturnPolicy(event.target.value as PortfolioResearchMissingReturnPolicy)
-                          }
-                          disabled={riskSettingsSaving || !loadedRiskPolicy}
-                        >
-                          {RISK_MISSING_RETURN_POLICY_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
+                        <input value="Strict — missing observations stop calculation" readOnly />
                       </label>
                       <label>
                         <span>Risk Model</span>
@@ -803,7 +787,7 @@ export default function PortfolioWorkspaceLayout({
                 onBlur={cancelNavigationPreload}
                 onPointerDown={() => scheduleNavigationPreload(item.label, true)}
               >
-                {item.label}
+                {item.label === 'Investment Views' && language === 'zh-Hans' ? '投资观点' : item.label}
               </Link>
             ))}
           </nav>

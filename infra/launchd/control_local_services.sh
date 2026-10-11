@@ -14,6 +14,7 @@ domain="gui/$UID"
 services=(
   home-api
   watchlist-api
+  research-worker
   portfolio-api
   briefing-api
   home-web

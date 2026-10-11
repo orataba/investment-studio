@@ -17,7 +17,7 @@ from portfolio_app.services import research as research_service
 from portfolio_app.services import research_solver as research_solver_service
 from portfolio_app.services.instrument_charts import (
     _annualized_volatility,
-    _candidate_chart_bases,
+    _candidate_analytical_return_bases,
     build_instrument_trend_metrics_from_detail,
 )
 from portfolio_app.services.risk_model import normalize_portfolio_risk_policy, risk_min_observations_for_window
@@ -46,7 +46,7 @@ from portfolio_app.services.research_solver import (
     _build_sampled_benchmark_points,
     _build_taxonomy_state,
     _estimate_covariance,
-    _infer_periods_per_year,
+    _annualization_periods_per_year,
     _rebalance_schedule,
     _selected_price_points,
     _selected_target_risk_share,
@@ -638,6 +638,7 @@ def test_zero_risk_budget_member_is_excluded_from_covariance_and_kept_in_results
             "instrument_name": instrument_id,
             "instrument_type": "public_fund",
             "currency": "USD",
+            "source_settings": {"expected_frequency": "daily", "market_calendar": "24/5"},
             "quote_selection_policy": {"total_return": ["total_return_nav"]},
             "market_data": points,
         }
@@ -752,6 +753,7 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
             "instrument_name": instrument_id,
             "instrument_type": "public_fund",
             "currency": "USD",
+            "source_settings": {"expected_frequency": "daily", "market_calendar": "24/5"},
             "quote_selection_policy": {"total_return": ["total_return_nav"]},
             "market_data": points,
         }
@@ -861,6 +863,7 @@ def test_positive_minimum_conflicts_with_zero_fixed_weight_unless_member_is_no_t
             "instrument_name": instrument_id,
             "instrument_type": "public_fund",
             "currency": "USD",
+            "source_settings": {"expected_frequency": "daily", "market_calendar": "24/5"},
             "quote_selection_policy": {"total_return": ["total_return_nav"]},
             "market_data": [
                 {
@@ -1700,9 +1703,7 @@ def test_research_backtest_metrics_require_ytd_anchor_and_use_arithmetic_mean_sh
     }
 
     metrics = _build_backtest_metrics(anchored_points, returns)
-    periods_per_year = _infer_periods_per_year(
-        [date(2025, 1, 2), date(2025, 12, 31), date(2026, 1, 2)]
-    )
+    periods_per_year = 3 / (date(2026, 1, 2) - date(2024, 12, 31)).days * 365.25
     values = np.asarray(list(returns.values()), dtype="float64")
     expected_volatility = float(np.std(values, ddof=1) * sqrt(periods_per_year))
     expected_sharpe = float(np.mean(values) * periods_per_year / expected_volatility)
@@ -1744,7 +1745,7 @@ def test_research_settings_only_accepts_daily_production_risk_frequency(client):
         "comparator_taxonomy_node_id": None,
         "as_of_date": "2026-04-15",
         "lookback_days": 180,
-        "missing_return_policy": "complete_case_drop",
+        "missing_return_policy": "strict",
         "covariance_model_id": "sample_covariance",
         "contribution_mode": "abs",
         "capital_mode": "unit_notional",
@@ -1775,7 +1776,7 @@ def test_research_settings_only_accepts_daily_production_risk_frequency(client):
     assert risk_policy["lookback_days"] == 180
     assert risk_policy["calculation_frequency"] == "daily"
     assert risk_policy["resolved_calculation_frequency"] == "daily"
-    assert risk_policy["missing_return_policy"] == "complete_case_drop"
+    assert risk_policy["missing_return_policy"] == "strict"
     assert risk_policy["contribution_mode"] == "abs"
     assert risk_policy["parameters"]["min_observations"] == 90
     assert risk_policy["parameters"]["corr_min_observations"] == 90
@@ -1789,7 +1790,7 @@ def test_research_settings_only_accepts_daily_production_risk_frequency(client):
     assert workbench_policy["covariance_model_id"] == "sample_covariance"
     assert workbench_policy["lookback_days"] == 180
     assert workbench_policy["calculation_frequency"] == "daily"
-    assert workbench_policy["missing_return_policy"] == "complete_case_drop"
+    assert workbench_policy["missing_return_policy"] == "strict"
     assert workbench_policy["contribution_mode"] == "abs"
 
 
@@ -2118,7 +2119,7 @@ def test_fund_analytics_remain_unavailable_without_total_return_nav() -> None:
         as_of_date=date(2026, 4, 15),
     )
     assert metrics["instrument_trend_basis"] is None
-    assert metrics["instrument_trend_reason"] == "total_return_series_unavailable"
+    assert metrics["instrument_trend_reason"] == "analytical_return_series_unavailable"
 
 
 def test_research_series_uses_only_complete_market_data() -> None:
@@ -2172,7 +2173,7 @@ def test_fund_instrument_chart_basis_is_exact_total_return_nav() -> None:
         },
     }
 
-    assert _candidate_chart_bases(detail) == ["total_return_nav"]
+    assert _candidate_analytical_return_bases(detail) == ["total_return_nav"]
 
 
 def test_instrument_trend_requires_an_explicit_quote_policy() -> None:
@@ -2271,6 +2272,7 @@ def test_holdings_risk_window_stays_anchored_to_requested_as_of_calendar_month()
     detail = {
         "instrument_type": "public_fund",
         "currency": "USD",
+        "source_settings": {"expected_frequency": "daily", "market_calendar": "24/7"},
         "quote_selection_policy": {"total_return": ["total_return_nav"]},
         "market_data": [
             {
@@ -2296,7 +2298,8 @@ def test_holdings_risk_window_stays_anchored_to_requested_as_of_calendar_month()
     assert metrics["instrument_trend_as_of_date"] == "2026-07-24"
     assert metrics["instrument_return_series_1m"]["first_return_start_date"] == "2026-06-28"
     assert metrics["instrument_return_series_1m"]["points"][0]["start_date"] == "2026-06-28"
-    assert metrics["instrument_volatility_1m"] is not None
+    assert metrics["instrument_volatility_1m"] is None
+    assert metrics["instrument_return_series_all"]["observation_coverage"]["gap_dates"] == ["2026-07-25", "2026-07-26", "2026-07-27", "2026-07-28"]
 
 
 def test_holdings_risk_window_withholds_uniformly_stale_tail_data() -> None:
@@ -2329,10 +2332,10 @@ def test_holdings_risk_window_withholds_uniformly_stale_tail_data() -> None:
 
     assert metrics["instrument_trend_as_of_date"] == "2026-07-24"
     assert metrics["instrument_volatility_1m"] is None
-    assert metrics["instrument_return_series_1m"] == {
-        "first_return_start_date": None,
-        "points": [],
-    }
+    assert metrics["instrument_return_series_1m"]["first_return_start_date"] is None
+    assert metrics["instrument_return_series_1m"]["points"] == []
+    assert metrics["instrument_return_series_1m"]["return_kind"] == "total_return"
+    assert metrics["instrument_return_series_1m"]["return_measure"] == "simple"
 
 
 def test_research_series_prefers_adjusted_close_for_equities() -> None:
@@ -2430,6 +2433,8 @@ def test_research_daily_alignment_carries_last_valid_marks_between_source_update
         ),
     }
 
+    for series in nav_series_by_member.values():
+        series.attrs["observation_coverage"] = {"gap_detection_basis": "event_driven", "gap_dates": []}
     aligned_members, calendar, _warnings = _align_member_series(
         members,
         nav_series_by_member,
@@ -2443,7 +2448,8 @@ def test_research_daily_alignment_carries_last_valid_marks_between_source_update
     assert returns_by_member["instrument-a"].loc[date(2026, 1, 2)] == pytest.approx(0.0)
     assert returns_by_member["instrument-a"].loc[date(2026, 1, 5)] == pytest.approx(0.1)
     assert returns_by_member["instrument-b"].loc[date(2026, 1, 2)] == pytest.approx(0.02)
-    assert _infer_periods_per_year([date(2026, 1, 2), date(2026, 1, 5)]) == pytest.approx(2 / 6 * 365.25)
+    frame = returns_by_member["instrument-a"].iloc[1:].to_frame()
+    assert _annualization_periods_per_year(frame) == pytest.approx(2 / 4 * 365.25)
 
 
 def test_research_covariance_annualizes_complete_aligned_dates() -> None:
@@ -2456,6 +2462,9 @@ def test_research_covariance_annualizes_complete_aligned_dates() -> None:
         dtype="float64",
     )
 
+    returns.attrs["return_period_starts"] = {
+        "2026-01-01": "2025-12-25", "2026-01-08": "2026-01-01", "2026-01-15": "2026-01-08",
+    }
     covariance = _estimate_covariance(
         returns,
         model_id="sample_covariance",
@@ -2463,7 +2472,7 @@ def test_research_covariance_annualizes_complete_aligned_dates() -> None:
         parameters={"min_observations": 2},
     )
 
-    annualization = _infer_periods_per_year([date(2026, 1, 1), date(2026, 1, 8), date(2026, 1, 15)])
+    annualization = 3 / 21 * 365.25
     expected_covariance = returns.cov(ddof=1) * annualization
 
     assert covariance.loc["asset_a", "asset_a"] == pytest.approx(expected_covariance.loc["asset_a", "asset_a"])
@@ -2490,112 +2499,28 @@ def test_research_covariance_rejects_partial_missing_rows() -> None:
         )
 
 
-def test_research_covariance_complete_case_drop_uses_only_complete_rows() -> None:
-    dates = [date(2026, 1, day) for day in range(1, 12)]
-    returns = pd.DataFrame(
-        {
-            "instrument_a": [0.001 * day for day in range(1, 12)],
-            "instrument_b": [0.002 * day for day in range(1, 12)],
-        },
-        index=dates,
-        dtype="float64",
-    )
-    returns.loc[date(2026, 1, 5), "instrument_b"] = np.nan
-
-    covariance = _estimate_covariance(
-        returns,
-        model_id="sample_covariance",
-        lookback_days=30,
-        parameters={"min_observations": 5},
-        missing_return_policy="complete_case_drop",
-        calculation_frequency="daily",
-        as_of_date=date(2026, 1, 11),
-    )
-
-    complete = returns.dropna(how="any")
-    expected_covariance = complete.cov(ddof=1) * _infer_periods_per_year(list(complete.index))
-    assert covariance.loc["instrument_a", "instrument_a"] == pytest.approx(
-        expected_covariance.loc["instrument_a", "instrument_a"]
-    )
-    assert covariance.loc["instrument_a", "instrument_b"] == pytest.approx(
-        expected_covariance.loc["instrument_a", "instrument_b"]
-    )
+@pytest.mark.parametrize("model_id", ["sample_covariance", "ewma_covariance", "lw_covariance", "ewma_vol_shrinkage_corr_covariance"])
+def test_retired_complete_case_policy_cannot_bypass_missing_returns(model_id):
+    returns = pd.DataFrame({"a": [0.01, 0.02, 0.01], "b": [0.02, np.nan, 0.03]},
+                           index=[date(2026, 1, day) for day in (2, 5, 6)])
+    with pytest.raises(ValueError, match="Unsupported missing-return policy"):
+        _estimate_covariance(returns, model_id=model_id, lookback_days=30,
+                             parameters={"min_observations": 2}, missing_return_policy="complete_case_drop")
 
 
-def test_research_covariance_complete_case_drop_allows_a_leading_common_history_boundary() -> None:
-    dates = [date(2026, 1, day) for day in range(1, 23)]
-    returns = pd.DataFrame(
-        {
-            "instrument_a": [0.001 * day for day in range(1, 23)],
-            "instrument_b": [None, None, None] + [0.002 * day for day in range(4, 23)],
-        },
-        index=dates,
-        dtype="float64",
-    )
-
-    covariance = _estimate_covariance(
-        returns,
-        model_id="sample_covariance",
-        lookback_days=30,
-        parameters={"min_observations": 15},
-        missing_return_policy="complete_case_drop",
-        calculation_frequency="daily",
-        as_of_date=date(2026, 1, 22),
-    )
-
-    complete = returns.iloc[3:]
-    expected_covariance = complete.cov(ddof=1) * _infer_periods_per_year(list(complete.index))
-    assert covariance.loc["instrument_a", "instrument_b"] == pytest.approx(
-        expected_covariance.loc["instrument_a", "instrument_b"]
-    )
+def test_current_settings_and_risk_policy_reject_retired_row_drop_policy(client):
+    for path in ("research/settings", "risk-policy"):
+        response = client.put(f"/api/portfolios/investment-studio/{path}",
+                              json={"missing_return_policy": "complete_case_drop"})
+        assert response.status_code == 422, response.json()
 
 
-def test_research_covariance_complete_case_drop_rejects_excessive_missing_rows() -> None:
-    dates = [date(2026, 1, day) for day in range(1, 11)]
-    returns = pd.DataFrame(
-        {
-            "instrument_a": [0.001 * day for day in range(1, 11)],
-            "instrument_b": [0.002 * day for day in range(1, 11)],
-        },
-        index=dates,
-        dtype="float64",
-    )
-    returns.loc[[date(2026, 1, 4), date(2026, 1, 8)], "instrument_b"] = np.nan
-
-    with pytest.raises(ValueError, match="exceeding"):
-        _estimate_covariance(
-            returns,
-            model_id="sample_covariance",
-            lookback_days=30,
-            parameters={"min_observations": 5},
-            missing_return_policy="complete_case_drop",
-            calculation_frequency="daily",
-            as_of_date=date(2026, 1, 10),
-        )
-
-
-def test_research_covariance_complete_case_drop_rejects_stale_latest_complete_row() -> None:
-    dates = [date(2026, 1, day) for day in range(1, 21)]
-    returns = pd.DataFrame(
-        {
-            "instrument_a": [0.001 * day for day in range(1, 21)],
-            "instrument_b": [0.002 * day for day in range(1, 21)],
-        },
-        index=dates,
-        dtype="float64",
-    )
-    returns.loc[date(2026, 1, 20), "instrument_b"] = np.nan
-
+def test_research_covariance_rejects_stale_complete_window():
+    returns = pd.DataFrame({"a": [0.01, 0.02, 0.01], "b": [0.02, 0.01, 0.03]},
+                           index=[date(2026, 1, day) for day in (2, 5, 6)])
     with pytest.raises(ValueError, match="latest complete return observation"):
-        _estimate_covariance(
-            returns,
-            model_id="sample_covariance",
-            lookback_days=30,
-            parameters={"min_observations": 5},
-            missing_return_policy="complete_case_drop",
-            calculation_frequency="daily",
-            as_of_date=date(2026, 1, 31),
-        )
+        _estimate_covariance(returns, model_id="sample_covariance", lookback_days=30,
+                             parameters={"min_observations": 2}, as_of_date=date(2026, 1, 20))
 
 
 def test_result_risk_share_uses_global_target_instead_of_conditional_configuration() -> None:
@@ -3058,7 +2983,7 @@ def test_research_benchmark_distinguishes_index_close_return_semantics() -> None
         "instrument_type": "index",
         "currency": "CNY",
         "identifiers": [],
-        "source_settings": {"return_semantics": "price_return"},
+        "source_settings": {"return_semantics": "price_return", "expected_frequency": "daily", "market_calendar": "24/5"},
         "quote_selection_policy": {
             "trading": ["close"],
             "valuation": ["close"],
@@ -3079,8 +3004,8 @@ def test_research_benchmark_distinguishes_index_close_return_semantics() -> None
             }
             for point_date, value in (
                 ("2026-03-30", "100"),
-                ("2026-04-03", "101"),
-                ("2026-04-10", "102"),
+                ("2026-03-31", "101"),
+                ("2026-04-01", "102"),
             )
         ],
     }
@@ -3090,7 +3015,7 @@ def test_research_benchmark_distinguishes_index_close_return_semantics() -> None
         taxonomy_name="Planning",
         root_allocation_basis="weight",
         base_currency="CNY",
-        as_of_date=date(2026, 4, 10),
+        as_of_date=date(2026, 4, 1),
         node_by_id={},
         children_by_parent={},
         node_path_by_id={},
@@ -3107,8 +3032,8 @@ def test_research_benchmark_distinguishes_index_close_return_semantics() -> None
     )
     portfolio_points = [
         {"date": "2026-03-30", "value": 1.0},
-        {"date": "2026-04-03", "value": 1.01},
-        {"date": "2026-04-10", "value": 1.02},
+        {"date": "2026-03-31", "value": 1.01},
+        {"date": "2026-04-01", "value": 1.02},
     ]
 
     price_result = research_solver_service._build_backtest_benchmark_comparison_from_state(
@@ -3124,7 +3049,7 @@ def test_research_benchmark_distinguishes_index_close_return_semantics() -> None
         "so excess return and relative statistics include that basis difference."
     ]
 
-    benchmark_detail["source_settings"] = {"return_semantics": "unknown"}
+    benchmark_detail["source_settings"]["return_semantics"] = "unknown"
     unknown_result = research_solver_service._build_backtest_benchmark_comparison_from_state(
         state,
         benchmark_instrument_id="index-benchmark",
@@ -3134,7 +3059,7 @@ def test_research_benchmark_distinguishes_index_close_return_semantics() -> None
     assert unknown_result["backtest_benchmark"]["points"] == []
     assert unknown_result["backtest_relative_metrics"] is None
 
-    benchmark_detail["source_settings"] = {"return_semantics": "total_return"}
+    benchmark_detail["source_settings"]["return_semantics"] = "total_return"
     total_return_result = research_solver_service._build_backtest_benchmark_comparison_from_state(
         state,
         benchmark_instrument_id="index-benchmark",
@@ -3281,7 +3206,7 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
             "lookback_days": 90,
-            "missing_return_policy": "complete_case_drop",
+            "missing_return_policy": "strict",
             "capital_mode": "unit_notional",
             "notes": "Delayed settlement actuals regression",
         },
@@ -3393,7 +3318,7 @@ def test_research_scope_reports_taxonomy_allocation_basis(client):
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
             "lookback_days": 90,
-            "missing_return_policy": "complete_case_drop",
+            "missing_return_policy": "strict",
             "capital_mode": "unit_notional",
         },
     )
@@ -3470,7 +3395,7 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
         "comparator_taxonomy_node_id": None,
         "as_of_date": "2026-04-15",
         "lookback_days": 90,
-        "missing_return_policy": "complete_case_drop",
+        "missing_return_policy": "strict",
         "capital_mode": "unit_notional",
         "frozen_taxonomy_node_ids": [node_ids["Risk Assets"]],
         "top_sleeve_weight_bounds": [
@@ -3483,7 +3408,7 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
     assert initial_response.json()["top_sleeve_weight_bounds"] == [
         {"taxonomy_node_id": node_ids["Risk Assets"], "min_weight": 0.2, "max_weight": 0.55},
     ]
-    assert initial_response.json()["missing_return_policy"] == "complete_case_drop"
+    assert initial_response.json()["missing_return_policy"] == "strict"
 
     omitted_payload = dict(payload)
     omitted_payload.pop("frozen_taxonomy_node_ids")
@@ -3514,7 +3439,7 @@ def test_research_settings_rejects_non_top_sleeve_weight_bounds(client):
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
             "lookback_days": 90,
-            "missing_return_policy": "complete_case_drop",
+            "missing_return_policy": "strict",
             "capital_mode": "unit_notional",
             "top_sleeve_weight_bounds": [
                 {"taxonomy_node_id": node_ids["Defensive Equity"], "max_weight": 0.3},

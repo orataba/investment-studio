@@ -3,6 +3,7 @@ from decimal import Decimal, InvalidOperation
 import re
 
 from sqlalchemy import func, select, text
+from studio_market.numeric.reporting import PRICE_WINDOW_METHOD_VERSION
 
 from briefing_app.contracts import MacroRelease, ReportDraft
 from briefing_app.db import Report
@@ -145,10 +146,13 @@ def report_summary(report: Report) -> dict:
 
 def report_detail(report: Report) -> dict:
     snapshot = report.input_json
+    numeric_coverage = list(snapshot.get("numeric_coverage", []))
+    if snapshot.get("market_rows") and snapshot.get("price_window_method_version") != PRICE_WINDOW_METHOD_VERSION:
+        numeric_coverage.append({"dataset": "historical_report", "status": "historical_price_window_unverified"})
     return {**report_summary(report), "window": {key: snapshot.get(key) for key in
             ("period_start", "period_end", "timezone", "period_label")},
             "market_rows": snapshot.get("market_rows", []), "macro_rows": snapshot.get("macro_rows", []),
-            "coverage": {"text": snapshot.get("text_coverage", {}), "numeric": snapshot.get("numeric_coverage", []), "documents": snapshot.get("document_counts", {})},
+            "coverage": {"text": snapshot.get("text_coverage", {}), "numeric": numeric_coverage, "documents": snapshot.get("document_counts", {})},
             "sources": [{key: source.get(key) for key in ("source_id", "source_type", "title", "source_name", "url",
                         "published_at", "occurred_at", "observed_at", "received_at", "content_completeness", "symbol", "date")}
                         for source in snapshot.get("sources", [])],

@@ -55,7 +55,7 @@ def test_configured_workers_finish_due_instruments_in_fair_order_before_scope_ri
         actions.append("risk")
         return SimpleNamespace(entry_id="risk", status="completed"), False
 
-    monkeypatch.setattr(research_runner, "run_analysis", analyze)
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     monkeypatch.setattr(risk_officer, "begin_run", risk_run)
     worker = Thread(target=service.run_daily_reviews, args=(stop,))
     worker.start()
@@ -91,7 +91,7 @@ def test_stop_finishes_active_work_without_starting_waiting_members_risk_or_back
             session.get(ResearchEntry, run_id).status = "completed"
             session.commit()
 
-    monkeypatch.setattr(research_runner, "run_analysis", analyze)
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     monkeypatch.setattr(risk_officer, "begin_run", lambda session, **scope: risk_calls.append(scope))
     worker = Thread(target=service.run_daily_reviews, args=(stop,))
     worker.start()
@@ -124,7 +124,7 @@ def test_already_running_member_defers_scope_risk_until_a_later_daily_pass(clien
             run.status = "completed"
             session.commit()
 
-    monkeypatch.setattr(research_runner, "run_analysis", analyze)
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     monkeypatch.setattr(risk_officer, "begin_run", lambda session, **scope: risk_calls.append(scope))
     service.run_daily_reviews(Event())
     assert sorted(calls) == ids[1:] and risk_calls == []
@@ -165,7 +165,7 @@ def test_free_slot_rechecks_due_boundary_while_another_instrument_is_still_runni
         with get_session_factory()() as session:
             session.get(ResearchEntry, run_id).status = "completed"
             session.commit()
-    monkeypatch.setattr(research_runner, "run_analysis", analyze)
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     worker = Thread(target=service.run_daily_reviews, args=(Event(),))
     worker.start()
     try:
@@ -205,7 +205,7 @@ def test_free_capacity_polls_for_newly_due_work_without_waiting_for_long_job(cli
         with get_session_factory()() as session:
             session.get(ResearchEntry, run_id).status = "completed"
             session.commit()
-    monkeypatch.setattr(research_runner, "run_analysis", analyze)
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     worker = Thread(target=service.run_daily_reviews, args=(Event(),))
     worker.start()
     try:
@@ -234,7 +234,7 @@ def test_manual_member_finishing_during_other_research_unblocks_scope_risk(clien
             session.get(ResearchEntry, manual_id).status = "completed"
             session.get(ResearchEntry, run_id).status = "completed"
             session.commit()
-    monkeypatch.setattr(research_runner, "run_analysis", analyze)
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     monkeypatch.setattr(risk_officer, "begin_run", lambda session, **scope:
         (calls.append(scope) or SimpleNamespace(entry_id="risk", status="completed"), False))
     service.run_daily_reviews(Event())
@@ -256,7 +256,7 @@ def test_same_day_completed_front_candidate_does_not_starve_remaining_work(clien
             calls.extend(run.context_json["instrument_ids"])
             run.status = "completed"
             session.commit()
-    monkeypatch.setattr(research_runner, "run_analysis", analyze)
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     service.run_daily_reviews(Event())
     assert calls == ids[1:]
 
@@ -286,6 +286,60 @@ def test_foreign_scope_becomes_ready_after_another_risk_job_completes(client, mo
                 session.get(ResearchEntry, manual_id).status = 'completed'
                 session.commit()
     monkeypatch.setattr(risk_officer, 'begin_run', begin_risk)
-    monkeypatch.setattr(research_runner, 'run_analysis', analyze)
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     service.run_daily_reviews(Event())
     assert calls == ['ready', 'busy']
+
+
+@pytest.mark.parametrize("concurrency", [1, 3])
+def test_real_durable_queue_holds_scheduler_slots_until_execution_finishes(client, monkeypatch, concurrency):
+    from datetime import UTC, datetime
+    import time
+    from sqlalchemy import select
+    from watchlist_app.core.settings import get_settings
+    from watchlist_app.db.models.research_execution import ResearchExecution
+    from watchlist_app.services import research_execution as queue
+    monkeypatch.setattr(get_settings(), "research_worker_concurrency", concurrency)
+    ids = daily_scope(client, monkeypatch, members=0)
+    stop = Event()
+    scheduler = Thread(target=service.run_daily_reviews, args=(stop,))
+    scheduler.start()
+
+    def pending():
+        with get_session_factory()() as session:
+            return list(session.scalars(select(ResearchExecution.run_id).where(
+                ResearchExecution.status.in_(["queued", "running"]))))
+    def wait_count(expected):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if len(pending()) == expected:
+                return
+            time.sleep(0.01)
+        assert len(pending()) == expected
+
+    try:
+        wait_count(concurrency)
+        # No synchronous run_analysis mock: committed queue entries remain
+        # pending. They must hold all scheduler slots, rather than queue all 8.
+        time.sleep(0.15)
+        assert len(pending()) == concurrency
+        with get_session_factory()() as session:
+            assert len(list(session.scalars(select(ResearchEntry.entry_id).where(
+                ResearchEntry.topic_id.startswith("instrument-events:daily-"))))) == concurrency
+        claim = queue.claim_next("offline-executor")
+        assert claim is not None
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, claim.run_id)
+            run.status, run.completed_at = "completed", datetime.now(UTC)
+            session.commit()
+        queue.finish_claim(claim)
+        wait_count(concurrency)
+        with get_session_factory()() as session:
+            assert len(list(session.scalars(select(ResearchEntry.entry_id).where(
+                ResearchEntry.topic_id.startswith("instrument-events:daily-"))))) == concurrency + 1
+    finally:
+        stop.set()
+        scheduler.join(5)
+    assert not scheduler.is_alive()
+    # Stop releases only the scheduler wait; accepted queue work stays durable.
+    assert len(pending()) == concurrency

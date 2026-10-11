@@ -95,6 +95,80 @@ def named_return_window_spec(window: str, as_of_date: date) -> ReturnWindowSpec:
     )
 
 
+def same_return_segment(points) -> bool:
+    """A reset of the return-chain level is not an economic return."""
+    return bool(points) and len({point.get("segment_id") for point in points}) == 1
+
+
+def confirmed_return_points(series: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read retained analytical points without losing their economic boundaries.
+
+    Missing segment identities on a declared segmented series cannot establish
+    continuity. Invalid observations fail closed instead of disappearing before
+    interval calculations and joining their former neighbours.
+    """
+    metadata = series.get("metadata") or {}
+    if metadata.get("return_kind") not in {"total_return", "price_return"} or metadata.get("return_series_status") not in {"ready", "complete", "partial"}:
+        return []
+    result = []
+    seen = set()
+    for point in series.get("points") or []:
+        try:
+            day = date.fromisoformat(point["date"])
+            value = float(point["value"])
+        except (TypeError, ValueError, KeyError):
+            return []
+        if day in seen or isinstance(point["value"], bool) or not isfinite(value) or value <= 0:
+            return []
+        if metadata.get("return_segment_breaks") and not point.get("segment_id"):
+            return []
+        seen.add(day)
+        result.append({**point, "date": day.isoformat(), "as_of_date": day, "value": value})
+    return sorted(result, key=lambda point: point["date"])
+
+
+def return_sample_limitation(series: dict[str, Any], points: list[dict[str, Any]]) -> str | None:
+    """Require retained interval evidence for the exact observations consumed.
+
+    A full-history gap counter cannot certify a later window. Conversely, an
+    intersection of observed dates must not turn a missing session into a valid
+    multi-day return. Call this on each unthinned source path before alignment.
+    """
+    if len(points) < 2:
+        return "区间内不足两个有效观察值"
+    if not same_return_segment(points):
+        return "请求区间跨越待确认的收益链断点"
+    frequency = series.get("frequency") or {}
+    resolved = frequency.get("resolved_frequency")
+    if resolved not in {"daily", "weekly", "monthly", "event_driven"}:
+        return "收益序列频率尚未确认"
+    if resolved == "daily" and not str(frequency.get("gap_detection_basis") or "").startswith("market_calendar:"):
+        return "缺少已确认的交易日历，不能验证日度观察值完整性"
+
+    def day(point):
+        value = point.get("as_of_date") or point.get("date")
+        return value.isoformat() if isinstance(value, date) else value
+
+    if resolved in {"weekly", "monthly"}:
+        dates = [date.fromisoformat(day(point)) for point in points]
+        periods = [value.year * 12 + value.month if resolved == "monthly"
+                   else (value.toordinal() - value.weekday()) // 7 for value in dates]
+        if any(after - before > 1 for before, after in zip(periods, periods[1:])):
+            return "计算区间缺少整期披露观察值，未跨缺口比较"
+
+    expected = {(day(before), day(after)) for before, after in zip(points, points[1:])}
+    evidence = {pair: [] for pair in expected}
+    for interval in series.get("intervals") or []:
+        pair = (interval.get("start_date"), interval.get("date"))
+        if pair in evidence:
+            evidence[pair].append(interval.get("status"))
+    if any(not statuses for statuses in evidence.values()):
+        return "计算区间缺少完整的收益区间证据，不能确认观察值连续性"
+    if any(statuses != ["complete"] for statuses in evidence.values()):
+        return "计算区间存在缺失观察值或未确认的收益区间"
+    return None
+
+
 def resolve_return_window(
     points: list[dict[str, Any]],
     *,
@@ -149,6 +223,9 @@ def resolve_return_window(
         return None
 
     window_points = tuple(ordered[anchor_index : end_index + 1])
+    # Separately rebased total-return segments are not one economic path.
+    if not same_return_segment(window_points):
+        return None
     return ReturnWindow(
         requested_start_date=requested_start_date,
         requested_end_date=requested_end_date,

@@ -53,6 +53,32 @@ def test_legacy_manual_origins_remain_unknown_and_freshness_does_not_mean_safe()
     assert price_rule_summary(asset)['counts']['triggered'] == 0
 
 
+@pytest.mark.parametrize("value,loss,state", [
+    (7.953320225788052, 0, 'not_triggered'), (0, 0, 'not_triggered'),
+    (-7.95, 7.95, 'not_triggered'), (-13.5, 13.5, 'triggered'), (-15, 15, 'triggered'),
+    (None, None, 'unavailable'),
+])
+def test_rolling_loss_rule_exposes_signed_return_and_negative_trigger_not_a_positive_return_budget(value, loss, state):
+    asset = {'freshness': 'fresh', 'risk': {'data_quality': {'status': 'ready'}, 'current_drawdown': -2},
+        'period_limits': {'month': 13.5}, 'price_risk_calibration': {'method': 'volatility_review_v1'},
+        'period_readings': [{'period': 'month', 'limit_pct': 13.5, 'return_pct': value,
+            'start_date': '2026-09-09', 'end_date': '2026-10-08', 'observations': 21}]}
+    summary = price_rule_summary(asset)
+    rule = summary['rules'][0]
+    assert summary['contract_version'] == 2
+    assert rule['metric'] == 'rolling_return'
+    assert rule['value_pct'] == value and rule['loss_magnitude_pct'] == loss
+    assert rule['limit_pct'] == 13.5 and rule['trigger_at_or_below_pct'] == -13.5
+    assert rule['state'] == state
+    assert rule['observations'] == 21 and rule['start_date'] == '2026-09-09'
+    drawdown = summary['rules'][-1]
+    assert drawdown['metric'] == 'current_drawdown' and drawdown['value_pct'] == -2
+    assert drawdown['loss_magnitude_pct'] == 2
+    assert drawdown['state'] == 'not_configured' and drawdown['trigger_at_or_below_pct'] is None
+    asset['freshness'] = 'stale'
+    assert price_rule_summary(asset)['rules'][0]['state'] == 'unavailable'
+
+
 def test_rules_freeze_before_settings_change_and_old_reports_are_not_reconstructed(client, monkeypatch):
     seed(client)
     observe(series([100] * 80))

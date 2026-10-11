@@ -140,8 +140,12 @@ def test_tool_pages_keep_one_source_account_scope_and_complete_histories(client,
         assert original["tool_evidence"][0]["result"]["rows"][0]["history"] == history
         saved.status = "draft"
         session.commit()
-    page = wire("read_portfolio_holdings", source_id=source_id, section="accounts")
-    assert page["total"] == 4
+    # Finished task credentials cannot be used to continue a model session;
+    # the user's ordinary read access to the retained conversation remains.
+    response = client.post(f"/api/research/runs/{run_id}/read", json={
+        "resource": "portfolio", "source_id": source_id, "section": "accounts"})
+    assert response.status_code == 409
+    assert client.get(f"/api/research/runs/{run_id}/context").status_code == 200
     with get_session_factory()() as session:
         assert session.get(ResearchEntry, run_id).context_json == original
     assert client.post(f"/api/research/runs/{run_id}/tools", json={"tool": "portfolio"}).status_code == 409
@@ -180,7 +184,7 @@ def retained_portfolio_run(client, *, flags=None):
     summary = account_summary(accounts_workspace(), as_of_date="2026-10-02")
     evidence = {"source_id": "portfolio:current", "tool": "portfolio", "retrieved_at": "2026-10-03T00:00:00Z",
         "result": {"portfolio_id": "A", "as_of_date": "2026-10-02", "account_summary": summary}}
-    context = {"portfolio_id": "A", "research_actor": {"kind": "user", "user_id": "alice"},
+    context = {"portfolio_id": "A", "research_actor": {"kind": "user", "user_id": "alice"}, "execution": {"attempt": 1},
                "tool_evidence": [evidence, {**evidence, "source_id": "portfolio:foreign",
                    "result": {**evidence["result"], "portfolio_id": "B"}}], **(flags or {})}
     with get_session_factory()() as session:
@@ -188,7 +192,7 @@ def retained_portfolio_run(client, *, flags=None):
                                   created_by_user_id="alice", portfolio_id="A"))
         session.flush()
         session.add(ResearchEntry(entry_id="account-run", topic_id="account-pages", kind="analysis",
-                                  title="Account facts", status="draft", context_json=context))
+                                  title="Account facts", status="running", context_json=context))
         session.commit()
     return context
 
@@ -196,7 +200,7 @@ def retained_portfolio_run(client, *, flags=None):
 def test_every_saved_account_page_rechecks_private_actor_scope_and_current_portfolio_grant(accounts):
     client, principals, grants = accounts
     retained_portfolio_run(client)
-    principals["run-A"] = replace(principals["alice"], credential="run-A", resource_scope={"kind": "run", "id": "account-run"})
+    principals["run-A"] = replace(principals["alice"], credential="run-A", resource_scope={"kind": "run", "id": "account-run", "attempt": "1"})
     payload = {"resource": "portfolio", "source_id": "portfolio:current", "section": "accounts", "limit": 1}
     path = "/api/research/runs/account-run/read"
     as_user(client, "run-A")
@@ -209,7 +213,7 @@ def test_every_saved_account_page_rechecks_private_actor_scope_and_current_portf
     assert client.post(path.replace("account-run", "other-run"), json=payload).status_code == 403
     as_user(client, "bob")
     assert client.get("/api/research/runs/account-run/context").status_code == 404
-    principals["forged-run"] = replace(principals["bob"], credential="forged-run", resource_scope={"kind": "run", "id": "account-run"})
+    principals["forged-run"] = replace(principals["bob"], credential="forged-run", resource_scope={"kind": "run", "id": "account-run", "attempt": "1"})
     assert as_user(client, "forged-run").post(path, json=payload).status_code == 403
     as_user(client, "run-A")
     grants["alice"].clear()
@@ -224,7 +228,7 @@ def test_every_saved_account_page_rechecks_private_actor_scope_and_current_portf
 def test_portfolio_pages_cannot_escape_into_unlinked_or_automatic_research(accounts, flags):
     client, principals, _ = accounts
     retained_portfolio_run(client, flags=flags)
-    principals["run-A"] = replace(principals["alice"], credential="run-A", resource_scope={"kind": "run", "id": "account-run"})
+    principals["run-A"] = replace(principals["alice"], credential="run-A", resource_scope={"kind": "run", "id": "account-run", "attempt": "1"})
     response = as_user(client, "run-A").post("/api/research/runs/account-run/read",
         json={"resource": "portfolio", "source_id": "portfolio:current", "section": "accounts"})
     assert response.status_code == 422

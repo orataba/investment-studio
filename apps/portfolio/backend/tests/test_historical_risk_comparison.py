@@ -26,15 +26,14 @@ def test_risk_native_history_is_exactly_the_complete_profile_history():
         assert detail == original
 
 
-@pytest.mark.parametrize("missing_policy", ["strict", "complete_case_drop"])
 @pytest.mark.parametrize("gap", [False, True])
-def test_omitting_return_display_keeps_entire_model_covariance_and_signed_fx_results(missing_policy, gap):
+def test_omitting_return_display_keeps_entire_model_covariance_and_signed_fx_results(gap):
     missing = date.fromisoformat(_return_points()[10]["date"]) if gap else None
     history = risk_fx_history(missing=missing)
     rows = [_holding("foreign", .7, currency="HKD"), monetary("cash:HKD", 200_000),
             _holding("domestic", .4, currency="USD"), monetary("pending:HKD", -300_000, "pending_payable")]
     args = dict(as_of_date=AS_OF_DATE, calculation_frequency="daily",
-                risk_policy=_risk_policy(missing_return_policy=missing_policy),
+                risk_policy=_risk_policy(),
                 fx_histories={history.instrument_id: history})
     full = risk_model.enrich_holdings_forward_risk(_workspace(deepcopy(rows), base_currency="USD"), **args)
     compact = risk_model.enrich_holdings_forward_risk(_workspace(deepcopy(rows), base_currency="USD"),

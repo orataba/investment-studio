@@ -79,7 +79,7 @@ def test_research_is_due_in_market_local_time_only_on_exchange_sessions(market, 
 
 def _registered(session, iid, kind, calendar, exchange=None):
     session.add(Instrument(instrument_id=iid, instrument_name=iid, instrument_type=kind, currency="USD",
-        exchange_code=exchange, quote_selection_policy_json={}, source_settings_json={"market_calendar": calendar},
+        exchange_code=exchange, quote_selection_policy_json={"total_return": ["adjusted_close"]} if kind in {"equity", "etf"} else {}, source_settings_json={"market_calendar": calendar},
         lifecycle_state_json={"status": "active"}))
     session.add(InstrumentDetail(instrument_id=iid, instrument_type=kind, detail_view_type=kind,
         instrument_name=iid, is_active=True, metadata_json={}))
@@ -182,7 +182,7 @@ def test_registered_catalogue_does_not_schedule_list_risk_but_invested_funds_sti
             session.commit()
 
     monkeypatch.setattr(risk_review_state, "current_scope", read_scope)
-    monkeypatch.setattr(research_runner, "run_analysis", analyze)
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     service.run_daily_reviews(Event())
     assert research_ids == ["registered-fund"]
     assert {"watchlist_id": "all-instruments"} not in risk_scopes
@@ -221,7 +221,7 @@ def test_new_proposed_instrument_initializes_on_weekend_once_and_retains_seven_d
             run.status = "failed"
             run.completed_at = now
             session.commit()
-    monkeypatch.setattr(research_runner, "run_analysis", analyze)
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     service.run_daily_reviews(Event())
     service.run_daily_reviews(Event())
     assert len(dispatched) == 1
@@ -257,7 +257,7 @@ def test_pending_research_referrals_reach_officer_outside_market_hours_without_d
         scopes.append(scope)
         return SimpleNamespace(entry_id="officer", status="completed"), False
     monkeypatch.setattr(risk_officer, "begin_run", begin_risk)
-    monkeypatch.setattr(research_runner, "run_analysis", lambda *args: pytest.fail("Referral must not launch a fresh instrument investigation"))
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda *args, **kwargs: pytest.fail("Referral must not launch a fresh instrument investigation"))
     service.run_daily_reviews(Event())
     expected = ([{"portfolio_id": "held"}] if in_portfolio else []) + [
         {"watchlist_id": "named-list"} if in_watchlist else {"instrument_id": "referral"}]
@@ -288,7 +288,7 @@ def test_first_published_research_referral_is_processed_in_same_worker_pass(clie
         assert order == ["research"]
         order.append("officer")
         return SimpleNamespace(entry_id="officer", status="completed"), False
-    monkeypatch.setattr(research_runner, "run_analysis", analyze)
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     monkeypatch.setattr(risk_officer, "begin_run", begin_risk)
     service.run_daily_reviews(Event())
     assert order == ["research", "officer"]

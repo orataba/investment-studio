@@ -200,7 +200,7 @@ DATAHUB_TUSHARE_PROVIDER = "datahub:tushare"
 TUSHARE_LISTED_SECURITY_QUOTE_SELECTION_POLICY: dict[str, list[str]] = {
     "trading": ["last", "close"],
     "valuation": ["close", "last"],
-    "total_return": ["adjusted_close", "close", "last"],
+    "total_return": ["adjusted_close"],
     "chart": ["adjusted_close", "close", "last"],
     "reference": ["close", "last"],
 }
@@ -3772,6 +3772,18 @@ def refresh_market_data(
 
     source_settings = dict(instrument.get("source_settings", {}))
     requested_source = str(source or "configured").strip().lower()
+    if (str(source_settings.get("source_api_profile") or "").strip().lower() == "futu"
+            and requested_source not in {"configured", "futu"}):
+        from studio_data.services.futu import FutuRefreshError
+
+        raise FutuRefreshError("The requested source differs from this instrument's configured Futu source.")
+    if requested_source == "futu" or (
+        requested_source == "configured"
+        and str(source_settings.get("source_api_profile") or "").strip().lower() == "futu"
+    ):
+        from studio_data.services.futu import refresh_futu_eod
+
+        return refresh_futu_eod(instrument_id, full_history=full_history)
     if requested_source == "email":
         _run_email_ingestion_batch(
             instruments=list_instruments(include_inactive=False),
@@ -3869,9 +3881,13 @@ def refresh_market_data_with_timeout(
     full_history: bool = False,
     source: str = "configured",
 ) -> dict[str, object] | None:
+    # Coverage/quality status is independent of committed canonical changes.
+    # Read first, before refresh can write; a failed read must not be hidden by
+    # a later refresh. Reuse the returned record for the after-watermarks.
+    before = get_instrument(instrument_id)
     try:
         with market_data_item_timeout(instrument_id):
-            return refresh_market_data(
+            record = refresh_market_data(
                 instrument_id=instrument_id,
                 updated_by=updated_by,
                 full_history=full_history,
@@ -3882,7 +3898,7 @@ def refresh_market_data_with_timeout(
         refresh_mode = (
             "email"
             if normalized_source == "email"
-            else "api" if normalized_source in {"tushare", "fmp"} else None
+            else "api" if normalized_source in {"tushare", "fmp", "futu"} else None
         )
         LOGGER.warning(
             "market data item timed out instrument_id=%s source=%s message=%s",
@@ -3890,7 +3906,7 @@ def refresh_market_data_with_timeout(
             normalized_source,
             exc,
         )
-        return update_refresh_status(
+        record = update_refresh_status(
             instrument_id=instrument_id,
             status="failed",
             message=str(exc),
@@ -3899,19 +3915,32 @@ def refresh_market_data_with_timeout(
         )
     except Exception as exc:
         from studio_data.services.fmp import FmpApiError
+        from studio_data.services.futu import FutuRefreshError
 
         # Scheduled market projections select each instrument's configured
         # source. A typed FMP failure has the same per-item boundary there as
         # when the caller explicitly selected FMP.
-        if not isinstance(exc, FmpApiError):
+        if not isinstance(exc, (FmpApiError, FutuRefreshError)):
             raise
-        return update_refresh_status(
+        record = update_refresh_status(
             instrument_id=instrument_id,
             status="failed",
             message=str(exc),
             updated_by=updated_by,
             mode="api",
         )
+    if record is not None:
+        record = {
+            **record,
+            "canonical_changed": bool(
+                before is not None
+                and any(
+                    record.get(field) and record.get(field) != before.get(field)
+                    for field in ("market_data_updated_at", "calculation_inputs_updated_at")
+                )
+            ),
+        }
+    return record
 
 
 def _refresh_tushare_listed_security(
@@ -4453,10 +4482,10 @@ def _matches_batch_source(instrument: dict[str, object], source: str) -> bool:
         return source_mode == "email"
     if normalized_source == "tushare":
         return source_mode == "api" and _tushare_profile_enabled(source_settings)
-    if normalized_source == "fmp":
+    if normalized_source in {"fmp", "futu"}:
         return source_mode == "api" and str(
             source_settings.get("source_api_profile") or ""
-        ).strip().lower() == "fmp"
+        ).strip().lower() == normalized_source
     if normalized_source == "all":
         return source_mode == "email" or source_mode == "api"
     return False
@@ -4913,10 +4942,15 @@ def refresh_market_data_batch(
             full_history=full_history,
             include_inactive=include_inactive,
         )
+        futu_result = refresh_market_data_batch(
+            source="futu", updated_by=updated_by, full_history=full_history,
+            include_inactive=include_inactive,
+        )
         combined_results = [
             *list(tushare_result.get("results", [])),
             *list(email_result.get("results", [])),
             *list(fmp_result.get("results", [])),
+            *list(futu_result.get("results", [])),
         ]
         return {
             **email_result,
@@ -4979,14 +5013,14 @@ def refresh_market_data_batch(
             "skipped_count": len(instruments) - len(targets),
             "results": results,
         }
-    if normalized_source == "fmp" and targets:
+    if normalized_source in {"fmp", "futu"} and targets:
         results: list[dict[str, object]] = []
         for target in targets:
             refreshed = refresh_market_data_with_timeout(
                 instrument_id=str(target["instrument_id"]),
                 updated_by=updated_by,
                 full_history=full_history,
-                source="fmp",
+                source=normalized_source,
             )
             if refreshed is None:
                 continue
@@ -4998,13 +5032,14 @@ def refresh_market_data_batch(
                     "instrument_name": refreshed["instrument_name"],
                     "instrument_type": refreshed["instrument_type"],
                     "source_mode": source_settings.get("source_mode") or "api",
-                    "source_api_profile": "fmp",
+                    "source_api_profile": normalized_source,
                     "status": refresh_status.get("status") or "idle",
                     "message": refresh_status.get("message") or "",
+                    "canonical_changed": refreshed.get("canonical_changed") is True,
                 }
             )
         return {
-            "source": "fmp",
+            "source": normalized_source,
             "refreshed_count": sum(
                 1 for item in results if item["status"] == "refreshed"
             ),

@@ -163,6 +163,7 @@ describe('Portfolio holding detail contract', () => {
     )
 
     expect(await screen.findByRole('heading', { name: 'Alpha Fund' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Portfolio investment views' })).toHaveAttribute('href', '/portfolios/3/investment-views?instrument_id=asset-1')
     expect(screen.getByRole('button', { name: /Data quality warning: Quote coverage needs review/ }).closest('.portfolio-security-detail-nav')).not.toBeNull()
     expect(await screen.findByText('2 detail chart points')).toBeInTheDocument()
 
@@ -175,7 +176,7 @@ describe('Portfolio holding detail contract', () => {
       expect(apiMocks.getPortfolioInstrumentPriceChart).toHaveBeenCalledWith(
         '3',
         'asset-1',
-        { as_of_date: '2026-07-15', range: '1y' },
+        { as_of_date: '2026-07-15', range: '1y', price_mode: 'raw' },
       )
       expect(apiMocks.getPortfolioPositionLots).toHaveBeenCalledWith('3', {
         as_of_date: '2026-07-15',
@@ -303,6 +304,7 @@ describe('Portfolio holding detail contract', () => {
     )
 
     expect(await screen.findByRole('heading', { name: 'EUR Cash' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Portfolio investment views' })).not.toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Overview Cash & FX' })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: /Position Lots/ })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Cash availability' })).toBeInTheDocument()
@@ -530,7 +532,7 @@ describe('Portfolio holding detail contract', () => {
       expect(apiMocks.getPortfolioInstrumentPriceChart).toHaveBeenCalledWith(
         '3',
         'asset-1',
-        { as_of_date: '2026-07-15', range: '1y' },
+        { as_of_date: '2026-07-15', range: '1y', price_mode: 'raw' },
       )
     })
   })

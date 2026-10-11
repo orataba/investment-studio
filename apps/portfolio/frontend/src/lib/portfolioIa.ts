@@ -3,6 +3,7 @@ export const workspacePrimaryNavigation = [
   { label: 'Holdings', href: '/holdings' },
   { label: 'Performance', href: '/performance' },
   { label: 'Risk', href: '/risk' },
+  { label: 'Investment Views', href: '/investment-views' },
   { label: 'Transactions', href: '/transactions' },
   { label: 'Accounts', href: '/accounts' },
   { label: 'Taxonomies', href: '/taxonomies' },

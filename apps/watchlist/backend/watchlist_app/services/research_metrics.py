@@ -6,11 +6,13 @@ from math import isfinite, log, sqrt
 from statistics import median
 from uuid import uuid4
 
+from investment_studio_instrument_core import analytical_return_quote_bases
 from studio_market.numeric.datasets import DATASETS
 from studio_market.numeric.store import cutoff_instant
 
 from watchlist_app.services.calculation_frequency import _market_calendar_sessions
 from watchlist_app.services.sector_market_data import numeric_store
+from watchlist_app.services.return_windows import confirmed_return_points
 
 
 SERIES_DATASETS = (
@@ -181,20 +183,24 @@ def ewma_price_evidence(series, *, instrument_type, calendar, as_of):
             "variance": "normalized exponential weights; weighted mean removed; population variance",
             "definition": "30 UTC-calendar-day half-life; completed daily spot prices" if crypto else "1m means a 21-trading-observation half-life, not a one-month rolling sample",
             "quote_basis": metadata.get("quote_basis"), "return_kind": metadata.get("return_kind"),
+            "return_measure": "log",
             "calendar": calendar,
         },
     }
-    if instrument_type not in {"equity", "etf", "index", "crypto"} or metadata.get("quote_basis") not in {"close", "adjusted_close", "last"}:
+    if instrument_type not in {"equity", "etf", "index", "crypto"} or not analytical_return_quote_bases(
+        instrument_type=instrument_type, quote_bases=[metadata.get("quote_basis")],
+        source_settings={"return_semantics": metadata.get("return_kind")},
+    ):
         result["limitations"].append("本指标仅适用于交易所日频价格；普通基金或净值口径不套用此年化波动定义。")
         return result
     if crypto and calendar != "24/7":
         result["limitations"].append("加密资产缺少24/7 UTC日线合同，未套用交易所交易日年化。")
         return result
-    if metadata.get("return_series_status") not in {"ready", "complete", "partial"} or metadata.get("return_segment_breaks"):
+    if metadata.get("return_kind") not in {"total_return", "price_return"} or metadata.get("return_series_status") not in {"ready", "complete", "partial"}:
         result["limitations"].append("价格收益口径未就绪或存在待确认断点。")
         return result
     cutoff_day = cutoff.astimezone(UTC).date().isoformat()
-    points = sorted((p for p in series.get("points", [])
+    points = sorted((p for p in confirmed_return_points(series)
                      if (p["date"] < cutoff_day if crypto else p["date"] <= cutoff_day)), key=lambda p: p["date"])
     # Older prices are outside every estimate below. In particular they need not
     # fall inside the calendar package's retained historical session coverage.
@@ -216,13 +222,14 @@ def ewma_price_evidence(series, *, instrument_type, calendar, as_of):
         return result
     last_break = 0
     for index in range(1, len(days)):
-        if positions[days[index]] != positions[days[index - 1]] + 1:
+        if (positions[days[index]] != positions[days[index - 1]] + 1
+                or points[index].get("segment_id") != points[index - 1].get("segment_id")):
             last_break = index
     if last_break:
-        result["limitations"].append("历史存在缺失交易日；只用最后缺口之后的连续观察重新计算，不跨缺口合成日收益。")
+        result["limitations"].append("历史存在缺失交易日或收益链断点；只用最后缺口或断点之后的连续观察重新计算，不跨边界合成日收益。")
     # Retain one year of volatility history, with a year of prior prices for its first estimate.
     points = points[last_break:]
-    result["input_points"] = points
+    result["input_points"] = [{key: value for key, value in point.items() if key != "as_of_date"} for point in points]
     if len(points) < minimum_returns + 1:
         result["limitations"].append(f"连续实际日收益不足{minimum_returns}个；未生成短样本年化波动。")
         return result

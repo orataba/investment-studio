@@ -59,10 +59,16 @@ from investment_studio_instrument_core.fx_contract import (
     validate_fx_market_data_contract,
 )
 from investment_studio_instrument_core.return_semantics import (
+    analytical_return_quote_bases,
     CONFIRMED_TOTAL_RETURN_QUOTE_BASES,
     INDEX_LEVEL_QUOTE_BASES,
     confirmed_total_return_quote_bases,
     resolve_quote_return_semantics,
+)
+from investment_studio_instrument_core.return_series import (
+    build_return_intervals,
+    return_interval_unavailable_reason,
+    simple_to_log_return,
 )
 from investment_studio_instrument_core.listing_contract import (
     LISTED_INSTRUMENT_TYPES,
@@ -71,6 +77,10 @@ from investment_studio_instrument_core.listing_contract import (
 )
 
 __all__ = [
+    "analytical_return_quote_bases",
+    "build_return_intervals",
+    "return_interval_unavailable_reason",
+    "simple_to_log_return",
     "BrokerIdentifier",
     "BrokerIdentifierType",
     "CorporateActionEvent",

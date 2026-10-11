@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Literal
+import os
+from pathlib import Path
 
 from studio_data.services.equities import (
     materialize_equity,
@@ -37,6 +39,22 @@ def materialize_security(
     refresh_eod: bool = True,
     client: FmpClient | None = None,
 ) -> dict[str, object]:
+    if catalog_provider == "futu":
+        from studio_market.config import MarketSettings
+        from studio_market.numeric import NumericStore
+        from studio_data.services.futu import materialize_futu_security
+
+        market = NumericStore(MarketSettings.from_environment())
+        try:
+            candidates = market.latest("futu_security_catalog", symbols=[catalog_symbol], limit=1)["rows"]
+            if not candidates or not candidates[0].get("active"):
+                raise ValueError("富途本地目录没有此证券，请先同步行情目录。")
+            candidate = candidates[0]
+            if candidate.get("instrument_type") != instrument_type:
+                raise ValueError("富途目录中的证券类型与所选标的不符。")
+            return materialize_futu_security(catalog_symbol, catalog_record=candidate, refresh_eod=refresh_eod)
+        finally:
+            market.close()
     if catalog_provider != "fmp":
         raise ValueError(f"Unsupported security catalog provider: {catalog_provider}")
     if instrument_type == "equity":
@@ -103,11 +121,31 @@ def refresh_security_eod(
     raise ValueError("Security refresh only supports equity, ETF, and index instruments.")
 
 
-def sync_security_catalogs(*, client: FmpClient | None = None) -> dict[str, object]:
+def sync_security_catalogs(*, client: FmpClient | None = None,
+                           prefer_current_futu: bool = False) -> dict[str, object]:
     fmp = client or FmpClient()
     equity = sync_equity_catalog(client=fmp)
     etf = sync_etf_catalog(client=fmp)
+    futu = _sync_futu_catalog_if_authorized(prefer_current=prefer_current_futu)
     return {
-        "active_count": int(equity["active_count"]) + int(etf["active_count"]),
-        "catalogs": {"equity": equity, "etf": etf},
+        "active_count": int(equity["active_count"]) + int(etf["active_count"]) + int(futu.get("active_count", 0)),
+        "catalogs": {"equity": equity, "etf": etf, "futu": futu},
     }
+
+
+def _sync_futu_catalog_if_authorized(*, prefer_current: bool = False) -> dict:
+    from studio_market.futu.oauth import DEFAULT_CONFIG_DIR, FutuOAuth
+
+    directory = Path(os.environ.get("INVESTMENT_STUDIO_MARKET_FUTU_CONFIG_DIR", str(DEFAULT_CONFIG_DIR))).expanduser()
+    with FutuOAuth(directory) as oauth:
+        if not oauth.status()["authenticated"]:
+            return {"status": "not_authorized", "active_count": 0}
+    from studio_market.config import MarketSettings
+    from studio_market.futu.catalog import current_catalog_snapshot, sync_catalog
+
+    settings = MarketSettings.from_environment()
+    if prefer_current:
+        retained = current_catalog_snapshot(settings)
+        if retained is not None:
+            return retained
+    return sync_catalog(settings)

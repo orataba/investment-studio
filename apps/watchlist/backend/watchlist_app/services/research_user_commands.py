@@ -53,6 +53,8 @@ def _require_instruction(run, command):
     verbs = r"保存|记录|记下|记为|记到|留存|存下|存到|写入|写到|save|record"
     if command.action == "manage_theme":
         verbs += r"|建立|创建|新增|添加|设立|新建|暂停|结束|关闭|恢复|调整|修改|更新|持续关注|持续跟踪|create|pause|close|resume|update"
+    elif command.action == "publish_research":
+        verbs += r"|发布(?!会)|\bpublish\b"
     # Check the real message prefix too: citing just '保存' from '不要保存' cannot
     # remove the user's negation. Semantic interpretation of examples and whose
     # view it is remains part of the researcher's explicit tool instructions.
@@ -62,6 +64,24 @@ def _require_instruction(run, command):
     for match in re.finditer(verbs, quote, re.IGNORECASE):
         prefix = run.title[:quote_start + match.start()]
         clause = re.split(r"[。！？.!?\n，,；;]", prefix)[-1]
+        if match.group().lower() in {"发布", "publish"}:
+            # Only a current publication directive adds authority. A release
+            # mentioned in a document, a press conference, or a question about
+            # the workflow does not. Model interpretation remains necessary;
+            # these checks do not infer an instruction from source materials.
+            sentence = re.split(r"[。！？.!?\n；;]", prefix)[-1]
+            following = run.title[quote_start + match.end():]
+            if (re.search(negative, sentence, re.IGNORECASE)
+                    or re.search(r"(?:引用|引文|资料内容|原文|摘录)\s*[:：]", sentence)
+                    or re.search(r"^[^。！？.!?\n；;]*(?:吗|么|否)\s*[？?]", following)):
+                continue
+            if re.search(r"请问|如何|怎么|是否|要不要|应否|可否|能否|描述|报道|提到|写着|表示|声称|介绍|解释|翻译|说明|举例|示例|资料中|报告中|文中|原文中|查看|检查|分析|讨论|了解|\b(?:how|whether|should|says?|said|describes?|explain|translate|example)\b", clause, re.IGNORECASE):
+                continue
+            directive = re.split(r"[:：]", clause)[-1].strip()
+            if directive and not re.match(
+                    r"(?:请|帮我|麻烦|我(?:授权|要求|希望)(?:你)?|将|把|现在|直接|立即)|"
+                    r"(?:please|kindly|I\s+(?:authorize|ask|want)\s+you\s+to)\b", directive, re.IGNORECASE):
+                continue
         if not re.search(negative, clause, re.IGNORECASE) and not re.search(r"如何|怎么|是否需要|要不要", clause):
             instructions.append(match)
     if not instructions:
@@ -108,7 +128,7 @@ def apply_user_command(session, run, command):
         if refs:
             from watchlist_app.services.research_notebook import research_sources, validate_notebook, ResearchNotebook
             from watchlist_app.services.market_evidence import source_reference
-            available = research_sources(run.context_json, run.entry_id)
+            available = research_sources(run.context_json, run.entry_id, session=session)
             validate_notebook(ResearchNotebook(source_ids=refs), command.instrument_id,
                               available)
             bound_sources = [deepcopy(source_reference(available[sid])) for sid in dict.fromkeys(refs)]

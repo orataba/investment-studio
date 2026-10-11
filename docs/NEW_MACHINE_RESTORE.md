@@ -81,7 +81,7 @@ CONFIRM_RESTORE=investment_studio \
 
 ## 5. 安装运行服务
 
-macOS 使用统一安装器完成迁移复核、前端构建、八个 API/前端 LaunchAgent、每日刷新、数据审计和健康检查：
+macOS 使用统一安装器完成迁移复核、前端构建、八个 API/前端 LaunchAgent、独立研究执行服务、每日刷新、数据审计和健康检查：
 
 ```bash
 infra/harness/install.sh
@@ -122,7 +122,7 @@ migration chain 的版本。不要对刚恢复的业务库裸跑 `migration-head
 并确认：
 
 - 八个 schema 的七条 migration chain 均处于当前 head，公共目录与原文文件可读；
-- 八个 API/前端服务健康，Home、Watchlist、Portfolio、Briefing 页面可打开；Regime 按自身恢复流程独立验收；
+- 八个 API/前端服务健康，研究执行服务运行正常，Home、Watchlist、Portfolio、Briefing 页面可打开；Regime 按自身恢复流程独立验收；
 - secrets、dump、checksum、日志、运行数据库和依赖目录均未进入 Git；
 - 最近刷新状态成功，或明确记录仍需追数的供应商/邮箱原因；
 - 恢复后的 Portfolio、账户、交易和 Watchlist 数量来自业务库，而不是 demo seed。

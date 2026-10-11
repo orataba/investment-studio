@@ -178,6 +178,14 @@ def require_topic_access(session, topic, *, principal=None):
     return topic
 
 
+def run_attempt(entry) -> int:
+    """A queued retry targets the next attempt; a running entry owns that number."""
+    attempt = ((entry.context_json or {}).get("execution") or {}).get("attempt", 0)
+    if type(attempt) is not int or attempt < 0:
+        raise HTTPException(409, "研究执行序号无效，不能继续本轮任务")
+    return attempt + 1 if entry.status == "queued" else attempt
+
+
 def require_entry_access(session, entry, *, tool_write=False):
     principal = current_principal()
     if entry is None:
@@ -186,6 +194,9 @@ def require_entry_access(session, entry, *, tool_write=False):
     if scope and (scope.get("kind") != "run" or scope.get("id") != entry.entry_id):
         raise HTTPException(403, "运行凭证不能访问其他研究记录")
     if scope:
+        if (entry.status not in {"queued", "running"} or run_attempt(entry) < 1
+                or scope.get("attempt") != str(run_attempt(entry))):
+            raise HTTPException(409, "研究执行已结束或已被重试替代，请使用当前任务凭证")
         actor = (entry.context_json or {}).get("research_actor") or {}
         subject_matches = (actor.get("user_id") == principal.user_id and principal.kind == "user" and principal.user_id is not None)
         if principal.kind == "service":
@@ -204,16 +215,16 @@ def require_entry_access(session, entry, *, tool_write=False):
 def _entry_access_projection(session, entry_id):
     from types import SimpleNamespace
     from sqlalchemy import JSON, true
-    relation, fields = research_context_projection(session, {"research_actor": JSON}, json_column=ResearchEntry.read_context_json)
-    query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.team_id,
-                   fields["research_actor"].label("research_actor")).select_from(ResearchEntry)
+    relation, fields = research_context_projection(session, {"research_actor": JSON, "execution": JSON}, json_column=ResearchEntry.read_context_json)
+    query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.team_id, ResearchEntry.status,
+                   fields["research_actor"].label("research_actor"), fields["execution"].label("execution")).select_from(ResearchEntry)
     if relation is not None:
         query = query.join(relation, true())
     rows = research_projection_rows(session, query.where(ResearchEntry.entry_id == entry_id),
-                                    {"research_actor": ("research_actor",)}, json_column=ResearchEntry.read_context_json)
+                                    {"research_actor": ("research_actor",), "execution": ("execution",)}, json_column=ResearchEntry.read_context_json)
     row = rows[0] if rows else None
-    return (SimpleNamespace(entry_id=row.entry_id, topic_id=row.topic_id, team_id=row.team_id,
-            context_json={"research_actor": row.research_actor}) if row else None)
+    return (SimpleNamespace(entry_id=row.entry_id, topic_id=row.topic_id, team_id=row.team_id, status=row.status,
+            context_json={"research_actor": row.research_actor, "execution": row.execution}) if row else None)
 
 
 def visible_topics(session):
@@ -240,7 +251,7 @@ def enforce_request(request, session):
     path = request.url.path
     match = re.fullmatch(r"/api/research/runs/([^/]+)(?:/.*)?", path)
     if principal.resource_scope:
-        if not match or principal.resource_scope != {"kind": "run", "id": match[1]}:
+        if not match or principal.resource_scope.get("kind") != "run" or principal.resource_scope.get("id") != match[1]:
             raise HTTPException(403, "运行凭证仅用于对应研究任务")
     if match:
         # Authorization needs identity and the topic's retained portfolio scope,

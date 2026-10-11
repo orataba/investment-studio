@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 
+from studio_market.calendars import latest_closed_market_session
 from studio_market.config import MarketSettings
 from studio_market.numeric import NumericStore
-from studio_data.services.fmp.eod_capture import ensure_fmp_security_history
+from studio_market.numeric.collect import closed_symbol_date
+from studio_data.services.fmp.client import FmpApiError
+from studio_data.services.fmp.eod_capture import FmpHistoryIncomplete, ensure_fmp_security_history
 from studio_data.services.instrument_store import (
     get_instrument,
     update_refresh_status,
@@ -44,6 +47,7 @@ def refresh_fmp_eod(
     full_history: bool = False,
     store: NumericStore | None = None,
     acquire_history: bool = False,
+    now: datetime | None = None,
 ) -> dict[str, object]:
     # The shared collector can revise retained adjusted prices after a split or
     # dividend. Projection is a local replay, so include those older revisions
@@ -70,18 +74,42 @@ def refresh_fmp_eod(
     if not provider_identifier:
         raise ValueError(f"{instrument_type.upper()} has no FMP provider_symbol identifier.")
     symbol = provider_identifier.removeprefix("fmp:")
+    clock = now or datetime.now(UTC)
+    exchange_code = str(instrument.get("exchange_code") or "")
+    if actual_type == "index":
+        # Indices have no listing MIC. Their publication calendar belongs to
+        # the source contract, independent of the provider symbol's spelling.
+        calendar_name = str(dict(instrument.get("source_settings") or {}).get("market_calendar") or "").strip()
+        if not calendar_name:
+            raise FmpApiError("FMP index projection requires a verified source_settings.market_calendar.")
+        try:
+            end_date = latest_closed_market_session(calendar_name, clock)
+        except ValueError as error:
+            raise FmpApiError("FMP index projection has no verified source market calendar or closing time.") from error
+        if acquire_history:
+            raise FmpApiError("FMP index history must be acquired by its shared source collector.")
+    else:
+        end_date = closed_symbol_date(symbol, clock, exchange_code=exchange_code)
     # Equity/ETF registration and scheduled refresh share this acquisition
     # boundary. An explicitly supplied store always stays an offline replay.
     no_trade_evidence = []
+    coverage_error = None
     if acquire_history and store is None:
-        no_trade_evidence = ensure_fmp_security_history(
-            instrument_id,
-            symbol=symbol,
-            exchange_code=str(instrument.get("exchange_code") or ""),
-            currency=str(instrument.get("currency") or ""),
-        ) or []
+        try:
+            no_trade_evidence = ensure_fmp_security_history(
+                instrument_id,
+                symbol=symbol,
+                exchange_code=exchange_code,
+                currency=str(instrument.get("currency") or ""),
+                now=clock,
+            ) or []
+        except FmpHistoryIncomplete as error:
+            # Preserve real observations and notify downstream via their
+            # canonical watermarks, without turning missing sessions into a
+            # successful refresh. Transport/revision errors still abort.
+            coverage_error = str(error)
+            no_trade_evidence = error.no_trade_evidence
     start_date = date(1900, 1, 1)
-    end_date = date.today()
     market = store or NumericStore(MarketSettings.from_environment())
     try:
         # One query fixes the source file view across this instrument's history.
@@ -157,8 +185,8 @@ def refresh_fmp_eod(
     if not price_bars:
         record = update_refresh_status(
             instrument_id=instrument_id,
-            status="no_new_data",
-            message=f"Shared market data has no raw EOD rows for {symbol} in the requested interval.",
+            status="failed" if coverage_error else "no_new_data",
+            message=coverage_error or f"Shared market data has no raw EOD rows for {symbol} in the requested interval.",
             updated_by=updated_by,
             mode="api",
         )
@@ -174,11 +202,12 @@ def refresh_fmp_eod(
         raise RuntimeError(f"Registry {instrument_type} disappeared during refresh: {instrument_id}")
     record = update_refresh_status(
         instrument_id=instrument_id,
-        status="refreshed" if any(changes) else "no_new_data",
+        status="failed" if coverage_error else "refreshed" if any(changes) else "no_new_data",
         message=(f"Projected {len(price_bars)} shared FMP EOD rows for {symbol}."
                  + (f" HKEX confirms {len(no_trade_evidence)} no-trade session(s) through "
-                    f"{max(str(row['date']) for row in no_trade_evidence)}; last traded price date is unchanged."
-                    if no_trade_evidence else "")),
+                    f"{max(str(row['date']) for row in no_trade_evidence)}; no prices were synthesized for those sessions."
+                    if no_trade_evidence else "")
+                 + (f" {coverage_error}" if coverage_error else "")),
         updated_by=updated_by,
         mode="api",
     )

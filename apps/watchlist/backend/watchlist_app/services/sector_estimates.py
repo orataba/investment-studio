@@ -1,7 +1,6 @@
 """Compare retained FMP estimate observations without rolling fiscal periods."""
 from datetime import UTC, datetime
 
-from investment_studio_instrument_core.listing_contract import SECTOR_ETF_TICKERS
 from copy import deepcopy
 
 from watchlist_app.services.sector_market_data import (
@@ -22,6 +21,7 @@ _GAP_LABELS = {
     "source_dataset_changed": "两次预期数据来源口径不同，变动尚未核实。",
     "current_weight_missing": "部分公司缺少当前ETF权重，权重覆盖不完整。",
     "current_estimates_missing": "当前快照没有可用的公司预期。",
+    "holding_type_unconfirmed": "部分披露持仓的证券类型未确认，未纳入公司预期范围；已确认公司的观察不能代表全部底层敞口。",
 }
 
 
@@ -58,7 +58,10 @@ def compare_estimate_snapshots(iid, current, previous=None, *, instrument_type="
     changes, observations, unmatched, metrics = [], [], [], []
     gaps = set()
     def weight(symbols):
-        return None if instrument_type == "equity" else sum(companies[symbol].get("weight_percent") or 0 for symbol in symbols)
+        if instrument_type == "equity":
+            return None
+        weights = [companies[symbol].get("weight_percent") for symbol in symbols]
+        return None if any(value is None for value in weights) else sum(weights)
     for frequency in _FREQUENCIES:
         for metric, (analyst_field, unit) in _METRICS.items():
             available, comparable, changed, unknown_currency = set(), set(), set(), set()
@@ -172,8 +175,6 @@ def estimate_scope(session, instrument_id):
         if not symbol:
             return None
         return {"symbol": symbol.upper(), "instrument_type": instrument["instrument_type"], "name": instrument.get("instrument_name")}
-    if instrument_id.upper() in SECTOR_ETF_TICKERS:
-        return {"symbol": instrument_id.upper(), "instrument_type": "etf", "name": instrument_id.upper()}
     return None
 
 
@@ -205,12 +206,19 @@ def read_estimate_evidence(session, instrument_id, *, as_of: datetime | None = N
         return {**empty, "status": "no_snapshot", "gaps": ["截至当前时点尚无可用的本公司或披露持仓对应的公司观测。"]}
     companies = {row["holding_symbol"]: {"name": row["holding_name"], "weight_percent": row.get("weight_percent"),
         "annual_estimates": [], "quarterly_estimates": []} for row in market["companies"]}
+    unconfirmed_holdings = any(row["kind"] == "unclassified_holding" for row in market["gaps"])
     if not companies:
-        return {**empty, "supported": False, "status": "not_applicable", "gaps": ["本次披露没有已核实的股票公司敞口，不对债券、黄金、商品或未知持仓套用EPS预期。"]}
+        if unconfirmed_holdings:
+            return {**empty, "status": "limited", "gap_codes": ["holding_type_unconfirmed"],
+                    "gaps": [_GAP_LABELS["holding_type_unconfirmed"]]}
+        if scope["instrument_type"] != "equity" and not market["holdings"]:
+            return {**empty, "status": "no_snapshot", "gaps": ["尚无已披露持仓，不能确认公司预期是否适用于本基金。"]}
+        return {**empty, "supported": False, "status": "not_applicable", "gaps": ["本次披露持仓不包含直接股票公司，不对这些持仓直接套用公司EPS预期；间接敞口仍需穿透核实。"]}
     store = numeric_store()
     captures = store.observations("analyst_estimates", symbols=list(companies), as_of=cutoff, limit=2)["observations"]
     if not captures:
-        return {**empty, "status": "no_snapshot", "gaps": ["截至当前时点尚未采集这些公司的分析师预期；首次采集后建立历史基线。"]}
+        return {**empty, "status": "no_snapshot", "gaps": ["截至当前时点尚未采集这些公司的分析师预期；首次采集后建立历史基线。"]
+                + ([_GAP_LABELS["holding_type_unconfirmed"]] if unconfirmed_holdings else [])}
     current_companies, previous_companies = deepcopy(companies), deepcopy(companies)
     from collections import defaultdict
     grouped = defaultdict(list)
@@ -246,6 +254,10 @@ def read_estimate_evidence(session, instrument_id, *, as_of: datetime | None = N
     current = observation(current_companies, current_clocks, "current")
     previous = observation(previous_companies, previous_clocks, "previous") if previous_clocks else None
     result = compare_estimate_snapshots(iid, current, previous, instrument_type=scope["instrument_type"])
+    if unconfirmed_holdings:
+        result["status"] = "limited"
+        result["gap_codes"].append("holding_type_unconfirmed")
+        result["gaps"].append(_GAP_LABELS["holding_type_unconfirmed"])
     return {**result, "as_of": cutoff.isoformat(), "source_ids": sorted(set(source_ids)),
             "comparison_basis": "Latest two complete source captures for each company and forecast frequency; fund weights only when applicable."}
 

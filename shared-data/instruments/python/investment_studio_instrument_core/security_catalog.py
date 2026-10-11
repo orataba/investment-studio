@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class SecuritySearchResult(BaseModel):
     instrument_type: Literal["equity", "etf"]
     symbol: str
-    catalog_provider: Literal["fmp"]
+    catalog_provider: Literal["fmp", "futu"]
     catalog_symbol: str
     name: str
     exchange_code: str
@@ -39,7 +39,7 @@ class SecuritySearchResponse(BaseModel):
 class SecurityMaterializeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     instrument_type: Literal["equity", "etf"]
-    catalog_provider: Literal["fmp"]
+    catalog_provider: Literal["fmp", "futu"]
     catalog_symbol: str = Field(min_length=1, max_length=100)
 
     @field_validator("catalog_symbol")

@@ -248,7 +248,10 @@ def test_capture_credentials_are_task_bound_and_lose_access_on_revocation(secure
         return response.json()['batch_id']
     task = batch(first)
     other_task = batch(second)
-    people['capture-run'] = Principal('alice', '甲经理', 'default', resource_scope={'kind': 'capture', 'id': task})
+    from portfolio_app.services.transaction_captures import queue_transaction_capture_analysis_run, mark_transaction_capture_analysis_run_started
+    queued = queue_transaction_capture_analysis_run(portfolio_id=a, batch_id=task)
+    assert mark_transaction_capture_analysis_run_started(portfolio_id=a, batch_id=task, attempt=queued['analysis_run_attempt'])[0]
+    people['capture-run'] = Principal('alice', '甲经理', 'default', resource_scope={'kind': 'capture', 'id': task, 'attempt': str(queued['analysis_run_attempt'])})
     context = f'/api/portfolios/{a}/transaction-capture-batches/{task}/agent-context'
     assert client.get(context, headers=headers()).status_code == 403
     assert client.get(context, headers=headers('capture-run')).status_code == 200
@@ -352,7 +355,10 @@ def test_local_scoped_delegations_cannot_escape_or_write_ledger(secured, monkeyp
         batch = local_client.post(f'/api/portfolios/{a}/transaction-capture-batches', headers=headers('local-owner'), json={'capture_ids': [image.json()['capture_id']], 'purpose': 'auto'})
         assert batch.status_code == 201, batch.text
         batch_id = batch.json()['batch_id']
-        people['local-capture'] = replace(local, resource_scope={'kind': 'capture', 'id': batch_id})
+        from portfolio_app.services.transaction_captures import queue_transaction_capture_analysis_run, mark_transaction_capture_analysis_run_started
+        queued = queue_transaction_capture_analysis_run(portfolio_id=a, batch_id=batch_id)
+        assert mark_transaction_capture_analysis_run_started(portfolio_id=a, batch_id=batch_id, attempt=queued['analysis_run_attempt'])[0]
+        people['local-capture'] = replace(local, resource_scope={'kind': 'capture', 'id': batch_id, 'attempt': str(queued['analysis_run_attempt'])})
         assert local_client.get(f'/api/portfolios/{a}/transaction-capture-batches/{batch_id}/agent-context', headers=headers('local-capture')).status_code == 200
         for token in ('local-portfolio', 'local-capture'):
             assert local_client.get(f'/api/portfolios/{a}/access', headers=headers(token)).status_code == 200

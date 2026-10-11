@@ -6,7 +6,7 @@ export type WatchlistDetailInstrumentType =
   | 'index'
   | 'crypto'
 
-export type ListedDetailTab = 'overview' | 'investment-research' | 'views' | 'performance'
+export type ListedDetailTab = 'overview' | 'risk' | 'investment-research' | 'views' | 'info'
 
 export type FundDetailTabCode =
   | 'overview'
@@ -21,12 +21,15 @@ export type FundDetailTabCode =
   | 'monitoring'
   | 'views'
   | 'archive'
+  | 'info'
 
-export type FundPrimaryTab = 'overview' | 'investment-research' | 'views' | 'performance' | 'archive'
+export type FundPrimaryTab = ListedDetailTab
 export type FundArchiveSection = 'exposure' | 'people' | 'strategy' | 'price' | 'documents' | 'monitoring'
 
+const DETAIL_TABS: readonly ListedDetailTab[] = ['overview', 'risk', 'investment-research', 'views', 'info']
+
 export function fundDetailTabs(): readonly FundPrimaryTab[] {
-  return ['overview', 'investment-research', 'views', 'performance', 'archive']
+  return DETAIL_TABS
 }
 
 export function resolveFundDetailLocation(tab: string | null, section: string | null, instrumentType: 'public_fund' | 'private_fund'):
@@ -36,20 +39,28 @@ export function resolveFundDetailLocation(tab: string | null, section: string | 
   const selectedSection = sections.includes(legacySection as FundArchiveSection) ? legacySection : section
   const resolvedSection = sections.includes(selectedSection as FundArchiveSection)
     ? selectedSection as FundArchiveSection : instrumentType === 'public_fund' ? 'exposure' : 'strategy'
-  if (sections.includes(legacySection as FundArchiveSection)) return { tab: 'archive', section: resolvedSection }
-  if (tab === 'risk') return { tab: 'performance', section: resolvedSection }
+  if (sections.includes(legacySection as FundArchiveSection) || tab === 'archive') return { tab: 'info', section: resolvedSection }
+  if (tab === 'performance') return { tab: 'overview', section: resolvedSection }
   if (tab === 'research') return { tab: 'views', section: resolvedSection }
   if (tab === 'analyst' || tab === 'events') return { tab: 'investment-research', section: resolvedSection }
   return { tab: fundDetailTabs().includes(tab as FundPrimaryTab) ? tab as FundPrimaryTab : 'overview', section: resolvedSection }
 }
 
-const LISTED_TABS: readonly ListedDetailTab[] = ['overview', 'investment-research', 'views', 'performance']
+export function resolveListedDetailTab(tab: string | null): ListedDetailTab {
+  if (tab === 'performance') return 'overview'
+  if (tab === 'archive') return 'info'
+  if (tab === 'analyst' || tab === 'events') return 'investment-research'
+  if (tab === 'research') return 'views'
+  return DETAIL_TABS.includes(tab as ListedDetailTab) ? tab as ListedDetailTab : 'overview'
+}
 
 const FUND_TAB_LABELS: Record<
   'public_fund' | 'private_fund',
   Partial<Record<FundDetailTabCode, { en: string; zh: string }>>
 > = {
   public_fund: {
+    risk: { en: 'Risk Monitoring', zh: '风险监测' },
+    info: { en: 'Information', zh: '资料' },
     'investment-research': { en: 'Investment Research', zh: '投资研究' },
     views: { en: 'Investment Views', zh: '投资观点' },
     performance: { en: 'Performance Metrics', zh: '绩效指标' },
@@ -59,6 +70,8 @@ const FUND_TAB_LABELS: Record<
     people: { en: 'Management', zh: '管理团队' },
   },
   private_fund: {
+    risk: { en: 'Risk Monitoring', zh: '风险监测' },
+    info: { en: 'Information', zh: '资料' },
     'investment-research': { en: 'Investment Research', zh: '投资研究' },
     views: { en: 'Investment Views', zh: '投资观点' },
     performance: { en: 'Performance Metrics', zh: '绩效指标' },
@@ -72,7 +85,7 @@ const FUND_TAB_LABELS: Record<
 export function listedDetailTabs(
   _instrumentType: 'etf' | 'equity' | 'index' | 'crypto',
 ): readonly ListedDetailTab[] {
-  return LISTED_TABS
+  return DETAIL_TABS
 }
 
 export function fundDetailTabLabel(

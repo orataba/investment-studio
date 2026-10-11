@@ -16,6 +16,7 @@ from sqlalchemy import (
     LargeBinary,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -40,6 +41,13 @@ class PortfolioRecordModel(Base):
     securities_count: Mapped[int] = mapped_column(nullable=False, default=0)
     sort_order: Mapped[int] = mapped_column(nullable=False, default=0)
     risk_policy_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    __table_args__ = (
+        CheckConstraint(
+            risk_policy_json["missing_return_policy"].as_string().is_(None)
+            | (risk_policy_json["missing_return_policy"].as_string() == "strict"),
+            name="portfolio_risk_strict_missing_returns",
+        ),
+    )
 
     accounts: Mapped[list["AccountRecordModel"]] = relationship(
         back_populates="portfolio",
@@ -1297,9 +1305,66 @@ class TargetSetLineRecordModel(Base):
     target_set: Mapped[TargetSetRecordModel] = relationship(back_populates="lines")
 
 
+class PortfolioInvestmentViewModel(Base):
+    __tablename__ = "portfolio_investment_view"
+    __table_args__ = (
+        CheckConstraint("latest_revision > 0", name="investment_view_revision_positive"),
+    )
+
+    portfolio_id: Mapped[str] = mapped_column(ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"), primary_key=True)
+    note_id: Mapped[str] = mapped_column(String, primary_key=True)
+    latest_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    author_user_id: Mapped[str] = mapped_column(String, nullable=False)
+    author_name: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class PortfolioInvestmentViewRevisionModel(Base):
+    __tablename__ = "portfolio_investment_view_revision"
+    __table_args__ = (
+        ForeignKeyConstraint(["portfolio_id", "note_id"],
+            ["portfolio_investment_view.portfolio_id", "portfolio_investment_view.note_id"], ondelete="CASCADE"),
+        CheckConstraint("revision_number > 0", name="investment_view_revision_number_positive"),
+    )
+
+    portfolio_id: Mapped[str] = mapped_column(String, primary_key=True)
+    note_id: Mapped[str] = mapped_column(String, primary_key=True)
+    revision_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    view_date: Mapped[date] = mapped_column(Date, nullable=False)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    context: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    # Validated shared identities and their names at the time of this judgment.
+    # They survive changes to positions and do not reference portfolio-local contracts.
+    instrument_refs_json: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False)
+    revised_by_user_id: Mapped[str] = mapped_column(String, nullable=False)
+    revised_by_name: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class PortfolioInvestmentStanceModel(Base):
+    __tablename__ = "portfolio_investment_stance"
+    __table_args__ = (
+        ForeignKeyConstraint(["portfolio_id", "note_id", "revision_number"],
+            ["portfolio_investment_view_revision.portfolio_id", "portfolio_investment_view_revision.note_id", "portfolio_investment_view_revision.revision_number"]),
+        CheckConstraint("(note_id IS NULL AND revision_number IS NULL) OR (note_id IS NOT NULL AND revision_number IS NOT NULL)", name="investment_stance_reference_pair"),
+        CheckConstraint("selection_version > 0", name="investment_stance_version_positive"),
+    )
+
+    portfolio_id: Mapped[str] = mapped_column(ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"), primary_key=True)
+    note_id: Mapped[str | None] = mapped_column(String)
+    revision_number: Mapped[int | None] = mapped_column(Integer)
+    selection_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    selected_at: Mapped[str] = mapped_column(String, nullable=False)
+    selected_by_user_id: Mapped[str] = mapped_column(String, nullable=False)
+    selected_by_name: Mapped[str] = mapped_column(String, nullable=False)
+
+
 class ResearchSettingsRecordModel(Base):
     __tablename__ = "research_settings_record"
     __table_args__ = (
+        CheckConstraint("missing_return_policy = 'strict'", name="research_strict_missing_returns"),
         CheckConstraint(
             "as_of_mode IN ('dynamic', 'pinned')",
             name="ck_research_settings_as_of_mode",

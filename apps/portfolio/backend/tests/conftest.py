@@ -59,14 +59,14 @@ def _canonical_quote_policy(instrument_type: str) -> dict[str, list[str]]:
         "equity": {
             "trading": ["last", "close"],
             "valuation": ["close", "last"],
-            "total_return": ["adjusted_close", "close", "last"],
+            "total_return": ["adjusted_close"],
             "chart": ["adjusted_close", "close", "last"],
             "reference": ["close", "last"],
         },
         "etf": {
             "trading": ["last", "close"],
             "valuation": ["close", "last"],
-            "total_return": ["adjusted_close", "close", "last"],
+            "total_return": ["adjusted_close"],
             "chart": ["adjusted_close", "close", "last"],
             "reference": ["close", "last"],
         },
@@ -117,6 +117,10 @@ REGISTRY_INSTRUMENT_DETAILS = [
             _market_point("price", "close", "2026-03-28", "97.62", "USD"),
             _market_point("price", "close", "2026-04-14", "96.97", "USD"),
             _market_point("price", "close", "2026-04-15", "91.62", "USD"),
+            _market_point("price", "adjusted_close", "2026-03-05", "96.82", "USD"),
+            _market_point("price", "adjusted_close", "2026-03-28", "97.62", "USD"),
+            _market_point("price", "adjusted_close", "2026-04-14", "96.97", "USD"),
+            _market_point("price", "adjusted_close", "2026-04-15", "91.62", "USD"),
         ],
     },
     {
@@ -131,6 +135,9 @@ REGISTRY_INSTRUMENT_DETAILS = [
             _market_point("price", "close", "2026-03-04", "21.30", "HKD"),
             _market_point("price", "close", "2026-04-02", "21.05", "HKD"),
             _market_point("price", "close", "2026-04-15", "21.34", "HKD"),
+            _market_point("price", "adjusted_close", "2026-03-04", "21.30", "HKD"),
+            _market_point("price", "adjusted_close", "2026-04-02", "21.05", "HKD"),
+            _market_point("price", "adjusted_close", "2026-04-15", "21.34", "HKD"),
         ],
     },
     {
@@ -208,7 +215,8 @@ def _with_daily_test_history(detail: dict[str, object]) -> dict[str, object]:
             previous = by_date.get(day.isoformat(), previous)
             observations.append({**previous, "as_of_date": day.isoformat()})
             day += timedelta(days=1)
-    return {**detail, "market_data": observations}
+    return {**detail, "market_data": observations,
+            "source_settings": {"expected_frequency": "daily", "market_calendar": "24/7", **detail.get("source_settings", {})}}
 
 
 REGISTRY_INSTRUMENT_DETAILS = [
@@ -577,7 +585,8 @@ def authorize_fixture_client(app):
     async def fixture_identity(request: Request):
         _grant_financial_fixture_portfolios(principal)
         batch_id = request.headers.get("X-Test-Capture-Batch")
-        return replace(principal, resource_scope={"kind": "capture", "id": batch_id}) if batch_id else principal
+        return replace(principal, resource_scope={"kind": "capture", "id": batch_id,
+            "attempt": request.headers.get("X-Test-Capture-Attempt", "1")}) if batch_id else principal
     app.dependency_overrides[authenticated_principal] = fixture_identity
 
 

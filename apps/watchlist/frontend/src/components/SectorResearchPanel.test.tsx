@@ -208,14 +208,17 @@ it('shows the persisted running stage and retry without treating elapsed time as
   const data = payload('running')
   request.mockResolvedValue({ ...data, sectors: [{ ...data.sectors[0], latest_review: {
     ...review('running'), created_at: '2026-09-06T07:40:00+08:00',
-    execution: { stage: 'review', attempt: 2, failures: [{ attempt: 1, failed_at: '2026-09-06T07:45:00+08:00', error: { type: 'ProviderUnavailable' } }] },
+    execution: { stage: 'review', attempt: 2, started_at: '2026-09-06T07:50:00+08:00', failures: [{ attempt: 1, failed_at: '2026-09-06T07:45:00+08:00', error: { type: 'ProviderUnavailable' } }] },
   } }] })
   render(<SectorResearchPanel instrumentId="xlk-us" />)
   await load()
   const status = screen.getByRole('region', { name: '任务运行状态' })
   expect(status.textContent).toContain('run-1')
   expect(status.textContent).toContain('核对研究')
-  expect(status.textContent).toContain('20:00')
+  expect(status.textContent).toContain('10:00')
+  expect(status.textContent).not.toContain('20:00')
+  expect(status.textContent).toContain('请求时间')
+  expect(status.textContent).toContain('本次执行耗时')
   expect(status.textContent).toContain('恢复运行中')
   expect(screen.getByRole('button', { name: '研究更新中…' }).hasAttribute('disabled')).toBe(true)
   expect(request.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)

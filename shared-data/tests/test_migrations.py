@@ -720,19 +720,19 @@ def test_daily_api_source_metadata_migration_excludes_manual_instruments(
                 ) VALUES
                 (
                     '510300-sh', '沪深300ETF', 'etf', 'CNY',
-                    '{}',
+                    '{"trading":["close"],"valuation":["close"],"total_return":["adjusted_close"],"chart":["close"],"reference":["close"]}',
                     '{"source_mode":"api","source_api_profile":"tushare","source_location":"Tushare"}',
                     '{}', '{"status":"active"}', NULL
                 ),
                 (
                     'manual-etf', '手工ETF', 'etf', 'CNY',
-                    '{}',
+                    '{"trading":["close"],"valuation":["close"],"total_return":["adjusted_close"],"chart":["close"],"reference":["close"]}',
                     '{"source_mode":"manual","source_location":"CSV import","market_calendar":"XSHG"}',
                     '{}', '{"status":"active"}', NULL
                 ),
                 (
                     'weekly-api-etf', '显式周频ETF', 'etf', 'CNY',
-                    '{}',
+                    '{"trading":["close"],"valuation":["close"],"total_return":["adjusted_close"],"chart":["close"],"reference":["close"]}',
                     '{"source_mode":"api","source_api_profile":"tushare","expected_frequency":"weekly","market_calendar":"XSHG"}',
                     '{}', '{"status":"active"}', NULL
                 ),
@@ -811,12 +811,12 @@ def test_single_primary_source_migration_routes_only_mainland_etfs(
                     refresh_status_json, lifecycle_state_json
                 ) VALUES
                 (
-                    'mainland-etf', 'Mainland ETF', 'etf', 'CNY', 'XSHG', '{}',
+                    'mainland-etf', 'Mainland ETF', 'etf', 'CNY', 'XSHG', '{"trading":["close"],"valuation":["close"],"total_return":["adjusted_close"],"chart":["close"],"reference":["close"]}',
                     '{"source_mode":"api","source_api_profile":"fmp","source_location":"FMP API"}',
                     '{}', '{"status":"active"}'
                 ),
                 (
-                    'mainland-equity', 'Mainland Equity', 'equity', 'CNY', 'XSHG', '{}',
+                    'mainland-equity', 'Mainland Equity', 'equity', 'CNY', 'XSHG', '{"trading":["close"],"valuation":["close"],"total_return":["adjusted_close"],"chart":["close"],"reference":["close"]}',
                     '{"source_mode":"api","source_api_profile":"fmp","source_location":"FMP API"}',
                     '{}', '{"status":"active"}'
                 ),

@@ -55,12 +55,14 @@ def test_method_recheck_does_not_rewrite_judgment_or_claim_unchecked_modules_wer
     assert result["modules"][1]["method_version"] == "1"
 
 
-def test_modules_use_applicable_method_ids_and_only_bound_numerical_figures():
-    paper = ResearchNotebook(modules=[module(figure_source_ids=[SOURCE["source_id"]])])
+def test_free_analysis_keys_still_require_bound_evidence_and_valid_numerical_figures():
+    paper = ResearchNotebook(modules=[module(key="fees-and-investor-return", title="费用如何影响投资者回报", figure_source_ids=[SOURCE["source_id"]])])
     validate_notebook(paper, "fund", SOURCES, research_plan=PLAN)
     assert notebook_source_ids(paper) == {SOURCE["source_id"]}
-    with pytest.raises(ValueError, match="方法范围"):
-        validate_notebook(paper, "fund", SOURCES, research_plan={"modules": []})
+    validate_notebook(paper, "fund", SOURCES, research_plan={"modules": []})
+    retained = retain_notebook(paper, None, SOURCES, "free-analysis", CUTOFF, research_plan={"modules": []})
+    assert retained["modules"][0]["title"] == "费用如何影响投资者回报"
+    assert "method_version" not in retained["modules"][0]
     with pytest.raises(ValueError, match="重复"):
         validate_notebook(ResearchNotebook(modules=[module(), module()]), "fund", SOURCES)
     with pytest.raises(ValueError, match="资料充分"):

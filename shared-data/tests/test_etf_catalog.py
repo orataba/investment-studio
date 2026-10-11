@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from copy import deepcopy
-from datetime import date, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from alembic import command
 from alembic.config import Config
@@ -51,20 +52,24 @@ def isolated_etf_store(
     _upgrade(database_url, root=REGISTRY_MIGRATIONS_ROOT, revision="20260715_0011")
     _upgrade(database_url, root=BACKEND_ROOT)
     _upgrade(database_url, root=REGISTRY_MIGRATIONS_ROOT)
+    from sqlalchemy import Column, JSON, MetaData, String, Table
+    Table("current", MetaData(), Column("dataset", String), Column("payload", JSON)).create(session_module.get_engine())
 
-    from studio_data.services.fmp import eod_capture
-    monkeypatch.setattr(eod_capture, "closed_symbol_date", lambda symbol, now: date(2026, 8, 15))
+    from studio_data.services.fmp import eod
+    # Freeze the entry clock, retaining the real MIC/session lookup in both
+    # capture and projection. Friday is closed in every fixture market.
+    clock = datetime(2026, 8, 16, tzinfo=UTC)
+    monkeypatch.setattr(eod, "datetime", SimpleNamespace(now=lambda _tz: clock))
 
     from studio_market.config import MarketSettings
     from studio_market.numeric import NumericStore
-    from datetime import UTC, datetime
     market_url = f"sqlite+pysqlite:///{tmp_path / 'shared-market.db'}"
     market_root = tmp_path / "market"
     monkeypatch.setenv("INVESTMENT_STUDIO_MARKET_DATABASE_URL", market_url)
     monkeypatch.setenv("INVESTMENT_STUDIO_MARKET_DATA_ROOT", str(market_root))
     market = NumericStore(MarketSettings(market_url, market_root))
     market.create_schema_for_testing()
-    market.ingest("raw_eod_daily", [[{"symbol": row["symbol"], "date": "2026-08-15", "open": 66, "high": 68, "low": 65, "close": 67, "adjusted_close": 67.1, "volume": 123456} for row in _CATALOG_ROWS.values()]], source="fixture", observed_at=datetime(2026, 8, 16, tzinfo=UTC))
+    market.ingest("raw_eod_daily", [[{"symbol": row["symbol"], "date": "2026-08-14", "open": 66, "high": 68, "low": 65, "close": 67, "adjusted_close": 67.1, "volume": 123456} for row in _CATALOG_ROWS.values()]], source="fixture", observed_at=clock)
     market.close()
 
     yield
@@ -185,7 +190,7 @@ def test_etf_materialization_loads_history_then_refreshes_incrementally(
     assert len(list_instruments(instrument_type="etf", limit=None)) == 1
     assert client.eod_calls == []
     coverage = get_price_bar_coverage(instrument_id=str(first["instrument_id"]))
-    assert coverage["latest_date"] == "2026-08-15"
+    assert coverage["latest_date"] == "2026-08-14"
     assert coverage["adjustment_factor_count"] == 1
 
 
@@ -253,7 +258,7 @@ def test_existing_registry_etf_is_reused_and_gains_fmp_identity(
     )
     assert materialized["source_settings"]["source_api_profile"] == "fmp"
     assert client.eod_calls == []
-    assert get_price_bar_coverage(instrument_id=str(materialized["instrument_id"]))["latest_date"] == "2026-08-15"
+    assert get_price_bar_coverage(instrument_id=str(materialized["instrument_id"]))["latest_date"] == "2026-08-14"
 
 
 def test_xetra_etf_verifies_currency_and_keeps_listing_exchange(

@@ -7,9 +7,10 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 from mcp.server import MCPServer
-from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from mcp.types import ToolAnnotations
 from pydantic import AwareDatetime, Field, SkipValidation, ValidationError
 from pydantic.json_schema import GenerateJsonSchema
+from watchlist_app.mcp_json import compact_json_result
 from watchlist_app.services.sector_research import ReviewResult, draft_payload
 from watchlist_app.services.risk_officer import RiskReview
 from watchlist_app.services.risk_read_projection import (
@@ -28,6 +29,8 @@ ResearchReferenceSection = Literal["overview", "holdings", "financials", "key_me
 REFERENCE_TABLES = {"holdings", "financials", "key_metrics", "ratios", "dividends", "splits"}
 SearchClock = Annotated[AwareDatetime | None, Field(description=
     "ISO 8601 datetime with an explicit timezone, e.g. 2026-09-04T00:00:00Z or 2026-09-04T00:00:00+08:00. A date alone or a datetime without timezone is invalid. Omit when no time filter is intended.")]
+ExactSourceId = Annotated[str, Field(description=
+    "Copy the complete returned source_id verbatim, including comparison: or computed: prefixes. IDs are opaque; never shorten, reconstruct or infer them.")]
 
 
 class _SubmissionSchema(GenerateJsonSchema):
@@ -65,13 +68,13 @@ def compact_read_tool(function):
     @wraps(function)
     def reply(*args, **kwargs):
         payload = function(*args, **kwargs)
-        return CallToolResult(content=[TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, separators=(",", ":")))],
-                              structured_content=payload)
-    mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))(reply)
+        return compact_json_result(payload)
+    mcp.tool(structured_output=False,
+             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))(reply)
     return function
 
 
-def request(suffix, payload=None, *, timeout=30):
+def request(suffix, payload=None, *, timeout=150):
     run_id = os.environ["INVESTMENT_STUDIO_RESEARCH_RUN_ID"]
     base = os.environ.get("INVESTMENT_STUDIO_RESEARCH_API_BASE_URL", "http://127.0.0.1:8000/api")
     req = Request(f"{base}/research/runs/{quote(run_id, safe='')}/{suffix}", data=json.dumps(payload).encode() if payload is not None else None, headers={"Content-Type": "application/json", "Authorization": "Bearer " + os.environ["INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN"]}, method="POST" if payload is not None else "GET")
@@ -79,6 +82,22 @@ def request(suffix, payload=None, *, timeout=30):
         with urlopen(req, timeout=timeout) as response:
             return json.load(response)
     except HTTPError as error:
+        if error.code == 404 and (suffix == "computed-read" or
+                (suffix == "read" and isinstance(payload, dict) and payload.get("resource") == "dossier")):
+            # A missing bound source is actionable, but may also conceal an
+            # inaccessible record. Do not guess an ID, broaden scope, or echo
+            # an arbitrary upstream response body.
+            raise ValueError(json.dumps({"status": 404, "error": "source_not_in_bound_scope",
+                "message": "该来源在所选本轮计算或冻结档案范围内不可读取。",
+                "next_action": (
+                    "先从read_research_context(section='computed_metrics')复制本轮完整source_id（保留comparison:/computed:前缀）及read入口。"
+                    "历史来源按read_research_dossier的sources/versions目录选择原source_id或version_id；不能把历史来源ID当作本轮计算。"
+                    "不要猜ID、去掉前缀或重复原请求；若绑定目录也没有该来源，说明证据缺失。"
+                    if suffix == "computed-read" else
+                    "按read_research_dossier的sources/versions目录选择冻结的完整source_id或version_id。"
+                    "本轮新计算从read_research_context(section='computed_metrics')返回的read入口读取，不一定已写入档案。"
+                    "不要猜ID或改读其他运行；若绑定目录也没有该来源，说明证据缺失。")},
+                ensure_ascii=False, separators=(",", ":"))) from error
         if error.code not in {409, 422}:
             raise
         try:
@@ -131,7 +150,7 @@ def read_risk_instrument(instrument_id: str,
                          section: Literal["overview", "cases", "comparisons", "sample_dates", "research_context"] = "overview",
                          offset: int = 0, comparison_source_id: str | None = None,
                          page_offset: int | None = None, path: list[str | int] | None = None) -> dict:
-    """Read ONE instrument from this risk run's bound snapshot. Start with overview for metrics, the complete current analyst view, performance and counts. Use overview counts to skip a section only when both its current and previous counts are zero. Read every nonempty cases and research_context page from offset=0 through next_offset=null, including previous-only rows. A large original page returns deferred: keep its page_offset and section, then read path/offset through every next_offset and deferred.path. In this continuation mode offset is within the selected text/array/object, not a different original page. A directory does not satisfy evidence delivery. Cases may use same_as_path for exactly identical evidence within this SAME original page (offset, or page_offset during continuation); the target is a full source or field, never another reference. Read all target continuations; a reference alone is not evidence delivery. Read comparisons when needed for performance assessment, following all pages for that section; unread comparisons cannot support relative-performance conclusions. research_context has the full current PM profile (current view, thesis, counterevidence, monitoring and attribution limits), attributed PM original notes, active research questions with counterevidence/next checks, and active forecasts with due status; these are judgments to test, not independent facts. Cases preserve full bodies and source references. Comparisons retain pair-specific sample start/end, count and methodology; sample_dates with a returned comparison_source_id pages exact common dates when needed. Read all instruments and case/research_context pages before synthesis; an unread page is not no risk. Prior changes remain bound, without live fetches."""
+    """Read ONE instrument from this risk run's bound snapshot. Start with overview for metrics, the complete current analyst view, performance and counts. Use overview counts to skip a section only when both its current and previous counts are zero. Read every nonempty cases and research_context page from offset=0 through next_offset=null, including previous-only rows. A large original page returns deferred: keep its page_offset and section, then read path/offset through every next_offset and deferred.path. In this continuation mode offset is within the selected text/array/object, not a different original page. A directory does not satisfy evidence delivery. Cases may use same_as_path for exactly identical evidence within this SAME original page (offset, or page_offset during continuation); the target is a full source or field, never another reference. Read all target continuations of decision pages. read_risk_evidence pointers identify original calculation inputs for optional claim-specific inspection; do not recursively read every observation merely to submit. A reference alone does not prove original text read. Read comparisons when needed for performance assessment, following all pages for that section; unread comparisons cannot support relative-performance conclusions. research_context has the full current PM profile (current view, thesis, counterevidence, monitoring and attribution limits), attributed PM original notes, active research questions with counterevidence/next checks, and active forecasts with due status; these are judgments to test, not independent facts. Cases preserve full bodies and source references. Comparisons retain pair-specific sample start/end, count and methodology; sample_dates with a returned comparison_source_id pages exact common dates when needed. Read all instruments and case/research_context pages before synthesis; an unread page is not no risk. Prior changes remain bound, without live fetches."""
     return request("risk-read", {"instrument_id": instrument_id, "section": section,
                                  "offset": offset, "comparison_source_id": comparison_source_id,
                                  "page_offset": page_offset, "path": path})
@@ -143,125 +162,20 @@ def read_risk_instruments(offset: int = 0) -> dict:
     return request("risk-read", {"section": "instrument_overviews", "offset": offset})
 
 
-def _concentration_page(portfolio, data, *, cutoff, offset, source_offset):
-    """Page bound rows and, independently, a large row's exposure sources.
-
-    The harness permits 50 KB UTF-8 tool text. Measure complete replies, leaving
-    room for transport overhead, rather than guessing from number of rows alone.
-    """
-    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-        raise ValueError("集中度offset必须是非负整数。")
-    if source_offset is not None and (isinstance(source_offset, bool) or not isinstance(source_offset, int) or source_offset < 0):
-        raise ValueError("集中度source_offset必须是非负整数。")
-    scopes = data.get("scopes", [])
-    flattened = [(scope_index, row) for scope_index, scope in enumerate(scopes) for row in scope.get("rows", [])]
-    total = len(flattened)
-    if offset > total or (source_offset is not None and offset >= total):
-        raise ValueError("集中度分页超出本次绑定快照的范围。")
-    registered = {source["source_id"]: source for source in portfolio.get("sources", [])}
-    module_sources = {source["source_id"] for source in data.get("sources", [])}
-    aggregate_id = data.get("source_id")
-    aggregate = [aggregate_id] if aggregate_id in module_sources and aggregate_id in registered else []
-    base = {key: value for key, value in data.items() if key not in {"scopes", "sources", "fcn_contracts"}}
-
-    def build(row_count, source_count):
-        projected_scopes, chosen_ids, continuations = {}, list(sorted(aggregate)), []
-        for row_offset in range(offset, min(total, offset + row_count)):
-            scope_index, row = flattened[row_offset]
-            row_sources = list(dict.fromkeys(source["source_id"] for source in row.get("sources", [])))
-            begin = source_offset if source_offset is not None else 0
-            if begin > len(row_sources):
-                raise ValueError("集中度来源分页超出当前行的范围。")
-            end = min(len(row_sources), begin + source_count)
-            source_ids = row_sources[begin:end]
-            projected_row = {key: value for key, value in row.items() if key != "sources"}
-            projected_row.update(row_offset=row_offset, source_ids=source_ids,
-                source_count=len(row_sources), source_offset=begin,
-                next_source_offset=end if end < len(row_sources) else None)
-            missing_ids = [source_id for source_id in source_ids if source_id not in registered or source_id not in module_sources]
-            if missing_ids:
-                projected_row["unregistered_source_ids"] = missing_ids
-            chosen_ids.extend(source_id for source_id in source_ids if source_id not in missing_ids)
-            if end < len(row_sources):
-                continuations.append({"offset": row_offset, "source_offset": end,
-                    "scope": scopes[scope_index].get("scope"), "taxonomy_id": scopes[scope_index].get("taxonomy_id"),
-                    "entity_id": row.get("entity_id")})
-            scope = projected_scopes.setdefault(scope_index, {
-                **{key: value for key, value in scopes[scope_index].items() if key != "rows"}, "rows": []})
-            scope["rows"].append(projected_row)
-        next_offset = min(total, offset + row_count)
-        return {"portfolio_id": portfolio["portfolio_id"], "as_of_date": portfolio["as_of_date"],
-            "cutoff": cutoff, "section": "concentration", "current": {**base, "scopes": list(projected_scopes.values())},
-            "sources": [registered[source_id] for source_id in dict.fromkeys(chosen_ids)],
-            "page_kind": "sources" if source_offset is not None else "rows",
-            "offset": offset, "next_offset": next_offset if source_offset is None and next_offset < total else None,
-            "total_rows": total, "source_continuations": continuations,
-            "pagination_note": "Follow next_offset until null to read all bound scopes/taxonomies. Independently follow every source_continuations offset/source_offset until none remain. row_offset is stable within this snapshot; source_ids are partial when next_source_offset is not null. Read contract terms with the existing derivatives holding_id tool. This page does not redefine portfolio scope."}
-
-    row_count = 1 if source_offset is not None else min(20, total - offset)
-    source_count = 20 if source_offset is not None else 8
-    while True:
-        packet = build(row_count, source_count)
-        if len(json.dumps(packet, ensure_ascii=False, separators=(",", ":")).encode()) <= 48000:
-            return packet
-        if row_count > 1:
-            row_count -= 1
-        elif source_count > 1:
-            source_count = max(1, source_count // 2)
-        else:
-            raise ValueError("单条集中度记录或来源超过工具返回上限，无法完整读取；请在组合风险页面核对。没有截断数据或将未读部分视为无风险。")
+@compact_read_tool
+def read_risk_evidence(snapshot: Literal["current", "previous"] = "current",
+                       path: list[str | int] | None = None, offset: int = 0, limit: int = 20) -> dict:
+    """Inspect exact original evidence using a risk page's read selector. Numerical input points and nested calculation sources are optional drill-downs, not a prerequisite to acknowledging validated metrics. Read originals when a claim depends on their contents; a reference is not proof of original text read. Preserve snapshot/path across pagination; no live refresh."""
+    return request("risk-evidence", {"snapshot": snapshot, "path": path or [], "offset": offset, "limit": limit})
 
 
 @compact_read_tool
-def read_portfolio_risk(section: PortfolioRiskSection, holding_id: str | None = None, offset: int = 0, source_offset: int | None = None) -> dict:
-    """Read ONE bound portfolio module. targets_by_taxonomy reads ALL classifications. concentration is PAGINATED: start offset=0, follow next_offset until null for every scope/taxonomy (at most 20 rows/page). Also follow each source_continuations entry using its offset and source_offset until empty; large group sources are separately paged, row source_ids may be partial. Browser grouping never filters monitoring. tail_risk includes historical VaR/ES, actual sample/tail mass and excluded exposures; exclusions are not zero risk. Only derivatives accepts holding_id; without it, read its contract index/resources. offset/source_offset are only for concentration. Dates, coverage and source_ids are authoritative. No live fetch or new assessment."""
-    context = request("context")
-    if not context.get("risk_run") or context["risk_inputs"]["scope"]["kind"] != "portfolio":
-        raise ValueError("只能读取本次风控范围内的组合。")
-    portfolio = (context["risk_inputs"].get("portfolio") or {}).get("risk_context") or {}
-    if portfolio.get("portfolio_id") != context["risk_inputs"]["scope"]["id"]:
-        raise ValueError("组合模块与本次风控范围不一致。")
-    if section not in get_args(PortfolioRiskSection) or section not in portfolio:
-        raise ValueError("本次组合快照不包含该风险模块。")
-    data = portfolio[section]
-    sources = portfolio.get("sources", [])
-    if section == "concentration":
-        if holding_id:
-            raise ValueError("holding_id 仅用于读取衍生品合约。")
-        return _concentration_page(portfolio, data, cutoff=context["cutoff"], offset=offset, source_offset=source_offset)
-    if offset != 0 or source_offset is not None:
-        raise ValueError("offset/source_offset仅用于集中度分页。")
-    if section == "derivatives":
-        positions = data.get("positions", [])
-        if holding_id:
-            position = next((row for row in positions if row["holding_id"] == holding_id), None)
-            if position is None:
-                raise ValueError("只能读取本次组合快照内的合约。")
-            data = {**{key: value for key, value in data.items() if key not in {"positions", "sources"}}, "position": position}
-            sources = [source for source in sources if source.get("holding_id") == holding_id]
-        else:
-            data = {**{key: value for key, value in data.items() if key not in {"positions", "sources"}},
-                    "positions": [{key: row.get(key) for key in ("holding_id", "name", "contract_type", "source_id")} for row in positions]}
-            sources = []
-    else:
-        if holding_id:
-            raise ValueError("holding_id 仅用于读取衍生品合约。")
-        if section == "tail_risk":
-            source_ids = {source["source_id"] for source in data.get("sources", [])}
-            sources = [source for source in sources if source.get("source_id") in source_ids]
-            # Sources appear once in this tool reply, separately from metrics.
-            data = {key: value for key, value in data.items() if key != "sources"}
-        elif section == "targets_by_taxonomy":
-            source_ids = {row["source_id"] for row in data if row.get("source_id")}
-            sources = [source for source in sources if source.get("source_id") in source_ids]
-        else:
-            names = {"portfolio_metrics": ("metrics", "correlations"), "targets": ("targets",),
-                     "comparisons": ("comparison",)}[section]
-            source_ids = {f"portfolio-risk:{portfolio['portfolio_id']}:{name}" for name in names}
-            sources = [source for source in sources if source.get("source_id") in source_ids
-                       and not source.get("holding_id") and not source.get("holding_ids")]
-    return {"portfolio_id": portfolio["portfolio_id"], "as_of_date": portfolio["as_of_date"],
-            "cutoff": context["cutoff"], "section": section, "current": data, "sources": sources}
+def read_portfolio_risk(section: PortfolioRiskSection, holding_id: str | None = None,
+                        offset: int = 0, source_offset: int | None = None,
+                        path: list[str | int] | None = None, limit: int = 20) -> dict:
+    """Read one frozen portfolio risk module. Concentration uses offset and source_continuations; other large modules advertise path/offset pagination. Follow the returned selectors for the same section/holding. Preserve VaR/ES coverage, excluded exposures and actual common samples; missing risk is not zero. No live refresh."""
+    return request("risk-portfolio", {"section": section, "holding_id": holding_id,
+        "offset": offset, "source_offset": source_offset, "path": path, "limit": limit})
 
 
 @compact_read_tool
@@ -308,7 +222,7 @@ def submit_risk_review(result: SkipValidation[RiskReview]) -> dict:
 
 
 @compact_read_tool
-def read_research_dossier(instrument_id: str, source_id: str | None = None, version_id: str | None = None, update_id: str | None = None,
+def read_research_dossier(instrument_id: str, source_id: ExactSourceId | None = None, version_id: str | None = None, update_id: str | None = None,
                           section: str = "overview", offset: int = 0, limit: int = 20, path: list[str | int] | None = None) -> dict:
     """Read the current judgment and section directory, then select research_plan/mandate/frameworks/available_modules/review_agenda/research_state, modules/facts/questions/catalysts/forecasts/forecast_reviews/lessons, themes/pm_views, materials/prior_sources/sources/historical_cases/versions. Read the assignment and agenda before deciding what to investigate. Select ONE source_id for an exact bound original, version_id for a past notebook/view/module/forecast or pm:<note_id>:<revision>, or update_id for a published update; selectors cannot combine with section. PM source indexes are not the originals: use that PM version's sources, never a later dossier source with the same ID. ALL selected data is paginated: follow next_offset AND every deferred.path, repeating the same section/selector until fully read. Text offsets count characters. No clipping, live substitution or model calls. AI/PM judgments remain hypotheses, not independently verified facts."""
     return request("read", {"resource": "dossier", "instrument_id": instrument_id, "source_id": source_id, "version_id": version_id, "update_id": update_id, "section": section, "offset": offset, "limit": limit, "path": path})
@@ -320,20 +234,16 @@ def read_risk_review(instrument_id: str | None = None) -> dict:
     return request("tools", {"tool": "risk_review", "instrument_ids": [instrument_id] if instrument_id else []})
 
 
-def _computed_source(source_id):
-    return request(f"computed-source?source_id={quote(source_id, safe='')}")
-
 
 @compact_read_tool
 def compare_instruments(instrument_ids: list[str] | None = None, start_date: str | None = None,
                         end_date: str | None = None, target_id: str | None = None, benchmark_id: str | None = None,
-                        source_id: str | None = None, section: Literal["overview", "result", "dates", "input_series", "evidence"] = "overview",
+                        source_id: ExactSourceId | None = None, section: Literal["overview", "result", "dates", "input_series", "evidence"] = "overview",
                         offset: int = 0, limit: int = 100, path: list[str | int] | None = None) -> dict:
-    """Compute once over explicit YYYY-MM-DD dates: exact common observations, same currency, no filling. Overview retains returns/drawdowns and optional target correlation/downside co-movement or benchmark excess return. Then pass ONLY the returned source_id plus section=result/dates/input_series/evidence and pagination arguments: continuation reads the same retained calculation, never recalculates or changes its window. Follow next_offset AND every deferred.path with that same source_id/section. Read exclusions, return conventions and common dates; choose appropriate peers and never claim full-market rankings from the local catalogue."""
+    """Compute once over explicit YYYY-MM-DD dates: exact common observations, same currency, no filling. Overview retains returns/drawdowns and optional target correlation/downside co-movement or benchmark excess return. Then pass ONLY the complete returned source_id (including comparison:) plus section=result/dates/input_series/evidence and pagination arguments: continuation reads the same retained calculation, never recalculates or changes its window. This continuation reads THIS RUN's calculations; historical sources use read_research_dossier's bound source/version selector. Follow next_offset AND every deferred.path with that same source_id/section. Read exclusions, return conventions and common dates; choose appropriate peers and never claim full-market rankings from the local catalogue."""
     if source_id:
         if instrument_ids or start_date or end_date or target_id or benchmark_id:
             raise ValueError("续读只传source_id和分区分页参数，不重新指定计算范围。")
-        metric = _computed_source(source_id)
     else:
         if section != "overview" or offset or path:
             raise ValueError("请先计算并取得source_id，再分页读取同一次计算。")
@@ -341,25 +251,9 @@ def compare_instruments(instrument_ids: list[str] | None = None, start_date: str
             raise ValueError("首次比较需要标的及完整起止日期。")
         evidence = request("tools", {"tool": "comparison", "instrument_ids": instrument_ids,
             "start_date": start_date, "end_date": end_date, "target_id": target_id, "benchmark_id": benchmark_id})
-        metric = _computed_source(evidence["source_id"])
-    if "input_series" not in metric:
-        raise ValueError("该来源不是已留存的标的共同样本比较。")
-    metadata = {key: metric.get(key) for key in ("source_id", "as_of")}
-    sections = {"result": metric["data"], "dates": metric["data"].get("dates", []),
-                "input_series": metric["input_series"], "evidence": metric}
-    if section != "overview":
-        return read_page(sections[section], {**metadata, "section": section}, offset=offset, limit=limit, path=path)
-    if offset or path:
-        raise ValueError("overview不使用offset/path，请读取目录内的section。")
-    read = {"tool": "compare_instruments", "source_id": metric["source_id"]}
-    return checked_overview({**metadata, "source_type": metric["source_type"], "methodology": metric["methodology"],
-        "request": metric.get("request"), "retrieved_at": metric.get("retrieved_at"),
-        "result": {key: value for key, value in metric["data"].items() if key != "dates"},
-        "sample_dates": {**shape(sections["dates"]), "read": {**read, "section": "dates"}},
-        "sections": {key: shape(value) for key, value in sections.items()},
-        "next_read": {**read, "section": "result"},
-        "read_note": "概览保留完整样本计算的数值；dates是精确共同日期，input_series是当时输入。按需选分区并跟随next_offset和全部deferred.path；始终使用同一source_id，不缩短计算窗口或重新计算。"},
-        pageable_fields=[(["result"], {**read, "section": "result"})])
+        source_id = evidence["source_id"]
+    return request("computed-read", {"source_id": source_id, "tool": "comparison", "section": section,
+        "offset": offset, "limit": limit, "path": path})
 
 
 @compact_read_tool
@@ -389,7 +283,7 @@ def read_research_numbers(action: Literal["catalogue", "series", "compare", "pri
                           start: str | None = None, end: str | None = None,
                           benchmark_id: str | None = None, event_date: str | None = None,
                           event_timing: Literal["date_only", "before_open", "after_close"] = "date_only",
-                          source_id: str | None = None, section: Literal["overview", "data", "sources", "evidence"] = "overview",
+                          source_id: ExactSourceId | None = None, section: Literal["overview", "data", "sources", "evidence"] = "overview",
                           offset: int = 0, limit: int = 100, path: list[str | int] | None = None) -> dict:
     """Read source-versioned macro/market series or calculated instrument risk from either entrance.
     Start with catalogue, then select an actual dataset and series IDs. series/compare require
@@ -398,6 +292,8 @@ def read_research_numbers(action: Literal["catalogue", "series", "compare", "pri
     Overview keeps actual values, changes and risk measures. To read full points/history/raw
     versions, pass ONLY the returned source_id plus section=data/sources/evidence and pagination
     arguments; follow next_offset AND every deferred.path with the same source_id/section.
+    Copy the complete source_id including its prefix. Continuation reads THIS RUN's calculations;
+    historical sources use read_research_dossier's bound source/version selector instead.
     Continuations never recalculate, shorten the window or write another source. A volatility
     observation is not a sell signal. Cite the computed source_id. This is not a backtest.
     observations returns a few asset-appropriate fixed measures, with actual holdings/sample and
@@ -408,39 +304,14 @@ def read_research_numbers(action: Literal["catalogue", "series", "compare", "pri
     if source_id:
         if instrument_id or dataset or series_ids or field or start or end or benchmark_id or event_date or event_timing != "date_only":
             raise ValueError("续读只传source_id和分区分页参数，不重新指定计算范围。")
-        evidence = _computed_source(source_id)
+        return request("computed-read", {"source_id": source_id, "tool": "numbers", "section": section,
+            "offset": offset, "limit": limit, "path": path})
     else:
         if section != "overview" or offset or path:
             raise ValueError("请先计算并取得source_id，再分页读取同一次计算。")
-        evidence = request("numeric", {"action": action, "instrument_id": instrument_id, "dataset": dataset,
+        return request("numeric", {"action": action, "instrument_id": instrument_id, "dataset": dataset,
             "series_ids": series_ids or [], "field": field, "start": start, "end": end,
             "benchmark_id": benchmark_id, "event_date": event_date, "event_timing": event_timing})
-    if "input_series" in evidence:
-        raise ValueError("该来源是标的比较，请用compare_instruments及同一source_id续读。")
-    metadata = {key: evidence.get(key) for key in ("source_id", "as_of")}
-    sections = {"data": evidence.get("data", {}), "sources": evidence.get("sources", []), "evidence": evidence}
-    if section != "overview":
-        return read_page(sections[section], {**metadata, "section": section}, offset=offset, limit=limit, path=path)
-    if offset or path:
-        raise ValueError("overview不使用offset/path，请读取目录内的section。")
-    read = {"tool": "read_research_numbers", "source_id": evidence["source_id"]}
-    result = {key: value for key, value in evidence.items() if key not in {"sources", "source_ids"}}
-    data = dict(result.get("data") or {})
-    if "series" in data:
-        data["series"] = [{**{key: value for key, value in row.items() if key != "points"},
-            **({"points": {**shape(row["points"]), "read": {**read, "section": "data", "path": ["series", index, "points"]}}}
-               if "points" in row else {})} for index, row in enumerate(data["series"])]
-    for key in ("input_points", "history"):
-        if key in data:
-            data[key] = {**shape(data[key]), "read": {**read, "section": "data", "path": [key]}}
-    result["data"] = data
-    result.update(sections={key: shape(value) for key, value in sections.items()},
-        next_read={**read, "section": "data"},
-        read_note="概览的points/history为完整原数据入口，数值计算使用全部请求样本。续读沿next_offset及全部deferred.path保持同一source_id；原始版本在sources/evidence，不以缩短日期区间代替续读。")
-    return checked_overview(result, pageable_fields=[
-        ([key], {**read, "section": "evidence", "path": [key]})
-        for key in ("input_snapshot", "benchmark_snapshot", "methodology") if key in result
-    ] + [(["data"], {**read, "section": "data"})])
 
 
 @compact_read_tool
@@ -515,19 +386,15 @@ def run_quant_analysis(instrument_id: str, title: str, source_ids: list[str], co
 
 
 @compact_read_tool
-def read_quant_analysis(source_id: str, section: Literal["data", "methodology", "inputs"] = "data",
+def read_quant_analysis(source_id: ExactSourceId, section: Literal["data", "methodology", "inputs"] = "data",
                         offset: int = 0, limit: int = 30, path: list[str | int] | None = None) -> dict:
     """Read an exact retained Python result without rerunning it. data includes all table rows and
     declarative charts; methodology includes code, params, input snapshots and runtime; inputs reads
     those original snapshots. Follow next_offset AND deferred.path using the same source_id/section.
     Previous-run artifacts may be read through read_research_dossier's exact source/version selector.
     """
-    source = _computed_source(source_id)
-    if (source.get("data") or {}).get("analysis_kind") != "python_quant":
-        raise ValueError("该来源不是已留存的 Python 量化产物，请使用它原来的数值读取工具。")
-    value = source["methodology"]["input_sources"] if section == "inputs" else source[section]
-    return read_page(value, {"source_id": source_id, "section": section, "as_of": source["as_of"]},
-                     offset=offset, limit=limit, path=path)
+    return request("computed-read", {"source_id": source_id, "tool": "quant", "section": section,
+        "offset": offset, "limit": limit, "path": path})
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))

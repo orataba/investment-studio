@@ -83,7 +83,7 @@ def test_selected_run_reads_and_authorization_skip_large_unrelated_json(postgres
     from watchlist_app.services.research_access import enforce_request
     context = {"research_run": True, "run_id": "projected-runtime", "cutoff": "2026-09-24T00:00:00Z",
         "instrument_ids": ["xlk"], "question": r"完整问题含字面\u0000",
-        "research_actor": {"user_id": "pm-one", "kind": "user"},
+        "research_actor": {"user_id": "pm-one", "kind": "user"}, "execution": {"attempt": 1},
         "research_dossiers": [{"instrument_id": "xlk", "notebook": None}],
         "computed_metrics": [{"source_id": "metric", "source_type": "computed_metric", "data": {"value": 3}}],
         "unrelated_original": "DO_NOT_HYDRATE_FULL_RUN" * 100000 + "\x00"}
@@ -100,14 +100,15 @@ def test_selected_run_reads_and_authorization_skip_large_unrelated_json(postgres
         return json.loads(value)
     engine = create_engine(get_engine().url, json_deserializer=deserialize,
         connect_args={"options": "-c search_path=watchlist,instrument_data,public -c default_transaction_read_only=on"})
-    principal = Principal("pm-one", "PM", "default", resource_scope={"kind": "run", "id": "projected-runtime"})
+    principal = Principal("pm-one", "PM", "default", resource_scope={"kind": "run", "id": "projected-runtime", "attempt": "1"})
     try:
         with principal_context(principal), Session(engine) as session:
             enforce_request(SimpleNamespace(method="POST", url=SimpleNamespace(
                 path="/api/research/runs/projected-runtime/numeric")), session)
             page = read_run_page("projected-runtime", ResearchReadInput(resource="context", section="question"), session)
             assert page["data"] == context["question"]
-            assert run_computed_source("projected-runtime", "metric", session) == context["computed_metrics"][0]
+            assert run_computed_source("projected-runtime", "metric", session) == {**context["computed_metrics"][0],
+                "retained_reference": {"run_id": "projected-runtime", "path": ["computed_metrics", "*"]}}
             assert run_dossier("projected-runtime", "xlk", session=session)["instrument_id"] == "xlk"
     finally:
         engine.dispose()
@@ -134,3 +135,54 @@ def test_private_history_projects_latest_active_run_without_loading_source_bodie
         assert selected['active_run']['watchlist_id'] == 'test-scope'
         assert 'private_source' not in str(rows)
         assert not any(isinstance(obj, ResearchEntry) for obj in session.identity_map.values())
+
+
+def test_topic_detail_polls_only_display_fields_and_exact_receipt_index(postgres_watchlist_env):
+    from studio_identity import Principal, principal_context
+    from watchlist_app.api.routes.workbench import topic_detail, run_evidence
+
+    original = {"text": "Exact original\x00with literal \\u0000", "points": [1, 2, 3]}
+    receipt = {"source_id": "source:old", "tool": "source", "request": {"note": "receipt\x00note"},
+               "retrieved_at": "2026-10-01", "result": original}
+    context = {"cutoff": "2026-10-01", "instrument_ids": [], "execution": {"attempt": 1},
+        "page_context": {"tab": r"literal\u0000"}, "tool_evidence": [receipt],
+        "unrelated_archive": "DO_NOT_FETCH_WHOLE_CONTEXT" * 100000 + "\x00"}
+    material = {"file_name": "attachment.txt", "extraction": "exact\x00metadata"}
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="polling-topic", title="Polling", visibility="private", created_by_user_id="poll-owner"))
+        session.flush()
+        session.add_all([
+            ResearchEntry(entry_id="polling-run", topic_id="polling-topic", kind="analysis", title="Question",
+                status="draft", body="Complete answer " * 1000, context_json=context),
+            ResearchEntry(entry_id="polling-file", topic_id="polling-topic", kind="evidence", title="Attachment", context_json=material),
+        ])
+        session.commit()
+
+    polling = True
+    def deserialize(value):
+        if isinstance(value, bytes):
+            value = value.decode()
+        if polling:
+            assert "DO_NOT_FETCH_WHOLE_CONTEXT" not in value
+        return json.loads(value)
+
+    engine = create_engine(get_engine().url, json_deserializer=deserialize,
+        connect_args={"options": "-c search_path=watchlist,instrument_data,public -c default_transaction_read_only=on"})
+    try:
+        with principal_context(Principal("poll-owner", "Owner", "default")), Session(engine) as session:
+            for _ in range(2):
+                page = topic_detail("polling-topic", session)
+                entries = {item["entry_id"]: item for item in page["entries"]}
+                run = entries["polling-run"]
+                assert run["body"] == "Complete answer " * 1000
+                assert run["context_json"]["page_context"] == context["page_context"]
+                assert run["context_json"]["tool_evidence"] == [{key: receipt.get(key) for key in ("source_id", "tool", "request", "retrieved_at")}]
+                assert entries["polling-file"]["context_json"] == material
+                assert "unrelated_archive" not in run["context_json"]
+                assert not any(isinstance(obj, ResearchEntry) for obj in session.identity_map.values())
+            # Explicit original reads retain the existing exceptional NUL
+            # recovery path; that path must never run during status polling.
+            polling = False
+            assert run_evidence("polling-run", "source:old", session) == receipt
+    finally:
+        engine.dispose()

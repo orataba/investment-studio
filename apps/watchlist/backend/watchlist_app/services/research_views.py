@@ -122,9 +122,9 @@ def note_sources(session, instrument_id, context):
         if run and (current_principal().local_unrestricted or run.team_id == current_principal().team_id):
             require_team_publication_scope(session, run)
             retained = [{**source, "pm_binding_note": "旧观点未单独冻结来源；此项来自原运行保留的明确引用。"}
-                        for sid, source in research_sources(run.context_json, run.entry_id).items() if sid in refs]
+                        for sid, source in research_sources(run.context_json, run.entry_id, session=session).items() if sid in refs]
     return [source for row in retained or [] if row.get("source_id") in refs
-            and (source := hydrate_source(row, cutoff=cutoff)) and _original_source(source, instrument_id, cutoff)
+            and (source := hydrate_source(row, cutoff=cutoff, bound_source=True)) and _original_source(source, instrument_id, cutoff)
             and (source.get("instrument_id") in {None, instrument_id}
                  or (source.get("source_type") == "computed_metric" and source.get("scope") == "public_market"))]
 
@@ -147,9 +147,9 @@ def _linked_sources(session, instrument_id, linked, actor):
         require_team_publication_scope(session, run)
         if run.team_id != actor["team_id"] and not current_principal().local_unrestricted:
             raise ValueError("引用的资料不属于当前团队")
-        return [s for sid, s in research_sources(run.context_json, run.entry_id).items() if sid in refs]
+        return [s for sid, s in research_sources(run.context_json, run.entry_id, session=session).items() if sid in refs]
     from watchlist_app.services.market_evidence import hydrate_source
-    return [hydrate_source(s) for s in linked.get("sources", [])]
+    return [hydrate_source(s, bound_source=True) for s in linked.get("sources", [])]
 
 
 def prepare_note_values(session, instrument_id, payload, *, actor=None, record=None, provenance=None):

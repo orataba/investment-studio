@@ -33,7 +33,7 @@ def registered_instruments(settings):
     ):
         raise ValueError(f'{option} requires nonempty FMP symbols and equity/etf/public_fund/index types')
     store=NumericStore(settings)
-    sql="""SELECT DISTINCT i.instrument_type, substring(k.identifier_value from 5) AS symbol
+    sql="""SELECT DISTINCT i.instrument_type, i.exchange_code, substring(k.identifier_value from 5) AS symbol
       FROM instrument_data.instrument i JOIN instrument_data.instrument_identifier k USING(instrument_id)
       WHERE k.identifier_type='provider_symbol' AND k.identifier_value LIKE 'fmp:%'
       AND i.instrument_type IN ('equity','etf','public_fund','index')
@@ -45,10 +45,15 @@ def registered_instruments(settings):
     targets = {}
     for row in registered + [{'symbol': symbol, 'instrument_type': kind} for symbol, kind in additional.items()]:
         symbol, kind = row['symbol'].strip().upper(), row['instrument_type']
-        if symbol in targets and targets[symbol] != kind:
+        if symbol in targets and targets[symbol]['instrument_type'] != kind:
             raise ValueError(f'Conflicting public collection instrument types for {symbol}')
-        targets[symbol] = kind
-    return [{'symbol': symbol, 'instrument_type': kind} for symbol, kind in sorted(targets.items())]
+        target = targets.setdefault(symbol, {'symbol':symbol, 'instrument_type':kind})
+        if 'exchange_code' in row and (row['exchange_code'] is not None or kind in {'equity','etf'}):
+            exchange = str(row['exchange_code'] or '').strip().upper()
+            if 'exchange_code' in target and target['exchange_code'] != exchange:
+                raise ValueError(f'Conflicting public collection listing exchanges for {symbol}')
+            target['exchange_code'] = exchange
+    return [target for _, target in sorted(targets.items())]
 
 
 def next_eod_date(settings,end):
@@ -90,20 +95,21 @@ def _run(settings,action: str,*,now: datetime|None=None,market: str='all')->dict
         return item
     if action in {'daily','weekly'}:
         if action=='daily':
-            prices=Collector(settings)
+            prices=Collector(settings,now=now)
             try:
                 stage('corporate_actions',lambda:prices.actions(end-timedelta(days=7),end,None))
-                begin=next_eod_date(settings,closed_us_date(now))
-                if begin<=closed_us_date(now):
-                    stage('us_eod_incremental',lambda:prices.eod(begin,closed_us_date(now),None))
+                closed=closed_us_date(now)
+                begin=next_eod_date(settings,closed)
+                if begin<=closed:
+                    stage('us_eod_incremental',lambda:prices.eod(begin,closed,None))
                 else:
                     results.append({'stage':'us_eod_incremental','status':'current','last_complete_session':(begin-timedelta(days=1)).isoformat()})
-                stage('corporate_action_price_revisions',lambda:prices.reconcile_price_revisions(closed_us_date(now)))
+                stage('corporate_action_price_revisions',lambda:prices.reconcile_price_revisions(closed))
             finally:
                 prices.store.close()
                 if prices._client:prices._client.close()
             for group in ['analyst','financials','macro','market_series','etf','events']:
-                stage(group,lambda group=group:collect(settings,groups=[group],start=end-timedelta(days=7),end=end))
+                stage(group,lambda group=group:collect(settings,groups=[group],start=end-timedelta(days=7),end=end,now=now))
             registry=stage('registered_identities',lambda:registered_instruments(settings))
             if registry['status']=='ready':
                 instruments=registry['result']
@@ -112,13 +118,14 @@ def _run(settings,action: str,*,now: datetime|None=None,market: str='all')->dict
                 # Raw captures consult durable revision receipts, including an
                 # earlier failed full rebuild or an action becoming effective.
                 symbols=[r['symbol'] for r in instruments]
-                if symbols:stage('registered_raw_price_revisions',lambda:collect(settings,groups=['raw_price_revisions'],symbols=symbols,start=end-timedelta(days=7),end=end))
+                exchanges={r['symbol']:r['exchange_code'] for r in instruments if 'exchange_code' in r}
+                if symbols:stage('registered_raw_price_revisions',lambda:collect(settings,groups=['raw_price_revisions'],symbols=symbols,start=end-timedelta(days=7),end=end,now=now,exchanges=exchanges))
         else:
             for group in ['reference','profiles','indexes']:
-                stage(group,lambda group=group:collect(settings,groups=[group],start=end-timedelta(days=7),end=end))
-            stage('etf_disclosures',lambda:collect(settings,groups=['etf_history'],start=end-timedelta(days=400),end=end))
-            stage('official_etf_disclosures',lambda:collect(settings,groups=['official_etf'],start=end-timedelta(days=400),end=end))
-            stage('cn_futures_daily_facts',lambda:collect(settings,groups=['cn_futures'],start=end-timedelta(days=7),end=end))
+                stage(group,lambda group=group:collect(settings,groups=[group],start=end-timedelta(days=7),end=end,now=now))
+            stage('etf_disclosures',lambda:collect(settings,groups=['etf_history'],start=end-timedelta(days=400),end=end,now=now))
+            stage('official_etf_disclosures',lambda:collect(settings,groups=['official_etf'],start=end-timedelta(days=400),end=end,now=now))
+            stage('cn_futures_daily_facts',lambda:collect(settings,groups=['cn_futures'],start=end-timedelta(days=7),end=end,now=now))
         # Ready batches from successful sources remain useful when another source fails.
         stage('publish_numeric_delta',lambda:publish_pending(settings))
     elif action=='crypto':
@@ -126,14 +133,16 @@ def _run(settings,action: str,*,now: datetime|None=None,market: str='all')->dict
         # post-midnight capture supplies the newly completed BTC calendar day.
         utc_end=now.astimezone(timezone.utc).date()-timedelta(days=1)
         stage('market_series',lambda:collect(settings,groups=['market_series'],symbols=['BTCUSD'],
-                                            start=utc_end-timedelta(days=7),end=utc_end))
+                                            start=utc_end-timedelta(days=7),end=utc_end,now=now))
         stage('publish_numeric_delta',lambda:publish_pending(settings))
     elif action=='publish':stage('publish_numeric_delta',lambda:publish_pending(settings))
     elif action=='registered-prices':
         registry=stage('registered_identities',lambda:registered_instruments(settings))
         if registry['status']=='ready':
-            symbols=[row['symbol'] for row in registry['result'] if market=='all' or symbol_market(row['symbol'])==market]
-            if symbols:stage('registered_raw_prices',lambda:collect(settings,groups=['raw_eod'],symbols=symbols,start=end-timedelta(days=7),end=end))
+            targets=[row for row in registry['result'] if market=='all' or symbol_market(row['symbol'],exchange_code=row.get('exchange_code'))==market]
+            symbols=[row['symbol'] for row in targets]
+            exchanges={row['symbol']:row['exchange_code'] for row in targets if 'exchange_code' in row}
+            if symbols:stage('registered_raw_prices',lambda:collect(settings,groups=['raw_eod'],symbols=symbols,start=end-timedelta(days=7),end=end,now=now,exchanges=exchanges))
         stage('publish_numeric_delta',lambda:publish_pending(settings))
     elif action=='sync':
         def catchup(prefix,pull):

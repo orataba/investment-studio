@@ -13,6 +13,8 @@ from watchlist_app.services.return_windows import (
     normalized_return_points,
     resolve_return_window,
     return_window_metadata,
+    confirmed_return_points,
+    return_sample_limitation,
 )
 
 
@@ -160,7 +162,7 @@ def build_metric_semantics_overrides(
     overrides: dict[str, dict[str, object]] = {}
     for chart in charts or []:
         payload = chart.payload_json
-        selected_series = payload.get("selected_series") if isinstance(payload, dict) else None
+        selected_series = _chart_return_metadata(payload)
         if not isinstance(selected_series, dict):
             continue
         overrides[chart.instrument_id] = {
@@ -189,57 +191,32 @@ def _extract_sparkline_points(
 ) -> list[dict[str, object]]:
     if not isinstance(payload, dict):
         return []
-    series = payload.get("series")
-    if not isinstance(series, list):
-        return []
-    for candidate in series:
-        if not isinstance(candidate, dict):
-            continue
-        points = candidate.get("points")
-        if not isinstance(points, list):
-            continue
-        normalized: list[dict[str, object]] = []
-        for point in points:
-            if not isinstance(point, dict):
-                continue
-            value = point.get("value")
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                continue
-            normalized.append(
-                {
-                    "as_of_date": date.fromisoformat(str(point.get("date"))[:10]),
-                    "value": float(value),
-                }
-            )
-        if normalized:
-            return normalized
-    return []
+    series = payload.get("return_series") or {}
+    return confirmed_return_points({**series, "points": series.get("wealth_points") or []})
+
+
+def _chart_return_metadata(payload: object) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        return None
+    # Compact list projections retain analytical metadata in selected_series;
+    # the interactive chart's selected_series can instead describe a raw quote.
+    return payload.get("selected_series") if "sparklines" in payload else (payload.get("return_series") or {}).get("metadata")
 
 
 def _chart_return_kind(payload: object) -> str | None:
     if not isinstance(payload, dict):
         return None
-    metadata = payload.get("selected_series")
+    metadata = _chart_return_metadata(payload)
     if not isinstance(metadata, dict):
         return None
-    if "return_kind" in metadata:
-        explicit = str(metadata.get("return_kind") or "").strip()
-        return explicit or None
-    quote_basis = str(metadata.get("quote_basis") or "").strip()
-    if quote_basis in {"total_return_nav", "adjusted_close"}:
-        return "total_return"
-    if quote_basis in {"close", "last"}:
-        return "price_return"
-    if quote_basis == "official_nav":
-        return "unit_nav_return"
-    return None
+    explicit = str(metadata.get("return_kind") or "").strip()
+    return explicit if explicit in {"total_return", "price_return"} else None
 
 
 def _chart_return_label(return_kind: str) -> str:
     return {
         "total_return": "Cumulative Total Return",
         "price_return": "Cumulative Price Return",
-        "unit_nav_return": "Cumulative Unit NAV Return",
     }[return_kind]
 
 
@@ -268,12 +245,13 @@ def build_sparkline_payload(
         points = _extract_sparkline_points(chart.payload_json)
         return_kind = _chart_return_kind(chart.payload_json)
         if not points or return_kind is None:
+            payload[chart.instrument_id] = {field: {"points": [], "status": "unavailable", "return_kind": return_kind,
+                "label": "Cumulative Return", "reason": "没有已确认的收益序列，不能使用原始报价替代",
+                "anchor_date": None, "end_date": None, "requested_start_date": None, "requested_end_date": None}
+                for field in requested_fields}
             continue
-        metadata = (
-            chart.payload_json.get("selected_series")
-            if isinstance(chart.payload_json, dict)
-            else None
-        )
+        metadata = _chart_return_metadata(chart.payload_json)
+        return_series = chart.payload_json.get("return_series") or {}
         raw_status = (
             str(metadata.get("return_series_status") or "ready").strip().lower()
             if isinstance(metadata, dict)
@@ -301,17 +279,20 @@ def build_sparkline_payload(
                     "return_kind": return_kind,
                     "label": _chart_return_label(return_kind),
                     "status": "unavailable",
+                    "reason": "区间覆盖不足或跨越未确认的收益断点",
                     "requested_start_date": spec.requested_start_date.isoformat(),
                     "requested_end_date": spec.requested_end_date.isoformat(),
                     "anchor_date": None,
                     "end_date": None,
                 }
                 continue
+            reason = return_sample_limitation(return_series, list(window.points))
             field_payloads[field_key] = {
-                "points": normalized_return_points(window),
+                "points": [] if reason else normalized_return_points(window),
                 "return_kind": return_kind,
                 "label": _chart_return_label(return_kind),
-                "status": series_status,
+                "status": "unavailable" if reason else series_status,
+                "reason": reason,
                 **return_window_metadata(window),
             }
         payload[chart.instrument_id] = field_payloads
@@ -322,7 +303,7 @@ def build_screener_chart_projection(instrument_id: str, chart_payload: dict[str,
     """Derive the fixed list windows once using the interactive window contract."""
     chart = SimpleNamespace(instrument_id=instrument_id, payload_json=chart_payload)
     return {
-        "selected_series": chart_payload.get("selected_series"),
+        "selected_series": _chart_return_metadata(chart_payload),
         "latest_values": chart_payload.get("latest_values"),
         "date_range": chart_payload.get("date_range"),
         "sparklines": build_sparkline_payload(

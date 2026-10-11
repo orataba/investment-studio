@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
+import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 
 import {
   formatNumber,
@@ -10,6 +11,7 @@ import {
 import type {
   PortfolioInstrumentChartRangeKey,
   PortfolioInstrumentPriceChartResponse,
+  PortfolioPriceMode,
 } from '../lib/api'
 import { performanceSeriesLabel } from '../lib/instrumentMetricLabels'
 
@@ -32,6 +34,8 @@ type InstrumentPriceChartProps = {
   error: string | null
   rangeKey: PortfolioInstrumentChartRangeKey
   onRangeChange: (rangeKey: PortfolioInstrumentChartRangeKey) => void
+  priceMode?: PortfolioPriceMode
+  onPriceModeChange?: (mode: PortfolioPriceMode) => void
   variant?: 'default' | 'instrument'
   referenceLines?: Array<{
     label: string
@@ -40,7 +44,10 @@ type InstrumentPriceChartProps = {
   }>
 }
 
-function chartSeriesLabel(chart: PortfolioInstrumentPriceChartResponse | null) {
+function chartSeriesLabel(chart: PortfolioInstrumentPriceChartResponse | null, chinese: boolean) {
+  if (chart?.price_mode === 'front') return chinese ? '前复权 · 分红再投资' : 'Forward adjusted · Dividends reinvested'
+  if (chart?.price_mode === 'back') return chinese ? '后复权 · 分红再投资' : 'Backward adjusted · Dividends reinvested'
+  if (chart?.price_mode === 'raw' && ['equity', 'etf'].includes(chart.instrument_core.instrument_type)) return chinese ? '未复权价格' : 'Unadjusted price'
   return chart?.series_role === 'price_level'
     ? 'Price level'
     : performanceSeriesLabel(chart?.chart_basis ?? chart?.metric_family)
@@ -52,10 +59,13 @@ export default function InstrumentPriceChart({
   error,
   rangeKey,
   onRangeChange,
+  priceMode = 'raw',
+  onPriceModeChange,
   variant = 'default',
   referenceLines = [],
 }: InstrumentPriceChartProps) {
-  const { t } = useLanguage()
+  const { t, language } = useLanguage()
+  const chinese = language === 'zh-Hans'
   const gradientId = useId()
   const chartRef = useRef<HTMLElement>(null)
   const [containerWidth, setContainerWidth] = useState(900)
@@ -108,9 +118,18 @@ export default function InstrumentPriceChart({
       }
     })
     const linePath = projectedPoints
-      .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
+      .map((point, index) => `${index === 0 || !sameReturnSegment([projectedPoints[index - 1], point]) ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
       .join(' ')
-    const areaPath = `${linePath} L ${projectedPoints[projectedPoints.length - 1].x.toFixed(1)} ${(height - paddingBottom).toFixed(1)} L ${projectedPoints[0].x.toFixed(1)} ${(height - paddingBottom).toFixed(1)} Z`
+    const segments: (typeof projectedPoints)[] = []
+    for (const point of projectedPoints) {
+      const segment = segments[segments.length - 1]
+      if (!segment || !sameReturnSegment([segment[segment.length - 1], point])) segments.push([point])
+      else segment.push(point)
+    }
+    const areaPath = segments.map(segment => {
+      const path = segment.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' ')
+      return `${path} L ${segment[segment.length - 1].x.toFixed(1)} ${(height - paddingBottom).toFixed(1)} L ${segment[0].x.toFixed(1)} ${(height - paddingBottom).toFixed(1)} Z`
+    }).join(' ')
     const gridValues = [0, 0.5, 1].map((fraction) => ({
       label: formatNumber(maxValue - span * fraction, 4),
       y: paddingTop + innerHeight * fraction,
@@ -141,16 +160,18 @@ export default function InstrumentPriceChart({
     chartGeometry && activePoint
       ? chartGeometry.projectedPoints[activeIndex]
       : null
+  const activePeriodConnected = sameReturnSegment(points.slice(0, activeIndex + 1))
   const activeChangeValue =
-    firstPoint && activePoint
+    firstPoint && activePoint && activePeriodConnected
       ? activePoint.value - firstPoint.value
       : null
   const activeChangePct =
-    firstPoint && activePoint && Math.abs(firstPoint.value) > 1e-9
+    firstPoint && activePoint && activePeriodConnected && Math.abs(firstPoint.value) > 1e-9
       ? (activePoint.value - firstPoint.value) / firstPoint.value
       : null
   const periodDrawdown = useMemo(() => {
-    if (points.length < 2 || points.some((point) => point.value <= 0)) return null
+    if (points.length < 2 || !sameReturnSegment(points) || points.some((point) => point.value <= 0)) return null
+    if (chart?.observation_coverage?.gap_dates.some(day => day > points[0].date && day <= chart.as_of_date)) return null
     let peak = points[0].value
     let drawdown = 0
     for (const point of points) {
@@ -158,7 +179,7 @@ export default function InstrumentPriceChart({
       drawdown = Math.min(drawdown, point.value / peak - 1)
     }
     return drawdown
-  }, [points])
+  }, [chart?.as_of_date, chart?.observation_coverage, points])
 
   return (
     <section
@@ -171,7 +192,7 @@ export default function InstrumentPriceChart({
           <div className="instrument-series-label portfolio-instrument-series-label">
             <strong>{chart.instrument_core.identifiers.find((item) => item.is_primary)?.identifier_value ?? chart.instrument_core.instrument_id}</strong>
             <span>
-              {chartSeriesLabel(chart)}
+              {chartSeriesLabel(chart, chinese)}
             </span>
           </div>
         ) : null}
@@ -192,6 +213,17 @@ export default function InstrumentPriceChart({
               : '—'}
           </span>
         </div>
+        {onPriceModeChange && <div className="price-chart-range-strip" role="group" aria-label={chinese ? "价格复权方式" : "Price adjustment"}>
+          {([
+            ['raw', chinese ? '未复权' : 'Unadjusted'], ['front', chinese ? '前复权' : 'Forward adjusted'], ['back', chinese ? '后复权' : 'Backward adjusted'],
+          ] as const).map(([mode, label]) => <button
+            key={mode} type="button"
+            className={`price-chart-range-button ${priceMode === mode ? 'price-chart-range-button-active' : ''}`}
+            aria-pressed={priceMode === mode}
+            disabled={loading || (mode !== 'raw' && !chart?.available_price_modes?.includes(mode))}
+            onClick={() => onPriceModeChange(mode)}
+          >{label}</button>)}
+        </div>}
         <div className="price-chart-range-strip" role="group" aria-label={t('Chart range')}>
           {RANGE_OPTIONS.map((option) => {
             const isActive = option.key === rangeKey
@@ -210,6 +242,11 @@ export default function InstrumentPriceChart({
         </div>
       </div>
 
+      {onPriceModeChange && chart && ['equity', 'etf'].includes(chart.instrument_core.instrument_type)
+        && (!chart.available_price_modes?.includes('front') || !chart.available_price_modes?.includes('back'))
+        && <p className="price-chart-footer">{chinese
+          ? '部分复权方式不可用：分红或公司行动覆盖尚未确认。'
+          : 'Some adjusted views are unavailable because dividend or corporate-action coverage is unconfirmed.'}</p>}
       {error ? <div className="price-chart-empty price-chart-empty-error">{error}</div> : null}
       {!error && !chartGeometry ? (
         <div className="price-chart-empty">
@@ -224,7 +261,7 @@ export default function InstrumentPriceChart({
             className="price-chart-svg"
             viewBox={`0 0 ${width} ${height}`}
             role="img"
-            aria-label={`${chart?.instrument_core.instrument_name ?? t('Instrument')} · ${t(chartSeriesLabel(chart))}`}
+            aria-label={`${chart?.instrument_core.instrument_name ?? t('Instrument')} · ${t(chartSeriesLabel(chart, chinese))}`}
             onMouseLeave={() => setHoverIndex(null)}
             onMouseMove={(event) => {
               const bounds = event.currentTarget.getBoundingClientRect()

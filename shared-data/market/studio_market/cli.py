@@ -5,7 +5,7 @@ import sys
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in ("-h", "--help"):
-        print("studio-market <numeric|text|pipeline> <action> [arguments]")
+        print("studio-market <numeric|text|pipeline|futu> <action> [arguments]")
         return 0
     group = args.pop(0)
     if group == "numeric":
@@ -14,8 +14,10 @@ def main(argv=None):
         from .text.cli import main as command
     elif group == "pipeline":
         from .pipeline import main as command
+    elif group == "futu":
+        from .futu.cli import main as command
     else:
-        raise SystemExit("Expected numeric, text or pipeline")
+        raise SystemExit("Expected numeric, text, pipeline or futu")
     return command(args)
 
 

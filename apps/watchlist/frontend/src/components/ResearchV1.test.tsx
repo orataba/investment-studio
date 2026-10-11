@@ -51,7 +51,7 @@ it('translates fixed research controls and preserves original content, draft and
     expect(screen.getByText('Risk', { selector: 'figcaption' })).toBeTruthy()
   }
   expect(api.source).toHaveBeenCalledTimes(1)
-  expect(api.source).toHaveBeenCalledWith('stock', 'original', expect.any(AbortSignal), 'frozen-v1')
+  expect(api.source).toHaveBeenCalledWith('stock', 'original', expect.any(AbortSignal), 'frozen-v1', 'figure')
   expect(api.note).not.toHaveBeenCalled()
   window.history.replaceState(null, '', '/')
 })

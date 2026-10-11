@@ -3,9 +3,6 @@ import { describe, expect, it } from 'vitest'
 import type { InstrumentPriceBar } from './api'
 import {
   adjustPriceBars,
-  hasCompleteAdjustmentFactors,
-  priceReturnStats,
-  priceRiskStats,
   slicePriceBars,
 } from './priceBars'
 
@@ -37,7 +34,8 @@ describe('price bars', () => {
   it('forward-adjusts historical OHLC while leaving the latest bar at raw price', () => {
     const adjusted = adjustPriceBars(
       [bar('2026-01-02', '10', '1'), bar('2026-01-03', '6', '2')],
-      'qfq',
+      'front',
+      { front: { date: '2026-01-03', factor: 2, start_date: '2026-01-02', end_date: '2026-01-03' } },
     )
 
     expect(adjusted[0].close).toBe(5)
@@ -58,29 +56,20 @@ describe('price bars', () => {
     expect(slicePriceBars(raw, 'ALL')).toHaveLength(80)
   })
 
-  it('computes returns and drawdown from adjusted closes', () => {
-    const bars = adjustPriceBars(
-      [bar('2025-12-31', '100', '1'), bar('2026-01-02', '120', '1'), bar('2026-01-03', '90', '1')],
-      'raw',
-    )
-
-    expect(priceReturnStats(bars).dailyChange).toBeCloseTo(-25)
-    expect(priceRiskStats(bars).maximumDrawdown).toBeCloseTo(-25)
-    expect(priceRiskStats(bars).observationCount).toBe(3)
+  it('backward adjustment uses the full-history anchor, even for a sliced response', () => {
+    const adjusted = adjustPriceBars([bar('2026-06-01', '6', '2'), bar('2026-06-02', '7', '2')], 'back', {
+      back: { date: '2020-01-01', factor: 1, start_date: '2020-01-01', end_date: '2026-06-02' },
+    })
+    expect(adjusted.map(point => point.close)).toEqual([12, 14])
+    expect(adjusted[1].previousClose).toBe(12)
   })
 
-  it('withholds YTD when no prior-year close is available', () => {
-    const currentYearOnly = adjustPriceBars(
-      [bar('2026-01-02', '100', '1'), bar('2026-07-24', '110', '1')],
-      'raw',
-    )
-    const withYearEndAnchor = adjustPriceBars(
-      [bar('2025-12-31', '100', '1'), bar('2026-07-24', '110', '1')],
-      'raw',
-    )
-
-    expect(priceReturnStats(currentYearOnly).ytd).toBeNull()
-    expect(priceReturnStats(withYearEndAnchor).ytd).toBeCloseTo(10)
+  it('does not mix factors across independently rebased segments', () => {
+    const adjusted = adjustPriceBars([bar('2026-01-02', '100', '1'), bar('2026-01-03', '50', '1')], 'front', {
+      front: { date: '2026-01-03', factor: 1, start_date: '2026-01-03', end_date: '2026-01-03' },
+    })
+    expect(adjusted.map(point => point.date)).toEqual(['2026-01-03'])
+    expect(adjusted[0].previousClose).toBeNull()
   })
 
   it('withholds QFQ when any bar lacks a valid adjustment factor', () => {
@@ -89,7 +78,7 @@ describe('price bars', () => {
       bar('2026-01-03', '11', null),
     ]
 
-    expect(hasCompleteAdjustmentFactors(incomplete)).toBe(false)
-    expect(adjustPriceBars(incomplete, 'qfq')).toEqual([])
+    expect(adjustPriceBars(incomplete, 'front', { front: { date: '2026-01-03', factor: 1, start_date: '2026-01-02', end_date: '2026-01-03' } })).toEqual([])
+    expect(adjustPriceBars([bar('2026-01-02', '10', '1')], 'front')).toEqual([])
   })
 })

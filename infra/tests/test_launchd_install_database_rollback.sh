@@ -33,6 +33,7 @@ prepare_case() {
     "$case_root/tmp"
   chmod 700 "$env_root" "$case_root/backups" "$case_root/tmp"
   printf '%s\n' test.investment-studio.home-api test.investment-studio.portfolio-web > "$case_root/loaded"
+  : > "$case_root/disabled"
   printf '%s\n' pre-install-record > "$case_root/database"
   : > "$env_root/home.env"
   chmod 600 "$env_root/home.env"
@@ -49,9 +50,27 @@ prepare_case() {
     "$project_root/infra/postgres/project_schema_backup.sh"
   cp "$REPOSITORY_ROOT/infra/scripts/install_market_pipeline.py" \
     "$project_root/infra/scripts/install_market_pipeline.py"
+  cat > "$project_root/infra/scripts/sync_cloud_to_local.py" <<'PY'
+import argparse
+import os
+from pathlib import Path
+import plistlib
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--config")
+parser.add_argument("--write-schedule", action="store_true", required=True)
+parser.add_argument("--output-dir", type=Path)
+parser.add_argument("--label-prefix")
+args = parser.parse_args()
+label = args.label_prefix + ".cloud-sync"
+with (args.output_dir / (label + ".plist")).open("wb") as handle:
+    plistlib.dump({"Label": label, "RunAtLoad": True, "StartInterval": 86400}, handle)
+if os.environ.get("SCHEDULE_WRITE_FAIL") == "true":
+    raise SystemExit(9)
+PY
 
   for service in \
-    home-api watchlist-api portfolio-api briefing-api \
+    home-api watchlist-api research-worker portfolio-api briefing-api \
     home-web watchlist-web portfolio-web briefing-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh market-sync; do
     printf 'old-%s\n' "$service" > "$plist_root/test.investment-studio.$service.plist"
     chmod 600 "$plist_root/test.investment-studio.$service.plist"
@@ -172,7 +191,17 @@ prepare_case() {
     'set -euo pipefail' \
     'printf "launchctl:%s\n" "$*" >> "$EVENT_LOG"' \
     'case "$1" in' \
-    '  print) grep -Fxq "${2##*/}" "$LAUNCHCTL_LOADED_FILE"; exit $? ;;' \
+    '  print-disabled)' \
+    '    [[ "${PRINT_DISABLED_FAIL:-false}" != true ]] || exit 7' \
+    '    if [[ "${PRINT_DISABLED_INVALID:-false}" == true ]]; then echo "unrecognized state"; exit 0; fi' \
+    '    printf "%s\n" "disabled services = {"' \
+    '    disabled=disabled; enabled=enabled' \
+    '    if [[ "${LAUNCHCTL_DISABLED_STYLE:-words}" == boolean ]]; then disabled=true; enabled=false; fi' \
+    '    printf "    \"unrelated.enabled.service\" => %s\n" "$enabled"' \
+    '    while IFS= read -r unit; do [[ -z "$unit" ]] || printf "    \"%s\" => %s\n" "$unit" "$disabled"; done < "$LAUNCHCTL_DISABLED_FILE"' \
+    '    printf "%s\n" "}"' \
+    '    ;;' \
+    '  print) grep -Fxq "${2##*/}" "$LAUNCHCTL_LOADED_FILE" || exit 1; echo "state = running"; exit 0 ;;' \
     '  bootout)' \
     '    unit="${2##*/}"' \
     '    for phase in "$TMPDIR"/investment-studio-launchd-install.*/phase; do' \
@@ -183,6 +212,7 @@ prepare_case() {
     '    ;;' \
     '  bootstrap)' \
     '    unit="${3##*/}"; unit="${unit%.plist}"' \
+    '    if grep -Fxq "$unit" "$LAUNCHCTL_DISABLED_FILE"; then exit 8; fi' \
     '    [[ "$unit" != "${BOOTSTRAP_FAIL_UNIT:-}" ]] || exit 1' \
     '    printf "%s\n" "$unit" >> "$LAUNCHCTL_LOADED_FILE"' \
     '    for phase in "$TMPDIR"/investment-studio-launchd-install.*/phase; do' \
@@ -231,14 +261,28 @@ run_installer() {
   TMPDIR="$case_root/tmp" \
   DATABASE_STATE_FILE="$case_root/database" \
   LAUNCHCTL_LOADED_FILE="$case_root/loaded" \
+  LAUNCHCTL_DISABLED_FILE="$case_root/disabled" \
     "$INSTALLER"
+}
+
+assert_schedule_stayed_disabled() {
+  local case_root="$1" service="$2"
+  grep -Fxq "test.investment-studio.$service" "$case_root/disabled"
+  if grep -Eq "launchctl:(bootstrap|enable|kickstart) .*test[.]investment-studio[.]$service([.]plist)?$" "$case_root/events"; then
+    echo "Installer started or enabled an explicitly disabled schedule: $service" >&2
+    exit 1
+  fi
+  if grep -Fxq "test.investment-studio.$service" "$case_root/loaded"; then
+    echo "Explicitly disabled schedule remains loaded: $service" >&2
+    exit 1
+  fi
 }
 
 assert_old_plists_restored() {
   local case_root="$1"
   local service
   for service in \
-    home-api watchlist-api portfolio-api briefing-api \
+    home-api watchlist-api research-worker portfolio-api briefing-api \
     home-web watchlist-web portfolio-web briefing-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh market-sync; do
     [[ "$(cat "$case_root/LaunchAgents/test.investment-studio.$service.plist")" == "old-$service" ]]
   done
@@ -471,6 +515,86 @@ HEALTH_FAIL=false run_installer "$SUCCESS_CASE" > "$SUCCESS_CASE/output" 2>&1
 grep -q '^startup-write:' "$SUCCESS_CASE/database"
 grep -q 'Investment Studio is running at' "$SUCCESS_CASE/output"
 test -z "$(find "$SUCCESS_CASE/tmp" -name 'investment-studio-launchd-install.*' -type d -print -quit)"
+
+FIRST_INSTALL_CASE="$TEST_ROOT/first-install"
+prepare_case "$FIRST_INSTALL_CASE"
+rm "$FIRST_INSTALL_CASE"/LaunchAgents/*.plist
+: > "$FIRST_INSTALL_CASE/loaded"
+export EVENT_LOG="$FIRST_INSTALL_CASE/events"
+HEALTH_FAIL=false run_installer "$FIRST_INSTALL_CASE" > "$FIRST_INSTALL_CASE/output" 2>&1
+for service in home-api watchlist-api research-worker portfolio-api briefing-api home-web watchlist-web portfolio-web briefing-web \
+  market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh market-sync; do
+  grep -Fxq "test.investment-studio.$service" "$FIRST_INSTALL_CASE/loaded"
+done
+
+DISABLED_CLOUD_CASE="$TEST_ROOT/disabled-cloud-sync"
+prepare_case "$DISABLED_CLOUD_CASE"
+printf '%s\n' '{}' > "$DISABLED_CLOUD_CASE/env/cloud-sync.json"
+printf '%s\n' old-cloud-sync > "$DISABLED_CLOUD_CASE/LaunchAgents/test.investment-studio.cloud-sync.plist"
+printf '%s\n' test.investment-studio.cloud-sync test.investment-studio.hk-market-data-refresh > "$DISABLED_CLOUD_CASE/disabled"
+export EVENT_LOG="$DISABLED_CLOUD_CASE/events"
+HEALTH_FAIL=false run_installer "$DISABLED_CLOUD_CASE" > "$DISABLED_CLOUD_CASE/output" 2>&1
+assert_schedule_stayed_disabled "$DISABLED_CLOUD_CASE" cloud-sync
+assert_schedule_stayed_disabled "$DISABLED_CLOUD_CASE" hk-market-data-refresh
+for service in home-api watchlist-api research-worker portfolio-api briefing-api home-web watchlist-web portfolio-web briefing-web; do
+  grep -Fxq "test.investment-studio.$service" "$DISABLED_CLOUD_CASE/loaded"
+  grep -Eq "launchctl:kickstart -k .*test[.]investment-studio[.]$service$" "$EVENT_LOG"
+done
+# The generated schedule remains capable of RunAtLoad, proving the installer
+# skips bootstrap itself rather than relying on a harmless schedule definition.
+"$REAL_PYTHON" - "$DISABLED_CLOUD_CASE/LaunchAgents/test.investment-studio.cloud-sync.plist" <<'PY'
+import plistlib
+import sys
+with open(sys.argv[1], "rb") as handle:
+    assert plistlib.load(handle)["RunAtLoad"] is True
+PY
+grep -Fxq test.investment-studio.cn-market-data-refresh "$DISABLED_CLOUD_CASE/loaded"
+if grep -q 'startup-write:test.investment-studio.cloud-sync' "$DISABLED_CLOUD_CASE/database"; then
+  echo "Disabled cloud synchronization ran during installation." >&2
+  exit 1
+fi
+
+DISABLED_ROLLBACK_CASE="$TEST_ROOT/disabled-schedule-rollback"
+prepare_case "$DISABLED_ROLLBACK_CASE"
+printf '%s\n' '{}' > "$DISABLED_ROLLBACK_CASE/env/cloud-sync.json"
+printf '%s\n' old-cloud-sync > "$DISABLED_ROLLBACK_CASE/LaunchAgents/test.investment-studio.cloud-sync.plist"
+printf '%s\n' test.investment-studio.cloud-sync test.investment-studio.market-data-refresh > "$DISABLED_ROLLBACK_CASE/disabled"
+# launchctl disable does not imply that an already-loaded job was booted out.
+# Even this old loaded entry must not be enabled again by rollback restoration.
+printf '%s\n' test.investment-studio.market-data-refresh test.investment-studio.cn-market-data-refresh >> "$DISABLED_ROLLBACK_CASE/loaded"
+export EVENT_LOG="$DISABLED_ROLLBACK_CASE/events"
+if SCHEDULE_WRITE_FAIL=true FAIL_ROLLBACK=false LAUNCHCTL_DISABLED_STYLE=boolean run_installer "$DISABLED_ROLLBACK_CASE" \
+  > "$DISABLED_ROLLBACK_CASE/output" 2>&1; then
+  echo "Installer accepted an injected schedule publication failure." >&2
+  exit 1
+fi
+assert_schedule_stayed_disabled "$DISABLED_ROLLBACK_CASE" cloud-sync
+assert_schedule_stayed_disabled "$DISABLED_ROLLBACK_CASE" market-data-refresh
+grep -Fxq test.investment-studio.cn-market-data-refresh "$DISABLED_ROLLBACK_CASE/loaded"
+grep -Fxq test.investment-studio.home-api "$DISABLED_ROLLBACK_CASE/loaded"
+grep -Fxq test.investment-studio.portfolio-web "$DISABLED_ROLLBACK_CASE/loaded"
+grep -q '^restore$' "$EVENT_LOG"
+assert_old_plists_restored "$DISABLED_ROLLBACK_CASE"
+[[ "$(cat "$DISABLED_ROLLBACK_CASE/LaunchAgents/test.investment-studio.cloud-sync.plist")" == old-cloud-sync ]]
+
+for failure in command malformed; do
+  DISABLED_STATE_CASE="$TEST_ROOT/disabled-state-$failure"
+  prepare_case "$DISABLED_STATE_CASE"
+  export EVENT_LOG="$DISABLED_STATE_CASE/events"
+  state_command_fail=false; state_invalid=false
+  if [[ "$failure" == command ]]; then state_command_fail=true; else state_invalid=true; fi
+  if PRINT_DISABLED_FAIL="$state_command_fail" PRINT_DISABLED_INVALID="$state_invalid" \
+    run_installer "$DISABLED_STATE_CASE" > "$DISABLED_STATE_CASE/output" 2>&1; then
+    echo "Installer proceeded without a verified disabled-service state." >&2
+    exit 1
+  fi
+  if grep -Eq 'launchctl:(bootout|bootstrap|enable|kickstart)|^backup$|^migrate$' "$EVENT_LOG"; then
+    echo "Installer mutated state before reading disabled schedules safely." >&2
+    exit 1
+  fi
+  assert_old_plists_restored "$DISABLED_STATE_CASE"
+  [[ "$(cat "$DISABLED_STATE_CASE/database")" == pre-install-record ]]
+done
 
 ROLLBACK_CASE="$TEST_ROOT/rollback-failure"
 prepare_case "$ROLLBACK_CASE"

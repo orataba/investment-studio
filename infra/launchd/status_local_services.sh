@@ -9,7 +9,7 @@ LOG_DIR="${LOG_DIR:-$HOME/Library/Logs/investment-studio}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
 domain="gui/$UID"
 
-for service in home-api watchlist-api portfolio-api briefing-api home-web watchlist-web portfolio-web briefing-web; do
+for service in home-api watchlist-api portfolio-api briefing-api home-web watchlist-web portfolio-web briefing-web research-worker; do
   label="$LABEL_PREFIX.$service"
   if details="$(launchctl print "$domain/$label" 2>/dev/null)"; then
     state="$(sed -n 's/^[[:space:]]*state = //p' <<<"$details" | head -n 1)"

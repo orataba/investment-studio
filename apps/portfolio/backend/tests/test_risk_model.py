@@ -49,6 +49,9 @@ def _holding(
         "market_value_base": weight * 1_000_000,
         "risk_eligible": True,
         "instrument_return_series_all": {
+            "return_measure": "simple", "return_kind": "total_return",
+            "quote_basis": "total_return_nav", "currency": currency,
+            "observation_coverage": {"gap_dates": [], "gap_detection_basis": "market_calendar:WEEKDAYS"},
             "points": points if points is not None else _return_points(),
         },
     }
@@ -368,7 +371,7 @@ def test_forward_risk_is_unavailable_for_non_base_monetary_exposure_without_fx_r
     assert result["forward_risk"].get("portfolio_variance") is None
     assert result["forward_risk"].get("portfolio_volatility") is None
     assert result["forward_risk"]["errors"] == [
-        "Forward RC requires an FX total-return series for non-base monetary exposure USD cash (USD versus CNY)."
+        "Forward RC requires an observed FX-return series for non-base monetary exposure USD cash (USD versus CNY)."
     ]
     assert result["rows"][1]["forward_risk_status"] == "cash_unallocated"
 
@@ -439,7 +442,7 @@ def test_forward_risk_fails_closed_for_non_base_currency_without_fx_total_return
 
     assert result["forward_risk"]["status"] == "unavailable"
     assert result["forward_risk"]["errors"] == [
-        "Forward RC requires base-currency total returns; foreign is USD while the portfolio base currency is CNY."
+        "Forward RC requires confirmed base-currency returns; foreign is USD while the portfolio base currency is CNY."
     ]
     assert result["rows"][0]["forward_risk_status"] == "unavailable"
 

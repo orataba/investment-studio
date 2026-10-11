@@ -17,7 +17,7 @@ def sources_context():
              "url": "https://example.com/release", "title": "原文", "published_at": "2026-09-01",
              "retrieved_at": "2026-09-02T00:00:00Z", "body_available": True}
     second = {**first, "source_id": "original-v2", "version_id": "v2", "retrieved_at": "2026-09-03T00:00:00Z"}
-    return {"research_run": True, "research_actor": {"kind": "user", "user_id": "pm-one"},
+    return {"research_run": True, "research_actor": {"kind": "user", "user_id": "pm-one"}, "execution": {"attempt": 1},
         "web_evidence": [{"operation": "search", "sources": [{"source_id": "lead", "text": "检索片段"}]},
             {"operation": "fetch", "sources": [first, {"source_id": "legacy", "url": "https://example.com/legacy",
                 "text": "完整历史原文" * 50000}, {"source_id": "failed-fetch", "text": ""}]}],
@@ -46,7 +46,7 @@ def test_context_sources_endpoint_uses_same_private_run_access_and_small_project
     # Identity resolution itself does not read research rows in production; the
     # shared fixture normally infers an actor from the whole test record.
     monkeypatch.setattr(main, "resolve_request", lambda *args, **kwargs:
-        Principal("pm-one", "PM", "default", resource_scope={"kind": "run", "id": "source-run"}))
+        Principal("pm-one", "PM", "default"))
     def reject_full_entry_load(*_):
         pytest.fail("Source directory must not hydrate the complete research context, including in access middleware")
     event.listen(ResearchEntry, "load", reject_full_entry_load)
@@ -108,7 +108,7 @@ def test_selected_reads_do_not_load_unrelated_retained_context(client, monkeypat
         session.commit()
     import watchlist_app.main as main
     monkeypatch.setattr(main, "resolve_request", lambda *args, **kwargs:
-        Principal("pm-one", "PM", "default", resource_scope={"kind": "run", "id": "paged-run"}))
+        Principal("pm-one", "PM", "default", resource_scope={"kind": "run", "id": "paged-run", "attempt": "1"}))
     def reject_full_entry_load(*_):
         pytest.fail("A selected source/page must not hydrate the complete research run")
     event.listen(ResearchEntry, "load", reject_full_entry_load)
@@ -120,7 +120,8 @@ def test_selected_reads_do_not_load_unrelated_retained_context(client, monkeypat
         event.remove(ResearchEntry, "load", reject_full_entry_load)
     assert page.status_code == source.status_code == dossier.status_code == 200
     assert page.json()["data"] == context["question"]
-    assert source.json() == context["computed_metrics"][0]
+    assert source.json() == {**context["computed_metrics"][0], "retained_reference": {
+        "run_id": "paged-run", "path": ["computed_metrics", "*"]}}
     assert dossier.json()["instrument_id"] == "xlk"
     with get_session_factory()() as session:
         assert session.get(ResearchEntry, "paged-run").context_json == context

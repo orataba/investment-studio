@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from copy import deepcopy
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -55,19 +55,21 @@ def isolated_equity_store(
     _upgrade(database_url, root=BACKEND_ROOT)
     _upgrade(database_url, root=REGISTRY_MIGRATIONS_ROOT)
 
-    from studio_data.services.fmp import eod_capture
-    monkeypatch.setattr(eod_capture, "closed_symbol_date", lambda symbol, now: date(2026, 8, 15))
+    from studio_data.services.fmp import eod
+    # Freeze the entry clock, retaining the real MIC/session lookup in both
+    # capture and projection. Friday is closed in every fixture market.
+    clock = datetime(2026, 8, 16, tzinfo=UTC)
+    monkeypatch.setattr(eod, "datetime", SimpleNamespace(now=lambda _tz: clock))
 
     from studio_market.config import MarketSettings
     from studio_market.numeric import NumericStore
-    from datetime import UTC, datetime
     market_url = f"sqlite+pysqlite:///{tmp_path / 'shared-market.db'}"
     market_root = tmp_path / "market"
     monkeypatch.setenv("INVESTMENT_STUDIO_MARKET_DATABASE_URL", market_url)
     monkeypatch.setenv("INVESTMENT_STUDIO_MARKET_DATA_ROOT", str(market_root))
     market = NumericStore(MarketSettings(market_url, market_root))
     market.create_schema_for_testing()
-    market.ingest("raw_eod_daily", [[{"symbol": row["symbol"], "date": "2026-08-15", "open": 200, "high": 204, "low": 199, "close": 203, "adjusted_close": 202.5, "volume": 123456} for row in _CATALOG_ROWS.values()]], source="fixture", observed_at=datetime(2026, 8, 16, tzinfo=UTC))
+    market.ingest("raw_eod_daily", [[{"symbol": row["symbol"], "date": "2026-08-14", "open": 200, "high": 204, "low": 199, "close": 203, "adjusted_close": 202.5, "volume": 123456} for row in _CATALOG_ROWS.values()]], source="fixture", observed_at=clock)
     market.close()
 
     yield
@@ -277,7 +279,7 @@ def test_first_materialization_loads_history_then_refreshes_incrementally(
     assert len(list_instruments(instrument_type="equity", limit=None)) == 1
     assert client.eod_calls == []
     coverage = get_price_bar_coverage(instrument_id=str(first["instrument_id"]))
-    assert coverage["latest_date"] == "2026-08-15"
+    assert coverage["latest_date"] == "2026-08-14"
     assert coverage["adjustment_factor_count"] == 1
 
 

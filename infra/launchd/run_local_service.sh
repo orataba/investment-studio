@@ -16,7 +16,7 @@ EXTERNAL_ENV_ROOT="$5"
 DATABASE_URL=""
 
 case "$SERVICE" in
-  home-api|watchlist-api|portfolio-api|briefing-api)
+  home-api|watchlist-api|portfolio-api|briefing-api|research-worker)
     DATABASE_URL="${INVESTMENT_STUDIO_LOCAL_DATABASE_URL:-}"
     if [[ -z "$DATABASE_URL" ]]; then
       echo "INVESTMENT_STUDIO_LOCAL_DATABASE_URL is required for API services." >&2
@@ -37,7 +37,7 @@ esac
 # syntax contained in a value.
 source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 case "$SERVICE" in
-  home-api|watchlist-api|portfolio-api|briefing-api)
+  home-api|watchlist-api|portfolio-api|briefing-api|research-worker)
     investment_studio_require_password_free_database_url "$DATABASE_URL"
     DATABASE_URL="$(investment_studio_sqlalchemy_database_url "$DATABASE_URL")"
     investment_studio_reject_repository_env_files "$PROJECT_ROOT"
@@ -49,7 +49,7 @@ case "$SERVICE" in
     ENV_FILE="$(investment_studio_runtime_env_file home "$EXTERNAL_ENV_ROOT")"
     investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_AUTH_ INVESTMENT_STUDIO_HOME_
     ;;
-  watchlist-api)
+  watchlist-api|research-worker)
     investment_studio_load_env_file "$EXTERNAL_ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
     ENV_FILE="$(investment_studio_runtime_env_file watchlist "$EXTERNAL_ENV_ROOT")"
     if [[ -f "$ENV_FILE" ]]; then
@@ -84,7 +84,7 @@ case "$SERVICE" in
     cd "$PROJECT_ROOT/home/backend"
     exec "$PYTHON_BIN" -m uvicorn home_api.main:app --host 127.0.0.1 --port 8002
     ;;
-  watchlist-api)
+  watchlist-api|research-worker)
     export PYTHONPATH="$PROJECT_ROOT/apps/watchlist/backend:$PYTHONPATH"
     export INVESTMENT_STUDIO_WATCHLIST_ENVIRONMENT=local
     export INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL="$DATABASE_URL"
@@ -92,7 +92,11 @@ case "$SERVICE" in
     export INVESTMENT_STUDIO_WATCHLIST_FRONTEND_URL=http://127.0.0.1:5173
     export INVESTMENT_STUDIO_WATCHLIST_CORS_ORIGINS='["http://127.0.0.1:5173","http://localhost:5173"]'
     export INVESTMENT_STUDIO_WATCHLIST_DOCUMENT_STORAGE_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/investment-studio/watchlist-documents"
+    export INVESTMENT_STUDIO_SECRET_ROOT="$EXTERNAL_ENV_ROOT"
     cd "$PROJECT_ROOT/apps/watchlist/backend"
+    if [[ "$SERVICE" == research-worker ]]; then
+      exec "$PYTHON_BIN" -m watchlist_app.research_worker
+    fi
     exec "$PYTHON_BIN" -m uvicorn watchlist_app.main:app --host 127.0.0.1 --port 8000
     ;;
   portfolio-api)

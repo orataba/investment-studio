@@ -93,6 +93,23 @@ def test_public_targets_default_to_registry_and_reject_type_conflicts(tmp_path, 
         pipeline.registered_instruments(MarketSettings('sqlite://', tmp_path))
 
 
+def test_registered_exchange_survives_additional_target_and_conflicts_fail(tmp_path, monkeypatch):
+    registry = [dict(symbol='BARE', instrument_type='etf', exchange_code='XHKG')]
+    statements = []
+    def execute(query):
+        statements.append(str(query))
+        return SimpleNamespace(mappings=lambda: registry)
+    store = SimpleNamespace(engine=SimpleNamespace(connect=lambda: nullcontext(SimpleNamespace(execute=execute))),
+                            close=lambda: None)
+    monkeypatch.setattr(pipeline, 'NumericStore', lambda settings: store)
+    monkeypatch.setenv('INVESTMENT_STUDIO_MARKET_ADDITIONAL_INSTRUMENTS', '{"BARE":"etf"}')
+    assert pipeline.registered_instruments(MarketSettings('sqlite://', tmp_path)) == registry
+    assert 'i.exchange_code' in statements[0]
+    registry.append(dict(symbol='BARE', instrument_type='etf', exchange_code='XNYS'))
+    with pytest.raises(ValueError, match='Conflicting public collection listing exchanges'):
+        pipeline.registered_instruments(MarketSettings('sqlite://', tmp_path))
+
+
 def test_public_macro_response_is_archived_and_published_without_json_payload(tmp_path):
     store=make_store(tmp_path,'macro')
     collector=Collector(store.settings,store=store)
@@ -410,7 +427,7 @@ def test_market_specific_closing_dates_and_safe_http_error():
     assert closed_symbol_date('0700.HK',now)==date(2026,9,7)
     assert closed_symbol_date('SPY',now)==date(2026,9,4)
     before=datetime.fromisoformat('2026-09-07T15:20:00+08:00')
-    assert closed_symbol_date('600519.SS',before)==date(2026,9,4)
+    assert closed_symbol_date('600519.SS',before)==date(2026,9,7)
     class HTTPStatusError(Exception):
         response=type('Response',(),{'status_code':403})()
     result=failure_summary(HTTPStatusError('https://provider.example?apikey=SECRET&token=SECRET'))
@@ -444,7 +461,7 @@ def test_daily_price_revisions_continue_when_incremental_prices_fail(tmp_path,mo
     collector=SimpleNamespace(actions=lambda *args:None,eod=broken,
         reconcile_price_revisions=lambda end: steps.append('revisions') or {'status':'ready'},
         store=SimpleNamespace(close=lambda:None),_client=None)
-    monkeypatch.setattr(pipeline,'Collector',lambda settings:collector)
+    monkeypatch.setattr(pipeline,'Collector',lambda settings,**kwargs:collector)
     monkeypatch.setattr(pipeline,'next_eod_date',lambda settings,end:date(2026,9,1))
     monkeypatch.setattr(pipeline,'registered_instruments',lambda settings:[{'symbol':'SPY','instrument_type':'etf'}])
     monkeypatch.setattr(registered,'refresh_registered',lambda *args,**kwargs:{'status':'ready'})

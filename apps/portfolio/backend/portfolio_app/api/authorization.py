@@ -40,6 +40,9 @@ def _capture_scope(request: Request, principal, portfolio_id: str) -> None:
         allowed = True
     if not allowed:
         raise HTTPException(403, "截图助手只能读取本任务材料并提交待人工复核的草稿")
+    if (scope.get("attempt") != str(batch["analysis_run_attempt"])
+            or batch["analysis_run_status"] != "running"):
+        raise HTTPException(409, "截图分析执行已结束或已被重试替代，请使用当前任务凭证")
 
 
 async def authorize(request: Request, principal) -> None:

@@ -605,7 +605,7 @@ describe('Overview rendered page contract', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('discloses a benchmark with unconfirmed distribution treatment while displaying its metrics', async () => {
+  it.each(['unknown', undefined])('withholds benchmark metrics when return semantics are unconfirmed (%s)', async (returnSemantics) => {
     const user = userEvent.setup()
     apiMocks.getPortfolioInstruments.mockResolvedValue({
       portfolio_id: '3',
@@ -633,6 +633,7 @@ describe('Overview rendered page contract', () => {
       as_of_date: '2026-07-15',
       range_key: 'all',
       chart_basis: 'close',
+      return_semantics: returnSemantics,
       metric_family: 'price',
       currency: 'USD',
       points: Array.from({ length: 11 }, (_, index) => ({
@@ -659,14 +660,16 @@ describe('Overview rendered page contract', () => {
     await user.click(await screen.findByRole('button', { name: /Market Benchmark/ }))
 
     const benchmarkHint = await screen.findByRole('button', {
-      name: /Benchmark comparison: Exploratory comparator/,
+      name: /Benchmark comparison: Comparator unavailable/,
     })
     expect(benchmarkHint).toHaveAttribute(
       'aria-label',
-      expect.stringContaining('Distribution treatment is unconfirmed'),
+      expect.stringContaining('distribution and corporate-action treatment is unconfirmed'),
     )
     const metricPanel = screen.getByRole('complementary', { name: 'Portfolio overview key metrics' })
-    expect(within(metricPanel).getAllByText(/Exploratory BM/).length).toBeGreaterThan(0)
+    expect(within(metricPanel).getAllByText('BM unavailable').length).toBeGreaterThan(0)
+    expect(metricPanel).not.toHaveTextContent(/Exploratory BM|Price BM/)
+    expect(metricPanel).toHaveTextContent('+3.02%')
     expect(metricPanel).not.toHaveTextContent(/excess/i)
   })
 

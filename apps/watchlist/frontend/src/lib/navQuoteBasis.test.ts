@@ -59,3 +59,14 @@ describe('NAV quote basis presentation', () => {
   })
 
 })
+
+it('preserves return-chain boundaries without applying them to observed unit NAV', () => {
+  const rows = [
+    { as_of_date: '2026-08-31', nav: 10, nav_with_dividend: 102, segment_id: 'old' },
+    { as_of_date: '2026-09-01', nav: 11, nav_with_dividend: 1, segment_id: 'new' },
+  ]
+  expect(buildNavQuoteBasisSeries(rows, 'nav_with_dividend').map(p => p.segment_id)).toEqual(['old', 'new'])
+  expect(buildNavQuoteBasisSeries(rows, 'nav')).toEqual([
+    { date: '2026-08-31', value: 10 }, { date: '2026-09-01', value: 11 },
+  ])
+})

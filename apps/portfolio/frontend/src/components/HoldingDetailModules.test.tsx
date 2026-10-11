@@ -122,6 +122,36 @@ describe('Holding detail investment semantics', () => {
     expect(screen.getByRole('button', { name: '1Y' })).toHaveAttribute('aria-pressed', 'true')
   })
 
+  it('keeps separate return segments disconnected in the line, fill and metrics', () => {
+    const segmented = { ...chart, points: chart.points.map((point, index) => ({ ...point, segment_id: index < 2 ? 'first' : 'second' })) }
+    render(<InstrumentPriceChart chart={segmented} loading={false} error={null} rangeKey="1y" onRangeChange={vi.fn()} variant="instrument" />)
+    expect(screen.getByText('Observed max drawdown').parentElement).toHaveTextContent('—')
+    expect(document.querySelector('.price-chart-readout')).not.toHaveTextContent('0.00%')
+    expect(document.querySelector('.price-chart-line')!.getAttribute('d')!.match(/M /g)).toHaveLength(2)
+    expect(document.querySelector('.price-chart-area')!.getAttribute('d')!.match(/Z/g)).toHaveLength(2)
+  })
+
+  it('offers confirmed price modes and explains unavailable adjustments', async () => {
+    const change = vi.fn()
+    const security = { ...chart, instrument_core: instrumentFixture({ instrument_type: 'equity' }), price_mode: 'raw' as const,
+      available_price_modes: ['raw', 'back'] as const, series_role: 'price_level' as const }
+    render(<InstrumentPriceChart chart={{ ...security, available_price_modes: [...security.available_price_modes] }} loading={false} error={null} rangeKey="1y" onRangeChange={vi.fn()} priceMode="raw" onPriceModeChange={change} variant="instrument" />)
+    expect(screen.getByRole('button', { name: 'Forward adjusted' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Unadjusted' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText(/Some adjusted views are unavailable/)).toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Backward adjusted' }))
+    expect(change).toHaveBeenCalledWith('back')
+    expect(screen.queryByText('Observed max drawdown')).not.toBeInTheDocument()
+  })
+
+  it('withholds path risk when a final expected observation is missing', () => {
+    const missingTail = { ...chart, as_of_date: '2026-07-16', observation_coverage: {
+      start_date: '2026-07-01', end_date: '2026-07-16', gap_dates: ['2026-07-16'], gap_detection_basis: 'market_calendar:XNYS',
+    } }
+    render(<InstrumentPriceChart chart={missingTail} loading={false} error={null} rangeKey="1y" onRangeChange={vi.fn()} variant="instrument" />)
+    expect(screen.getByText('Observed max drawdown').parentElement).toHaveTextContent('—')
+  })
+
   it('dates booked income by entitlement and distinguishes pending source notices from cash receipts', async () => {
     api.getPortfolioInstrumentEventTasks.mockResolvedValue({ tasks: [{ instrument_event_task_id: 'task-1', instrument_id: 'asset-1', effective_date: '2026-07-05', event_type: 'cash_dividend', expected_gross_amount: 900, account_id: 'account-1', status: 'pending', attention_required: true }] })
     const income = { transaction_id: 'div-1', transaction_type: 'dividend', instrument_id: 'asset-1', entitlement_date: '2026-07-01', economic_date: '2026-07-01', trade_date: '2026-07-10', settlement_date: '2026-07-20', account: { account_name: 'Broker' }, currency: 'USD', net_cash_effect: 100 } as PortfolioTransactionRecord

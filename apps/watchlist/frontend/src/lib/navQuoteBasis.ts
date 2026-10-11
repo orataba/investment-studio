@@ -1,6 +1,7 @@
 export type NavQuoteBasis = 'nav' | 'nav_with_dividend'
 
 export type NavQuoteRow = {
+  segment_id?: string | null
   as_of_date: string
   nav: number | null
   nav_with_dividend: number | null
@@ -8,6 +9,7 @@ export type NavQuoteRow = {
 }
 
 export type NavQuotePoint = {
+  segment_id?: string | null
   date: string
   value: number
 }
@@ -53,7 +55,13 @@ export function buildNavQuoteBasisSeries(
     .sort((left, right) => left.as_of_date.localeCompare(right.as_of_date))
     .flatMap((row) => {
       const value = navQuoteValueForBasis(row, basis)
-      return value == null ? [] : [{ date: row.as_of_date, value }]
+      return value == null ? [] : [{
+        date: row.as_of_date,
+        value,
+        // A return-chain reset belongs to the derived return NAV, not the
+        // independently observed unit NAV used for price display.
+        ...(basis === 'nav_with_dividend' && row.segment_id ? { segment_id: row.segment_id } : {}),
+      }]
     })
 }
 

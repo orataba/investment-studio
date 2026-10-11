@@ -73,7 +73,7 @@ def test_mandates_use_actual_registration_and_asset_specific_methods(dossier_cli
             ("public", "public_fund", "CNY", None, {"fund_info": {"benchmark": "中证1000指数收益率×95%", "management": "登记管理人"}}),
         ]:
             session.add(Instrument(instrument_id=iid, instrument_name=iid, instrument_type=kind,
-                currency=currency, exchange_code=exchange, quote_selection_policy_json={}))
+                currency=currency, exchange_code=exchange, quote_selection_policy_json={"total_return": ["adjusted_close"]} if kind in {"equity", "etf"} else {}))
             session.flush()
             session.add(InstrumentReferenceSnapshot(instrument_id=iid,
                 value_json={"provider": "fixture", "fetched_at": "2026-09-01T10:00:00Z", "sections": sections}))
@@ -100,21 +100,23 @@ def test_mandates_use_actual_registration_and_asset_specific_methods(dossier_cli
     assert "commodity-supply-demand" not in {item["id"] for item in dossier_client.get(url("518880-sh")).json()["research_plan"]["modules"]}
 
 
-def test_save_updates_one_owned_mandate_without_turning_it_into_material(dossier_client):
+def test_save_updates_one_owned_guidance_without_replacing_analyst_notes_or_material(dossier_client):
     material = dossier_client.post(url() + "/materials", json={"title": "原始材料", "body": "真实材料正文"}).json()
     initial = dossier_client.get(url()).json()["mandate"]
-    payload = _mandate_payload(initial)
-    payload.update(background="已登记资料：XLK。待验证假设：新投入是否改善现金回报。", focus=["检验实际资本回报"], gaps=["尚缺最新季度原文"])
+    assert initial["guidance"] == "" and initial["revision"] == 0
+    payload = {"guidance": "检验资本开支能否改善现金回报；只使用实际成份。", "expected_revision": 0}
     first = dossier_client.put(url() + "/mandate", json=payload)
     assert first.status_code == 200
-    payload["focus"] = ["结合新原文重新核对投入回收"]
+    payload.update(guidance="结合新原文重新核对投入回收", expected_revision=first.json()["revision"])
     second = dossier_client.put(url() + "/mandate", json=payload)
     assert second.status_code == 200
     assert first.json()["entry_id"] == second.json()["entry_id"] == "dossier-mandate:xlk"
-    assert second.json()["updated_at"] >= first.json()["updated_at"]
     current = dossier_client.get(url()).json()
-    assert current["mandate"]["user_focus"] == payload["focus"]
+    assert current["mandate"]["guidance"] == payload["guidance"]
     assert current["mandate"]["focus"] == initial["focus"]
+    assert current["mandate"]["background"] == initial["background"]
+    assert current["mandate"]["guidance_author"]["user_id"] == "pm-one"
+    assert current["mandate"]["guidance_updated_at"]
     assert [item["entry_id"] for item in current["materials"]] == [material["entry_id"]]
     assert "source_id" not in current["mandate"]
     assert dossier_client.get(url("xlf")).json()["mandate"]["entry_id"] is None
@@ -124,6 +126,8 @@ def test_save_updates_one_owned_mandate_without_turning_it_into_material(dossier
         note = next(entry for entry in entries if entry.entry_id == "dossier-mandate:xlk")
         assert note.kind == "note" and note.context_json["role"] == "research_mandate"
     assert dossier_client.put(url() + "/mandate", json={**payload, "instrument_id": "xlf"}).status_code == 422
+    assert dossier_client.put(url() + "/mandate", json={"guidance": "缺版本"}).status_code == 422
+    assert dossier_client.put(url() + "/mandate", json={"guidance": "错误版本类型", "expected_revision": True}).status_code == 422
 
 
 def test_initialization_and_review_updates_share_callers_transaction(dossier_client):
@@ -152,8 +156,7 @@ def test_mandate_rejects_cross_instrument_or_portfolio_topic_ownership(dossier_c
             context_json={"role": "research_mandate", "instrument_id": "xlf", "mandate": {}}))
         session.commit()
     assert dossier_client.get(url()).status_code == 422
-    payload = _mandate_payload(dossier_client.get(url("xlf")).json()["mandate"])
-    assert dossier_client.put(url() + "/mandate", json=payload).status_code == 422
+    assert dossier_client.put(url() + "/mandate", json={"guidance": "不得串用", "expected_revision": 0}).status_code == 422
 
 
 def test_materials_preserve_three_clocks_and_reuse_stable_topic(dossier_client):
@@ -288,46 +291,55 @@ def test_notebook_uses_completed_instrument_research_and_preserves_original_sour
     assert dossier_client.get(url()).json()["notebook_history"] == []
 
 
-def test_mandate_history_records_changes_and_quiet_save_keeps_version_and_date(dossier_client):
-    payload = _mandate_payload(dossier_client.get(url("stock")).json()["mandate"])
+def test_guidance_history_and_revision_conflicts_preserve_saved_content(dossier_client):
+    payload = {"guidance": "核对竞争假设", "expected_revision": 0}
     first = dossier_client.put(url("stock") + "/mandate", json=payload).json()
-    quiet = dossier_client.put(url("stock") + "/mandate", json=payload).json()
+    conflict = dossier_client.put(url("stock") + "/mandate", json=payload)
+    assert conflict.status_code == 409 and isinstance(conflict.json()["detail"], str)
+    quiet = dossier_client.put(url("stock") + "/mandate", json={**payload, "expected_revision": first["revision"]}).json()
     assert quiet["version_id"] == first["version_id"]
-    assert datetime.fromisoformat(quiet["updated_at"]).replace(tzinfo=None) == datetime.fromisoformat(first["updated_at"]).replace(tzinfo=None)
-    revised = dossier_client.put(url("stock") + "/mandate", json={**payload, "focus": ["新增竞争假设"]}).json()
-    assert revised["version_id"] != first["version_id"]
-    assert revised["versions"][0]["version_id"] == first["version_id"]
-    assert revised["versions"][0]["focus"] == first["focus"]
+    assert quiet["guidance_updated_at"] == first["guidance_updated_at"]
+    revised = dossier_client.put(url("stock") + "/mandate", json={"guidance": "新增竞争假设", "expected_revision": first["revision"]}).json()
+    assert revised["revision"] == first["revision"] + 1
+    assert revised["versions"][0]["guidance"] == first["guidance"]
+    conflict = dossier_client.put(url("stock") + "/mandate", json={"guidance": "旧页面覆盖", "expected_revision": first["revision"]})
+    assert conflict.status_code == 409
+    assert dossier_client.get(url("stock")).json()["mandate"]["guidance"] == revised["guidance"]
     with get_session_factory()() as session:
         old = service.read_dossier_version(session, "stock", first["version_id"])
-    assert old["kind"] == "mandate" and old["value"]["focus"] == first["focus"]
+    assert old["kind"] == "mandate" and old["value"]["guidance"] == first["guidance"]
     assert "registration" not in old["value"]
 
 
-def test_mandate_keeps_user_focus_while_research_evolves_its_own_document(dossier_client):
+def test_guidance_ownership_and_clock_survive_research_updates_and_explicit_clear(dossier_client):
     with get_session_factory()() as session:
         initial = service.ensure_mandate(session, "stock")
-        assert initial["author"]["origin"] == "initial" and initial["user_focus"] == []
-        payload = service.ResearchMandateInput.model_validate({**_mandate_payload(initial), "focus": ["用户要求检验资本开支回报"]})
-        manual = service.save_mandate(session, "stock", payload)
-        assert manual["author"]["origin"] == "user"
-        assert manual["author"]["user_id"] == "pm-one" and initial["author"]["user_id"] is None
-        assert manual["focus"] == initial["focus"] and manual["user_focus"] == payload.focus
+        assert initial["guidance_author"] is None and initial["guidance_updated_at"] is None
+        manual = service.save_guidance(session, "stock", service.ResearchGuidanceInput(
+            guidance="用户要求检验资本开支回报", expected_revision=initial["revision"]))
         revised = service.save_mandate(session, "stock", service.ResearchMandateInput.model_validate({
-            **payload.model_dump(), "background": "研究补充的待验证背景", "focus": ["研究员继续核对需求"]}), origin="research")
+            **_mandate_payload(manual), "guidance": "研究员试图覆盖用户范围", "background": "研究补充的待验证背景",
+            "focus": ["研究员继续核对需求"]}), origin="research")
         assert revised["author"]["user_id"] is None and revised["author"]["display_name"] == "研究员"
         assert revised["focus"] == ["研究员继续核对需求"]
-        assert revised["user_focus"] == manual["user_focus"] and revised["author"]["origin"] == "research"
-        assert revised["versions"][-1]["author"] == manual["author"]
-        assert revised["versions"][-1]["user_focus"] == manual["user_focus"]
-        old = service.read_dossier_version(session, "stock", manual["version_id"])
-        assert old["value"]["user_focus"] == manual["user_focus"]
-        # An explicit human save can change the instruction even when document text is unchanged.
-        accepted = service.save_mandate(session, "stock", service.ResearchMandateInput.model_validate(_mandate_payload(revised)))
-        assert accepted["version_id"] != revised["version_id"]
-        assert accepted["user_focus"] == revised["focus"] and accepted["author"]["origin"] == "user"
-        cleared = service.save_mandate(session, "stock", service.ResearchMandateInput.model_validate({**_mandate_payload(accepted), "focus": []}))
-        assert cleared["user_focus"] == [] and cleared["focus"] == revised["focus"]
+        assert revised["guidance"] == manual["guidance"]
+        assert revised["guidance_author"] == manual["guidance_author"]
+        assert revised["guidance_updated_at"] == manual["guidance_updated_at"]
+        with pytest.raises(service.ResearchGuidanceConflict):
+            service.save_guidance(session, "stock", service.ResearchGuidanceInput(guidance="旧草稿", expected_revision=manual["revision"]))
+        cleared = service.save_guidance(session, "stock", service.ResearchGuidanceInput(guidance="", expected_revision=revised["revision"]))
+        assert cleared["guidance"] == "" and cleared["focus"] == revised["focus"]
+        assert cleared["background"] == revised["background"]
+        assert cleared["versions"][-1]["guidance"] == manual["guidance"]
+
+
+def test_delayed_initialization_cannot_replace_guidance_saved_after_its_first_read(dossier_client):
+    with get_session_factory()() as session:
+        initial = service.ResearchMandateInput.model_validate(_mandate_payload(service.read_mandate(session, "stock")))
+        manual = service.save_guidance(session, "stock", service.ResearchGuidanceInput(guidance="新的用户要求", expected_revision=0))
+        delayed = service.save_mandate(session, "stock", initial, origin="initial")
+        assert delayed["guidance"] == manual["guidance"]
+        assert delayed["revision"] == manual["revision"]
 
 
 def test_quiet_checks_keep_latest_clock_without_duplicating_notebook_versions(dossier_client):
@@ -427,36 +439,48 @@ def test_registered_taxonomy_and_strategy_reach_the_research_plan(dossier_client
     result = dossier_client.get(url("private")).json()
     assert result["mandate"]["registration"]["taxonomy"]["assigned_node_id"] == "research-private-credit"
     assert result["mandate"]["registration"]["disclosed_strategy"]["summary"] == "管理人描述的信用研究流程"
-    credit = next(item for item in result["research_plan"]["modules"] if item["id"] == "rates-credit")
-    assert credit["applicability"] == "unconfirmed" and "已登记信用子策略" in credit["reason"]
+    assert result["research_plan"]["modules"] == []
+    assert "已登记信用子策略" in "\n".join(result["research_plan"]["basis"])
 
 
-def test_user_constraints_and_explicit_method_selection_cannot_be_overwritten_by_research(dossier_client):
+def test_legacy_human_fields_are_read_without_promoting_analyst_focus_then_explicitly_replaced(dossier_client):
+    from copy import deepcopy
     with get_session_factory()() as session:
-        initial = service.read_mandate(session, "xlk")
-        user = service.ResearchMandateInput.model_validate({**_mandate_payload(initial),
-            "user_constraints": ["只以实际成份为范围"],
-            "module_focus": [{"module_id": "equity-aggregation", "reason": "用户明确选择股票成份研究"}]})
-        first = service.save_mandate(session, "xlk", user)
-        revision = service.ResearchMandateInput.model_validate({**_mandate_payload(first),
-            "background": "研究员新增的背景", "user_constraints": ["扩大至所有行业"], "module_focus": []})
-        after = service.save_mandate(session, "xlk", revision, origin="research")
-        assert after["user_constraints"] == first["user_constraints"]
+        service.ensure_mandate(session, "xlk")
+        entry = session.get(ResearchEntry, "dossier-mandate:xlk")
+        old = deepcopy(entry.context_json)
+        old["mandate"].pop("guidance")
+        old["mandate"].update(focus=["研究员自拟的线索"], user_constraints=["只以实际成份为范围"],
+            user_methods=["比较同一观察期"], module_focus=[{"module_id": "equity-aggregation", "reason": "用户选择股票成份研究", "selected_by": "user"}])
+        old["user_focus"] = ["用户关注资本回报"]
+        entry.context_json = old
+        session.commit()
+        first = service.read_mandate(session, "xlk")
+        for text in ("用户关注资本回报", "只以实际成份为范围", "比较同一观察期", "用户选择股票成份研究"):
+            assert text in first["guidance"]
+        assert "研究员自拟的线索" not in first["guidance"]
+        assert entry.context_json == old  # Reading did not rewrite the original record.
+        after = service.save_mandate(session, "xlk", service.ResearchMandateInput.model_validate({
+            **_mandate_payload(first), "guidance": "扩大至所有行业", "user_constraints": [], "module_focus": [],
+            "background": "研究员补充的背景"}), origin="research")
+        assert after["guidance"] == first["guidance"]
         assert after["module_focus"] == first["module_focus"]
-        assert after["module_focus"][0]["selected_by"] == "user"
-        assert after["versions"][-1]["user_constraints"] == first["user_constraints"]
-        assert service.read_dossier_version(session, "xlk", first["version_id"])["value"]["user_constraints"] == first["user_constraints"]
-        cleared = service.save_mandate(session, "xlk", service.ResearchMandateInput.model_validate({
-            **_mandate_payload(after), "user_constraints": [], "module_focus": []}))
-        assert cleared["user_constraints"] == [] and cleared["module_focus"] == []
+        cleared = service.save_guidance(session, "xlk", service.ResearchGuidanceInput(guidance="", expected_revision=after["revision"]))
+        assert cleared["guidance"] == "" and cleared["user_focus"] == []
+        assert cleared["user_constraints"] == [] and cleared["user_methods"] == [] and cleared["module_focus"] == []
+        assert cleared["focus"] == ["研究员自拟的线索"]
+        assert cleared["versions"][0]["guidance"] == first["guidance"]
+        assert cleared["versions"][0]["user_focus"] == old["user_focus"]
 
 
 def test_public_method_updates_do_not_rewrite_existing_instrument_supplements(dossier_client, monkeypatch):
     from copy import deepcopy
     from watchlist_app.services import research_methods
-    initial = dossier_client.get(url("stock")).json()
-    payload = {**_mandate_payload(initial["mandate"]), "mechanisms": ["既有人工与研究员共同维护的专属机制"]}
-    saved = dossier_client.put(url("stock") + "/mandate", json=payload).json()
+    with get_session_factory()() as session:
+        initial = service.read_mandate(session, "stock")
+        saved = service.save_mandate(session, "stock", service.ResearchMandateInput.model_validate({
+            **_mandate_payload(initial), "mechanisms": ["已有原文支持的待检验机制"],
+            "module_focus": [{"module_id": "business-fundamentals", "reason": "参考经营研究方法"}]}), origin="research")
     updated = deepcopy(research_methods.method_library())
     for item in updated["frameworks"]:
         if item["id"] == "business-fundamentals":

@@ -49,7 +49,7 @@ def equity_evidence(tmp_path):
     def stamp(day, hour=0):
         return datetime(2026, 9, day, hour, tzinfo=UTC)
     profiles = [{"symbol": symbol, "company_name": symbol, "cik": cik, "is_etf": False, "is_fund": False,
-                 "collected_at": stamp(1)} for symbol, cik in (("AAPL", "0000320193"), ("AAPL.B", "0000320193"),
+                 "exchange": "HKSE" if symbol.endswith(".HK") else "NASDAQ", "collected_at": stamp(1)} for symbol, cik in (("AAPL", "0000320193"), ("AAPL.B", "0000320193"),
                  ("0700.HK", None), ("MSFT", "0000789019"), ("LATE", "0000000001"))]
     profiles[-1]["collected_at"] = stamp(9)
     store.ingest("company_profiles", [profiles], source="fixture")
@@ -128,3 +128,25 @@ def test_build_input_freezes_related_rows_and_all_their_sources(equity_evidence,
     for index, row in enumerate(frozen["market_rows"]):
         assert bound[f"market-row:{index}"]["return_pct"] == row["return_pct"]
         assert all(bound[key]["source_type"] == "numeric" for key in row["source_ids"] + row["identity_source_ids"])
+
+
+def test_related_company_daily_return_rejects_missing_trading_day(equity_evidence):
+    store, documents = equity_evidence
+    # HK Sep 8 has closed, while Sep 7 remains the latest stored observation.
+    result = related_equity_snapshot(store, documents, report_type="daily", period_start=date(2026, 9, 8),
+        period_end=date(2026, 9, 8), cutoff=datetime(2026, 9, 8, 10, tzinfo=UTC))
+    assert "0700.HK" not in {row["symbol"] for row in result["market_rows"]}
+    gap = next(row for row in result["coverage"] if row["symbol"] == "0700.HK")
+    assert gap["status"] == "missing_expected_observations"
+    assert gap["missing_dates"] == ["2026-09-08"]
+
+
+def test_related_company_requires_observed_classification(equity_evidence):
+    store, documents = equity_evidence
+    store.ingest("company_profiles", [[{"symbol": "AAPL", "company_name": "Unclassified",
+        "cik": "0000320193", "exchange": "NASDAQ", "is_etf": None, "is_fund": None,
+        "collected_at": datetime(2026, 9, 7, tzinfo=UTC)}]], source="fixture")
+    result = related_equity_snapshot(store, documents, report_type="daily", period_start=date(2026, 9, 8),
+        period_end=date(2026, 9, 8), cutoff=datetime(2026, 9, 8, 0, 30, tzinfo=UTC))
+    assert "AAPL" not in {row["symbol"] for row in result["market_rows"]}
+    assert next(row for row in result["coverage"] if row["symbol"] == "AAPL")["status"] == "security_type_unverified"

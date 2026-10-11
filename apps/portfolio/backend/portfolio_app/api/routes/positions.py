@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 
@@ -120,6 +121,7 @@ def get_portfolio_instrument_price_chart(
     as_of_date: date | None = None,
     range: str | None = None,
     price_level: bool = False,
+    price_mode: Literal["return", "raw", "front", "back"] = "return",
 ) -> InstrumentPriceChartResponse:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -140,6 +142,7 @@ def get_portfolio_instrument_price_chart(
             as_of_date=resolved_as_of_date,
             range_key=normalize_chart_range_key(range),
             price_level=price_level,
+            price_mode=price_mode,
         )
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error

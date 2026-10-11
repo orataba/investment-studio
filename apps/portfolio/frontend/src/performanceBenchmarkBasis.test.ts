@@ -16,12 +16,12 @@ describe('performance benchmark basis reliability', () => {
   )
 
   it.each(['close', 'official_nav', 'last', 'spot'])(
-    'discloses unconfirmed distribution treatment for %s without declaring it total return',
+    'withholds %s when distribution treatment is unconfirmed',
     (basis) => {
       const assessment = assessPerformanceBenchmarkBasis(basis)
       expect(assessment.returnSemantics).toBe('unknown')
-      expect(assessment.basis).toBe(basis)
-      expect(assessment.warning).toContain('Comparison uses the selected price or NAV series')
+      expect(assessment.basis).toBeNull()
+      expect(assessment.warning).toContain('Benchmark comparison is unavailable')
       expect(assessment.warning).toContain('unconfirmed')
     },
   )

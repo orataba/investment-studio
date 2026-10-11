@@ -8,7 +8,7 @@ import { Link, Navigate, useParams, useSearchParams } from 'react-router'
 import CalculationStatus from '../components/CalculationStatus'
 import FundDistributionTasksPanel from '../components/FundDistributionTasksPanel'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
-import SecurityInstrumentPicker, { instrumentSearchLabel, primaryIdentifier } from '../components/SecurityInstrumentPicker'
+import SecurityInstrumentPicker, { instrumentSearchLabel, primaryIdentifier, registeredSecurityCatalogIdentity, securitySourceLabel } from '../components/SecurityInstrumentPicker'
 import {
   createPortfolioInternalTransfer,
   commitPortfolioTransactionImport,
@@ -1754,6 +1754,7 @@ export default function TransactionsPage() {
     ...filteredInstrumentOptions.map((instrument) => ({
       key: instrument.instrument_id, symbol: primaryIdentifier(instrument),
       name: instrument.instrument_name, currency: instrument.currency,
+      source: securitySourceLabel(instrument, language === 'zh-Hans'),
       disabledReason: accountCurrencyMismatch(instrument.currency),
       instrument, catalogResult: null as SecurityCatalogResult | null,
     })),
@@ -1768,6 +1769,7 @@ export default function TransactionsPage() {
         symbol: existing ? primaryIdentifier(existing) : item.symbol,
         name: existing?.instrument_name ?? item.name,
         currency: existing?.currency ?? `${item.exchange_label} · ${item.currency}${item.currency_verified ? '' : fcnLabel(' (Currency to be verified)', '（币种待核实）')}`,
+        source: existing ? securitySourceLabel(existing, language === 'zh-Hans') : item.catalog_provider === 'futu' ? fcnLabel('Futu', '富途') : 'FMP',
         disabledReason: accountCurrencyMismatch(eligible.currency, Boolean(existing) || item.currency_verified),
         instrument: existing ?? null, catalogResult: existing ? null : item,
       }]
@@ -2163,10 +2165,8 @@ export default function TransactionsPage() {
     if (materializingSecurityRef.current || option.disabledReason) return
     setFormError(null)
     const registered = option.instrument
-    const providerSymbol = registered?.identifiers.find((identifier) =>
-      identifier.identifier_type === 'provider_symbol' && identifier.identifier_value.startsWith('fmp:'),
-    )?.identifier_value.slice(4)
-    const needsInitialPrices = registered && providerSymbol &&
+    const catalogIdentity = registered ? registeredSecurityCatalogIdentity(registered) : null
+    const needsInitialPrices = registered && catalogIdentity &&
       ['equity', 'etf'].includes(registered.instrument_type) &&
       !registered.latest_market_data.some((point) => point.metric_family === 'price' &&
         ['last', 'close'].includes(point.quote_basis) && point.status === 'complete')
@@ -2176,7 +2176,7 @@ export default function TransactionsPage() {
     }
     const catalogRequest = option.catalogResult ?? (needsInitialPrices ? {
       instrument_type: registered.instrument_type as 'equity' | 'etf',
-      catalog_provider: 'fmp' as const, catalog_symbol: providerSymbol,
+      ...catalogIdentity,
     } : null)
     if (!catalogRequest || !portfolioId) return
     const generation = securitySelectionGeneration.current
@@ -5339,9 +5339,8 @@ export default function TransactionsPage() {
                           {selectedCaptureBatch.analysis_run_status !== 'idle' && <ResearchRunStatus
                             runId={selectedCaptureBatch.batch_id}
                             status={selectedCaptureBatch.analysis_run_status}
-                            createdAt={selectedCaptureBatch.analysis_run_started_at || selectedCaptureBatch.updated_at}
                             completedAt={selectedCaptureBatch.analysis_run_completed_at}
-                            execution={{ attempt: selectedCaptureBatch.analysis_run_attempt, stage: selectedCaptureBatch.analysis_run_status === 'queued' ? 'queued' : 'generation' }}
+                            execution={{ attempt: selectedCaptureBatch.analysis_run_attempt, started_at: selectedCaptureBatch.analysis_run_started_at || undefined, stage: selectedCaptureBatch.analysis_run_status === 'queued' ? 'queued' : 'generation' }}
                             timeoutSeconds={selectedCaptureBatch.analysis_timeout_seconds ?? null}
                           />}
                           <div className="transaction-capture-evidence-grid">
@@ -6776,7 +6775,7 @@ export default function TransactionsPage() {
                             <button
                               type="button"
                               key={option.key}
-                              title={`${option.symbol} · ${option.name} · ${option.currency}${option.disabledReason ? ` · ${option.disabledReason}` : ''}`}
+                              title={`${option.symbol} · ${option.name} · ${option.currency}${option.source ? ` · ${option.source}` : ''}${option.disabledReason ? ` · ${option.disabledReason}` : ''}`}
                               disabled={materializingSecurity || Boolean(option.disabledReason)}
                               className="transaction-instrument-result"
                               onClick={() => void selectSecurityOption(option)}
@@ -6786,7 +6785,7 @@ export default function TransactionsPage() {
                                 <span className="holding-secondary" translate="no">{option.name}</span>
                               </div>
                               <span className="transaction-picker-meta">
-                                {option.currency}
+                                {option.currency}{option.source ? ` · ${option.source}` : ''}
                                 {option.disabledReason ? <span className="transaction-picker-constraint">{option.disabledReason}</span> : null}
                               </span>
                             </button>

@@ -20,7 +20,9 @@ def test_each_collection_is_retained_without_overwriting_history_and_commit_is_a
     factory = sessionmaker(bind=engine)
     with factory() as session:
         session.add(Instrument(instrument_id="test", instrument_name="Reference test", instrument_type=instrument_type,
-                               currency="USD", exchange_code="XNYS", quote_selection_policy_json={}))
+                               currency="USD", exchange_code="XNYS", quote_selection_policy_json={
+                                   "trading": ["close"], "valuation": ["close"], "total_return": ["adjusted_close"],
+                                   "chart": ["close"], "reference": ["close"]}))
         session.commit()
     monkeypatch.setattr(instrument_reference, "get_session_factory", lambda: factory)
     record = {"instrument_id": "test", "instrument_type": instrument_type, "provider": "fmp", "provider_symbol": "TEST",

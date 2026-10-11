@@ -52,7 +52,7 @@ RefreshOperationMode = Literal[
     "api",
     "projection_reconciliation",
 ]
-RefreshChannel = Literal["configured", "email", "tushare", "fmp", "all"]
+RefreshChannel = Literal["configured", "email", "tushare", "fmp", "futu", "all"]
 FxRateSourceKind = Literal["direct", "inverse", "cross"]
 InstrumentLifecycleStatus = Literal["active", "archived"]
 EmailParserProfile = Literal[
@@ -633,6 +633,9 @@ class StudioSourceSettingsUpdateRequest(BaseModel):
     market_calendar: str | None = Field(default=None, min_length=1)
     release_lag_days: int | None = Field(default=None, ge=0)
     return_semantics: ReturnSemantics | None = None
+    history_start_date: date | None = None
+    source_provider_currency: str | None = Field(default=None, min_length=1, max_length=8)
+    source_price_multiplier: Decimal | None = Field(default=None, gt=0)
 
     @field_validator("market_calendar", mode="before")
     @classmethod
@@ -675,6 +678,7 @@ class StudioBulkRefreshResult(BaseModel):
     source_api_profile: str = ""
     status: str
     message: str
+    canonical_changed: bool = False
 
 
 class StudioBulkRefreshResponse(BaseModel):

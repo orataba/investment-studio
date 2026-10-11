@@ -72,6 +72,7 @@ et-xmlfile==2.0.0
 exchange-calendars==4.13.2
     # via
     #   -c requirements/python.lock
+    #   investment-studio-market (shared-data/market/pyproject.toml)
     #   investment-studio-portfolio-backend (apps/portfolio/backend/pyproject.toml)
     #   investment-studio-watchlist-backend (apps/watchlist/backend/pyproject.toml)
     #   investment-studio-data (shared-data/pyproject.toml)

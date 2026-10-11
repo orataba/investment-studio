@@ -13,6 +13,7 @@ import {
   instrumentFixture,
   optionContractFixture,
 } from './test/portfolioFixtures'
+import type { HoldingReturnSeries } from './lib/api'
 
 function returnSeries(
   periods: Array<[startDate: string, endDate: string, value: number]>,
@@ -220,6 +221,43 @@ describe('holdings current-basket period identity', () => {
     expect(groupedAnnualizedVolatility([holding], workspace, '1m')).toBeNull()
     expect(groupedCurrentDrawdown([holding], workspace)).toBeNull()
     expect(groupedMaxDrawdown([holding], workspace)).toBeNull()
+  })
+
+  it.each(['unavailable_interval', 'missing_latest_session'] as const)('keeps %s unavailable in group metrics even inside the freshness allowance', (failure) => {
+    const end = Date.parse('2026-07-15T00:00:00Z')
+    const periods = Array.from({ length: 35 }, (_, index): [string, string, number] => [
+      new Date(end - (35 - index) * 86_400_000).toISOString().slice(0, 10),
+      new Date(end - (34 - index) * 86_400_000).toISOString().slice(0, 10),
+      index % 2 === 0 ? .01 : -.005,
+    ])
+    const series: HoldingReturnSeries = returnSeries(periods)
+    const holding = holdingFixture({ instrument_return_series_1m: series, instrument_return_series_all: series })
+    const workspace = holdingsWorkspaceFixture({ as_of_date: '2026-07-15', rows: [holding] })
+    expect(groupedAnnualizedVolatility([holding], workspace, '1m')).toBeGreaterThan(0)
+    expect(groupedMaxDrawdown([holding], workspace)).toBeLessThan(0)
+    if (failure === 'unavailable_interval') {
+      series.points[series.points.length - 1] = { ...series.points[series.points.length - 1], value: null, status: 'unavailable', reason: 'total_return_segment_break' }
+    } else {
+      series.points.pop()
+      series.observation_coverage = { start_date: periods[0][0], end_date: '2026-07-15',
+        gap_dates: ['2026-07-15'], gap_detection_basis: 'market_calendar:XNYS' }
+    }
+    expect(groupedAnnualizedVolatility([holding], workspace, '1m')).toBeNull()
+    expect(groupedCurrentDrawdown([holding], workspace)).toBeNull()
+    expect(groupedMaxDrawdown([holding], workspace)).toBeNull()
+  })
+
+  it('does not let coverage gaps before a complete selected window veto group volatility', () => {
+    const end = Date.parse('2026-07-15T00:00:00Z')
+    const series = returnSeries(Array.from({ length: 35 }, (_, index): [string, string, number] => [
+      new Date(end - (35 - index) * 86_400_000).toISOString().slice(0, 10),
+      new Date(end - (34 - index) * 86_400_000).toISOString().slice(0, 10),
+      index % 2 === 0 ? .01 : -.005,
+    ]))
+    const holding = holdingFixture({ instrument_return_series_1m: { ...series, observation_coverage: {
+      start_date: '2020-01-01', end_date: '2026-07-15', gap_dates: ['2020-02-02'], gap_detection_basis: 'market_calendar:XNYS',
+    } } })
+    expect(groupedAnnualizedVolatility([holding], holdingsWorkspaceFixture({ rows: [holding] }), '1m')).toBeGreaterThan(0)
   })
 
   it('excludes derivatives instead of presenting zero volatility', () => {

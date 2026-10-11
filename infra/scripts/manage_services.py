@@ -16,7 +16,7 @@ GROUPS = {
     "briefing": ("briefing-api", "briefing-web", "briefing-daily", "briefing-weekly"),
     "market": tuple(f"market-{action}" for action in (ROOT / "infra/market_pipeline_actions.txt").read_text().splitlines()),
     "investments": (
-        "watchlist-api", "watchlist-web", "portfolio-api", "portfolio-web",
+        "watchlist-api", "watchlist-web", "research-worker", "portfolio-api", "portfolio-web",
         "market-data-refresh", "cn-market-data-refresh",
         "hk-market-data-refresh", "us-market-data-refresh",
         "cn-hk-reference-data-refresh",

@@ -1,6 +1,10 @@
-from datetime import date
+from datetime import UTC, date, datetime
 import pytest
 from sqlalchemy import select
+from investment_studio_instrument_core import build_return_intervals
+
+
+COMPARISON_CUTOFF = datetime(2026, 10, 1, tzinfo=UTC)
 
 
 def seed(client):
@@ -103,7 +107,7 @@ def test_conversation_uses_tools_retains_history_and_never_adopts_view(client, m
     import watchlist_app.services.research_runner as runner
     original_run = runner.run_analysis
     monkeypatch.setattr(runner, 'harness_available', lambda: True)
-    monkeypatch.setattr(runner, 'run_analysis', lambda run_id, token=None, issuer=None: None)
+    monkeypatch.setattr(runner, 'run_analysis', lambda run_id, token=None, issuer=None, *, attempt=None: None)
     topic = client.post('/api/research/topics', json={'title': '基金研究', 'instrument_ids': ['sxv264']}).json()
     path = f"/api/research/topics/{topic['topic_id']}/analysis"
     response = client.post(path, json={'question': '有哪些风险待核查？', 'watchlist_id': wid})
@@ -126,7 +130,7 @@ def test_conversation_uses_tools_retains_history_and_never_adopts_view(client, m
     class HeadlessProcess:
         returncode = 0
         def communicate(self, timeout):
-            return '{"answer":"需要补充底层风险证据。","research_result":null}', None
+            return '需要补充底层风险证据。', None
     monkeypatch.setattr(runner.subprocess, 'Popen', lambda *args, **kwargs: HeadlessProcess())
     # Inputs were bound by the preceding tools; exercise completion without preparing twice.
     monkeypatch.setattr('watchlist_app.services.sector_research.prepare_run', lambda _: None)
@@ -191,7 +195,7 @@ def test_portfolio_assistant_binds_selected_holding_account_and_valuation_day(cl
         raise AssertionError(path)
     monkeypatch.setattr(research_workbench, "external_json", external)
     monkeypatch.setattr(research_runner, "harness_available", lambda: True)
-    monkeypatch.setattr(research_runner, "run_analysis", lambda run_id, token=None, issuer=None: None)
+    monkeypatch.setattr(research_runner, "run_analysis", lambda run_id, token=None, issuer=None, *, attempt=None: None)
     topic = client.post("/api/research/topics", json={"title": "持仓讨论", "portfolio_id": "portfolio-a"}).json()
     page = {"surface": "portfolio", "portfolio_id": "portfolio-a", "holding_id": "fcn-local",
             "account_id": "account-a", "as_of_date": "2026-08-31", "tab": "risk"}
@@ -230,31 +234,36 @@ def test_portfolio_page_fields_cannot_relabel_an_instrument_conversation(client,
 def test_common_sample_math_never_fills_or_mixes_currency():
     from watchlist_app.services.research_workbench import compare_series
     def series(values, currency='USD'):
-        return {'metadata': {'return_kind': 'total_return', 'return_series_status': 'ready'}, 'frequency': {'gap_count': 0}, 'currency': currency, 'points': [{'date': d, 'value': v} for d, v in values]}
+        points = [{'date': d, 'value': v} for d, v in values]
+        return {'metadata': {'return_kind': 'total_return', 'return_series_status': 'ready'}, 'frequency': {'gap_count': 0, 'resolved_frequency': 'event_driven'}, 'currency': currency, 'points': points, 'intervals': build_return_intervals(points)}
     assets = {'a': series([('2026-01-01',100),('2026-01-08',90),('2026-01-15',99)]), 'b': series([('2026-01-01',100),('2026-01-05',500),('2026-01-08',110),('2026-01-15',100)])}
-    result = compare_series(assets, date(2026,1,1), date(2026,1,31), target_id='a', benchmark_id='b')
+    result = compare_series(assets, date(2026,1,1), date(2026,1,15), target_id='a', benchmark_id='b', cutoff=COMPARISON_CUTOFF)
     assert result['observations'] == 3
     rows = {r['instrument_id']: r for r in result['rows']}
     assert rows['a']['return_pct'] == pytest.approx(-1)
     assert rows['a']['max_drawdown_pct'] == pytest.approx(-10)
     assert rows['b']['correlation_to_target'] == pytest.approx(-1)
+    assert rows['b']['max_drawdown_pct'] == pytest.approx(-80)
+    assert rows['b']['path_observations'] == 4
+    assert any('回撤保留各自完整路径' in note for note in result['limitations'])
     assert rows['b']['average_return_when_target_down_pct'] == pytest.approx(10)
     assert rows['a']['excess_return_pp'] == pytest.approx(-1)
     assets['b']['currency'] = 'CNY'
-    assert compare_series(assets, date(2026,1,1), date(2026,1,31))['rows'] == []
+    assert compare_series(assets, date(2026,1,1), date(2026,1,15), cutoff=COMPARISON_CUTOFF)['rows'] == []
 
 
 def test_comparison_allows_fund_price_index_and_adjusted_stock_on_common_dates():
     from watchlist_app.services.research_workbench import compare_series
     def series(kind, basis, values):
+        points = [{'date': d, 'value': v} for d, v in zip(['2026-01-01', '2026-01-08', '2026-01-15'], values)]
         return {'metadata': {'return_kind': kind, 'quote_basis': basis, 'return_series_status': 'ready'},
-            'currency': 'CNY', 'points': [{'date': d, 'value': v} for d, v in zip(['2026-01-01', '2026-01-08', '2026-01-15'], values)]}
+            'currency': 'CNY', 'frequency': {'resolved_frequency': 'weekly'}, 'points': points, 'intervals': build_return_intervals(points)}
     assets = {
         'fund': series('total_return', 'total_return_nav', [100, 90, 99]),
         'index': series('price_return', 'close', [100, 110, 100]),
         'stock': series('total_return', 'adjusted_close', [100, 105, 110]),
     }
-    result = compare_series(assets, date(2026, 1, 1), date(2026, 1, 31), target_id='fund', benchmark_id='index')
+    result = compare_series(assets, date(2026, 1, 1), date(2026, 1, 15), target_id='fund', benchmark_id='index', cutoff=COMPARISON_CUTOFF)
     rows = {row['instrument_id']: row for row in result['rows']}
     assert result['return_kind'] == 'mixed'
     assert result['observations'] == 3
@@ -266,7 +275,7 @@ def test_comparison_allows_fund_price_index_and_adjusted_stock_on_common_dates()
     assert any('口径逐项列示' in note for note in result['limitations'])
 
 
-def test_comparison_uses_available_observations_despite_gaps_and_missing_semantics():
+def test_comparison_rejects_unknown_semantics_but_preserves_declared_observations():
     from watchlist_app.services.research_workbench import compare_series
     dates = ['2026-01-01', '2026-01-08', '2026-01-15']
     assets = {
@@ -275,12 +284,20 @@ def test_comparison_uses_available_observations_despite_gaps_and_missing_semanti
         'b': {'metadata': {'return_series_status': 'ready', 'return_kind': 'price_return'}, 'currency': 'USD',
             'points': [{'date': d, 'value': v} for d, v in zip(dates, [100, 110, 100])]},
     }
-    result = compare_series(assets, date(2026, 1, 1), date(2026, 1, 31), benchmark_id='b')
-    assert len(result['rows']) == 2
-    assert result['rows'][0]['excess_return_pp'] == pytest.approx(-1)
-    assert any('缺失观察值' in note for note in result['limitations'])
+    for item in assets.values():
+        item['intervals'] = build_return_intervals(item['points'])
+        item.setdefault('frequency', {})['resolved_frequency'] = 'weekly'
+    assets['a']['intervals'][0].update(status='unavailable', value=None)
+    result = compare_series(assets, date(2026, 1, 1), date(2026, 1, 15), benchmark_id='b', cutoff=COMPARISON_CUTOFF)
+    assert len(result['rows']) == 1
+    assert result['excluded'] == [{'instrument_id': 'a', 'reason': '收益经济口径尚未确认'}]
+    assets['a']['metadata']['return_kind'] = 'price_return'
+    confirmed = compare_series(assets, date(2026, 1, 1), date(2026, 1, 15), benchmark_id='b', cutoff=COMPARISON_CUTOFF)
+    assert len(confirmed['rows']) == 1
+    assert confirmed['excluded'] == [{'instrument_id': 'a', 'reason': '计算区间存在缺失观察值或未确认的收益区间'}]
+    assert confirmed['rows'][0]['excess_return_pp'] == pytest.approx(0)
     assets['a']['metadata']['return_segment_breaks'] = [{'date': '2026-01-08'}]
-    result = compare_series(assets, date(2026, 1, 1), date(2026, 1, 31))
+    result = compare_series(assets, date(2026, 1, 1), date(2026, 1, 15), cutoff=COMPARISON_CUTOFF)
     assert result['excluded'] == [{'instrument_id': 'a', 'reason': '收益序列存在待确认的断点'}]
 
 
@@ -521,3 +538,60 @@ def test_ledger_part_failure_remains_explicit_without_erasing_other_facts(monkey
     assert evidence['ledger_errors'] == {'ledger_positions': 'Position ledger unavailable'}
     assert evidence['account_summary']['rows'][0]['settled_cash'] == 14224
     assert evidence['valuation_status'] == 'unavailable'
+
+
+def test_comparison_uses_confirmed_requested_segment_without_joining_rebased_history():
+    from watchlist_app.services.research_workbench import compare_series
+    source = {"currency": "HKD", "metadata": {"return_kind": "total_return", "return_series_status": "partial", "return_segment_breaks": [{}]},
+        "points": [{"date": day, "value": value, "segment_id": segment} for day, value, segment in [
+            ("2026-08-31", 102, "old"), ("2026-09-01", 1, "new"), ("2026-09-30", 1.1, "new")]]}
+    source['intervals'] = build_return_intervals(source['points'], break_dates=['2026-09-01'])
+    source['frequency'] = {'resolved_frequency': 'event_driven'}
+    assets = {"a": source, "b": source}
+    recent = compare_series(assets, date(2026, 9, 1), date(2026, 9, 30), "a", "b", cutoff=COMPARISON_CUTOFF)
+    assert len(recent["rows"]) == 2
+    assert recent["rows"][0]["return_pct"] == pytest.approx(10)
+    assert compare_series(assets, date(2026, 8, 31), date(2026, 9, 30), cutoff=COMPARISON_CUTOFF)["rows"] == []
+    source["points"][1].pop("segment_id")
+    assert compare_series(assets, date(2026, 9, 1), date(2026, 9, 30), cutoff=COMPARISON_CUTOFF)["rows"] == []
+
+
+def test_comparison_does_not_hide_a_missing_trading_day_in_the_common_intersection():
+    from watchlist_app.services.calculation_frequency import build_calculation_frequency_context
+    from watchlist_app.services.research_workbench import compare_series
+
+    def observed(days):
+        points = [{"date": day, "as_of_date": date.fromisoformat(day), "value": 100 + index}
+                  for index, day in enumerate(days)]
+        context = build_calculation_frequency_context(points, expected_frequency="daily", market_calendar="XNYS")
+        return {"currency": "USD", "metadata": {"return_kind": "total_return", "return_series_status": "complete"},
+                "frequency": context["profile"], "observation_schedule": {"market_calendar": "XNYS", "expected_frequency": "daily"}, "points": points,
+                "intervals": build_return_intervals(points, break_dates=context["missing_observation_dates"])}
+
+    complete = observed(["2026-09-08", "2026-09-09", "2026-09-10", "2026-09-11"])
+    missing = observed(["2026-09-08", "2026-09-10", "2026-09-11"])
+    result = compare_series({"target": complete, "benchmark": missing}, date(2026, 9, 8), date(2026, 9, 11), "target", "benchmark", cutoff=COMPARISON_CUTOFF)
+    assert [row["instrument_id"] for row in result["rows"]] == ["target"]
+    assert result["rows"][0]["excess_return_pp"] is None
+    assert result["observations"] == 4
+    assert "缺失应有观察值" in result["excluded"][0]["reason"]
+    assert result["window_coverage"]["benchmark"]["missing_dates"] == ["2026-09-09"]
+    recent = compare_series({"target": complete, "benchmark": missing}, date(2026, 9, 10), date(2026, 9, 11), "target", "benchmark", cutoff=COMPARISON_CUTOFF)
+    assert len(recent["rows"]) == 2
+    assert any("不表示全历史完整" in note for note in recent["limitations"])
+    missing["frequency"]["gap_detection_basis"] = "calendar_day_threshold"
+    unverified = compare_series({"benchmark": missing}, date(2026, 9, 10), date(2026, 9, 11), cutoff=COMPARISON_CUTOFF)
+    assert not unverified["rows"]
+    assert "缺少已确认的交易日历" in unverified["excluded"][0]["reason"]
+
+
+def test_low_frequency_comparison_cannot_bridge_a_missing_disclosure_period():
+    from watchlist_app.services.research_workbench import compare_series
+    item = {"currency": "USD", "metadata": {"return_kind": "total_return", "return_series_status": "complete"},
+            "frequency": {"resolved_frequency": "monthly"},
+            "points": [{"date": day, "value": 100} for day in ["2026-06-30", "2026-08-31", "2026-09-30"]]}
+    item["intervals"] = build_return_intervals(item["points"])
+    missing = compare_series({"fund": item}, date(2026, 6, 30), date(2026, 9, 30), cutoff=COMPARISON_CUTOFF)
+    assert not missing["rows"]
+    assert "缺少整期披露观察值" in missing["excluded"][0]["reason"]
+    assert compare_series({"fund": item}, date(2026, 8, 31), date(2026, 9, 30), cutoff=COMPARISON_CUTOFF)["rows"][0]["return_pct"] == 0

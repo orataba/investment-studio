@@ -1,7 +1,7 @@
 """Portfolio-oriented research and persistent risk follow-up."""
 from datetime import date, datetime
 from typing import Any
-from sqlalchemy import JSON, DDL, Date, DateTime, ForeignKey, Float, Index, Text, event, inspect
+from sqlalchemy import JSON, DDL, Date, DateTime, ForeignKey, Float, Index, Integer, Text, event, inspect
 from sqlalchemy.orm import Mapped, mapped_column
 from watchlist_app.db.base import Base
 from watchlist_app.db.models.common import TimestampMixin
@@ -90,3 +90,12 @@ class RiskCase(TimestampMixin, Base):
     follow_up_date: Mapped[date | None] = mapped_column(Date)
     evidence_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     history_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+
+
+class ResearchRiskReadState(Base):
+    """Small attempt-bound delivery/submission state, separate from frozen inputs."""
+    __tablename__ = "research_risk_read_state"
+    run_id: Mapped[str] = mapped_column(ForeignKey("research_entry.entry_id", ondelete="CASCADE"), primary_key=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    delivered_pages: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    submitted_review: Mapped[dict | None] = mapped_column(JSON, nullable=True)

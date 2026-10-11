@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useModalDialog } from './useModalDialog'
 import InfoHint from './InfoHint'
 import NoticeToast, { type NoticeToastMessage } from './NoticeToast'
@@ -84,6 +84,7 @@ type PublicSource = { source_id?: string; title?: string; url?: string; publishe
 const toolLabels: Record<string, string> = {
   instruments: '标的研究与风险',
   comparison: '收益与风险比较',
+  quant: 'Python 量化计算',
   portfolio: '实际组合持仓',
   market: '市场状态',
   search: '公开信息检索',
@@ -105,47 +106,77 @@ function linkedAnswer(entry: Entry, evidence: Evidence[]) {
   for (const item of evidence) body = body.split(`[${item.source_id}]`).join(`[${item.source_id}](#${evidenceId(entry.entry_id, item.source_id)})`)
   return body
 }
-function EvidenceDetails({ evidence, entry }: { evidence: Evidence[]; entry: Entry }) {
-  return <details className="assistant-evidence"><summary>查阅依据（{evidence.length}）</summary>
-    <p>以下是本次回答实际查阅并保留的证据。目录、历史对话和未检索的扩展范围不代表已核实；未关联来源的结论仍有证据限制。</p>
-    {evidence.map((item) => {
-      let result = item.result
-      if (!result && item.result_storage) {
-        const retained = entry.context_json[item.result_storage]
-        const ids = [...((item.request?.instrument_ids || []) as string[]), ...(typeof item.request?.benchmark_id === 'string' ? [item.request.benchmark_id] : [])]
-        const selected = Array.isArray(retained) ? retained.filter(value => item.result_storage === 'computed_metrics' ? value.source_id === item.source_id : !ids?.length || ids.includes(value.instrument_id)) : []
-        if (item.result_storage === 'research_dossiers') {
-          const dossier = selected[0]
-          const sourceId = item.request?.source_id
-          const sources = dossier ? [...(dossier.materials || []), ...(dossier.historical_cases || []), ...(dossier.prior_sources || []),
-            ...(dossier.themes || []).flatMap((theme: { sources?: unknown[] }) => theme.sources || []),
-            ...(dossier.pm_views || []).flatMap((view: { sources?: unknown[] }) => view.sources || []), ...(dossier.notebook?.sources || [])] : []
-          const source = sourceId ? sources.find(value => value.source_id === sourceId) : null
-          result = { source_ids: item.source_ids || [], retained_source: source,
-            limitation: sourceId ? '此处展示当时绑定的来源记录；未展开的原文不能视为已核实。' : '本条查阅的是研究档案概览；资料目录不代表已阅读每份原文。' }
-          if (!dossier || (sourceId && !source)) result.available = false
-        } else {
-          result = selected.length ? { retained_snapshot: selected, source_ids: item.source_ids || [] }
-            : { available: false, limitation: '此历史记录未保留可展示的证据明细。' }
-        }
-      }
-      result ||= { available: false, limitation: '此历史记录未保留可展示的证据明细。' }
-      const failed = result.available === false
-      const sources = failed ? [] : item.tool === 'search' && Array.isArray(result.sources)
-        ? result.sources as PublicSource[] : item.tool === 'source' ? [result as PublicSource] : []
-      const coverage = Array.isArray(result.coverage) ? result.coverage as string[] : []
-      return <div key={item.source_id} id={evidenceId(entry.entry_id, item.source_id)} tabIndex={-1}>
-        <p><strong>{toolLabels[item.tool] || item.tool}{failed ? ' · 读取未完成' : ''}</strong> · <span>获取时间</span> {stamp(item.retrieved_at)}</p>
-        <p><span>来源编号</span> <code translate="no">{item.source_id}</code>{item.tool === 'portfolio' && <> · <span>组合编号</span> <code translate="no">{String(result.portfolio_id || entry.context_json.portfolio_id || '—')}</code> · <span>估值日期</span> <span translate="no">{String(result.as_of_date || (result.summary as Record<string, unknown> | undefined)?.as_of_date || (entry.context_json.page_context as Record<string, unknown> | undefined)?.as_of_date || '—')}</span></>}</p>
-        {typeof result.reason === 'string' && <p>{result.reason}</p>}{typeof result.limitation === 'string' && <p>{result.limitation}</p>}
-        {sources.map((source, index) => {
-          const href = publicHref(source.url)
-          return <p key={source.source_id || index}>{href ? <a href={href} target="_blank" rel="noopener noreferrer" translate="no">{source.title || source.url}</a> : source.title}<br /><small><span>原文发布时间</span> {stamp(source.published_at)}</small></p>
-        })}
-        {coverage.length > 0 && <ul>{coverage.map((gap) => <li key={gap}>{gap}</li>)}</ul>}
-        <details><summary>当时证据快照</summary><pre className="research-evidence-json" translate="no">{JSON.stringify({ request: item.request, result }, null, 2)}</pre></details>
-      </div>
+// Bound the rendered text, not the retained evidence. Large originals can contain
+// years of input observations and otherwise stall layout/accessibility snapshots.
+const evidencePageCharacters = 24_000
+function EvidenceSnapshot({ request, result, sourceId }: { request?: Record<string, unknown>; result: Record<string, unknown>; sourceId: string }) {
+  const text = useMemo(() => JSON.stringify({ request, result }, null, 2), [request, result])
+  const [page, setPage] = useState(0)
+  const pageCount = Math.ceil(text.length / evidencePageCharacters)
+  const currentPage = Math.min(page, pageCount - 1)
+  function download() {
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${sourceId.replace(/[^a-zA-Z0-9._-]/g, '_')}.json`
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+  return <>
+    {pageCount > 1 && <div className="research-evidence-pages">
+      <p>原件较大，以下分段显示；完整内容保留在下载文件中。</p>
+      <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>上一段</button>
+      <span role="status"><span>文本段</span> {currentPage + 1} / {pageCount}</span>
+      <button type="button" disabled={currentPage === pageCount - 1} onClick={() => setPage(currentPage + 1)}>下一段</button>
+      <button type="button" onClick={download}>下载完整证据</button>
+    </div>}
+    <pre className="research-evidence-json" translate="no">{text.slice(currentPage * evidencePageCharacters, (currentPage + 1) * evidencePageCharacters)}</pre>
+  </>
+}
+function EvidenceItem({ item, entry, read }: { item: Evidence; entry: Entry; read: ResearchAssistantProps['read'] }) {
+  const [result, setResult] = useState(item.result)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const fetching = useRef(false)
+  async function load() {
+    if (result || fetching.current) return
+    fetching.current = true
+    setLoading(true)
+    setError('')
+    try {
+      const receipt = await read<Evidence>(`/research/runs/${encodeURIComponent(entry.entry_id)}/evidence?source_id=${encodeURIComponent(item.source_id)}`)
+      setResult(receipt.result || { available: false, limitation: '此历史记录未保留可展示的证据明细。' })
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : '证据读取失败，请重试。')
+    } finally {
+      fetching.current = false
+      setLoading(false)
+    }
+  }
+  const failed = result?.available === false
+  const sources = failed ? [] : item.tool === 'search' && Array.isArray(result?.sources)
+    ? result.sources as PublicSource[] : item.tool === 'source' && result ? [result as PublicSource] : []
+  const coverage = Array.isArray(result?.coverage) ? result.coverage as string[] : []
+  return <div id={evidenceId(entry.entry_id, item.source_id)} tabIndex={-1}>
+    <p><strong>{toolLabels[item.tool] || item.tool}{failed ? ' · 读取未完成' : ''}</strong> · <span>获取时间</span> {stamp(item.retrieved_at)}</p>
+    <p><span>来源编号</span> <code translate="no">{item.source_id}</code>{item.tool === 'portfolio' && <> · <span>组合编号</span> <code translate="no">{String(result?.portfolio_id || entry.context_json.portfolio_id || '—')}</code> · <span>估值日期</span> <span translate="no">{String(result?.as_of_date || (result?.summary as Record<string, unknown> | undefined)?.as_of_date || (entry.context_json.page_context as Record<string, unknown> | undefined)?.as_of_date || '—')}</span></>}</p>
+    {typeof result?.reason === 'string' && <p>{result.reason}</p>}{typeof result?.limitation === 'string' && <p>{result.limitation}</p>}
+    {sources.map((source, index) => {
+      const href = publicHref(source.url)
+      return <p key={source.source_id || index}>{href ? <a href={href} target="_blank" rel="noopener noreferrer" translate="no">{source.title || source.url}</a> : source.title}<br /><small><span>原文发布时间</span> {stamp(source.published_at)}</small></p>
     })}
+    {coverage.length > 0 && <ul>{coverage.map((gap) => <li key={gap}>{gap}</li>)}</ul>}
+    <details onToggle={(event) => { if (event.currentTarget.open) void load() }}><summary>当时证据快照</summary>
+      {loading && <p role="status">正在读取当时留存的证据…</p>}
+      {error && <p role="alert">{error} <button type="button" onClick={() => void load()}>重试读取</button></p>}
+      {result && <EvidenceSnapshot request={item.request} result={result} sourceId={item.source_id} />}
+    </details>
+  </div>
+}
+function EvidenceDetails({ evidence, entry, read }: { evidence: Evidence[]; entry: Entry; read: ResearchAssistantProps['read'] }) {
+  return <details className="assistant-evidence"><summary>查阅依据（{evidence.length}）</summary>
+    <p>以下是本次回答实际查阅并保留的证据。目录、历史对话和未检索的扩展范围不代表已核实；未关联来源的结论仍有证据限制。展开某条快照可读取当时留存的完整内容。</p>
+    {evidence.map(item => <EvidenceItem key={item.source_id} item={item} entry={entry} read={read} />)}
   </details>
 }
 
@@ -593,7 +624,7 @@ export default function ResearchAssistant({
                 {userRecords.map((record) => <p className="assistant-scope" role="status" key={record.id}>
                   已保存{record.kind === 'theme' ? '关注主题' : record.kind === 'research_publication' ? '团队研究发布指令' : '你的投资观点'}{record.title ? `：${record.title}` : '。'}
                 </p>)}
-                {evidence.length > 0 ? <EvidenceDetails evidence={evidence} entry={entry} /> : !['queued', 'running'].includes(entry.status) && <p className="assistant-scope">本次回答没有可展示的工具查阅记录；无法据此核实扩展范围的事实。</p>}
+                {evidence.length > 0 ? <EvidenceDetails evidence={evidence} entry={entry} read={read} /> : !['queued', 'running'].includes(entry.status) && <p className="assistant-scope">本次回答没有可展示的工具查阅记录；无法据此核实扩展范围的事实。</p>}
                 {entry.status === 'failed' && <button type="button" disabled={busy || running} onClick={() => { setQuestion(entry.title); questionRef.current?.focus() }}>重新填写本次问题</button>}
                 {entry.status === 'draft' && canSaveNote && saveNote && !pagePortfolioId && !detail?.topic.portfolio_id && !portfolioId && (
                   <button

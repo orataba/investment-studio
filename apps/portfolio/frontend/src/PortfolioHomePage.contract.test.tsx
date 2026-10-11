@@ -1616,6 +1616,17 @@ describe('Holdings rendered page contract', () => {
     expect(screen.queryByText('Trend: Close · Partial · 40 observations')).not.toBeInTheDocument()
   })
 
+  it('explains why unverified observation schedules withhold daily risk', async () => {
+    renderHoldings(holdingsWorkspaceFixture({ rows: [holdingFixture({
+      instrument_trend_reason: 'observation_schedule_unverified',
+      instrument_volatility_1m: null,
+    })] }))
+    await waitForHoldings()
+    const title = screen.getByRole('cell', { name: 'Alpha Fund' }).querySelector('.holding-name-stack')?.getAttribute('title')
+    expect(title).toContain('Daily risk is unavailable because the observation schedule is unverified')
+    expect(title).toContain('verified market calendar or explicit event-driven source contract')
+  })
+
   it('exports sectioned schemas instead of reconstructing the obsolete unified table', async () => {
     renderHoldings(
       holdingsWorkspaceFixture({

@@ -15,6 +15,13 @@ def bind_context(monkeypatch, context, requests=None):
             requests.append(suffix)
         if suffix == "risk-read":
             return project_risk_read(context, **payload)
+        if suffix == "risk-evidence":
+            from watchlist_app.services.research_read_projection import read_page
+            snapshot = payload["snapshot"]
+            assert snapshot in {"current", "previous"} and context["risk_run"]
+            return read_page(context["risk_inputs" if snapshot == "current" else "prior_inputs"],
+                {"snapshot": snapshot, "cutoff": context["cutoff"]},
+                **{key: payload[key] for key in ("path", "offset", "limit")})
         assert suffix == "context"
         return context
     monkeypatch.setattr(mcp, "request", server_projection(request))
@@ -53,7 +60,11 @@ def test_risk_tools_keep_all_instruments_and_shared_reports_without_spilling(mon
         report = packet["current"]["research"][0]
         assert report["body"] == "完整风险分析及反向证据"
         assert report["case_id"].split("-")[1] == instrument["instrument_id"].split("-")[1]
-        assert report["sources"][0]["published_at"] == "2026-09-04" and "text" not in report["sources"][0]
+        assert report["sources"][0]["published_at"] == "2026-09-04"
+        text_reference = report["sources"][0]["text"]
+        assert text_reference["inline"] is False
+        assert text_reference["read"] == {"tool": "read_risk_evidence", "snapshot": "current",
+            "path": ["research", int(instrument["instrument_id"].split("-")[1]), "evidence_json", "sources", 0, "text"]}
         assert report["evidence_json"]["occurred_at"] == "2026-09-03"
         assert packet["previous"] == {"unchanged": True}
         assert len(json.dumps(packet, ensure_ascii=False, indent=2).encode()) < 50000
@@ -175,25 +186,27 @@ def test_scope_plan_keeps_single_overview_that_fits_without_batch_envelope(monke
 
 
 def test_risk_instrument_pages_real_peer_evidence_cases_and_exact_samples(monkeypatch):
-    from datetime import date, timedelta
+    from datetime import UTC, date, datetime
     from math import sin
     from types import SimpleNamespace
+    from investment_studio_instrument_core import build_return_intervals
+    from watchlist_app.services.calculation_frequency import _market_calendar_sessions
     from watchlist_app.services import risk_performance as performance
 
-    dates, day = [], date(2023, 9, 1)
-    while len(dates) < 756:
-        if day.weekday() < 5:
-            dates.append(day.isoformat())
-        day += timedelta(days=1)
-    series = {"currency": "CNY", "frequency": {"resolved_frequency": "daily"},
+    sessions = _market_calendar_sessions('XNYS', date(2023, 9, 1), date(2026, 9, 11))
+    assert sessions is not None and len(sessions) >= 756
+    dates = [day.isoformat() for day in sessions[:756]]
+    series = {"currency": "CNY", "frequency": {"resolved_frequency": "daily", "gap_detection_basis": "market_calendar:XNYS"},
+        "observation_schedule": {"market_calendar": "XNYS", "expected_frequency": "daily"},
         "metadata": {"return_series_status": "ready", "return_kind": "total_return"},
         "points": [{"date": day, "value": 100 * 1.0002 ** index * (1 + .004 * sin(index))}
                    for index, day in enumerate(dates)]}
+    series['intervals'] = build_return_intervals(series['points'])
     class RetainedSession:
         def get(self, model, instrument_id):
             if model is performance.InstrumentChartReadModel:
                 return SimpleNamespace(payload_json={"research_returns": series},
-                    source_cutoff_at="2026-09-13T00:00:00+00:00", data_freshness_status="fresh")
+                    source_cutoff_at=datetime(2026, 9, 13, tzinfo=UTC), data_freshness_status="fresh")
             if model is performance.InstrumentManualProfile:
                 return SimpleNamespace(nav_settings_json={})
             if model is performance.InstrumentDetail:
@@ -206,7 +219,7 @@ def test_risk_instrument_pages_real_peer_evidence_cases_and_exact_samples(monkey
         model: {iid: retained.get(model, iid) for iid in ["target", *peers]}
         for model in (performance.InstrumentChartReadModel, performance.InstrumentManualProfile,
                       performance.InstrumentDetail, performance.InstrumentPerformanceReadModel)
-    }, {"target": (peers, {}, None)})
+    }, {"target": (peers, {}, None)}, datetime(2026, 9, 13, tzinfo=UTC))
     evidence = performance.performance_evidence(retained, "target", context=context)
     assert len(json.dumps(evidence, ensure_ascii=False, separators=(",", ":")).encode()) > 50000
     instrument = {"instrument_id": "target", "name": "同类基金", "performance_evidence": evidence}
@@ -322,6 +335,40 @@ def _resolve_case_evidence_references(packet):
     return expand(packet)
 
 
+def _read_original_evidence(reference):
+    """Follow only the delivered selector, restoring every optional original page."""
+    selector = reference["read"]
+    assert selector["tool"] == "read_risk_evidence" and reference["inline"] is False
+
+    def read(path):
+        offset, result = 0, None
+        while True:
+            output = asyncio.run(mcp.mcp.call_tool("read_risk_evidence", {
+                "snapshot": selector["snapshot"], "path": path, "offset": offset, "limit": 100}))
+            packet = output.structured_content
+            assert json.loads(output.content[0].text) == packet
+            assert len(output.content[0].text.encode()) <= 48000
+            assert packet["snapshot"] == selector["snapshot"] and packet["path"] == path
+            kind = packet["data_type"]
+            if result is None:
+                result = {} if kind == "object" else [None] * packet["total"] if kind == "array" else "" if kind == "text" else packet["data"]
+            if kind == "object":
+                result.update(packet["data"])
+            elif kind == "array":
+                result[offset:offset + len(packet["data"])] = packet["data"]
+            elif kind == "text":
+                assert len(result) == offset
+                result += packet["data"]
+            for child in packet["deferred"]:
+                result[child["path"][-1]] = read(child["path"])
+            if packet["next_offset"] is None:
+                return result
+            assert packet["next_offset"] > offset
+            offset = packet["next_offset"]
+
+    return read(selector["path"])
+
+
 def test_risk_instrument_pages_large_single_record_without_truncating(monkeypatch):
     context = {"risk_run": True, "cutoff": "2026-09-13", "risk_inputs": {
         "instrument_ids": ["target"], "instruments": [], "research": [
@@ -401,12 +448,13 @@ def test_large_current_prior_and_nested_sources_are_lossless_and_required(monkey
         mcp.read_risk_instrument("other", section=section, page_offset=0, path=[])
 
 
-def test_case_evidence_references_restore_exact_prior_and_views_and_require_full_source(monkeypatch):
+def test_case_decisions_remain_required_while_original_calculations_are_lossless_optional_reads(monkeypatch):
     from watchlist_app.services.risk_read_projection import delivered_page_keys, missing_required_reads
 
     sources = [{"source_id": f"computed-{label}", "document_id": f"document-{label}",
         "version_id": "v1", "source_type": "computed_metric", "text": "相同完整原文",
-        "methodology": {"formula": "相同方法", "input_sources": [{"source_id": f"prices-{label}",
+        "data": {"value": 0.00000125, "coverage": "partial", "limitations": ["样本不完整"]},
+        "methodology": {"formula": "相同方法", "currency": "CNY", "input_sources": [{"source_id": f"prices-{label}",
             "input_series": [{"date": f"day-{day}", "value": day / 100} for day in range(1800)]}]}}
         for label in ("a", "b")]
 
@@ -427,47 +475,44 @@ def test_case_evidence_references_restore_exact_prior_and_views_and_require_full
                "prior_inputs": {**snapshot, "research": [previous_case]}, "risk_delivered_pages": []}
     frozen = copy.deepcopy(context)
     bind_context(monkeypatch, context)
-    for section in ("overview", "cases"):
-        directory = mcp.read_risk_instrument("target", section=section)
-        context["risk_delivered_pages"].extend(delivered_page_keys(directory))
-    pages = []
-    complete = _reassemble_risk_continuation("target", "cases", 0, on_page=pages.append)
-    current, previous = (complete[side]["research"][0] for side in ("current", "previous"))
-    assert current["sources"] == _risk_case_brief(current_case)["sources"]
-    for prior_index, current_index in ((0, 1), (1, 0)):
-        reference = previous["sources"][prior_index]
-        assert reference == {**{key: sources[current_index][key]
-            for key in ("source_id", "document_id", "version_id", "source_type")},
-            "same_as_path": ["current", "research", 0, "sources", current_index]}
-        assert previous["evidence_json"]["source_views"][prior_index]["methodology"] == {
-            "same_as_path": [*reference["same_as_path"], "methodology"]}
-    assert previous["sources"][2] == _risk_case_brief(previous_case)["sources"][2]
-    assert current["evidence_json"]["source_views"][0]["title"] is None
-    assert current["evidence_json"]["source_views"][0]["view_note"] == "单独保留的解释"
-    restored = _resolve_case_evidence_references(complete)
-    assert restored["current"]["research"] == [_risk_case_brief(current_case)]
-    assert restored["previous"]["research"] == [_risk_case_brief(previous_case)]
-    assert len(json.dumps(complete)) < len(json.dumps(restored))
-
-    # Deliver all references and all other pages, but withhold actual current
-    # input observations. A reference to that source cannot satisfy its read.
-    source_path = ["current", "research", 0, "sources", 0]
-    omitted = next(page for page in pages if page["path"][:len(source_path)] == source_path
-                   and page["data_type"] == "array" and page["offset"] > 0 and page["data"])
-    for page in pages:
-        if page is not omitted:
-            context["risk_delivered_pages"].extend(delivered_page_keys(page))
-    assert any(read.get("path") == omitted["path"] and read["offset"] == omitted["offset"]
-               for read in missing_required_reads(context))
-    context["risk_delivered_pages"].extend(delivered_page_keys(omitted))
+    context["risk_delivered_pages"].extend(delivered_page_keys(mcp.read_risk_instrument("target")))
+    assert any(read["section"] == "cases" for read in missing_required_reads(context))
+    output = asyncio.run(mcp.mcp.call_tool("read_risk_instrument", {"instrument_id": "target", "section": "cases"}))
+    complete = output.structured_content
+    assert json.loads(output.content[0].text) == complete
+    assert len(output.content[0].text.encode()) <= 48000
+    assert not complete.get("deferred")
+    context["risk_delivered_pages"].extend(delivered_page_keys(complete))
+    # All risk decision bodies have arrived; thousands of original observations
+    # are not a separate prerequisite for submitting a supported assessment.
     assert missing_required_reads(context) == []
+    restored = _resolve_case_evidence_references(complete)
+    for side, original in (("current", current_case), ("previous", previous_case)):
+        observed = restored[side]["research"][0]
+        assert observed["body"] == original["body"]
+        for source, expected in zip(observed["sources"], original["evidence_json"]["sources"], strict=True):
+            assert source["source_id"] == expected["source_id"]
+            assert source["data"] == expected["data"]
+            assert source["methodology"]["formula"] == expected["methodology"]["formula"]
+            assert source["methodology"]["currency"] == "CNY"
+            assert _read_original_evidence(source["methodology"]["input_sources"]) == expected["methodology"]["input_sources"]
+            assert _read_original_evidence(source["text"]) == expected["text"]
+        for view, expected in zip(observed["evidence_json"]["source_views"], original["evidence_json"]["source_views"], strict=True):
+            assert view["title"] is None and view["view_note"] == "单独保留的解释"
+            assert view["methodology"]["formula"] == expected["methodology"]["formula"]
+            assert _read_original_evidence(view["methodology"]["input_sources"]) == expected["methodology"]["input_sources"]
+    prior_reference = restored["previous"]["research"][0]["sources"][2]["methodology"]["input_sources"]
+    assert prior_reference["read"]["snapshot"] == "previous"
+    assert prior_reference["read"]["path"] == ["research", 0, "evidence_json", "sources", 2, "methodology", "input_sources"]
+    with pytest.raises(ValueError, match="读取路径"):
+        mcp.read_risk_evidence(snapshot="previous", path=["outside"])
     for key in ("risk_inputs", "prior_inputs", "cutoff"):
         assert context[key] == frozen[key]
 
 
 @pytest.mark.parametrize("changed", ["text", "version_id", "number", "scalar_type"])
 def test_same_source_id_does_not_merge_different_originals(monkeypatch, changed):
-    source = {"source_id": "same-id", "version_id": "v1", "text": "当前原文",
+    source = {"source_id": "same-id", "source_type": "computed_metric", "version_id": "v1", "text": "当前原文",
               "methodology": {"input_series": [{"value": 1}] * 80}, "data": {"value": 0.00000125}}
     previous = copy.deepcopy(source)
     if changed == "text":
@@ -488,17 +533,20 @@ def test_same_source_id_does_not_merge_different_originals(monkeypatch, changed)
     bind_context(monkeypatch, context)
     packet = mcp.read_risk_instrument("target", section="cases")
     assert packet["previous"] != {"unchanged": True}
-    assert packet["previous"]["research"][0]["sources"] == _risk_case_brief(prior["research"][0])["sources"]
-    assert "same_as_path" not in packet["previous"]["research"][0]["sources"][0]
+    observed = packet["previous"]["research"][0]["sources"][0]
+    assert "same_as_path" not in observed
+    assert observed["version_id"] == previous["version_id"] and observed["data"] == previous["data"]
+    assert _read_original_evidence(observed["text"]) == previous["text"]
+    assert _read_original_evidence(observed["methodology"]["input_series"]) == previous["methodology"]["input_series"]
 
 
 def test_case_source_views_keep_different_values_versions_and_small_metadata(monkeypatch):
     source = {"source_id": "same-id", "version_id": "v1", "methodology": {
-        "input_series": [{"value": value / 100} for value in range(80)]}, "metadata": {"unit": "%"}}
+        "formula": "收益比较", "input_sources": [{"value": value / 100} for value in range(80)]}, "metadata": {"unit": "%"}}
     exact = {"source_id": "same-id", "version_id": "v1", "methodology": copy.deepcopy(source["methodology"]),
              "metadata": {"unit": "%"}, "title": None, "status": "complete"}
     changed_value = copy.deepcopy(exact)
-    changed_value["methodology"]["input_series"][0]["value"] = 0.00000125
+    changed_value["methodology"]["input_sources"][0]["value"] = 0.00000125
     changed_version = {**copy.deepcopy(exact), "version_id": "v0"}
     views = [exact, changed_value, changed_version]
     context = {"risk_run": True, "cutoff": "2026-09-27", "risk_inputs": {
@@ -509,7 +557,100 @@ def test_case_source_views_keep_different_values_versions_and_small_metadata(mon
     packet = mcp.read_risk_instrument("target", section="cases")
     observed = packet["current"]["research"][0]["evidence_json"]["source_views"]
     assert observed[0] == {**exact, "methodology": {"same_as_path": ["current", "research", 0, "sources", 0, "methodology"]}}
-    assert observed[1:] == [changed_value, changed_version]
+    for view, expected in zip(observed[1:], [changed_value, changed_version], strict=True):
+        assert {key: value for key, value in view.items() if key != "methodology"} == {
+            key: value for key, value in expected.items() if key != "methodology"}
+        assert view["methodology"]["formula"] == expected["methodology"]["formula"]
+        assert _read_original_evidence(view["methodology"]["input_sources"]) == expected["methodology"]["input_sources"]
+    assert context == before
+
+
+@pytest.fixture
+def retained_computation_context():
+    source = {"source_id": "computed-a", "source_type": "computed_metric", "version_id": "v1",
+        "title": "已发布计算及其独立留存的原始输入", "metadata": {"currency": "CNY"},
+        "data_summary": {"value": 0.00000125, "sample_count": 1},
+        "retained_reference": {"run_id": "origin-run", "path": ["computed_metrics", "*"]}}
+    snapshot = {"instrument_ids": ["target"], "instruments": [], "quantitative": [], "coverage": [],
+        "research": [{"case_id": "case", "instrument_id": "target", "body": "当前风险判断",
+                      "evidence_json": {"sources": [source]}}]}
+    return {"risk_run": True, "cutoff": "2026-09-27", "risk_inputs": snapshot,
+            "prior_inputs": copy.deepcopy(snapshot)}
+
+
+def test_retained_original_delivery_addresses_do_not_create_evidence_changes(monkeypatch, retained_computation_context):
+    context = retained_computation_context
+    bind_context(monkeypatch, context)
+    before = copy.deepcopy(context)
+    packet = mcp.read_risk_instrument("target", section="cases")
+    assert packet["previous"] == {"unchanged": True}
+    source = packet["current"]["research"][0]["sources"][0]
+    assert source["read"] == {"tool": "read_risk_evidence", "snapshot": "current",
+        "path": ["research", 0, "evidence_json", "sources", 0]}
+    assert source["retained_reference"] == before["risk_inputs"]["research"][0]["evidence_json"]["sources"][0]["retained_reference"]
+    assert context == before
+
+    # A changed judgment still shows the old body, while its exact immutable
+    # original can reuse the current page despite its different delivery side.
+    context["prior_inputs"]["research"][0]["body"] = "此前风险判断"
+    before = copy.deepcopy(context)
+    packet = mcp.read_risk_instrument("target", section="cases")
+    previous = packet["previous"]["research"][0]
+    assert previous["body"] == "此前风险判断"
+    assert previous["sources"][0]["same_as_path"] == ["current", "research", 0, "sources", 0]
+    restored = _resolve_case_evidence_references(packet)
+    assert restored["previous"]["research"][0]["sources"][0] == source
+    assert context == before
+
+
+@pytest.mark.parametrize("changed", ["run_id", "path", "source_id", "metadata", "scalar_type"])
+def test_retained_original_identity_and_metadata_cannot_be_merged(monkeypatch, retained_computation_context, changed):
+    context = retained_computation_context
+    previous = context["prior_inputs"]["research"][0]["evidence_json"]["sources"][0]
+    if changed == "run_id":
+        previous["retained_reference"]["run_id"] = "different-origin-run"
+    elif changed == "path":
+        previous["retained_reference"]["path"] = ["reviews", "target", "research", "sources", "*"]
+    elif changed == "source_id":
+        previous["source_id"] = "computed-b"
+    elif changed == "metadata":
+        previous["metadata"]["currency"] = "USD"
+    else:
+        previous["data_summary"]["sample_count"] = True
+    before = copy.deepcopy(context)
+    bind_context(monkeypatch, context)
+    packet = mcp.read_risk_instrument("target", section="cases")
+    assert packet["previous"] != {"unchanged": True}
+    observed = packet["previous"]["research"][0]["sources"][0]
+    assert "same_as_path" not in observed
+    assert {key: observed[key] for key in previous} == previous
+    assert observed["read"]["snapshot"] == "previous"
+    assert context == before
+
+
+@pytest.mark.parametrize("has_read", [False, True])
+def test_reference_shaped_arbitrary_data_is_preserved_and_compared_as_data(monkeypatch, retained_computation_context, has_read):
+    context = retained_computation_context
+    for side, snapshot in (("current", context["risk_inputs"]), ("previous", context["prior_inputs"])):
+        evidence = snapshot["research"][0]["evidence_json"]
+        shaped_data = copy.deepcopy(evidence["sources"][0])
+        if has_read:
+            shaped_data["read"] = {"tool": "read_risk_evidence", "snapshot": side,
+                                   "path": ["arbitrary-output", side]}
+        evidence["data"] = {"sources": [shaped_data]}
+    before = copy.deepcopy(context)
+    bind_context(monkeypatch, context)
+    packet = mcp.read_risk_instrument("target", section="cases")
+    current = packet["current"]["research"][0]
+    assert current["sources"][0]["read"]["path"] == ["research", 0, "evidence_json", "sources", 0]
+    assert current["evidence_json"]["data"] == before["risk_inputs"]["research"][0]["evidence_json"]["data"]
+    if has_read:
+        # A field in arbitrary output remains evidence. Its changed value must
+        # not receive the trusted source transport-address equality exception.
+        assert packet["previous"] != {"unchanged": True}
+        assert packet["previous"]["research"][0]["evidence_json"]["data"] == before["prior_inputs"]["research"][0]["evidence_json"]["data"]
+    else:
+        assert packet["previous"] == {"unchanged": True}
     assert context == before
 
 

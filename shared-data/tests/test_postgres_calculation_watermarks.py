@@ -38,7 +38,7 @@ def registry_factory():
                 session.add(Instrument(
                     instrument_id=instrument_id, instrument_name=instrument_id,
                     instrument_type="equity", currency="USD", exchange_code="XNYS",
-                    quote_selection_policy_json={role: ["close"] for role in
+                    quote_selection_policy_json={role: ["adjusted_close"] if role == "total_return" else ["close"] for role in
                                                  ("valuation", "trading", "chart", "reference", "total_return")},
                     source_settings_json={}, refresh_status_json={}, lifecycle_state_json={},
                     calculation_inputs_updated_at="2099-01-01T00:00:00.000000Z",
@@ -120,7 +120,7 @@ def test_configuration_and_market_writer_keep_instrument_then_registry_lock_orde
         configuration_started.set()
         return instrument_store.upsert_quote_selection_policy(
             registry_factory, instrument_id="a",
-            quote_selection_policy={role: ["last", "close"] for role in
+            quote_selection_policy={role: ["adjusted_close"] if role == "total_return" else ["last", "close"] for role in
                                     ("valuation", "trading", "chart", "reference", "total_return")},
         )
 

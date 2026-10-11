@@ -170,7 +170,7 @@ def test_portfolio_scope_is_checked_again_on_history_download_and_run(accounts):
         session.add(ResearchEntry(entry_id="portfolio-run", topic_id=tid, kind="analysis", title="讨论A", status="running",
                                  context_json={"research_run": True, "portfolio_id": "A", "research_actor": principals["alice"].to_dict()}))
         session.commit()
-    principals["run-A"] = replace(principals["alice"], credential="run-A", resource_scope={"kind": "run", "id": "portfolio-run"})
+    principals["run-A"] = replace(principals["alice"], credential="run-A", resource_scope={"kind": "run", "id": "portfolio-run", "attempt": "1"})
     assert as_user(client, "alice").get("/api/research/runs/portfolio-run/context").status_code == 200
     assert client.post("/api/research/runs/portfolio-run/tools", json={"tool": "portfolio"}).status_code == 403
     assert as_user(client, "run-A").get("/api/research/topics").status_code == 403
@@ -276,7 +276,7 @@ def test_team_reader_can_analyze_an_authorized_portfolio_but_cannot_refresh_shar
     client, _, grants = accounts
     monkeypatch.setattr(risk_officer, "harness_available", lambda: True)
     queued = []
-    monkeypatch.setattr(risk_officer, "run_analysis", lambda run_id, token, issuer: queued.append(run_id))
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: queued.append(run_id))
     as_user(client, "reader")
     path = "/api/risk/review/runs"
     assert client.post(path, json={"instrument_id": "fund-us-agg"}).status_code == 403
@@ -304,7 +304,7 @@ def test_risk_summary_and_detail_keep_team_read_and_delegation_boundaries(accoun
     assert client.get('/api/risk?instrument_id=fund-us-agg&summary=true').status_code == 200
     assert client.get(f'/api/risk/cases/{case_id}').json() == created
     assert client.put(f'/api/risk/cases/{case_id}', json={'status': 'handled'}).status_code == 403
-    principals['scoped'] = replace(principals['alice'], credential='scoped', resource_scope={'kind': 'run', 'id': 'limited'})
+    principals['scoped'] = replace(principals['alice'], credential='scoped', resource_scope={'kind': 'run', 'id': 'limited', 'attempt': '1'})
     as_user(client, 'scoped')
     assert client.get('/api/risk?summary=true').status_code == 403
     assert client.get(f'/api/risk/cases/{case_id}').status_code == 403

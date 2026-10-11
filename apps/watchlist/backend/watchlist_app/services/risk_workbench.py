@@ -38,11 +38,13 @@ def refresh_risk_cases(session: Session, instrument_ids: list[str] | None = None
             observed = (summary.payload_json.get("snapshot_metadata") or {}).get("as_of_date")
         observed_on = date.fromisoformat(str(observed)[:10]) if observed else None
         quality = payload.get("data_quality") or {}
-        limited = not risk or quality.get("status") != "ready" or freshness.get("data_freshness_status", summary.data_freshness_status if summary else "missing") != "fresh"
+        stale = freshness.get("data_freshness_status", summary.data_freshness_status if summary else "missing") != "fresh"
+        limited = not risk or quality.get("status") != "ready" or stale
         chart = session.get(InstrumentChartReadModel, iid)
+        price_stale = stale or not chart or chart.data_freshness_status != "fresh"
         series = (chart.payload_json.get("research_returns") or {}) if chart else {}
         rule = session.get(RiskReviewRule, iid)
-        if not limited and (rule is None or not rule.period_limits_json):
+        if not price_stale and (rule is None or not rule.period_limits_json):
             limits, calibration = initial_price_limits(series)
             if limits:
                 if rule is None:
@@ -67,7 +69,9 @@ def refresh_risk_cases(session: Session, instrument_ids: list[str] | None = None
         else:
             if rule and rule.drawdown_limit is not None and drawdown is not None and float(drawdown) <= -rule.drawdown_limit:
                 signals["drawdown_limit"] = dict(title="回撤达到复核线", body=f"当前回撤 {float(drawdown):.2f}%，达到你设置的 {rule.drawdown_limit:g}% 复核线。", severity="attention", evidence={"current_drawdown": drawdown, "review_line": rule.drawdown_limit, "sample": dd_summary})
-            # A sample low alone has no materiality threshold. Keep it in readings.
+        # Each period validates its own confirmed path; an older chain break
+        # may leave full-history drawdown unavailable without suppressing it.
+        if not price_stale:
             breached = [row for row in readings if row["breached"]]
             if breached:
                 description = "；".join(f"{row['label']}下跌 {abs(row['return_pct']):.2f}%（复核线 {row['limit_pct']:g}%）" for row in breached)
@@ -106,7 +110,7 @@ def refresh_risk_cases(session: Session, instrument_ids: list[str] | None = None
             if limited and case.signal == "drawdown_limit" and rule and rule.drawdown_limit is not None:
                 continue
             if case.signal == "period_loss" and any(
-                (limited or row["limitation"]) and row["limit_pct"] is not None
+                (price_stale or row["limitation"]) and row["limit_pct"] is not None
                 for row in readings
                 if row["period"] in {p["period"] for p in case.evidence_json.get("periods", [])}
             ):

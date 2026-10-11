@@ -15,7 +15,7 @@ def _profile(
     )
 
 
-def test_registry_expected_frequency_overrides_sparse_history_inference(
+def test_declared_daily_frequency_without_calendar_cannot_prove_coverage(
     monkeypatch,
 ) -> None:
     detail = {
@@ -41,8 +41,21 @@ def test_registry_expected_frequency_overrides_sparse_history_inference(
 
     assert profile["source_frequency_by_instrument"] == {"fund": "daily"}
     assert profile["resolved_frequency"] == "daily"
-    assert profile["coverage_state"] == "partial"
-    assert profile["gap_instrument_ids"] == ["fund"]
+    assert profile["coverage_state"] == "unavailable"
+    assert profile["gap_instrument_ids"] == []
+    assert profile["unverified_schedule_instrument_ids"] == ["fund"]
+    assert "observation schedule unverified" in profile["status_label"]
+
+
+def test_short_or_invalid_calendar_history_cannot_be_inferred_complete(monkeypatch):
+    monkeypatch.setattr(risk_basis, "_market_calendar_sessions", lambda *_args: None)
+    for settings in ({}, {"expected_frequency": "daily"}, {"market_calendar": "UNRECOGNIZED"}):
+        coverage = risk_basis.observation_coverage_from_dates(
+            [date(2026, 7, 6), date(2026, 7, 8)], source_settings=settings,
+        )
+        assert coverage["gap_detection_basis"] == "schedule_unverified"
+        assert coverage["gap_dates"] == []  # Unknown dates must not be fabricated.
+        assert not risk_basis.observation_schedule_verified(coverage)
 
 
 def test_market_calendar_detects_a_missing_session_even_when_all_members_share_it(
@@ -150,3 +163,16 @@ def test_event_driven_source_does_not_invent_expected_daily_gaps() -> None:
     )
     assert coverage["gap_dates"] == []
     assert coverage["gap_detection_basis"] == "event_driven"
+
+
+def test_risk_basis_summary_includes_missing_expected_tail(monkeypatch):
+    days = [date(2026, 7, day) for day in (23, 24, 27, 28)]
+    monkeypatch.setattr(risk_basis, "_market_calendar_sessions",
+                        lambda _calendar, start, end: [day for day in days if start <= day <= end])
+    profile = risk_basis.calculation_frequency_profile_from_observation_dates(
+        ["asset"], observation_dates_by_instrument={"asset": days[:2]},
+        source_settings_by_instrument={"asset": {"market_calendar": "XTEST"}},
+        end_date=days[-1],
+    )
+    assert profile["coverage_state"] == "partial"
+    assert profile["gap_details"][0]["gap_date_sample"] == ["2026-07-27", "2026-07-28"]

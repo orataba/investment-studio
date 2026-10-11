@@ -1,7 +1,9 @@
 """Reviewer subprocesses have API access, deliberately no market DB credentials."""
 from copy import deepcopy
 from datetime import datetime
+from io import BytesIO
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
 from watchlist_app.db.session import get_session_factory
@@ -40,11 +42,34 @@ def test_context_expands_theme_and_pm_original_versions_before_sandboxed_review(
     def unavailable():
         raise AssertionError("Reviewer must not create TextStore or require a DB credential")
     monkeypatch.setattr(market_evidence, "text_store", unavailable)
+    api_reads = []
+    def api_transport(request, *, timeout):
+        # Keep the real reviewer request builder and persisted dossier endpoint.
+        # Only the API server owns TextStore; the isolated reviewer can resolve
+        # cited originals through its bound API without acquiring DB access.
+        url = urlsplit(request.full_url)
+        assert url.scheme == "http" and url.netloc == "review-api.invalid"
+        assert request.get_method() == "GET"
+        assert request.get_header("Authorization") == "Bearer fixture-run"
+        assert timeout == 150
+        path = url.path + "?" + url.query
+        api_reads.append(path)
+        with monkeypatch.context() as server:
+            server.setattr(market_evidence, "text_store", lambda: SimpleNamespace(read=read))
+            response = client.get(path, headers={"Authorization": request.get_header("Authorization")})
+        assert response.status_code == 200, response.text
+        return BytesIO(response.content)
+    monkeypatch.setenv("INVESTMENT_STUDIO_RESEARCH_API_BASE_URL", "http://review-api.invalid/api")
+    monkeypatch.setattr(sector_fact_review, "urlopen", api_transport)
     originals = research_notebook.research_sources(hydrated, "review-hydration")
     assert set(originals) == {ref["source_id"] for ref in refs}
     draft = [{"instrument_id": "asset", "events": [], "research": {"source_ids": list(originals)}}]
     packet = sector_fact_review._evidence_packet(hydrated, draft, "review-hydration")
+    assert api_reads == [f"/api/research/runs/review-hydration/dossier/asset?source_id={source_id}"
+                         for source_id in sorted(originals)]
     assert {s["source_id"] for s in packet["sources"]} == set(originals)
     assert all(s["text"] == "该版本保留的原始披露。" for s in packet["sources"])
+    assert {(s["document_id"], s["version_id"]) for s in packet["sources"]} == {
+        (ref["document_id"], ref["version_id"]) for ref in refs}
     with get_session_factory()() as session:
         assert session.get(ResearchEntry, "review-hydration").context_json == persisted

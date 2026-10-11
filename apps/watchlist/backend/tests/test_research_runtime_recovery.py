@@ -110,7 +110,9 @@ def test_risk_retry_redelivers_frozen_inputs_and_requires_a_new_proposal(client,
         assert run.context_json["execution"]["failures"][-1]["manual_recovery"] is manual
         for key in ("cutoff", "input_snapshot_cutoff", "prepared_at", "risk_inputs", "prior_inputs", "research_actor"):
             assert run.context_json[key] == retained[key]
-        assert run.context_json["submitted_risk_review"] == new_result
+        from watchlist_app.services.research_risk_state import get_risk_submission
+        assert get_risk_submission(session, run_id, attempt=2) == new_result
+        assert "submitted_risk_review" not in run.context_json
 
 
 def test_recovery_does_not_adopt_another_users_research(client, monkeypatch):
@@ -290,8 +292,8 @@ def test_generation_recovery_reuses_saved_computations_and_keeps_original_clock(
     save_run(context, status="queued")
     monkeypatch.setattr(sector_research, "prepare_run", lambda *args: pytest.fail("Recovery must not rebind inputs"))
     def read(suffix, payload=None):
-        assert suffix.startswith("computed-source?"), "Saved source reads must not calculate or acquire data"
-        response = client.get("/api/research/runs/recovery/" + suffix)
+        assert suffix == "computed-read", "Saved source reads must not calculate or acquire data"
+        response = client.post("/api/research/runs/recovery/" + suffix, json=payload)
         assert response.status_code == 200, response.text
         return response.json()
     monkeypatch.setattr(mcp, "request", read)
@@ -461,7 +463,8 @@ def test_risk_retry_keeps_bound_inputs_and_shares_the_existing_attempt_budget(cl
             run = session.get(ResearchEntry, 'recovery')
             assert 'submitted_risk_review' not in run.context_json
             if submits_again:
-                run.context_json = {**run.context_json, 'submitted_risk_review': fresh_proposal}
+                from watchlist_app.services.research_risk_state import risk_read_state
+                risk_read_state(session, run.entry_id, 2).submitted_review = fresh_proposal
                 session.commit()
         return SimpleNamespace(communicate=lambda **kw: ('', ''), returncode=0)
     monkeypatch.setattr(runner.subprocess, 'Popen', launch)
@@ -479,7 +482,7 @@ def test_risk_retry_keeps_bound_inputs_and_shares_the_existing_attempt_budget(cl
         assert run.context_json['risk_inputs'] == snapshot and run.context_json['cutoff'] == cutoff
         if not submits_again:
             assert 'submitted_risk_review' not in run.context_json
-            assert 'submitted_risk_review' in run.context_json['validation_error']
+            assert run.context_json['runtime_error']['type'] == 'NoAcceptedSubmission'
         run.status, run.completed_at = 'failed', stamp
         run.context_json = {**run.context_json, 'runtime_error': context['runtime_error'],
                            'execution': {**run.context_json['execution'], 'attempt': 3}}

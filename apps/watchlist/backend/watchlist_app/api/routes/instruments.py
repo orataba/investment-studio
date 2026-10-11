@@ -1,4 +1,5 @@
 from datetime import date
+from math import isfinite
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
@@ -122,7 +123,7 @@ def get_instrument_price_bars(
     instrument_id: str,
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
-    limit: int = Query(default=1250, ge=1, le=5000),
+    limit: int | None = Query(default=None, ge=1, le=5000),
 ) -> dict[str, object]:
     if start_date is not None and end_date is not None and start_date > end_date:
         raise HTTPException(
@@ -140,18 +141,57 @@ def get_instrument_price_bars(
                 status_code=422,
                 detail=f'{instrument_type or "unknown"} instruments do not expose OHLCV bars',
             )
-        bars = get_shared_price_bars(
-            instrument_id=canonical_id,
-            start_date=start_date,
-            end_date=end_date,
-            limit=limit,
-        )
+        # Fixed full-history anchors make display adjustment independent of
+        # the requested chart range. Reads never mutate prices or analytical TR.
+        all_bars = get_shared_price_bars(instrument_id=canonical_id, end_date=end_date)
+        all_bars = [bar for bar in all_bars if end_date is None or str(bar["date"]) <= end_date.isoformat()]
+        bars = [bar for bar in all_bars
+            if (start_date is None or str(bar["date"]) >= start_date.isoformat())
+            and (end_date is None or str(bar["date"]) <= end_date.isoformat())]
+        if limit is not None:
+            bars = bars[-limit:]
     except HTTPException:
         raise
     except SharedInstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
-    factor_count = sum(1 for bar in bars if bar.get("adjustment_factor") is not None)
+    def valid_factor(bar):
+        try:
+            factor = float(bar.get("adjustment_factor"))
+            return not isinstance(bar.get("adjustment_factor"), bool) and isfinite(factor) and factor > 0
+        except (TypeError, ValueError):
+            return False
+
+    factor_count = sum(valid_factor(bar) for bar in bars)
+    factor_bars = [bar for bar in all_bars if valid_factor(bar)]
+    anchors = {}
+    unavailable_modes = {}
+    available_modes = ["raw"]
+    settings = instrument.get("source_settings") or {}
+    if instrument_type in {"equity", "etf"}:
+        segments = settings.get("total_return_segments")
+        for mode in ("front", "back"):
+            if not factor_bars:
+                unavailable_modes[mode] = "No confirmed multiplicative total-return factors are available."
+                continue
+            anchor = factor_bars[-1] if mode == "front" else factor_bars[0]
+            segment = (next((item for item in segments if isinstance(item, dict)
+                and str(item.get("start_date") or "") <= anchor["date"] <= str(item.get("end_date") or "")), None)
+                if isinstance(segments, list) else {"start_date": all_bars[0]["date"], "end_date": all_bars[-1]["date"]})
+            if not segment:
+                unavailable_modes[mode] = "The anchor is outside confirmed total-return coverage."
+                continue
+            anchors[mode] = {"date": anchor["date"], "factor": float(anchor["adjustment_factor"]),
+                "start_date": segment["start_date"], "end_date": min(segment["end_date"], all_bars[-1]["date"])}
+            selected = [bar for bar in bars if segment["start_date"] <= bar["date"] <= segment["end_date"]]
+            if not selected:
+                unavailable_modes[mode] = "The requested range has no observations in the anchor's confirmed segment."
+            elif any(not valid_factor(bar) for bar in selected):
+                unavailable_modes[mode] = "Some requested observations have no confirmed adjustment factor."
+            elif mode == "front" and bars and bars[-1]["date"] > anchor["date"]:
+                unavailable_modes[mode] = "The latest observed price is newer than the last confirmed adjustment factor."
+            else:
+                available_modes.append(mode)
     refresh_status = (
         dict(instrument.get("refresh_status", {}))
         if isinstance(instrument.get("refresh_status"), dict)
@@ -163,6 +203,11 @@ def get_instrument_price_bars(
         "currency": str(instrument.get("currency") or ""),
         "adjustment_mode": "raw_with_factor" if factor_count else "raw",
         "factor_coverage": factor_count / len(bars) if bars else 0.0,
+        "available_price_modes": available_modes,
+        "unavailable_price_mode_reasons": unavailable_modes,
+        "adjustment_method": "multiplicative_total_return_chain" if anchors else None,
+        "adjustment_anchors": anchors,
+        "total_return_segments": settings.get("total_return_segments"),
         "source_refresh_status": str(refresh_status.get("status") or "idle"),
         "source_refresh_message": str(refresh_status.get("message") or ""),
         "count": len(bars),

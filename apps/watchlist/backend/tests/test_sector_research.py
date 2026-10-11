@@ -11,7 +11,13 @@ from watchlist_app.db.session import get_session_factory
 
 
 def seed_sector(client, monkeypatch):
+    from .conftest import canonical_quote_policy, seed_shared_instrument
     monkeypatch.setattr(service, "_research_market", lambda session, iid: "us")
+    for iid in ("xlk", "xlf"):
+        seed_shared_instrument({"instrument_id": iid, "instrument_name": iid.upper(),
+            "instrument_type": "etf", "currency": "USD", "exchange_code": "ARCX",
+            "quote_selection_policy": canonical_quote_policy("etf"),
+            "identifiers": [{"identifier_type": "provider_symbol", "identifier_value": f"fmp:{iid.upper()}", "is_primary": True}]})
     with get_session_factory()() as session:
         for iid in ("xlk", "xlf"):
             session.add(InstrumentDetail(instrument_id=iid, instrument_type="etf", detail_view_type="etf", instrument_name=iid.upper(), metadata_json={}))
@@ -71,7 +77,7 @@ def test_new_research_rejects_invalid_scope_without_creating_any_run(client, mon
     from watchlist_app.api.routes import sector_research as routes
     seed_sector(client, monkeypatch)
     monkeypatch.setattr(routes, "harness_available", lambda: True)
-    monkeypatch.setattr(routes, "run_analysis", lambda *args: pytest.fail("invalid scope started a harness"))
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda *args, **kwargs: pytest.fail("invalid scope started a harness"))
     response = client.post("/api/sector-research/runs", json={"instrument_ids": ids})
     assert response.status_code == 422
     with get_session_factory()() as session:
@@ -653,7 +659,19 @@ def test_shared_original_can_support_research_without_online_search(client, monk
         case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == "xlk"))
         assert case.evidence_json["sources"][0]["version_id"] == original["version_id"]
         assert "text" not in case.evidence_json["sources"][0]
-    assert client.get(f"/api/research/runs/{run_id}/market-source", params={"document_id": original["document_id"]}).status_code == 409
+    # A source fetch binds new evidence, so an ordinary PM history read does
+    # not authorize it; the original run credential is separately expired.
+    response = client.get(f"/api/research/runs/{run_id}/market-source", params={"document_id": original["document_id"]})
+    assert response.status_code == 403
+    assert '本轮运行凭证' in response.json()['detail']
+    from dataclasses import replace
+    from studio_identity import current_principal
+    from watchlist_app import main
+    completed_run_actor = replace(current_principal(), resource_scope={'kind': 'run', 'id': run_id, 'attempt': '1'})
+    monkeypatch.setattr(main, 'resolve_request', lambda *args, **kwargs: completed_run_actor)
+    response = client.get(f"/api/research/runs/{run_id}/market-source", params={"document_id": original["document_id"]})
+    assert response.status_code == 409
+    assert '已结束' in response.json()['detail']
 
 
 def test_market_search_continuation_keeps_original_cutoff_after_new_capture(client, monkeypatch):

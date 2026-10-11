@@ -59,13 +59,16 @@ def test_local_run_credentials_stay_bound_and_portfolio_content_is_not_team_rese
     with get_session_factory()() as session:
         for rid in ("local-current", "local-other"):
             session.add(ResearchEntry(entry_id=rid, topic_id=tid, kind="analysis", title="请保存团队研究", status="running",
-                context_json={"research_run": True, "portfolio_id": "B", "instrument_ids": ["fund-us-agg"], "research_actor": owner.to_dict()}))
+                context_json={"research_run": True, "portfolio_id": "B", "instrument_ids": ["fund-us-agg"],
+                              "research_actor": owner.to_dict(), "execution": {"attempt": 1}}))
         session.commit()
     path = "/api/research/runs/local-current"
     assert local.get(path + "/context").status_code == 200
     assert local.post(path + "/tools", json={"tool": "portfolio"}).status_code == 403
     principals["local-run"] = replace(owner, credential="local-run", resource_scope={"kind": "run", "id": "local-current"})
     local.headers["Authorization"] = "Bearer local-run"
+    assert local.get(path + "/context").status_code == 409  # Local owner cannot bypass a missing task attempt.
+    principals["local-run"] = replace(owner, credential="local-run", resource_scope={"kind": "run", "id": "local-current", "attempt": "1"})
     assert local.get(path + "/context").status_code == 200
     assert local.get("/api/research/runs/local-other/context").status_code == 403
     assert local.get("/api/research/topics").status_code == 403

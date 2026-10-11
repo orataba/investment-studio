@@ -194,4 +194,10 @@ if grep -Eq 'INVESTMENT_STUDIO_DATA_|DATABASE|/data([/:]|$)' \
 fi
 grep -Fq 'home_api.main:app' "$UNIT_ROOT/investment-studio-home-api.service"
 
+worker_unit="$UNIT_ROOT/investment-studio-research-worker.service"
+grep -Fq 'watchlist_app.research_worker' "$worker_unit"
+grep -Fq 'watchlist.env' "$worker_unit"
+grep -Fq 'market.env' "$worker_unit"
+grep -Fq 'KillMode=control-group' "$worker_unit"
+grep -Fq 'TimeoutStopSec=45' "$worker_unit"
 echo "systemd app external-environment contract test passed."

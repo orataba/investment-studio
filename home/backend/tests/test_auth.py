@@ -63,6 +63,27 @@ def introspect(client, token, audience="watchlist"):
     return client.post("/api/auth/introspect", json={"audience": audience}, headers={"Authorization": f"Bearer {token}"})
 
 
+def test_task_delegation_preserves_attempt_and_rejects_ambiguous_capture_scope(identity):
+    client = client_as()
+    headers = {"Authorization": f"Bearer {credential(client)}"}
+    for scope in (
+        {"kind": "capture", "id": "capture-1"},
+        {"kind": "capture", "id": "capture-1", "attempt": "0"},
+        {"kind": "capture", "id": "capture-1", "attempt": "01"},
+        {"kind": "capture", "id": "capture-1", "attempt": "-1"},
+        {"kind": "portfolio", "id": "portfolio-1", "attempt": "1"},
+        {"kind": "report", "id": "report-1", "attempt": "1"},
+    ):
+        assert client.post("/api/auth/delegations", headers=headers,
+            json={"audience": "portfolio", "resource_scope": scope}).status_code == 422
+    for kind, audience in (("capture", "portfolio"), ("run", "watchlist")):
+        scope = {"kind": kind, "id": "task-1", "attempt": "2"}
+        response = client.post("/api/auth/delegations", headers=headers,
+            json={"audience": audience, "resource_scope": scope})
+        assert response.status_code == 201, response.text
+        assert introspect(client, response.json()["token"], audience).json()["resource_scope"] == scope
+
+
 def test_login_stable_identity_opaque_session_and_revoked_logout(identity):
     settings, engine, ids = identity
     client = client_as()

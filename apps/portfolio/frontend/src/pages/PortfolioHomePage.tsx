@@ -600,6 +600,8 @@ function instrumentTrendReasonLabel(row: PortfolioHoldingRow) {
       return `Raw ${basis} history was adjusted across confirmed split ratios.`
     case 'selected_series_has_single_observation':
       return 'Trend history has only one observation.'
+    case 'observation_schedule_unverified':
+      return 'Daily risk is unavailable because the observation schedule is unverified; a verified market calendar or explicit event-driven source contract is required.'
     case 'raw_price_split_evidence_unconfirmed':
       return 'Trend withheld because split evidence is not confirmed.'
     case 'raw_price_split_ratio_invalid':
@@ -1096,9 +1098,12 @@ function returnSeriesForVolatilityRange(row: PortfolioHoldingRow, rangeKey: Grou
   }
 }
 
-function normalizedReturnSeries(series: HoldingReturnSeries | null | undefined) {
+function normalizedReturnSeries(series: HoldingReturnSeries | null | undefined, asOfDate: string) {
   const points = Array.isArray(series?.points) ? series.points : []
-  return points
+  // An unavailable interval is evidence, not a row to drop. In particular a
+  // missing latest interval must not leave yesterday's path looking complete.
+  if (points.some(point => !point.date || finiteNumber(point.value) == null || point.status === 'unavailable')) return null
+  const normalized = points
     .map((point) => ({
       startDate: point.start_date || null,
       date: point.date,
@@ -1109,6 +1114,9 @@ function normalizedReturnSeries(series: HoldingReturnSeries | null | undefined) 
         Boolean(point.date) && point.value != null,
     )
     .sort((left, right) => `${left.startDate || ''}|${left.date}`.localeCompare(`${right.startDate || ''}|${right.date}`))
+  const firstStart = normalized[0]?.startDate
+  if (firstStart && series?.observation_coverage?.gap_dates.some(day => day > firstStart && day <= asOfDate)) return null
+  return normalized
 }
 
 function calculationFrequencyForRows(rows: PortfolioHoldingRow[]): PortfolioCalculationFrequency {
@@ -1172,11 +1180,13 @@ export function groupedReturnSeries(
       points:
         modeledZeroRisk && holdingUsesZeroReturnRiskCapital(row, workspace)
           ? []
-          : normalizedReturnSeries(seriesAccessor(row)),
+          : normalizedReturnSeries(seriesAccessor(row), workspace.as_of_date),
     }))
     .filter((item) => item.value != null)
-  const returnRows = valuedRows.filter((item) => item.points.length >= 2)
-  const zeroReturnRows = valuedRows.filter(
+  if (valuedRows.some(item => item.points === null)) return null
+  const completeRows = valuedRows.map(item => ({ ...item, points: item.points! }))
+  const returnRows = completeRows.filter((item) => item.points.length >= 2)
+  const zeroReturnRows = completeRows.filter(
     (item) =>
       item.points.length < 2 &&
       (isBaseCurrencyMonetaryHoldingRow(item.row, workspace) ||

@@ -197,6 +197,7 @@ status、mode 或 requested timestamp 反推、补写 cursor。
 `QuoteSelectionPolicy` 的五个 role 都是非空必填持久化事实。未知 role、未知/重复 basis 以及
 违反 role 语义的 policy 必须被拒绝；运行时读取和更新不按 instrument type 补 role 或替换空数组。
 只有创建新 instrument 时，才把类型默认 policy 作为显式创建规则完整写入。
+股票／ETF 的 `total_return` 固定为 `[adjusted_close]`，由共享模型、数据库约束和只读审计共同执行；旧原始价格兜底通过迁移清理，不由读取路径偷偷修正。价格图的 `chart` 候选仍可包含原始报价。
 
 NAV history 的批量预览、导入与替换只支持 `public_fund` 和 `private_fund`。非基金资产必须在解析上传内容前拒绝，shared store 也必须在删除或写入前执行同一条断言；其他资产的行情通过 typed market-data 写入路径维护。
 
@@ -208,10 +209,11 @@ NAV history 的批量预览、导入与替换只支持 `public_fund` 和 `privat
 - `public_fund` / `private_fund`
   - `valuation`: `official_nav -> close`
   - `total_return/chart`: `total_return_nav`（缺失即 NA，无 fallback）
-- `equity`
+- `equity` / `etf`
   - `trading`: `last -> close`
   - `valuation`: `close -> last`
-  - `total_return/chart`: `adjusted_close -> close -> last`
+  - `total_return`: `adjusted_close`（缺失即不可用，不能退回原始价格）
+  - `chart`: 可展示 `adjusted_close / close / last`；价格展示候选不授予收益计算资格
 - `index`
   - `trading`: `close -> last`
   - `valuation`: `close -> last`
@@ -220,6 +222,35 @@ NAV history 的批量预览、导入与替换只支持 `public_fund` 和 `privat
   - `valuation/reference`: `par`
 - `fx`
   - `valuation/trading/reference`: `spot`
+
+### Economic returns and display prices
+
+收益口径与数学表达是两个独立维度。`return_kind` 标记 `total_return`、`price_return`
+或 `unknown`；`return_measure=simple` 的区间值是小数收益率，`log_return=log1p(value)`
+是同一期的派生表达。对数收益在简单收益小于等于 -1 时不可定义；不得截断、补零或删除
+观察后跨期重算。组合单期加权使用简单收益，跨期按 `product(1+r)-1` 累计；财富指数基点
+任意，不能乘真实份额用于估值。风险模型自行明确简单／对数变换与年化，不能对报价水平求
+协方差后称为收益风险。
+
+共享 `analytical_return_quote_bases` 是计算资格入口，与 quote policy 的候选顺序分开。
+它对已有 policy 同样生效：股票／ETF 仅接受 canonical `adjusted_close`，基金仅接受
+`total_return_nav`；指数 close 必须明确 PR／TR，crypto close 是现货价格收益，FX spot 是
+外汇价格因子。现金利息、FX carry 和质押收益没有事件依据时不能自动加入；其他未支持资产
+不能因有正数报价而获得分析资格。衍生合约收益、实际账户 TWR、现金流仍由 Portfolio 管理。
+
+canonical `adjusted_close` 是摄取层对乘法总回报序列的承诺，不是任意供应商同名字段。
+FMP 使用 [dividend-adjusted](https://site.financialmodelingprep.com/developer/docs/stable/historical-price-eod-dividend-adjusted)
+端点；Tushare 使用供应商声明的[分红再投资复权因子](https://tushare.pro/document/2?doc_id=146)。
+这两者保留供应商的方法，不声称已核验相同税项或再投资时点。富途则由可核对的公司行动按
+[富途接入合同](../../docs/FUTU_MARKET_DATA.md)派生，不采用分红平移价格。
+
+共享 `build_return_intervals` 保留每期 `start_date/date/value/log_return/status/reason`。
+频率与缺失交易日由消费者既有日历合同提供，周频／非定期净值不填成日频零收益。
+`source_settings.total_return_segments` 为闭区间 `[start_date,end_date]` 的可连接 level 段；
+`total_return_unavailable_intervals` 表示 `(start_date,end_date]` 的收益不可用及原因。
+明确空 segments 表示无已确认覆盖。不同段可各自归一，收益、端点回报、回撤、比较及图表均
+不得跨段连接。前后复权展示分别以完整可用历史的末／首共同原始价格为锚，仅显示锚点所在
+连续段；显示区间缩放不改变锚点，不改变风险输入。原始价格、真实 OHLC 和估值继续独立。
 
 ## Non-goals
 

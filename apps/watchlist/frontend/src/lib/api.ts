@@ -87,12 +87,13 @@ export type SharedInstrumentRecord = {
   }>
   coverage_state?: string
   exchange_code?: string | null
+  source_settings?: { source_api_profile?: string }
 }
 
 export type SecuritySearchResult = {
   instrument_type: 'equity' | 'etf'
   symbol: string
-  catalog_provider: 'fmp'
+  catalog_provider: 'fmp' | 'futu'
   catalog_symbol: string
   name: string
   exchange_code: string
@@ -283,6 +284,10 @@ export type InstrumentPriceBarsResponse = {
   currency: string
   adjustment_mode: 'raw_with_factor' | 'raw'
   factor_coverage: number
+  available_price_modes?: Array<'raw' | 'front' | 'back'>
+  unavailable_price_mode_reasons?: Partial<Record<'front' | 'back', string>>
+  adjustment_method?: string | null
+  adjustment_anchors?: Partial<Record<'front' | 'back', { date: string; factor: string | number; start_date: string; end_date: string }>>
   source_refresh_status: string
   source_refresh_message: string
   count: number
@@ -519,40 +524,41 @@ type RawInstrumentLibraryItem = {
   primary_identifier: string | null
 }
 
-export type InstrumentChartPoint = { date: string; value: number }
+export type InstrumentChartPoint = { date: string; value: number; segment_id?: string | null }
 
 export type ReturnKind = 'total_return' | 'price_return' | 'unit_nav_return'
 
 export type ReturnSparklineSeries = {
   points: InstrumentChartPoint[]
-  return_kind: ReturnKind
+  return_kind: ReturnKind | null
   label: string
   status: 'ready' | 'partial' | 'unavailable'
+  reason?: string | null
   policy_version?: string
   anchor_mode?: 'on_or_before' | 'strictly_before'
-  requested_start_date: string
-  requested_end_date: string
+  requested_start_date: string | null
+  requested_end_date: string | null
   anchor_date: string | null
   end_date: string | null
 }
 
-export type CalculationFrequency = 'daily'
+export type CalculationFrequency = 'daily' | 'weekly' | 'monthly' | 'event_driven' | 'unknown'
 
 export type CalculationFrequencyProfile = {
-  requested_frequency: 'daily'
+  requested_frequency: CalculationFrequency
   expected_frequency?: CalculationFrequency | null
   resolved_frequency: CalculationFrequency
   inferred_frequency: CalculationFrequency
-  source_frequency_counts: Record<CalculationFrequency | 'unknown', number>
-  frequency_source?: 'daily_policy'
+  source_frequency_counts: Partial<Record<CalculationFrequency, number>>
+  frequency_source?: 'source_contract' | 'observation_metadata'
   raw_observation_count: number
   observation_count: number
   start_date: string | null
   end_date: string | null
   annualization_periods_per_year: number | null
   largest_gap_days: number | null
-  gap_count: number
-  gap_status: 'aligned' | 'calendar_gaps'
+  gap_count: number | null
+  gap_status: 'aligned' | 'calendar_gaps' | 'unverified'
   gap_detection_basis?: string
   missing_observation_date_sample?: string[]
   status_label: string
@@ -562,6 +568,13 @@ export type InstrumentChartResponse = {
   instrument_id: string
   base_series_type: string
   selected_series?: SelectedQuoteSeriesMetadata
+  price_series?: { quote_basis: string | null; currency: string; points: InstrumentChartPoint[] }
+  return_series?: {
+    metadata: SelectedQuoteSeriesMetadata
+    currency: string
+    intervals: Array<{ start_date: string; date: string; value: number | null; log_return: number | null; status: string; reason: string | null }>
+    wealth_points: InstrumentChartPoint[]
+  }
   latest_values?: {
     valuation?: LatestQuoteValueSnapshot | null
     total_return?: LatestQuoteValueSnapshot | null
@@ -579,6 +592,7 @@ export type LatestQuoteValueSnapshot = SelectedQuoteSeriesMetadata & {
 }
 
 export type SelectedQuoteSeriesMetadata = {
+  return_measure?: 'simple'
   role?: string | null
   metric_family?: string | null
   quote_basis?: string | null
@@ -593,6 +607,7 @@ export type SelectedQuoteSeriesMetadata = {
 }
 
 export type SelectedQuotePoint = {
+  segment_id?: string | null
   date: string
   value: number
   metric_family?: string | null
@@ -626,6 +641,7 @@ export type InstrumentPerformanceResponse = {
     candidate_count?: number
     sample_count: number
     excluded_mismatched_as_of_count?: number
+    excluded_windows?: Array<{ instrument_id: string; metric_key: string; reason: string | null }>
     metrics: Array<{
       metric_key: string
       label: string
@@ -680,7 +696,7 @@ export type InstrumentRiskResponse = {
   } | null
   data_quality?: {
     status: 'ready' | 'withheld_missing_observations' | string
-    gap_count: number
+    gap_count: number | null
     gap_detection_basis?: string | null
   }
   calculation_frequency_profile: CalculationFrequencyProfile | null
@@ -970,12 +986,14 @@ export type FundNavSeriesResponse = {
   }
   series: SelectedQuotePoint[]
   calculation_series: SelectedQuotePoint[]
+  return_series?: InstrumentChartResponse['return_series']
   rows: Array<{
     as_of_date: string
     nav: number | null
     nav_with_dividend: number | null
     selected_basis_type: string | null
     selected_value: number | null
+    segment_id?: string | null
     selected_metric_family?: string | null
     selected_quote_basis?: string | null
     selected_series_type?: string | null
@@ -990,6 +1008,7 @@ export type FundNavSeriesResponse = {
 }
 
 type RawFundNavSeriesResponse = {
+  return_series?: InstrumentChartResponse['return_series']
   instrument_id: string
   count: number
   nav_basis_preference: 'auto' | 'nav_with_dividend'
@@ -1024,6 +1043,7 @@ type RawFundNavSeriesResponse = {
     nav_with_dividend: number | null
     selected_basis_type: string | null
     selected_value: number | null
+    segment_id?: string | null
     selected_metric_family?: string | null
     selected_quote_basis?: string | null
     selected_series_type?: string | null
@@ -1146,6 +1166,7 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
     nav_with_dividend: row.nav_with_dividend,
     selected_basis_type: row.selected_basis_type,
     selected_value: row.selected_value,
+    segment_id: row.segment_id,
     selected_metric_family: row.selected_metric_family,
     selected_quote_basis: row.selected_quote_basis,
     selected_series_type: row.selected_series_type,
@@ -1169,6 +1190,7 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
       return [{
         date: row.as_of_date,
         value,
+        segment_id: row.segment_id,
         metric_family: response.selected_metric_family ?? undefined,
         quote_basis: response.selected_quote_basis ?? undefined,
         series_type: response.selected_series_type ?? undefined,
@@ -1197,6 +1219,7 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
     refresh_status: response.refresh_status,
     series: pointsFromRows(false),
     calculation_series: pointsFromRows(true),
+    return_series: response.return_series,
     rows,
   }
 }

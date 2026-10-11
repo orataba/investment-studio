@@ -1,18 +1,20 @@
 """Exercise the actual migration and release backfill in a disposable database."""
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 import importlib.util
 
 from alembic import command
 from alembic.config import Config
 import pytest
 from sqlalchemy import select, text
+from investment_studio_instrument_core import build_return_intervals
 
 from watchlist_app.db.models.instruments import InstrumentDetail
 from watchlist_app.db.models.read_models import InstrumentChartReadModel
 from watchlist_app.db.session import get_engine, get_session_factory
 from watchlist_app.services.materialization_policy import WATCHLIST_MATERIALIZATION_VERSION
 from watchlist_app.services.read_models import RETURN_CHART_WINDOWS, build_sparkline_payload
+from watchlist_app.services.calculation_frequency import build_calculation_frequency_context, _market_calendar_sessions
 
 from .test_postgres_instrument_registry_constraints import BACKEND_ROOT, postgres_watchlist_env
 
@@ -21,7 +23,8 @@ pytestmark = pytest.mark.postgresql_integration
 
 
 @pytest.mark.parametrize("postgres_watchlist_env", ["20260920_0059"], indirect=True)
-def test_screener_projection_migration_backfill_and_downgrade_preserve_chart(postgres_watchlist_env):
+@pytest.mark.parametrize("confirmed_returns", [False, True])
+def test_screener_projection_migration_backfill_and_downgrade_preserve_chart(postgres_watchlist_env, confirmed_returns):
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
     spec = importlib.util.spec_from_file_location(
@@ -31,8 +34,8 @@ def test_screener_projection_migration_backfill_and_downgrade_preserve_chart(pos
     spec.loader.exec_module(release)
     factory = get_session_factory()
     instrument_id = postgres_watchlist_env["instrument_id"]
-    points = [{"date": (date(2025, 1, 1) + timedelta(days=offset)).isoformat(), "value": 100 + offset / 10}
-              for offset in range(400)]
+    days = _market_calendar_sessions("XNYS", date(2024, 1, 2), date(2026, 2, 4))
+    points = [{"date": day.isoformat(), "value": 100 + offset / 10} for offset, day in enumerate(days)]
     full_payload = {
         "selected_series": {"quote_basis": "total_return_nav", "return_kind": "total_return"},
         "latest_values": {"total_return": {"date": points[-1]["date"], "value": points[-1]["value"],
@@ -40,6 +43,13 @@ def test_screener_projection_migration_backfill_and_downgrade_preserve_chart(pos
         "date_range": {"start": points[0]["date"], "end": points[-1]["date"]},
         "series": [{"points": points}],
     }
+    if confirmed_returns:
+        frequency = build_calculation_frequency_context(
+            [{**point, "as_of_date": date.fromisoformat(point["date"])} for point in points],
+            expected_frequency="daily", market_calendar="XNYS")
+        full_payload["return_series"] = {
+            "metadata": {**full_payload["selected_series"], "return_series_status": "complete"},
+            "wealth_points": points, "intervals": build_return_intervals(points), "frequency": frequency["profile"]}
     with factory() as session:
         # Archived charts must be ready too, without making the asset active.
         session.add(InstrumentDetail(instrument_id=instrument_id, instrument_type="public_fund",
@@ -56,6 +66,10 @@ def test_screener_projection_migration_backfill_and_downgrade_preserve_chart(pos
         expected_windows = build_sparkline_payload([chart], instrument_ids=[instrument_id],
             selected_fields=list(RETURN_CHART_WINDOWS))[instrument_id]
         assert set(expected_windows) == set(RETURN_CHART_WINDOWS)
+        # Backfilling a compact view never upgrades an old display series into
+        # verified analytical returns. Current intervals remain usable as-is.
+        assert all(window["status"] == ("ready" if confirmed_returns else "unavailable")
+                   for window in expected_windows.values())
 
     columns = [column for column in InstrumentChartReadModel.__table__.c if column.name != "screener_payload_json"]
     def original_rows():
@@ -83,8 +97,8 @@ def test_screener_projection_migration_backfill_and_downgrade_preserve_chart(pos
         assert session.scalar(text("SELECT count(*) FROM watchlist.instrument_chart_read_model "
                                    "WHERE screener_payload_json IS NULL")) == 0
         projection = session.get(InstrumentChartReadModel, instrument_id).screener_payload_json
-        assert projection == {key: full_payload[key] for key in ("selected_series", "latest_values", "date_range")} | {
-            "sparklines": expected_windows}
+        assert projection == {key: full_payload[key] for key in ("latest_values", "date_range")} | {
+            "selected_series": (full_payload.get("return_series") or {}).get("metadata"), "sparklines": expected_windows}
         assert session.get(InstrumentDetail, instrument_id).is_active is False
     with factory() as session, session.begin():
         assert release._backfill_screener_projections(session) == 0

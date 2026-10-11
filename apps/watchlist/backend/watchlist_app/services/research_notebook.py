@@ -235,7 +235,9 @@ class ResearchModule(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$",
-        description="Use a module id from this instrument's research_plan; retain the same key across updates.")
+        description="Choose a stable analysis key for the actual question; it need not appear in the method library. Retain the key across updates.")
+    title: str = Field(default="", max_length=300,
+        description="Optional reader-facing title for this question or analytical section.")
     summary: str = Field(default="", max_length=3000)
     analysis: str = Field(default="", max_length=16000,
         description="Readable paragraphs explaining current conditions, mechanisms, opposing evidence and implications. No HTML or invented chart data.")
@@ -283,7 +285,7 @@ def notebook_current_view(notebook: dict | None) -> dict | None:
                         if source.get("source_id") in result.get("source_ids", [])],
             "updated_at": result.get("updated_at") or result.get("checked_at"),
             "version_id": result.get("version_id") or result.get("run_id"),
-            "note": "此前保存的综合分析，保留原始日期与依据；适用模块尚待逐项建立。",
+            "note": "此前保存的综合分析，保留原始日期与依据；后续按实际问题维护。",
         }
     return result
 
@@ -385,7 +387,7 @@ def retained_public_sources(session, instrument_id: str, *, metadata_only=False)
                 identity = source.get("version_id") or source["source_id"]
                 if identity in by_url:
                     continue
-                source = hydrate_source(source)
+                source = hydrate_source(source, bound_source=True)
                 original = {**source, "source_type": "public_source", "source_run_id": record.entry_id,
                     "instrument_id": instrument_id, "role": "retained_original",
                     "verification_note": "已取得的原文，不代表其主张已核实；须重读正文及原始日期。所属报告的模型结论不作为依据。"}
@@ -396,7 +398,7 @@ def retained_public_sources(session, instrument_id: str, *, metadata_only=False)
                 continue
             if source["version_id"] in by_url:
                 continue
-            original = {**hydrate_source(source), "instrument_id": instrument_id,
+            original = {**hydrate_source(source, bound_source=True), "instrument_id": instrument_id,
                         "source_run_id": record.entry_id, "role": "retained_original"}
             by_url.setdefault(source["version_id"], original)
     if metadata_only:
@@ -466,7 +468,7 @@ def dossier_outline(dossier: dict) -> dict:
             for s in notebook.get("sources", [])]} if notebook else None}
 
 
-def dossier_source(dossier: dict, source_id: str) -> dict:
+def dossier_source(dossier: dict, source_id: str, *, references_only=False) -> dict:
     for source in [*dossier.get("materials", []), *dossier.get("historical_cases", []),
                    *dossier.get("prior_sources", []),
                    *(source for theme in dossier.get("themes", []) for source in theme.get("sources", [])),
@@ -477,7 +479,7 @@ def dossier_source(dossier: dict, source_id: str) -> dict:
                     (source.get("source_type") == "public_source" and source.get("instrument_id") is None)
                     or (source.get("source_type") == "computed_metric" and source.get("scope") == "public_market")):
                 raise ValueError("这份依据不属于当前标的研究档案")
-            return hydrate_source(source)
+            return source_reference(source) if references_only else hydrate_source(source, bound_source=True)
     raise ValueError("当前研究档案没有这份材料或历史依据")
 
 
@@ -534,7 +536,7 @@ def company_source(run_id: str, instrument_id: str, symbol: str, company: dict) 
         "source_type": "company_snapshot", "title": f"FMP · {symbol} 公司资料与预期", "company": company}
 
 
-def research_sources(context: dict, run_id: str) -> dict[str, dict]:
+def research_sources(context: dict, run_id: str, *, session=None) -> dict[str, dict]:
     """Only original evidence is reusable; methods and AI summaries are not sources."""
     sources = {}
     cutoff = datetime.fromisoformat(context["cutoff"])
@@ -543,7 +545,7 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
         for source in [*dossier.get("prior_sources", []), *(dossier.get("notebook") or {}).get("sources", []),
                        *(source for theme in dossier.get("themes", []) for source in theme.get("sources", [])),
                        *(source for view in dossier.get("pm_views", []) for source in view.get("sources", []))]:
-            source = hydrate_source(source, cutoff=cutoff)
+            source = hydrate_source(source, cutoff=cutoff, bound_source=True)
             if _original_source(source, iid, cutoff):
                 sources[source["source_id"]] = source
         for material in dossier.get("materials", []):
@@ -577,7 +579,7 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
     for capture in context.get("web_evidence", []):
         if capture.get("operation") in {"fetch", "author_import"}:
             for source in capture.get("sources", []):
-                source = hydrate_source(source, cutoff=cutoff)
+                source = hydrate_source(source, cutoff=cutoff, bound_source=True)
                 original = {**source, "source_run_id": run_id, "source_type": "public_source"}
                 if _original_source(original, source.get("instrument_id"), cutoff):
                     sources[source["source_id"]] = original
@@ -585,8 +587,16 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
     for source in context.get("financial_sources", []):
         if _original_source(source, source.get("instrument_id"), cutoff):
             sources[source["source_id"]] = source
-    for source in context.get("computed_metrics", []):
+    computed = context.get("computed_metrics", [])
+    if session is not None:
+        from watchlist_app.services.research_run_evidence import retained_computed_sources
+        computed = [*computed, *retained_computed_sources(session, run_id)]
+    for source in computed:
+        source = hydrate_source(source, cutoff=cutoff, bound_source=True)
         if _original_source(source, source.get("instrument_id"), cutoff):
+            if session is not None or context.get("retained_run_id") == run_id:
+                source = {**source, "retained_reference": source.get("retained_reference") or {
+                    "run_id": run_id, "path": ["computed_metrics", "*"]}}
             sources[source["source_id"]] = source
     return sources
 
@@ -597,10 +607,6 @@ def validate_notebook(notebook: ResearchNotebook, iid: str, sources: dict[str, d
         keys = [row.key for row in getattr(notebook, field)]
         if len(set(keys)) != len(keys):
             raise ValueError("同一研究模块、预测、复盘或经验在本轮重复出现")
-    if research_plan is not None:
-        applicable = {module["id"] for module in research_plan.get("modules", [])}
-        if any(module.key not in applicable for module in notebook.modules):
-            raise ValueError("研究模块不在本标的已绑定的方法范围内；请先更新专属方法，再按适用模块研究")
     keys = [q.key for q in notebook.questions]
     if len(set(keys)) != len(keys):
         raise ValueError("同一研究问题在本轮重复出现")

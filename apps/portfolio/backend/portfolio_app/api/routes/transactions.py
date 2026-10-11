@@ -535,6 +535,7 @@ def _serialize_instrument_option(record: dict[str, object]) -> dict[str, object]
         "coverage_state": record["coverage_state"],
         "latest_market_data": record["latest_market_data"],
         "quote_selection_policy": record["quote_selection_policy"],
+        "source_settings": {"source_api_profile": dict(record.get("source_settings") or {}).get("source_api_profile")},
     }
 
 

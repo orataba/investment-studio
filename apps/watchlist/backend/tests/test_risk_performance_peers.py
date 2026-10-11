@@ -1,11 +1,19 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
+from investment_studio_instrument_core import build_return_intervals
 
 from .conftest import canonical_quote_policy, seed_shared_instrument
 from watchlist_app.db.models import InstrumentChartReadModel, InstrumentDetail, InstrumentManualProfile
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services.risk_performance import performance_evidence
+
+
+@pytest.fixture(autouse=True)
+def comparison_clock(monkeypatch):
+    import watchlist_app.services.risk_performance as performance
+    monkeypatch.setattr(performance, "datetime", SimpleNamespace(now=lambda _: datetime(2026, 9, 4, 12, tzinfo=UTC)))
 
 
 LEAF = "fund-private-equity-quant-index-enhanced"
@@ -14,9 +22,10 @@ TARGET = "peer-target"
 
 
 def series(points):
-    return {"research_returns": {"currency": "CNY", "frequency": {"resolved_frequency": "weekly"},
+    points = [{"date": day, "value": value} for day, value in points]
+    return {"research_returns": {"currency": "CNY", "frequency": {"resolved_frequency": "monthly"},
         "metadata": {"return_kind": "total_return", "return_series_status": "complete", "quote_basis": "total_return_nav"},
-        "points": [{"date": day, "value": value} for day, value in points]}}
+        "points": points, "intervals": build_return_intervals(points)}}
 
 
 def set_classification(client, iid, node):
@@ -46,10 +55,11 @@ def seed_charts():
     drain_recalc_jobs()
     with get_session_factory()() as session:
         for iid in (TARGET, "peer-same", "peer-region", "peer-leaf"):
-            points = [("2026-06-26", 1), ("2026-07-31", 1.01), ("2026-08-28", 1.04), ("2026-09-04", 1.05)]
+            points = [("2026-06-30", 1), ("2026-07-31", 1.01), ("2026-08-31", 1.04), ("2026-09-04", 1.05)]
             if iid == TARGET:
-                points = [("2026-06-19", 0.9), ("2026-06-26", 1), ("2026-07-31", 0.98), ("2026-08-28", 0.95), ("2026-09-04", 0.96)]
-            session.merge(InstrumentChartReadModel(instrument_id=iid, data_freshness_status="current", payload_json=series(points)))
+                points = [("2026-06-19", 0.9), ("2026-06-30", 1), ("2026-07-31", 0.98), ("2026-08-31", 0.95), ("2026-09-04", 0.96)]
+            session.merge(InstrumentChartReadModel(instrument_id=iid, data_freshness_status="current", payload_json=series(points),
+                source_cutoff_at=datetime(2026, 9, 4, tzinfo=UTC), last_recalculated_at=datetime(2026, 9, 4, tzinfo=UTC)))
         session.commit()
 
 
@@ -69,7 +79,7 @@ def test_saved_fund_page_peer_scope_uses_common_series_without_ranking_snapshots
     assert len(evidence["comparisons"]) == 1
     comparison = evidence["comparisons"][0]
     assert comparison["role"] == "taxonomy_peer" and comparison["configuration_source"] == "instrument_taxonomy"
-    assert comparison["comparison"]["sample_start"] == "2026-06-26"
+    assert comparison["comparison"]["sample_start"] == "2026-06-30"
     assert comparison["comparison"]["sample_end"] == "2026-09-04"
     assert comparison["comparison"]["observations"] == 4
     target = next(row for row in comparison["comparison"]["rows"] if row["instrument_id"] == TARGET)
@@ -87,7 +97,7 @@ def test_taxonomy_peer_requires_same_currency_frequency_and_common_dates(client)
         original = chart.payload_json["research_returns"]
         for patch, expected in (({"currency": "USD"}, "币种不同"),
             ({"frequency": {"resolved_frequency": "daily"}}, "频率不同"),
-            ({"points": [{"date": "2026-06-26", "value": 1}]}, "共同实际观察日不足")):
+            ({"points": [{"date": "2026-06-30", "value": 1}]}, "共同实际观察日不足")):
             chart.payload_json = {"research_returns": {**original, **patch}}
             session.commit()
             evidence = performance_evidence(session, TARGET)

@@ -107,6 +107,24 @@ rebuild. A newly changed raw overlap publishes its evidence and durable rebuild
 request without publishing partial adjusted prices. Missing adjusted prices,
 retained dates, or all history remain explicit source coverage failures.
 
+Price acquisition captures one timezone-aware cutoff at the collection entry.
+The registered listing exchange takes precedence over a provider symbol suffix;
+an unknown explicit exchange fails instead of falling back to a guessed market.
+Raw prices, adjusted histories, revision rebuilds and scheduled collection share
+the same closed-session calendar, including holidays, US daylight saving and
+early closes, and HKEX's latest closing-auction end (16:10 or 12:10 on half days).
+The US bulk calendar response must cover the expected closed exchange sessions;
+an omitted provider date cannot shorten the requested sample. Additional public
+targets without a registry identity use the existing FMP market-suffix contract,
+including unsuffixed US symbols; unknown suffixes are not assigned a calendar.
+
+XAUUSD and DXY have no verified source daily-session clock. Their acquisition
+uses the previous complete UTC date only as a conservative request upper bound;
+it does not establish completed sessions or analytical coverage. BTC daily bars
+use complete UTC days. Market-series OHLC values outside their supplied high/low
+range are rejected with the original response and date-specific reason retained;
+highs and lows are never silently expanded to repair the provider's bar.
+
 `price_series_identities` records reviewed security identities, provider symbols,
 history boundaries and ticker validity intervals with source references and a real
 observation clock. New reference conflicts quarantine the affected price series;
@@ -159,6 +177,12 @@ capture lineage, independently of the archived response's historical wire format
 There is no old-URL or alternate-host fallback.
 
 ## Maintenance
+
+Futu REST uses quote-only OAuth, a preloaded HK/US listing catalog, raw daily prices
+and retained corporate-action evidence. A separate declared-cash-reinvestment
+projection supplies total returns with explicit unavailable intervals. It has no
+trading/account access. See [Futu market data](../../docs/FUTU_MARKET_DATA.md)
+for authorization, catalog sync, storage and source-selection contracts.
 
 Run through `bin/investment-studio market`. Examples:
 

@@ -174,7 +174,9 @@ ResearchAsOfMode = Literal["dynamic", "pinned"]
 ResearchTargetDimension = Literal["scope_default", "weight", "risk_budget"]
 ResearchCapitalMode = Literal["unit_notional", "fixed_gross", "target_volatility", "volatility_cap"]
 ResearchCalculationFrequency = Literal["daily"]
-ResearchMissingReturnPolicy = Literal["strict", "complete_case_drop"]
+ResearchMissingReturnPolicy = Literal["strict"]
+# Saved run evidence retains the policy used by its original solver.
+HistoricalResearchMissingReturnPolicy = Literal["strict", "complete_case_drop"]
 ResearchBacktestRebalanceFrequency = Literal["1w", "1m", "3m"]
 PortfolioCalculationFrequency = Literal["daily"]
 PortfolioRiskCalculationFrequency = Literal["daily"]
@@ -366,6 +368,7 @@ class InstrumentOption(BaseModel):
     coverage_state: CoverageState
     latest_market_data: list[InstrumentLatestMarketDataPoint]
     quote_selection_policy: QuoteSelectionPolicy
+    source_settings: dict[str, str | None] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_latest_market_data_contract(self) -> "InstrumentOption":
@@ -941,6 +944,7 @@ class PositionListResponse(BaseModel):
 class InstrumentPriceChartPoint(BaseModel):
     date: date
     value: float
+    segment_id: str | None = None
 
 
 class InstrumentPriceChartSummary(BaseModel):
@@ -957,8 +961,17 @@ class InstrumentPriceChartResponse(BaseModel):
     as_of_date: date
     range_key: str
     series_role: Literal["performance", "price_level"] = "performance"
+    price_mode: Literal["return", "raw", "front", "back"] = "return"
+    available_price_modes: list[Literal["raw", "front", "back"]] = Field(default_factory=list)
+    adjustment_anchor_date: date | None = None
+    adjustment_method: Literal["total_return_reinvestment"] | None = None
     chart_basis: str | None = None
     return_semantics: ReturnSemantics = "unknown"
+    return_kind: ReturnSemantics = "unknown"
+    return_measure: Literal["simple"] = "simple"
+    observation_coverage: dict[str, object] | None = None
+    total_return_segments: list[dict[str, object]] | None = None
+    total_return_unavailable_intervals: list[dict[str, object]] | None = None
     metric_family: str | None = None
     currency: str
     coverage_state: CoverageState = "unavailable"
@@ -2022,6 +2035,7 @@ class ResearchSettingsUpdateRequest(BaseModel):
 class PortfolioRiskPolicyRecord(BaseModel):
     model_name: str = "Production Risk Model"
     model_role: str = "production"
+    return_measure: Literal["simple"] = "simple"
     covariance_model_id: PortfolioRiskCovarianceModel = "ewma_vol_shrinkage_corr_covariance"
     lookback_days: int = Field(default=90)
     calculation_frequency: PortfolioRiskCalculationFrequency = "daily"
@@ -2201,6 +2215,8 @@ class ResearchSolvedResultGroupRecord(BaseModel):
 
 
 class ResearchSolveEventRecord(BaseModel):
+    return_measure: Literal["simple"] = "simple"
+    input_return_series: dict[str, dict[str, object] | None] = Field(default_factory=dict)
     solver_version: str | None = None
     risk_attribution_scope: Literal["portfolio", "selected_research_scope"] | None = None
     global_leaf_count: int | None = None
@@ -2221,7 +2237,7 @@ class ResearchSolveEventRecord(BaseModel):
     covariance_model: str | None = None
     covariance_observations: int | None = None
     risk_contribution_mode: str | None = None
-    missing_return_policy: ResearchMissingReturnPolicy | None = None
+    missing_return_policy: HistoricalResearchMissingReturnPolicy | None = None
     return_rows_before_policy: int | None = None
     return_rows_after_policy: int | None = None
     missing_return_row_count: int | None = None
@@ -2353,6 +2369,8 @@ class ResearchBacktestContributionReconciliationRecord(BaseModel):
 
 
 class ResearchBacktestMethodologyRecord(BaseModel):
+    return_measure: Literal["simple"] = "simple"
+    input_return_series: dict[str, dict[str, object] | None] = Field(default_factory=dict)
     solver_version: str | None = None
     risk_attribution_scope: Literal["portfolio", "selected_research_scope"] | None = None
     name: str
@@ -2526,9 +2544,14 @@ class ResearchBacktestBenchmarkRecord(BaseModel):
     points: list[ResearchBacktestPointRecord] = Field(default_factory=list)
     metrics: ResearchBacktestMetricsRecord | None = None
     warnings: list[str] = Field(default_factory=list)
+    return_contract: dict[str, object] | None = None
 
 
-class ResearchBacktestRelativeMetricsRecord(ResearchBacktestMetricsRecord):
+class ResearchBacktestRelativeMetricsRecord(BaseModel):
+    start_date: str | None = None
+    end_date: str | None = None
+    observation_count: int | None = None
+    return_measure: Literal["simple"] = "simple"
     excess_return: float | None = None
     tracking_error: float | None = None
     information_ratio: float | None = None

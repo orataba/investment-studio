@@ -1,7 +1,10 @@
 """Source-bound research inputs; numerical work stays outside the language model."""
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from calendar import monthrange
+from bisect import bisect_left, bisect_right
 import math
 from statistics import correlation, mean
+from watchlist_app.services.return_windows import confirmed_return_points, return_sample_limitation
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
@@ -163,9 +166,9 @@ def _read_instrument_evidence(session: Session, ids: list[str], *, include_dossi
     from watchlist_app.services.sector_research import latest_reviews
     completed_research = latest_reviews(session, completed_only=True, instrument_ids=ids, summary_only=True)
     assets = [item for item in catalogue(session) if item["instrument_id"] in ids]
-    from watchlist_app.services.risk_performance import performance_context, performance_evidence
+    from watchlist_app.services.risk_performance import _snapshot_cutoff_limitation, performance_context, performance_evidence
     fund_ids = [asset["instrument_id"] for asset in assets if asset["instrument_type"] in {"public_fund", "private_fund"}]
-    fund_context = performance_context(session, fund_ids) if fund_ids else None
+    fund_context = performance_context(session, fund_ids, cutoff=as_of) if fund_ids else None
     for asset in assets:
         iid = asset["instrument_id"]
         asset["research_plan"] = read_research_plan(session, iid)
@@ -182,6 +185,9 @@ def _read_instrument_evidence(session: Session, ids: list[str], *, include_dossi
             row = session.get(model, iid, populate_existing=True)
             asset[name] = {"data": row.payload_json, "freshness": row.data_freshness_status,
                            "source_cutoff_at": row.source_cutoff_at} if row else None
+            if name == "performance" and as_of is not None and (reason := _snapshot_cutoff_limitation(row, as_of)):
+                asset[name] = {"data": None, "freshness": "unavailable", "source_cutoff_at": row.source_cutoff_at,
+                               "reason": reason}
         asset["research"] = _research_response(session, iid)
         asset["research_tracking"] = completed_research.get(iid)
         asset["research_tracking_note"] = "这是已保存的自动研究结论，不是本轮最新核实；请按生成日期使用，并回到原始证据核实相关事实。"
@@ -239,10 +245,10 @@ def conversation_context(session: Session, topic: ResearchTopic, question: str, 
     from watchlist_app.services.research_dossier import read_dossier_version
     if reference.get("pm_note_id"):
         version_id = f"pm:{reference['pm_note_id']}:{reference['pm_note_revision']}"
-        referenced_versions.append(read_dossier_version(session, reference["instrument_id"], version_id))
+        referenced_versions.append(read_dossier_version(session, reference["instrument_id"], version_id, references_only=True))
     for key in ("notebook_version_id", "investment_view_version_id", "forecast_version_id", "theme_version_id"):
         if reference.get(key):
-            version = read_dossier_version(session, reference["instrument_id"], reference[key])
+            version = read_dossier_version(session, reference["instrument_id"], reference[key], references_only=True)
             expected = {"notebook_version_id": "notebook", "investment_view_version_id": "investment_view",
                         "forecast_version_id": "forecasts", "theme_version_id": "theme"}[key]
             if version["kind"] != expected:
@@ -278,27 +284,153 @@ def conversation_context(session: Session, topic: ResearchTopic, question: str, 
     })
 
 
-def compare_series(series: dict[str, dict], start: date, end: date, target_id: str | None = None, benchmark_id: str | None = None):
+def _prepare_comparison_calendar(item, start, end, cutoff):
+    """Read one source's frozen schedule once for a batch of nested windows."""
+    from studio_market.calendars import closed_market_sessions
+    from watchlist_app.services.calculation_frequency import (
+        _market_calendar_sessions, assess_latest_observation_freshness, source_calendar_date,
+    )
+
+    frequency = item.get("frequency") or {}
+    basis = str(frequency.get("gap_detection_basis") or "")
+    if not basis.startswith("market_calendar:"):
+        return {"reason": "缺少已确认的交易日历，不能验证请求区间完整性"}
+    calendar = basis.removeprefix("market_calendar:")
+    schedule = item.get("observation_schedule")
+    if not isinstance(schedule, dict) or schedule.get("market_calendar") != calendar:
+        return {"reason": "缺少与收益快照绑定的发布安排，请重建收益快照"}
+    today = source_calendar_date(cutoff, calendar)
+    freshness = assess_latest_observation_freshness(
+        latest_observation_date=min(end, today), current_date=today, now=cutoff,
+        resolved_frequency="daily", expected_frequency=schedule.get("expected_frequency"),
+        market_calendar=calendar, release_lag_days=schedule.get("release_lag_days"),
+        source_mode=schedule.get("source_mode"), instrument_type=schedule.get("instrument_type"))
+    due = freshness.get("expected_latest_date")
+    if not due:
+        return {"reason": "请求区间的交易日历或发布安排未确认"}
+    return {"reason": None, "calendar": calendar, "due": date.fromisoformat(due),
+        "sessions": _market_calendar_sessions(calendar, start, end),
+        "closed": closed_market_sessions(calendar, start, end, cutoff)}
+
+
+def _comparison_window_coverage(item, points, start, end, cutoff, *, prepared_calendar=None):
+    """Validate the requested window before common-date alignment can shrink it.
+
+    The publication contract is retained with the series, not read from today's
+    registry. Weekly/monthly frequency certifies periods, never an invented
+    publication weekday. Sources without exact schedules require observed bounds.
+    """
+    from studio_market.calendars import closed_market_sessions
+    from watchlist_app.services.calculation_frequency import _market_calendar_sessions
+
+    frequency = item.get("frequency") or {}
+    resolved = frequency.get("resolved_frequency")
+    dates = {date.fromisoformat(point["date"]) for point in points}
+    coverage = {"frequency": resolved, "status": "unavailable", "reason": None,
+        "expected_start": None, "expected_end": None, "missing_dates": [], "missing_periods": [],
+        "not_yet_due_dates": [], "limitation": None}
+
+    def unavailable(reason):
+        return {**coverage, "reason": reason}
+
+    if resolved == "daily":
+        prepared = prepared_calendar if prepared_calendar is not None else _prepare_comparison_calendar(item, start, end, cutoff)
+        if prepared["reason"]:
+            return unavailable(prepared["reason"])
+        calendar, due = prepared["calendar"], prepared["due"]
+        sessions, closed = prepared["sessions"], prepared["closed"]
+        # A calendar may not cover the oldest history while supporting a later
+        # window. Failure to prepare the whole span must not reject that window.
+        sessions = (_market_calendar_sessions(calendar, start, end) if sessions is None
+                    else sessions[bisect_left(sessions, start):bisect_right(sessions, end)])
+        closed = (closed_market_sessions(calendar, start, end, cutoff) if closed is None
+                  else closed[bisect_left(closed, start):bisect_right(closed, end)])
+        if closed is None or sessions is None:
+            return unavailable("请求区间的交易日历或发布安排未确认")
+        expected = [day for day in sessions if day <= due]
+        coverage.update(calendar=calendar, expected_start=expected[0].isoformat() if expected else None,
+            expected_end=expected[-1].isoformat() if expected else None,
+            missing_dates=[day.isoformat() for day in expected if day not in dates],
+            not_yet_due_dates=[day.isoformat() for day in sessions if day > due and day not in dates])
+        if dates - set(closed):
+            return unavailable("请求区间含尚未完成交易时段或非交易日的观察值")
+        if coverage["missing_dates"]:
+            return unavailable("请求区间缺失应有观察值：" + "、".join(coverage["missing_dates"]))
+        if coverage["not_yet_due_dates"]:
+            coverage["limitation"] = "按本轮冻结时刻及发布安排，部分请求日期尚未收盘或尚未到披露期限；仅使用已取得的完整观察。"
+        return {**coverage, "status": "complete"}
+
+    if resolved in {"weekly", "monthly"}:
+        def period(day):
+            return day.replace(day=1) if resolved == "monthly" else day - timedelta(days=day.weekday())
+
+        def finish(first):
+            return first.replace(day=monthrange(first.year, first.month)[1]) if resolved == "monthly" else first + timedelta(days=6)
+
+        current, last = period(start), period(end)
+        actual = {period(day) for day in dates}
+        missing = []
+        while current <= last:
+            last_day = finish(current)
+            # Frequency alone cannot say when this period's last NAV will be
+            # published. Check missing whole periods in addition to the actual
+            # requested endpoints, without inventing a publication weekday.
+            if last_day <= end and last_day < cutoff.date() and current not in actual:
+                missing.append(current.isoformat())
+            current = last_day + timedelta(days=1)
+        coverage["missing_periods"] = missing
+        if missing:
+            return unavailable("请求区间缺少整期披露观察值：" + "、".join(missing))
+        if start not in dates or end not in dates:
+            return unavailable("低频来源未确认请求端点的披露安排，不能缩短窗口替代")
+        coverage["limitation"] = "低频来源仅比较明确的实际起止观察值，并核验整期缺失；不声称已验证未配置的确切披露日历。"
+        return {**coverage, "status": "observed_endpoints_only"}
+
+    if resolved == "event_driven":
+        if start not in dates or end not in dates:
+            return unavailable("事件驱动来源没有固定披露安排，请求起止日须有实际观察值")
+        return {**coverage, "status": "observed_endpoints_only",
+            "limitation": "事件驱动来源仅比较明确的实际观察端点与已确认区间，不声称验证固定披露日历。"}
+    return unavailable("收益序列频率尚未确认")
+
+
+def compare_series(series: dict[str, dict], start: date, end: date, target_id: str | None = None, benchmark_id: str | None = None, *, cutoff: datetime):
     """No forward fills: all returns span the exact same observed dates."""
+    if cutoff.tzinfo is None or cutoff.utcoffset() is None:
+        raise ValueError("Comparison requires a timezone-aware frozen cutoff")
+    if start > end or end > cutoff.date():
+        raise ValueError("Comparison requires a valid window ending no later than its frozen cutoff date")
     excluded = []
     usable = {}
+    coverage_by_instrument = {}
     for iid, item in series.items():
         meta = item.get("metadata") or {}
         reason = None
         if meta.get("return_series_status") not in {"ready", "complete", "partial"}:
             reason = "收益序列未就绪"
-        elif meta.get("return_segment_breaks"):
+        elif meta.get("return_kind") not in {"price_return", "total_return"}:
+            reason = "收益经济口径尚未确认"
+        if meta.get("return_segment_breaks") and any(not p.get("segment_id") for p in item.get("points", [])):
             reason = "收益序列存在待确认的断点"
-        points = {p["date"]: float(p["value"]) for p in item.get("points", []) if start.isoformat() <= p["date"] <= end.isoformat() and isinstance(p.get("value"), (int, float)) and math.isfinite(p["value"]) and p["value"] > 0}
-        if len(points) < 2:
-            reason = "区间内不足两个有效观察值"
+        retained = [p for p in confirmed_return_points(item) if start.isoformat() <= p["date"] <= end.isoformat()]
+        points = {p["date"]: p["value"] for p in retained}
+        if reason is None:
+            coverage = _comparison_window_coverage(item, retained, start, end, cutoff)
+            coverage_by_instrument[iid] = coverage
+            reason = coverage["reason"]
+        if reason is None:
+            reason = return_sample_limitation(item, retained)
         if reason:
             excluded.append({"instrument_id": iid, "reason": reason})
         else:
             usable[iid] = (item, points)
-    result = {"requested_start": start.isoformat(), "requested_end": end.isoformat(), "sample_start": None, "sample_end": None, "observations": 0, "rows": [], "excluded": excluded,
-        "method": "共同实际观察日；不填充缺失值；收益为样本首尾比值；相关性基于共同相邻观察区间；不年化。",
-        "limitations": ["仅覆盖本地已登记标的，不能代表全市场排名。", "净值平滑、披露频率和费用口径会影响可比性；低相关不等于危机对冲。", "收益与相关性只是历史描述，组合角色需要结合底层敞口与流动性复核。"]}
+    result = {"requested_start": start.isoformat(), "requested_end": end.isoformat(), "cutoff": cutoff.isoformat(),
+        "window_coverage": coverage_by_instrument, "sample_start": None, "sample_end": None, "observations": 0, "rows": [], "excluded": excluded,
+        "method": "先逐项核验请求区间内完整收益区间，再对齐共同实际观察日；不填充缺失值。收益为共同首尾比值；回撤使用各自该首尾间完整观察路径；相关性基于共同相邻观察区间；不年化。",
+        "limitations": ["仅覆盖本地已登记标的，不能代表全市场排名。", "净值平滑、披露频率和费用口径会影响可比性；低相关不等于危机对冲。", "收益与相关性只是历史描述，不能识别事件因果或哪类因素主导收益；组合角色需要结合底层敞口与流动性复核。"]}
+    result["limitations"].extend(dict.fromkeys(
+        coverage["limitation"] for iid, coverage in coverage_by_instrument.items()
+        if iid in usable and coverage.get("limitation")))
     if len(usable) < 2:
         result["limitations"].append("合格标的少于两个，以下仅为单标的描述，不能形成跨产品排名。")
     if not usable:
@@ -311,7 +443,7 @@ def compare_series(series: dict[str, dict], start: date, end: date, target_id: s
     if len(return_kinds) > 1 or not all(return_kinds):
         result["limitations"].append("按各标的实际价格或净值序列比较；收益口径逐项列示，超额收益和相关性包含分红及复权口径差异。")
     if any((item.get("frequency") or {}).get("gap_count") for item, _ in usable.values()):
-        result["limitations"].append("部分序列存在缺失观察值；仅按共同实际观察区间计算，不填充，也不把跨日收益当作单日收益。")
+        result["limitations"].append("部分序列在请求区间外存在历史观察缺口；本次仅使用已逐区间确认的完整样本，不表示全历史完整。")
     common = sorted(set.intersection(*(set(x[1]) for x in usable.values())))
     if len(common) < 2:
         result["limitations"].append("没有足够的共同实际观察日；未用各自最新日期拼接排名。")
@@ -321,9 +453,10 @@ def compare_series(series: dict[str, dict], start: date, end: date, target_id: s
     target = returns.get(target_id)
     benchmark = returns.get(benchmark_id)
     for iid, (item, points) in usable.items():
+        path = [day for day in sorted(points) if common[0] <= day <= common[-1]]
         peak = points[common[0]]
         worst = 0.
-        for day in common:
+        for day in path:
             peak = max(peak, points[day])
             worst = min(worst, points[day] / peak - 1)
         values = returns[iid]
@@ -335,9 +468,12 @@ def compare_series(series: dict[str, dict], start: date, end: date, target_id: s
         benchmark_return = math.prod(1 + x for x in benchmark) - 1 if benchmark is not None else None
         metadata = item.get("metadata") or {}
         result["rows"].append({"instrument_id": iid, "return_kind": metadata.get("return_kind"), "quote_basis": metadata.get("quote_basis"),
+            "path_observations": len(path), "aligned_observations": len(common),
             "return_pct": total_return * 100, "max_drawdown_pct": worst * 100,
             "correlation_to_target": coefficient, "target_down_observations": len(down), "average_return_when_target_down_pct": mean(down) * 100 if down else None,
             "joint_loss_observations": sum(v < 0 for v in down), "excess_return_pp": (total_return - benchmark_return) * 100 if benchmark_return is not None else None})
+    if any(row["path_observations"] != len(common) for row in result["rows"]):
+        result["limitations"].append("披露日期或日历不同：相关性仅按列示的共同区间比较，回撤保留各自完整路径；没有删除缺失交易日来凑齐样本。")
     if benchmark_id and benchmark is None:
         result["limitations"].append("所选基准缺少合格共同样本，未计算超额收益。")
     if not benchmark_id:

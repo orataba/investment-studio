@@ -29,7 +29,7 @@ def shape(value):
     return {"type": kind, "count": len(value) if isinstance(value, (dict, list, str)) else 0 if value is None else 1}
 
 
-def read_page(value, metadata, *, offset=0, limit=20, path=None):
+def read_page(value, metadata, *, offset=0, limit=20, path=None, resolve=None):
     """Page arrays/object fields/text; oversized children have explicit read paths.
 
     Every returned child path is relative to the same selected section/source/version.
@@ -40,13 +40,19 @@ def read_page(value, metadata, *, offset=0, limit=20, path=None):
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError("分页limit必须是正整数。")
     path = list(path or [])
+    traversed = []
     for key in path:
+        if resolve is not None:
+            value = resolve(value, traversed)
         if isinstance(value, dict) and isinstance(key, str) and key in value:
             value = value[key]
         elif isinstance(value, list) and type(key) is int and 0 <= key < len(value):
             value = value[key]
         else:
             raise ValueError("读取路径不在本轮绑定资料中；请使用返回的deferred.path。")
+        traversed.append(key)
+    if resolve is not None:
+        value = resolve(value, traversed)
     description = shape(value)
     total = description["count"]
     if offset > total or (description["type"] == "value" and offset):

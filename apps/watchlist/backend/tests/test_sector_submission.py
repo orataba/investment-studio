@@ -379,7 +379,7 @@ def test_research_business_scope_and_closed_run_errors_keep_distinct_diagnostics
         research_mcp.request("market-search", {})
     assert json.loads(str(conflict.value))["status"] == 409
     assert json.loads(str(conflict.value))["error"] == "state_conflict"
-    assert "已经结束" in json.loads(str(conflict.value))["message"]
+    assert "已结束" in json.loads(str(conflict.value))["message"]
     assert len(calls) == 2
 
 

@@ -11,6 +11,7 @@ export type PortfolioPreloadSection =
   | 'Holdings'
   | 'Performance'
   | 'Risk'
+  | 'Investment Views'
   | 'Transactions'
   | 'Accounts'
   | 'Taxonomies'
@@ -23,6 +24,7 @@ const routeModulePreloaders: Record<PortfolioPreloadSection, PreloadTask> = {
   Holdings: () => import('../pages/PortfolioHomePage'),
   Performance: () => import('../pages/PerformancePage'),
   Risk: () => import('../pages/RiskPage'),
+  'Investment Views': () => import('../pages/InvestmentViewsPage'),
   Transactions: () => import('../pages/TransactionsPage'),
   Accounts: () => import('../pages/AccountsPage'),
   Taxonomies: () => import('../pages/TaxonomiesPage'),

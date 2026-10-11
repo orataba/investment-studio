@@ -60,8 +60,8 @@ def test_new_theme_dispatch_returns_the_saved_run_without_calling_a_live_model(r
     from watchlist_app.services import research_runner
     calls = []
     monkeypatch.setattr(research_runner, "harness_available", lambda: True)
-    monkeypatch.setattr(research_runner, "authorize_run", lambda actor, run_id: "test-run-token")
-    monkeypatch.setattr(research_runner, "run_analysis", lambda *args: calls.append(args[0]))
+    monkeypatch.setattr(research_runner, "authorize_run", lambda actor, run_id, *, attempt: "test-run-token")
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda *args, **kwargs: calls.append(args[1]))
     result = research_client.post(_themes(), json={"title": "新的研究问题"}).json()
     assert result["research_status"] == "queued" and result["research_run_id"]
     assert calls == [result["research_run_id"]]
@@ -102,8 +102,8 @@ def test_attach_brief_event_to_existing_theme_preserves_original_and_requests_re
         original = next(row for row in research_activity(session, "xlk")["updates"] if row["kind"] == "event")
     calls = []
     monkeypatch.setattr(research_runner, "harness_available", lambda: True)
-    monkeypatch.setattr(research_runner, "authorize_run", lambda actor, run_id: "test-token")
-    monkeypatch.setattr(research_runner, "run_analysis", lambda *args: calls.append(args[0]))
+    monkeypatch.setattr(research_runner, "authorize_run", lambda actor, run_id, *, attempt: "test-token")
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda *args, **kwargs: calls.append(args[1]))
     reference = {key: value for key, value in original["reference"].items() if key != "instrument_id"}
     response = activity_client.patch(f"/api/research/instruments/xlk/themes/{theme['theme_id']}", json={"reference": reference})
     assert response.status_code == 200, response.text

@@ -222,6 +222,8 @@ export default function PortfolioHoldingDetailPage() {
   const [instrumentChartResponse, setInstrumentChartWorkspace] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
   const [instrumentChartLoading, setInstrumentChartLoading] = useState(false)
   const [instrumentChartError, setInstrumentChartError] = useState<string | null>(null)
+  const [priceMode, setPriceMode] = useState<'raw' | 'front' | 'back'>('raw')
+  useEffect(() => setPriceMode('raw'), [holdingId])
   const [derivativeContractsResponse, setDerivativeContracts] = useState<PortfolioDerivativeContractsResponse | null>(null)
   const [deliveryLinksResponse, setDeliveryLinks] = useState<PortfolioOptionDeliveryLinksResponse | null>(null)
   const [optionObligationsResponse, setOptionObligations] = useState<PortfolioOptionObligationsResponse | null>(null)
@@ -851,6 +853,7 @@ export default function PortfolioHoldingDetailPage() {
     getPortfolioInstrumentPriceChart(portfolioId, holdingId, {
       as_of_date: resolvedAsOfDate,
       range: chartRangeKey,
+      price_mode: priceMode,
     })
       .then((response) => {
         if (!cancelled) {
@@ -875,6 +878,7 @@ export default function PortfolioHoldingDetailPage() {
     }
   }, [
     chartRangeKey,
+    priceMode,
     relatedDataResolved,
     activeDetailTab,
     holdingId,
@@ -904,6 +908,11 @@ export default function PortfolioHoldingDetailPage() {
             <label className="holding-detail-asof">{t('As of date')}<input type="date" aria-label={t('Holding date')} value={requestedAsOfDate || resolvedAsOfDate} onChange={(event) => { if (event.target.value) updateSearchParam('as_of_date', event.target.value) }} /></label>
             {workspace && requestedAsOfDate && requestedAsOfDate !== workspace.as_of_date ? <span role="status">{language === 'zh-Hans' ? '请求日期' : 'Requested date'}: {requestedAsOfDate} · {language === 'zh-Hans' ? '有效持仓日期' : 'Effective holdings date'}: {workspace.as_of_date}</span> : null}
             <QualityWarningsNotice warnings={workspace?.quality_warnings} />
+            {detailKind === 'security' && selectedRow?.instrument_core ? (
+              <Link className="portfolio-security-secondary-link" to={`${buildPortfolioSectionPath(portfolioId, '/investment-views')}?${new URLSearchParams({ instrument_id: selectedRow.instrument_core.instrument_id })}`}>
+                {language === 'zh-Hans' ? '本组合投资观点' : 'Portfolio investment views'}
+              </Link>
+            ) : null}
             {detailKind === 'security' && selectedRow?.instrument_core ? (
               <a data-workspace-link className="portfolio-security-secondary-link" href={watchlistDetailUrl}>
                 View instrument research
@@ -1151,6 +1160,10 @@ export default function PortfolioHoldingDetailPage() {
                   rangeKey={chartRangeKey}
                   onRangeChange={(rangeKey) => updateSearchParam('chart_range', rangeKey)}
                   variant="instrument"
+                  priceMode={priceMode}
+                  onPriceModeChange={['equity', 'etf'].includes(securityCore?.instrument_type ?? '') ? mode => {
+                    if (mode !== 'return') setPriceMode(mode)
+                  } : undefined}
                 />
               </section>
 

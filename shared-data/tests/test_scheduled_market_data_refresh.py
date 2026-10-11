@@ -5,12 +5,14 @@ import importlib.util
 import json
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 import psycopg
 
 from studio_data.services.downstream_notifications import DownstreamRequestFailure
+from studio_data.services import listed_close_acceptance
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "refresh_market_data_scheduled.py"
@@ -103,6 +105,7 @@ def test_configured_fmp_failure_keeps_later_scheduled_instruments_running(monkey
         return record(kwargs["instrument_id"], "refreshed")
 
     monkeypatch.setattr(market_data_ops, "market_data_item_timeout", lambda *args: nullcontext())
+    monkeypatch.setattr(market_data_ops, "get_instrument", lambda instrument_id: record(instrument_id, "idle"))
     monkeypatch.setattr(market_data_ops, "refresh_market_data", refresh)
     monkeypatch.setattr(market_data_ops, "update_refresh_status", lambda **kwargs: record(kwargs["instrument_id"], kwargs["status"]))
     result = scheduled_refresh._refresh_selected_instruments(channel="configured", instrument_ids=["unavailable", "next"], updated_by="scheduler", full_history=False)
@@ -118,6 +121,9 @@ def test_configured_fmp_failure_keeps_later_scheduled_instruments_running(monkey
 
 @pytest.fixture(autouse=True)
 def _empty_projection_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Routing tests use synthetic provider responses, not a registered database.
+    # The actual baseline reader and acceptance are exercised separately below.
+    monkeypatch.setattr(scheduled_refresh, "listed_close_baseline", lambda instrument_ids=None: {})
     monkeypatch.setattr(scheduled_refresh, "refresh_reference_data_batch",
                         lambda **kwargs: {"results": [], "refreshed_count": 0})
     monkeypatch.setattr(
@@ -283,6 +289,7 @@ def test_all_channels_merge_into_one_downstream_notification(monkeypatch, tmp_pa
         "tushare",
         "email",
         "fmp",
+        "futu",
         "fund_nav_projection",
         "reference",
     ]
@@ -406,6 +413,112 @@ def test_channel_summary_uses_final_retry_result(monkeypatch, tmp_path: Path) ->
     assert tushare_summary["refreshed_count"] == 1
     assert tushare_summary["status_counts"] == {"refreshed": 1}
     assert summary["updated_instrument_count"] == 1
+
+
+@pytest.mark.parametrize("canonical_changed", [True, False])
+@pytest.mark.parametrize("selected_instrument", [True, False])
+def test_partial_refresh_notifies_only_for_canonical_changes_without_retry(
+    monkeypatch, tmp_path: Path, canonical_changed: bool, selected_instrument: bool,
+) -> None:
+    calls: list[str] = []
+    notifications: list[dict[str, object]] = []
+    instrument_id = "futu-etf"
+    _current_listed_close(monkeypatch, instrument_id)
+
+    def refresh(**kwargs):
+        calls.append(kwargs["instrument_id"])
+        return {
+            "instrument_id": instrument_id,
+            "instrument_name": instrument_id,
+            "instrument_type": "etf",
+            "source_settings": {"source_mode": "api", "source_api_profile": "futu"},
+            "refresh_status": {"status": "partial", "message": "One historical OHLC bar is inconsistent."},
+            "canonical_changed": canonical_changed,
+        }
+
+    monkeypatch.setattr(scheduled_refresh, "refresh_market_data_with_timeout", refresh)
+    monkeypatch.setattr(scheduled_refresh, "refresh_market_data_batch", lambda **kwargs: {
+        "source": "futu", "refreshed_count": 0, "skipped_count": 0,
+        "results": [{**_updated_result(instrument_id, "etf"), "status": "partial",
+                     "source_api_profile": "futu", "canonical_changed": canonical_changed}],
+    })
+    monkeypatch.setattr(scheduled_refresh, "notify_market_data_downstream_refresh", lambda **kwargs: (
+        notifications.append(kwargs) or scheduled_refresh.DownstreamRefreshResult(request_count=2)
+    ))
+
+    exit_code, summary = scheduled_refresh._run_refresh(_args(
+        tmp_path, channel="futu", instrument_ids=[instrument_id] if selected_instrument else [],
+        retry_failed_attempts=2,
+    ), started_at=datetime(2026, 10, 8, 9, tzinfo=UTC))
+
+    assert exit_code == 0
+    assert summary["status"] == "succeeded"
+    assert summary["failed_item_count"] == 0
+    assert summary["channels"][0]["status_counts"] == {"partial": 1}
+    assert summary["channels"][0]["refreshed_count"] == 0
+    assert calls == ([instrument_id] if selected_instrument else [])
+    assert summary["updated_instrument_ids"] == ([instrument_id] if canonical_changed else [])
+    assert summary["downstream_refresh"] is canonical_changed
+    if canonical_changed:
+        assert len(notifications) == 1
+        assert notifications[0]["instrument_ids"] == [instrument_id]
+    else:
+        assert notifications == []
+
+
+def test_intermediate_failed_retry_keeps_canonical_change_for_final_no_new_data_notification(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    instrument_id = "futu-etf"
+    _current_listed_close(monkeypatch, instrument_id)
+    notifications: list[dict[str, object]] = []
+    calls: list[str] = []
+    retry_results: list[dict[str, object]] = []
+    outcomes = iter([("failed", True), ("no_new_data", False)])
+    monkeypatch.setattr(scheduled_refresh, "refresh_market_data_batch", lambda **kwargs: {
+        "source": "futu", "refreshed_count": 0, "skipped_count": 0,
+        "results": [{**_updated_result(instrument_id, "etf"), "status": "failed",
+                     "canonical_changed": False}],
+    })
+
+    def refresh(**kwargs):
+        calls.append(kwargs["instrument_id"])
+        status, changed = next(outcomes)
+        return {
+            "instrument_id": instrument_id, "instrument_name": instrument_id,
+            "instrument_type": "etf",
+            "source_settings": {"source_mode": "api", "source_api_profile": "futu"},
+            "refresh_status": {"status": status, "message": status},
+            "canonical_changed": changed,
+        }
+
+    retry = scheduled_refresh._retry_failed_results
+
+    def capture_retries(**kwargs):
+        results = retry(**kwargs)
+        retry_results.extend(results)
+        return results
+
+    monkeypatch.setattr(scheduled_refresh, "refresh_market_data_with_timeout", refresh)
+    monkeypatch.setattr(scheduled_refresh, "_retry_failed_results", capture_retries)
+    monkeypatch.setattr(scheduled_refresh, "notify_market_data_downstream_refresh", lambda **kwargs: (
+        notifications.append(kwargs) or scheduled_refresh.DownstreamRefreshResult(request_count=2)
+    ))
+
+    exit_code, summary = scheduled_refresh._run_refresh(_args(
+        tmp_path, channel="futu", retry_failed_attempts=2,
+    ), started_at=datetime(2026, 10, 8, 9, tzinfo=UTC))
+
+    assert calls == [instrument_id, instrument_id]
+    assert retry_results[0]["status"] == "no_new_data"
+    assert retry_results[0]["canonical_changed"] is True
+    assert exit_code == 0
+    assert summary["channels"][0]["status_counts"] == {"no_new_data": 1}
+    assert summary["channels"][0]["refreshed_count"] == 0
+    assert summary["failed_item_count"] == 0
+    assert summary["updated_instrument_ids"] == [instrument_id]
+    assert len(notifications) == 1
+    assert notifications[0]["instrument_ids"] == [instrument_id]
 
 
 def test_retry_timeout_keeps_failed_result_and_continues_to_next_item(monkeypatch) -> None:
@@ -792,3 +905,74 @@ def test_empty_market_scope_never_falls_back_to_global_refresh(monkeypatch, tmp_
 def test_settlement_retains_nav_projection_and_fx_without_repeating_research():
     assert scheduled_refresh._channels("settlement") == ["fmp_catalog", "tushare", "email", "fx", "fund_nav_projection"]
     assert scheduled_refresh._channels("market") == ["configured"]
+
+
+def _current_listed_close(monkeypatch, instrument_id):
+    quote = {"as_of_date": "2026-10-08", "value": "100", "currency": "HKD",
+             "provider": "futu:history-kline:unadjusted", "price_unit": "per_unit", "price_scale": 1}
+    record = {"instrument_id": instrument_id, "instrument_type": "etf", "currency": "HKD",
+              "exchange_code": "XHKG", "source_settings": {"source_mode": "api", "source_api_profile": "futu"},
+              "lifecycle_state": {"status": "active"}, "close": quote}
+    monkeypatch.setattr(listed_close_acceptance, "_read_listed_close_inputs",
+                        lambda ids, **kwargs: {instrument_id: record})
+
+
+def test_batch_acceptance_retains_starting_window_after_failed_capture_publishes_latest(
+    monkeypatch, tmp_path,
+):
+    instrument_id = "hk-stock"
+    order = []
+    original = _updated_result(instrument_id, "equity")
+    original.update(source_api_profile="fmp", status="failed", canonical_changed=True)
+    def baseline(ids):
+        order.append("baseline")
+        assert ids is None
+        return {instrument_id: "2026-10-05"}
+    def initial(**kwargs):
+        order.append("initial")
+        return {"results": [original], "refreshed_count": 0, "skipped_count": 0}
+    def retry(**kwargs):
+        order.append("retry")
+        return {"instrument_id": instrument_id, "instrument_name": instrument_id,
+                "instrument_type": "equity", "source_settings": {"source_mode": "api", "source_api_profile": "fmp"},
+                "refresh_status": {"status": "no_new_data", "message": "Latest already projected"}}
+    quotes = [{"as_of_date": day, "value": "100", "currency": "HKD", "price_unit": "per_unit",
+               "price_scale": 1, "provider": "fmp:historical-price-eod:non-split-adjusted"}
+              for day in ("2026-10-05", "2026-10-08")]
+    def read(ids, *, baseline):
+        order.append("acceptance")
+        assert ids == [instrument_id]
+        assert baseline == {instrument_id: "2026-10-05"}
+        return {instrument_id: {"instrument_id": instrument_id, "instrument_type": "equity", "currency": "HKD",
+                "exchange_code": "XHKG", "source_settings": {"source_mode": "api", "source_api_profile": "fmp"},
+                "close": quotes[-1], "window_closes": quotes}}
+    monkeypatch.setattr(scheduled_refresh, "listed_close_baseline", baseline)
+    monkeypatch.setattr(scheduled_refresh, "refresh_market_data_batch", initial)
+    monkeypatch.setattr(scheduled_refresh, "refresh_market_data_with_timeout", retry)
+    monkeypatch.setattr(listed_close_acceptance, "_read_listed_close_inputs", read)
+    monkeypatch.setattr(scheduled_refresh, "notify_market_data_downstream_refresh",
+                        lambda **kwargs: scheduled_refresh.DownstreamRefreshResult(request_count=2))
+    code, summary = scheduled_refresh._run_refresh(
+        _args(tmp_path, channel="fmp", retry_failed_attempts=1, fail_on_item_failure=False),
+        started_at=datetime(2026, 10, 8, 9, tzinfo=UTC),
+    )
+    assert order == ["baseline", "initial", "retry", "acceptance"]
+    assert code == 1 and summary["status"] == "failed"
+    assert original["status"] == "failed"  # Source receipt is not rewritten by acceptance.
+    assert summary["channels"][-1]["status_counts"] == {"no_new_data": 1}
+    assert summary["failed_item_count"] == 0
+    assert summary["listed_close_coverage"]["failed_count"] == 1
+    checked = summary["listed_close_coverage"]["results"][0]
+    assert checked["baseline_close_date"] == "2026-10-05"
+    assert checked["expected_close_date"] == checked["latest_close_date"] == "2026-10-08"
+    assert checked["missing_session_dates"] == ["2026-10-06", "2026-10-07"]
+    assert summary["updated_instrument_ids"] == [instrument_id]
+    assert summary["downstream_refresh"] is True
+
+
+def test_reference_only_does_not_read_listed_price_baseline(monkeypatch, tmp_path):
+    monkeypatch.setattr(scheduled_refresh, "listed_close_baseline",
+                        lambda *args: pytest.fail("References have no price-delivery responsibility"))
+    code, summary = scheduled_refresh._run_refresh(_args(tmp_path, channel="reference"))
+    assert code == 0
+    assert summary["listed_close_coverage"]["status"] == "not_required"

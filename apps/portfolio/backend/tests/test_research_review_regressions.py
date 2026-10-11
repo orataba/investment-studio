@@ -387,6 +387,7 @@ def allocation_state():
         key: {
             "instrument_id": key, "instrument_name": key, "instrument_type": "public_fund",
             "currency": "CNY", "quote_selection_policy": {"total_return": ["total_return_nav"]},
+            "source_settings": {"expected_frequency": "daily", "market_calendar": "24/5"},
             "market_data": [
                 {"metric_family": "nav", "quote_basis": "total_return_nav", "as_of_date": day.isoformat(),
                  "value": value, "currency": "CNY", "price_unit": "per_unit", "price_scale": 1, "status": "complete"}
@@ -707,6 +708,11 @@ def test_risk_window_uses_pre_weekend_close_and_does_not_fill_stale_tail():
         ("instrument", "a"): pd.Series([100, 110, 121], index=[date(2026, 5, 29), date(2026, 6, 1), date(2026, 6, 2)]),
         ("instrument", "b"): pd.Series([100, 105], index=[date(2026, 5, 29), date(2026, 6, 1)]),
     }
+    for key, nav in series.items():
+        nav.attrs["observation_coverage"] = {
+            "gap_detection_basis": "market_calendar:24/5",
+            "gap_dates": ["2026-06-02"] if key[1] == "b" else [],
+        }
     aligned, _, _ = solver._align_member_series(
         members, series, start_date=date(2026, 5, 31), end_date=date(2026, 6, 2),
     )
@@ -825,15 +831,15 @@ def test_covariance_honors_configured_trailing_staleness_parameter():
         )
 
 
-def test_backtest_treats_excess_early_complete_case_loss_as_a_warmup_gap():
+def test_backtest_reports_incomplete_return_window_as_a_data_gap():
     error = ValueError(
-        "Risk budget solve complete-case drop would remove 2 of 4 return rows "
-        "(50.00%), exceeding the 10.00% limit."
+        "Risk budget solve requires complete aligned return observations; missing "
+        "return values were found for period ends 2026-01-05."
     )
     assert solver._is_rebalance_data_gap_error(error) is True
 
 
-def test_complete_case_coverage_reports_leading_boundary_separately_from_later_gaps():
+def test_incomplete_prefix_and_intermittent_gap_are_not_dropped():
     returns = pd.DataFrame(
         {
             "a": [None, None, 0.01, 0.02, 0.01, 0.03, 0.01, 0.02, 0.01, 0.02, 0.01, 0.02],
@@ -843,20 +849,11 @@ def test_complete_case_coverage_reports_leading_boundary_separately_from_later_g
         dtype="float64",
     )
 
-    coverage = solver._apply_missing_return_policy(
-        returns,
-        min_observations=5,
-        label="QA",
-        missing_return_policy="complete_case_drop",
-        calculation_frequency="daily",
-        as_of_date=date(2026, 1, 12),
-    )
-
-    assert coverage.leading_incomplete_row_count == 2
-    assert coverage.post_warmup_missing_row_count == 1
-    assert coverage.post_warmup_missing_row_fraction == pytest.approx(0.1)
-    assert coverage.missing_row_count == 3
-    assert coverage.rows_after == 9
+    with pytest.raises(ValueError, match="complete aligned return observations"):
+        solver._apply_missing_return_policy(
+            returns, min_observations=5, label="QA", missing_return_policy="strict",
+            calculation_frequency="daily", as_of_date=date(2026, 1, 12),
+        )
 
 
 def test_global_covariance_failure_reports_the_selected_research_scope(monkeypatch):
@@ -909,7 +906,9 @@ def test_sample_covariance_matches_independent_n_minus_one_formula():
         },
         index=dates,
     )
-    annualization = solver._infer_periods_per_year(dates)
+    starts = [date(2026, 1, 2), *dates[:-1]]
+    returns.attrs["return_period_starts"] = {end.isoformat(): start.isoformat() for start, end in zip(starts, dates)}
+    annualization = len(dates) / (dates[-1] - starts[0]).days * 365.25
     expected = np.cov(returns.to_numpy(), rowvar=False, ddof=1) * annualization
 
     actual = solver.estimate_covariance(
@@ -942,10 +941,13 @@ def test_ewma_covariance_matches_independent_weighted_formula():
     mean = np.average(values, axis=0, weights=weights)
     centered = values - mean
     expected = (centered * weights[:, None]).T @ centered
-    expected *= solver._infer_periods_per_year(dates)
+    starts = [date(2026, 1, 2), *dates[:-1]]
+    expected *= len(dates) / (dates[-1] - starts[0]).days * 365.25
+    returns = pd.DataFrame(values, index=dates, columns=["equity", "bonds"])
+    returns.attrs["return_period_starts"] = {end.isoformat(): start.isoformat() for start, end in zip(starts, dates)}
 
     actual = solver.estimate_covariance(
-        pd.DataFrame(values, index=dates, columns=["equity", "bonds"]),
+        returns,
         model_id="ewma_covariance",
         lookback_days=30,
         parameters={"min_observations": 2, "decay": decay, "max_period_staleness_days": 5},
@@ -965,6 +967,8 @@ def test_composite_covariance_preserves_ewma_vol_and_shrinks_correlation():
         },
         index=dates,
     )
+    starts = [date(2026, 1, 2), *dates[:-1]]
+    returns.attrs["return_period_starts"] = {end.isoformat(): start.isoformat() for start, end in zip(starts, dates)}
     decay = 0.93
     shrinkage = 0.2
     parameters = {

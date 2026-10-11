@@ -184,7 +184,7 @@ def test_live_derivative_quotes_and_event_review_invalidate_without_changing_acc
             PortfolioDailyHoldingSnapshotModel.portfolio_id == PID,
             PortfolioDailyHoldingSnapshotModel.as_of_date == as_of))
         session.add(Instrument(instrument_id="live-underlying", instrument_name="底层", instrument_type="equity",
-            currency="USD", exchange_code="XNAS", quote_selection_policy_json={}))
+            currency="USD", exchange_code="XNAS", quote_selection_policy_json={"total_return": ["adjusted_close"]}))
         session.add(DerivativeContractRecordModel(portfolio_id=PID, derivative_contract_id="held-option",
             account_id=existing.account_id, contract_name="已持有期权", contract_type="option", currency="USD",
             terms_json={"underlying_instrument_id": "live-underlying"}, created_at="2026-09-27"))

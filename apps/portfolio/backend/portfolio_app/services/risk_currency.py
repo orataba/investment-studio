@@ -9,6 +9,7 @@ from typing import Hashable
 
 import numpy as np
 import pandas as pd
+from investment_studio_instrument_core.return_series import simple_to_log_return
 
 from portfolio_app.services.risk_alignment import align_risk_navs
 
@@ -34,9 +35,13 @@ def risk_return_series_payload(
             continue
         value = returns.loc[day]
         points.append({"start_date": previous.isoformat(), "date": day.isoformat(),
-                       "value": float(value) if pd.notna(value) else None})
+                       "value": float(value) if pd.notna(value) else None,
+                       "log_return": simple_to_log_return(float(value)) if pd.notna(value) else None,
+                       "status": "complete" if pd.notna(value) else "unavailable",
+                       "reason": None if pd.notna(value) else "unavailable_aligned_return"})
     return {"first_return_start_date": first.isoformat() if first is not None else None,
-            "points": points, **metadata}
+            "last_return_end_date": points[-1]["date"] if points else None,
+            "points": points, **metadata, "return_measure": "simple"}
 
 
 def _currency(value: str) -> str:
@@ -84,6 +89,7 @@ def align_base_currency_navs(
     fx_histories: dict[str, RiskFxHistory] | None = None,
     calendar: list[date] | None = None,
     end_date: date | None = None,
+    return_contracts_by_key: dict[Hashable, dict[str, object]] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[Hashable, dict[str, object]]]:
     """Align components first, then multiply wealth and take same-period returns.
 
@@ -99,7 +105,7 @@ def align_base_currency_navs(
     end_date = end_date or max(max(series.index) for series in nav_by_key.values())
     components, component_coverage, native_keys, paths = {}, {}, {}, {}
     for index, (key, series) in enumerate(nav_by_key.items()):
-        native_key = f"native:{index}"
+        native_key = f"native:{index}:{key}"
         native_keys[key] = native_key
         components[native_key] = series
         component_coverage[native_key] = coverage_by_key.get(key) or {}
@@ -129,6 +135,7 @@ def align_base_currency_navs(
     aligned, component_returns = align_risk_navs(
         components, coverage_by_key=component_coverage,
         calendar=sorted(union), end_date=end_date,
+        return_contracts_by_key={native_keys[key]: contract for key, contract in (return_contracts_by_key or {}).items()},
     )
     wealth_by_key, invalid_returns, metadata = {}, {}, {}
     for key, native_key in native_keys.items():
@@ -158,6 +165,8 @@ def align_base_currency_navs(
                 "component_coverage": {component_key: component_coverage[component_key] for component_key in relevant},
             }
         metadata[key] = {
+            **(return_contracts_by_key or {}).get(key, {}),
+            "return_measure": "simple",
             "currency": base_currency,
             "source_currency": _currency(currency_by_key[key]),
             "source_instrument_ids": sorted({history.instrument_id for history, _ in paths[key]}),
@@ -165,6 +174,9 @@ def align_base_currency_navs(
         }
     navs = pd.DataFrame(wealth_by_key, index=aligned.index)
     returns = navs.pct_change(fill_method=None)
+    # Multiplication preserves the aligned component intervals, including the
+    # actual opening boundary of the first native/FX return.
+    returns.attrs["return_period_starts"] = dict(component_returns.attrs["return_period_starts"])
     for key, missing in invalid_returns.items():
         returns.loc[missing, key] = np.nan
     return navs, returns, metadata

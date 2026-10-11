@@ -36,19 +36,26 @@ def test_search_is_read_only_and_preserves_catalog_errors(raw_client, monkeypatc
     assert calls == [("SHV", 25)]
 
 
-def test_materialize_uses_data_owner_and_returns_instrument_option(raw_client, monkeypatch):
+@pytest.mark.parametrize("provider", ["fmp", "futu"])
+def test_materialize_uses_data_owner_and_returns_instrument_option(raw_client, monkeypatch, provider):
     calls = []
     monkeypatch.setenv("INVESTMENT_STUDIO_AUTH_SERVICE_TOKEN", "portfolio-only-test-token")
+    payload = {**PAYLOAD, "catalog_provider": provider}
+    instrument = {**REGISTRY_INSTRUMENTS[1], "source_settings": {
+        "source_api_profile": provider, "source_location": "private-source-location",
+        "source_email": "private-source@example.test",
+    }}
     def run(args, **kwargs):
         calls.append((args, kwargs))
-        return subprocess.CompletedProcess(args, 0, json.dumps(REGISTRY_INSTRUMENTS[1]), "")
+        return subprocess.CompletedProcess(args, 0, json.dumps(instrument), "")
     monkeypatch.setattr(security_catalog.subprocess, "run", run)
-    response = raw_client.post(BASE + "/materialize", json={**PAYLOAD, "catalog_symbol": " shv "})
+    response = raw_client.post(BASE + "/materialize", json={**payload, "catalog_symbol": " shv "})
     assert response.status_code == 200, response.text
     assert response.json()["instrument_core"]["instrument_id"] == "fund-us-agg"
-    assert "source_settings" not in response.json()
+    assert response.json()["source_settings"] == {"source_api_profile": provider}
+    assert "private-source" not in response.text
     assert calls[0][0][1:] == ["data", "securities", "add", "--input", "-", "--apply"]
-    assert json.loads(calls[0][1]["input"]) == {**PAYLOAD, "refresh_eod": True}
+    assert json.loads(calls[0][1]["input"]) == {**payload, "refresh_eod": True}
     assert not any(key.startswith("INVESTMENT_STUDIO_") for key in calls[0][1]["env"])
 
 

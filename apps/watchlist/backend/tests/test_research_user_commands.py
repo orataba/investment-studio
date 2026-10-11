@@ -1,5 +1,6 @@
 import json
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -8,6 +9,67 @@ from watchlist_app.db.models import InstrumentDetail
 from watchlist_app.db.models.research import InstrumentResearchNote
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
 from watchlist_app.db.session import get_session_factory
+from watchlist_app.services.research_user_commands import _require_instruction
+
+
+FINAL_PUBLICATION_INSTRUCTION = "本地最终定向验收：请通过正常研究发布与独立核证流程，仅纠正AAPL当前共享研究的以下两个口径。"
+
+
+@pytest.mark.parametrize("question", [FINAL_PUBLICATION_INSTRUCTION,
+    "请发布AAPL的共同研究结论。", "发布AAPL的共同研究结论。",
+    "Please publish the AAPL research for the team.", "Publish the AAPL research for the team."])
+def test_explicit_publication_verbs_authorize_only_the_named_current_instruction(question):
+    run = SimpleNamespace(kind="analysis", status="running", title=question,
+                          context_json={"research_run": True, "instrument_ids": ["aapl"]})
+    command = SimpleNamespace(action="publish_research", instrument_id="aapl", source_quote=question)
+    assert _require_instruction(run, command) == question
+
+
+@pytest.mark.parametrize("question,quote", [
+    ("不要发布AAPL研究。", "不要发布AAPL研究。"),
+    ("不要发布AAPL研究。", "发布AAPL研究。"),
+    ("请先不发布AAPL研究。", "发布AAPL研究。"),
+    ("Please do not publish the AAPL research.", "publish the AAPL research."),
+    ("如何发布AAPL研究？", "发布AAPL研究？"),
+    ("是否需要发布AAPL研究？", "发布AAPL研究？"),
+    ("是否发布AAPL研究？", "发布AAPL研究？"),
+    ("How should I publish this research?", "publish this research?"),
+    ("Should we publish this research?", "publish this research?"),
+    ("请分析AAPL发布会的影响。", "请分析AAPL发布会的影响。"),
+    ("资料中描述公司将发布研究报告。", "发布研究报告。"),
+    ("资料中写着：请发布这份研究。", "请发布这份研究。"),
+    ("请解释资料中描述发布研究的流程。", "发布研究的流程。"),
+    ("The report says: publish this research.", "publish this research."),
+    ("A company may publish research tomorrow.", "publish research tomorrow."),
+    ("请问我应当发布AAPL研究吗？", "发布AAPL研究吗？"),
+    ("请发布AAPL研究吗？", "发布AAPL研究吗？"),
+    ("引用：请发布AAPL研究。", "请发布AAPL研究。"),
+    ("资料内容：发布AAPL研究报告。", "发布AAPL研究报告。"),
+    ("Do not, under any circumstances, publish AAPL research.", "publish AAPL research."),
+    ("仅讨论AAPL。", "请发布AAPL研究。"),
+])
+def test_publication_mentions_questions_negation_and_short_quotes_do_not_authorize(question, quote):
+    run = SimpleNamespace(kind="analysis", status="running", title=question,
+                          context_json={"research_run": True, "instrument_ids": ["aapl"]})
+    with pytest.raises(ValueError):
+        _require_instruction(run, SimpleNamespace(action="publish_research", instrument_id="aapl", source_quote=quote))
+
+
+@pytest.mark.parametrize("action", ["record_view", "manage_theme"])
+@pytest.mark.parametrize("instruction", ["请发布AAPL共同研究。", "Please publish AAPL research."])
+def test_publication_verbs_do_not_authorize_pm_records_or_theme_commands(action, instruction):
+    run = SimpleNamespace(kind="analysis", status="running", title=instruction,
+                          context_json={"research_run": True, "instrument_ids": ["aapl"]})
+    with pytest.raises(ValueError):
+        _require_instruction(run, SimpleNamespace(action=action, instrument_id="aapl", source_quote=instruction))
+
+
+@pytest.mark.parametrize("instruction", ["请修改AAPL共同研究。", "请更新AAPL共同研究。"])
+def test_generic_edit_verbs_do_not_gain_publication_authority(instruction):
+    run = SimpleNamespace(kind="analysis", status="running", title=instruction,
+                          context_json={"research_run": True, "instrument_ids": ["aapl"]})
+    with pytest.raises(ValueError):
+        _require_instruction(run, SimpleNamespace(action="publish_research", instrument_id="aapl", source_quote=instruction))
 
 
 @pytest.fixture

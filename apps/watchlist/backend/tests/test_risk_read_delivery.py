@@ -42,14 +42,20 @@ def prepare_fixture(client, context=None):
     with get_session_factory()() as session:
         run, _ = service.begin_run(session, watchlist_id="risk-list")
         run.status = "running"
-        run.context_json = {**run.context_json, **(context or bound_context())}
+        run.context_json = {**run.context_json, **(context or bound_context()), "execution": {"attempt": 1}}
         session.commit()
         return run.entry_id
 
 
 def state(run_id):
     with get_session_factory()() as session:
-        return copy.deepcopy(session.get(ResearchEntry, run_id).context_json)
+        from watchlist_app.db.models.workbench import ResearchRiskReadState
+        result = copy.deepcopy(session.get(ResearchEntry, run_id).context_json)
+        row = session.get(ResearchRiskReadState, run_id)
+        result["risk_delivered_pages"] = row.delivered_pages if row else []
+        if row and row.submitted_review is not None:
+            result["submitted_risk_review"] = row.submitted_review
+        return result
 
 
 def read(client, run_id, instruction):
@@ -107,9 +113,9 @@ def test_batch_overview_delivers_every_member_and_repeat_does_not_rewrite_contex
         first = read(client, rid, request)
         assert first.status_code == 200
         assert {r["instrument_id"] for r in first.json()["instruments"]} == {"risk-a", "risk-b"}
-        assert len(updates) == 1
+        assert len(updates) == 1 and "research_risk_read_state" in updates[0]
         assert read(client, rid, request).json() == first.json()
-        assert len(updates) == 1
+        assert len(updates) == 1 and "research_risk_read_state" in updates[0]
     finally:
         event.remove(engine, "before_cursor_execute", trace)
     assert sorted(state(rid)["risk_delivered_pages"]) == [["risk-a", "overview", 0], ["risk-b", "overview", 0]]
@@ -202,13 +208,13 @@ def test_risk_pages_require_matching_run_token_and_recheck_portfolio_revocation(
     with principal_context(principals["alice"]), get_session_factory()() as session:
         run, _ = service.begin_run(session, portfolio_id="A")
         run.status = "running"
-        run.context_json = {**run.context_json, **bound_context(), "risk_scope": {"portfolio_id": "A"}}
+        run.context_json = {**run.context_json, **bound_context(), "execution": {"attempt": 1}, "risk_scope": {"portfolio_id": "A"}}
         session.commit()
         rid = run.entry_id
     path = f"/api/research/runs/{rid}/risk-read"
     # Ordinary login is insufficient for a model-only delivery write.
     assert client.post(path, json={"section": "instrument_overviews"}).status_code == 403
-    principals["run"] = replace(principals["alice"], credential="run", resource_scope={"kind": "run", "id": rid})
+    principals["run"] = replace(principals["alice"], credential="run", resource_scope={"kind": "run", "id": rid, "attempt": "1"})
     as_user(client, "run")
     assert client.post(path, json={"section": "instrument_overviews"}).status_code == 200
     before = state(rid)
@@ -218,3 +224,62 @@ def test_risk_pages_require_matching_run_token_and_recheck_portfolio_revocation(
     assert client.post(path, json={"instrument_id": "risk-a", "section": "research_context",
                                    "page_offset": 0, "path": ["current"], "offset": 0}).status_code == 404
     assert state(rid) == before
+
+
+def test_risk_reads_use_small_projection_and_keep_original_computation_available(client):
+    context = bound_context()
+    original = {"source_id": "computed-large", "source_type": "computed_metric",
+        "data": {"volatility": 12.4, "sample_count": 3000, "coverage": "complete"},
+        "methodology": {"formula": "sample standard deviation", "unit": "annualized_percent"},
+        "input_snapshot": {"points": [{"date": f"sample-{i}", "value": i, "marker": "RAW_INPUT_ONLY"} for i in range(3000)]}}
+    context["risk_inputs"]["research"][0]["evidence_json"]["sources"] = [original]
+    rid = prepare_fixture(client, context)
+    statements = []
+    engine = get_session_factory().kw["bind"]
+    def trace(_conn, _cursor, statement, _params, _context, _many):
+        statements.append(statement)
+    event.listen(engine, "before_cursor_execute", trace)
+    try:
+        response = read(client, rid, {"instrument_id": "risk-a", "section": "cases"})
+        assert response.status_code == 200
+        assert len(response.content) <= 48000 and b"RAW_INPUT_ONLY" not in response.content
+        source = response.json()["current"]["research"][0]["sources"][0]
+        assert source["data"] == original["data"]
+        assert source["methodology"] == original["methodology"]
+        assert not any("research_entry.context_json" in sql for sql in statements), "\n".join(sql for sql in statements if "research_entry.context_json" in sql)
+        assert not any(sql.lstrip().upper().startswith("UPDATE research_entry".upper()) for sql in statements)
+    finally:
+        event.remove(engine, "before_cursor_execute", trace)
+    selector = source["input_snapshot"]["read"]
+    assert selector["tool"] == "read_risk_evidence"
+    response = client.post(f"/api/research/runs/{rid}/risk-evidence", json={
+        "snapshot": selector["snapshot"], "path": [*selector["path"], "points"], "offset": 2999})
+    assert response.status_code == 200, response.text
+    assert response.json()["data"] == original["input_snapshot"]["points"][2999:]
+    assert state(rid)["risk_inputs"] == context["risk_inputs"]
+
+
+def test_original_reads_resolve_only_bound_source_positions(client, monkeypatch):
+    from watchlist_app.services import research_run_evidence
+    context = bound_context()
+    reference = {"source_id": "computed-bound", "source_type": "computed_metric",
+        "retained_reference": {"run_id": "origin", "path": ["computed_metrics", "*"]}}
+    context["risk_inputs"]["research"][0]["evidence_json"]["sources"] = [reference]
+    spoof = {**reference, "source_id": "not-a-source"}
+    original = {"source_id": "computed-bound", "source_type": "computed_metric",
+        "data": {"metrics": {"value": 7}, "sources": [spoof]}}
+    resolved = []
+    def resolve(value, *, session, bound_source):
+        assert bound_source is True
+        assert value == reference
+        resolved.append(value)
+        return original
+    monkeypatch.setattr(research_run_evidence, "resolve_reference", resolve)
+    rid = prepare_fixture(client, context)
+    prefix = ["research", 0, "evidence_json", "sources", 0]
+    response = client.post(f"/api/research/runs/{rid}/risk-evidence", json={"path": [*prefix, "data", "metrics"]})
+    assert response.status_code == 200 and response.json()["data"] == {"value": 7}
+    response = client.post(f"/api/research/runs/{rid}/risk-evidence", json={"path": [*prefix, "data", "sources", 0]})
+    assert response.status_code == 200 and response.json()["data"] == spoof
+    assert len(resolved) == 2  # The arbitrary JSON lookalike was not followed.
+    assert state(rid)["risk_inputs"] == context["risk_inputs"]

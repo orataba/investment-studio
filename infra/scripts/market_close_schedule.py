@@ -19,7 +19,13 @@ def is_refresh_due(market_scope: str, now: datetime) -> bool:
     if not calendar.is_session(local_day):
         return False
     refresh_at = calendar.session_close(local_day).to_pydatetime() + timedelta(minutes=30)
-    return refresh_at <= now < refresh_at + timedelta(minutes=30)
+    if refresh_at <= now < refresh_at + timedelta(minutes=30):
+        return True
+    # The HKEX daily quotation used to confirm no-trade sessions can still be
+    # unpublished at the first close run. One late reconciliation uses the same
+    # closed-session acceptance; it never treats an unavailable report as data.
+    local_now = now.astimezone(ZoneInfo(MARKET_SCOPE_TIMEZONES[market_scope]))
+    return market_scope == "hk" and local_now.hour == 23 and local_now.minute >= 30
 
 
 def main() -> int:

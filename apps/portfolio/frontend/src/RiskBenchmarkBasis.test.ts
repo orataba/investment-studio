@@ -39,12 +39,12 @@ describe('Risk benchmark basis guard', () => {
     })
   })
 
-  it('allows split-adjusted price comparisons and discloses unconfirmed distribution treatment', () => {
+  it('blocks comparisons with unconfirmed distribution treatment', () => {
     const assessment = benchmarkRiskBasisAssessment(
       chart({ chart_basis: 'close', return_semantics: 'unknown', split_adjusted: true }), 'CNY',
     )
-    expect(assessment.blocking).toBe(false)
-    expect(assessment.message).toContain('Distribution treatment is unconfirmed')
+    expect(assessment.blocking).toBe(true)
+    expect(assessment.message).toContain('treatment is unconfirmed')
   })
 
   it('blocks raw-currency comparisons', () => {

@@ -9,18 +9,89 @@ import shutil
 import signal
 import subprocess
 import time
+from types import SimpleNamespace
 from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
 from fastapi import HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import JSON, select, true
 from studio_identity import (IdentityError, current_principal, issue_delegation, principal_context,
                              resolve_token, revoke_delegation, service_principal)
 from watchlist_app.db.models.workbench import ResearchEntry
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services.research_errors import ResearchInputUnavailable
+from watchlist_app.services.research_access import run_attempt
 
 ROOT = Path(__file__).resolve().parents[5]
 SCRIPT = ROOT / "apps/watchlist/backend/scripts/run_research_harness.sh"
+RESTART_FAILURE = "服务重新启动，本次分析未完成。输入快照已保留，可重新发起。"
+
+
+class ResearchExecutionInterrupted(Exception):
+    """The worker stopped or lost its lease; recovery owns the next attempt."""
+
+
+def _execution_state(session, run_id, *, draft=False):
+    from watchlist_app.services.research_access import research_context_projection, research_projection_rows
+    names = ["execution", "submitted_draft"] if draft else ["execution"]
+    relation, values = research_context_projection(session, {name: JSON for name in names},
+        json_column=ResearchEntry.read_context_json)
+    query = select(ResearchEntry.status, *(values[name].label(name) for name in names)).select_from(ResearchEntry)
+    if relation is not None:
+        query = query.join(relation, true())
+    rows = research_projection_rows(session, query.where(ResearchEntry.entry_id == run_id),
+        {name: (name,) for name in names}, json_column=ResearchEntry.read_context_json)
+    return rows[0] if rows else None
+
+
+def _accepted_submission(run_id, attempt, *, risk_run):
+    with get_session_factory()() as session:
+        row = _execution_state(session, run_id, draft=not risk_run)
+        if row is None or row.status != "running" or (row.execution or {}).get("attempt") != attempt:
+            return False
+        if risk_run:
+            from watchlist_app.services.research_risk_state import get_risk_submission
+            return get_risk_submission(session, run_id, attempt=attempt) is not None
+        return bool(row.submitted_draft)
+
+
+def _wait_harness(process, *, cancellation=None, accepted=None, timeout=1800):
+    """Own the process group until completion, including local polling failures."""
+    cleanup_started = False
+    try:
+        if cancellation is None:
+            reply, errors = process.communicate(timeout=timeout)
+            return reply, errors, process.returncode
+        deadline = time.monotonic() + timeout
+        while True:
+            if cancellation.is_set():
+                raise ResearchExecutionInterrupted()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            try:
+                reply, errors = process.communicate(timeout=min(2, remaining))
+                # A durable, validated submission is the completion boundary even
+                # when the CLI exits during its final acknowledgement/cleanup.
+                return reply, errors, 0 if accepted is not None and accepted() else process.returncode
+            except subprocess.TimeoutExpired:
+                if accepted is not None and accepted():
+                    # Stop unnecessary acknowledgements/tool loops before publication.
+                    cleanup_started = True
+                    _stop_process_group(process)
+                    reply, errors = process.communicate()
+                    return reply, errors, 0
+    except BaseException:
+        if not cleanup_started:
+            # Stop descendants even when the shell has already exited. This must
+            # precede failure publication and release of the durable queue slot.
+            try:
+                _stop_process_group(process)
+            except Exception as cleanup_error:
+                # Preserve the original failure and never expose process output,
+                # command arguments or credentials through a cleanup diagnostic.
+                logging.getLogger(__name__).error(
+                    "Harness process-group cleanup failed (%s)", type(cleanup_error).__name__)
+        raise
 
 
 def _stop_process_group(process, *, grace_seconds=5):
@@ -71,8 +142,10 @@ def _provider_failure(errors):
     if codes.intersection({"rate_limit_exceeded", "too_many_requests"}) or re.search(r"^dsh: (?:RATE_LIMIT|RATE):", text, re.M):
         return {"type": "ProviderRateLimit", "summary": "模型服务暂时限流，草稿与已有证据已保留。", "retryable": True}
     if codes.intersection({"service_unavailable", "server_error", "overloaded_error"}) or re.search(
-        r"^dsh: (?:NETWORK|SERVER):.*(?:\b50[234]\b|ECONNRESET|ETIMEDOUT|fetch failed)", text, re.M):
+        r"^dsh: (?:NETWORK|SERVER|TRANSPORT|TIMEOUT|EMPTY_RESPONSE):", text, re.M):
         return {"type": "ProviderUnavailable", "summary": "模型服务或网络暂时不可用，草稿与已有证据已保留。", "retryable": True}
+    if re.search(r"^dsh: (?:INVALID_REQUEST|BAD_REQUEST|UNSUPPORTED_OPTION|UNSUPPORTED_REASONING_EFFORT):", text, re.M):
+        return {"type": "ProviderRequestRejected", "summary": "模型接口拒绝了请求参数，本轮未完成；请检查模型与工具接口配置。", "retryable": False}
     return None
 
 
@@ -88,6 +161,20 @@ def review_checkpoint(context):
     return None
 
 
+def conversation_answer(context):
+    """Preserve private prose independently of the shared research checkpoint."""
+    answer = context.get("conversation_answer")
+    if isinstance(answer, str):
+        return answer
+    # The earlier conversation wrapper retained the completed private answer
+    # before starting review. Recover that already-running path without a model.
+    for capture in reversed(context.get("web_evidence", [])):
+        answer = (capture.get("review") or {}).get("raw_draft")
+        if isinstance(answer, str):
+            return answer
+    return "共同研究草稿已保留；上次私人答复在完成前中断，核证与发布结果见本条记录。"
+
+
 def same_research_initiator(context, principal):
     actor = context.get("research_actor") or {}
     return principal.local_unrestricted or (actor.get("kind") == principal.kind and (
@@ -95,11 +182,20 @@ def same_research_initiator(context, principal):
         principal.kind == "user" and actor.get("user_id") == principal.user_id))
 
 
+def _failed_attempt(context, body):
+    execution = context.get("execution") or {}
+    attempt = execution.get("attempt", 1)
+    # Startup deliberately updates only scalar status fields, without loading
+    # retained evidence. A queued retry had already reserved its next number;
+    # consume that reservation when recovering the interrupted task.
+    return attempt + 1 if body == RESTART_FAILURE and execution.get("stage") == "queued" else attempt
+
+
 def automatic_retry_due(context, completed_at, body, *, now=None):
     """Shared eligibility only; queue_retry still locks and rechecks authority."""
-    attempt = (context.get("execution") or {}).get("attempt", 1)
+    attempt = _failed_attempt(context, body)
     error = context.get("runtime_error") or {}
-    interrupted = body == "服务重新启动，本次分析未完成。输入快照已保留，可重新发起。"
+    interrupted = body == RESTART_FAILURE
     ended = completed_at.replace(tzinfo=completed_at.tzinfo or UTC) if completed_at else None
     return (attempt < 3 and (error.get("retryable") is True or interrupted) and ended is not None
             and (now or datetime.now(UTC)) >= ended + timedelta(seconds=60 if attempt == 1 else 300))
@@ -134,7 +230,7 @@ def queue_retry(session, run, *, now=None, manual=False, recheck_review=False):
             or not context.get("cutoff")):
         return False
     execution = dict(context.get("execution") or {})
-    attempt = execution.get("attempt", 1)
+    attempt = _failed_attempt(context, run.body)
     error = context.get("runtime_error") or {}
     ended = run.completed_at
     if ended is not None:
@@ -166,6 +262,9 @@ def queue_retry(session, run, *, now=None, manual=False, recheck_review=False):
         # this session received the required pages or submitted a fresh proposal.
         context["risk_delivered_pages"] = []
         context.pop("submitted_risk_review", None)
+        # Explicit retry of a failed publication requests a new proposal; a
+        # worker interruption alone uses the accepted publication checkpoint.
+        execution.pop("risk_submission_attempt", None)
     run.context_json = {**context, "execution": execution}
     run.status, run.body, run.completed_at = "queued", "", None
     session.flush()
@@ -182,23 +281,27 @@ def harness_available():
                 and entry.is_file() and launcher.is_file() and os.access(launcher, os.X_OK))
 
 
-def interrupt_incomplete_runs():
+def _current_attempt(run_id):
     with get_session_factory()() as session:
-        # Recovery changes status only; retained inputs can be many megabytes
-        # per interrupted run and must not be hydrated during API startup.
-        session.execute(update(ResearchEntry).where(ResearchEntry.kind == "analysis",
-            ResearchEntry.status.in_(["queued", "running"])).values(status="failed",
-            body="服务重新启动，本次分析未完成。输入快照已保留，可重新发起。",
-            completed_at=datetime.now(UTC)))
-        session.commit()
+        row = _execution_state(session, run_id)
+    if row is None or row.status not in {"queued", "running"}:
+        return None
+    return run_attempt(SimpleNamespace(status=row.status, context_json={"execution": row.execution}))
 
 
-def run_analysis(run_id: str, token: str | None = None, issuer=None):
+def run_analysis(run_id: str, token: str | None = None, issuer=None, *, attempt: int | None = None,
+                 cancellation=None):
     tokens = []
     try:
+        if token is not None and attempt is None:
+            raise ValueError("A dispatched research credential must carry its analysis attempt")
+        if attempt is None:
+            attempt = _current_attempt(run_id)
+        if attempt is None:
+            return
         if token is None:
             issuer = issuer or service_principal("watchlist")
-            token = authorize_run(issuer, run_id)
+            token = authorize_run(issuer, run_id, attempt=attempt)
         tokens.append(token)
         with ExitStack() as identities:
             identities.enter_context(principal_context(resolve_token(token, "watchlist")))
@@ -208,18 +311,21 @@ def run_analysis(run_id: str, token: str | None = None, issuer=None):
                 # Revalidate the original subject after preparation; never renew
                 # from an expired run token or substitute a different service.
                 if issuer is not None:
-                    execution_token = authorize_run(issuer, run_id)
+                    execution_token = authorize_run(issuer, run_id, attempt=attempt)
                     tokens.append(execution_token)
                     identities.enter_context(principal_context(resolve_token(execution_token, "watchlist")))
 
             with operation("watchlist_research", run_id=run_id):
-                _run_analysis(run_id, execution_authorization=execution_authorization)
+                _run_analysis(run_id, execution_authorization=execution_authorization, attempt=attempt,
+                              cancellation=cancellation)
+    except ResearchExecutionInterrupted:
+        raise
     except (IdentityError, HTTPException) as error:
-        _fail_authorization(run_id, error)
+        _fail_authorization(run_id, error, attempt=attempt)
     except Exception as error:
         logging.getLogger(__name__).exception("Research run did not finish: %s", run_id)
         summary = "研究运行未完成，本轮没有发布成果；输入与草稿已保留，可重新发起。"
-        _fail_run(run_id, summary, runtime_error={"type": type(error).__name__, "summary": summary})
+        _fail_run(run_id, summary, attempt=attempt, runtime_error={"type": type(error).__name__, "summary": summary})
     finally:
         for issued_token in dict.fromkeys(reversed(tokens)):
             try:
@@ -228,43 +334,61 @@ def run_analysis(run_id: str, token: str | None = None, issuer=None):
                 pass  # Credentials also expire server-side; never publish on an auth failure.
 
 
-def _fail_authorization(run_id, error):
+def _fail_authorization(run_id, error, *, attempt):
     message = "账号或研究范围授权不可用，本轮没有发布成果；恢复授权后可重新发起。"
     # Preserve the failure class without storing credentials, response bodies or
     # private provider details. A generic message alone cannot distinguish a
     # rejected credential/scope from an unavailable identity service afterwards.
-    _fail_run(run_id, message, runtime_error={"type": "AuthorizationUnavailable",
+    _fail_run(run_id, message, attempt=attempt, runtime_error={"type": "AuthorizationUnavailable",
         "status_code": error.status_code, "summary": message})
 
 
-def _fail_run(run_id, message, *, runtime_error=None):
+def _fail_run(run_id, message, *, attempt, runtime_error=None):
     """Finish an abandoned dispatch/publication in a fresh transaction after rollback."""
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id, with_for_update=True)
-        if run and run.status in {"queued", "running"}:
+        if run and run.status in {"queued", "running"} and attempt is not None and run_attempt(run) == attempt:
+            context = dict(run.context_json or {})
+            if run.status == "queued":
+                # A grant may have been issued even if dispatch failed before
+                # the worker started. Consume that reserved number so a later
+                # retry cannot reuse its still-live credential.
+                context["execution"] = {**context.get("execution", {}), "attempt": attempt}
             run.status, run.body = "failed", message
             if runtime_error:
-                run.context_json = {**run.context_json, "runtime_error": runtime_error}
+                context["runtime_error"] = runtime_error
+            run.context_json = context
             run.completed_at = datetime.now(UTC)
             session.commit()
 
 
-def authorize_run(principal, run_id):
+def authorize_run(principal, run_id, *, attempt=None, ttl_seconds=3600):
     """A persisted queue item must reach a terminal state if dispatch is rejected."""
     try:
-        return issue_delegation(principal, audience="watchlist", resource_scope={"kind": "run", "id": run_id})
+        current = _current_attempt(run_id)
+        if attempt is None:
+            attempt = current
+        if current is None or attempt != current:
+            raise HTTPException(409, "研究执行已结束或已被重试替代，不能签发旧任务凭证")
+        return issue_delegation(principal, audience="watchlist", resource_scope={"kind": "run", "id": run_id, "attempt": str(attempt)},
+                                **({"ttl_seconds": ttl_seconds} if ttl_seconds != 3600 else {}))
     except (IdentityError, HTTPException) as error:
-        _fail_authorization(run_id, error)
+        _fail_authorization(run_id, error, attempt=attempt)
         raise
 
 
-def _run_analysis(run_id: str, *, execution_authorization=None):
+def _run_analysis(run_id: str, *, execution_authorization=None, attempt=None, cancellation=None):
+    if cancellation is not None and cancellation.is_set():
+        raise ResearchExecutionInterrupted()
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id, with_for_update=True)
-        if not run or run.status != "queued":
+        if not run or run.status != "queued" or (attempt is not None and run_attempt(run) != attempt):
             return
         from watchlist_app.services.research_access import require_entry_access
         require_entry_access(session, run)
+        # Resolve the same reserved number for internal callers as for an
+        # explicitly dispatched claim before changing queued -> running.
+        attempt = run_attempt(run)
         run.status = "running"
         sector_run = bool(run.context_json.get("sector_run"))
         risk_run = bool(run.context_json.get("risk_run"))
@@ -272,10 +396,18 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
         execution = dict(context.get("execution") or {})
         resuming = bool(execution.get("resume"))
         prepared = resuming and bool(context.get("input_snapshot_cutoff"))
-        resume_review = sector_run and prepared and bool(context.get("submitted_draft"))
+        resume_review = not risk_run and prepared and bool(context.get("submitted_draft"))
         checkpoint = review_checkpoint(context) if resume_review else None
+        saved_answer = (not sector_run and not risk_run and prepared
+                        and isinstance(context.get("conversation_answer"), str))
+        risk_checkpoint = None
+        if risk_run and resuming and execution.get("risk_submission_attempt") is not None:
+            from watchlist_app.services.research_risk_state import get_risk_submission
+            risk_checkpoint = get_risk_submission(session, run_id, attempt=execution["risk_submission_attempt"])
+            if not prepared or risk_checkpoint is None:
+                raise ValueError("已受理的风控发布检查点或冻结输入不可用")
         execution.update(attempt=execution.get("attempt", 0) + 1,
-                         stage="publication" if checkpoint else "review" if resume_review else "generation" if prepared else "preparation",
+                         stage="publication" if checkpoint or risk_checkpoint is not None else "review" if resume_review else "generation" if prepared else "preparation",
                          started_at=datetime.now(UTC).isoformat(), resume=False)
         run.context_json = {**context, "execution": execution}
         session.commit()
@@ -293,56 +425,74 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
             prepare_run(run_id)
         if execution_authorization is not None:
             execution_authorization()
-        if not risk_run and not resume_review:
+        if cancellation is not None and cancellation.is_set():
+            raise ResearchExecutionInterrupted()
+        if not risk_run and not resume_review and not saved_answer:
             from watchlist_app.services.sector_research import prepare_initialization_searches
             prepare_initialization_searches(run_id)
-        if checkpoint is None and not resume_review:
+        if checkpoint is None and risk_checkpoint is None and not resume_review:
             with get_session_factory()() as session:
                 current = session.get(ResearchEntry, run_id, with_for_update=True)
                 if current is None or current.status != "running":
                     return
+                require_entry_access(session, current)
                 current.context_json = {**current.context_json, "execution": {
                     **current.context_json.get("execution", {}), "stage": "generation"}}
                 session.commit()
         # The pinned headless CLI returns its last assistant text.
         # Research/risk drafts use structured tool submissions; conversations retain prose.
         mode = ["sector"] if sector_run else ["risk"] if risk_run else []
-        if checkpoint is not None:
-            reply, errors, returncode = json.dumps(checkpoint, ensure_ascii=False), "", 0
+        if risk_checkpoint is not None:
+            reply, errors, returncode = "", "", 0
+        elif checkpoint is not None:
+            document = checkpoint if sector_run else {"answer": conversation_answer(context), "research_result": checkpoint}
+            reply, errors, returncode = json.dumps(document, ensure_ascii=False), "", 0
+        elif saved_answer and not resume_review:
+            reply, errors, returncode = json.dumps({"answer": context["conversation_answer"],
+                "research_result": None, "research_publication": {"status": "not_requested"}}, ensure_ascii=False), "", 0
         else:
             def launch():
                 return subprocess.Popen(["/bin/bash", str(SCRIPT), run_id, *mode], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
                     env={**os.environ, "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN": current_principal().credential,
-                     "INVESTMENT_STUDIO_RESEARCH_GENERATION_ONLY": "1" if sector_run and not resume_review else "0",
-                     "INVESTMENT_STUDIO_RESEARCH_RESUME_GENERATION": "1" if sector_run and prepared and not resume_review else "0",
+                     "INVESTMENT_STUDIO_RESEARCH_GENERATION_ONLY": "1" if not risk_run and not resume_review else "0",
+                     "INVESTMENT_STUDIO_RESEARCH_RESUME_GENERATION": "1" if not risk_run and prepared and not resume_review else "0",
                      "INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW": "1" if resume_review else "0"})
             process = launch()
             # Generation and independent review are two actual work stages.
             # A long generation must not consume the reviewer's entire allowance.
-            reply, errors = process.communicate(timeout=1800)
-            returncode = process.returncode
-            if sector_run and not resume_review and not returncode:
+            accepted = (lambda: _accepted_submission(run_id, attempt, risk_run=risk_run)) if (risk_run or sector_run) and not resume_review else None
+            reply, errors, returncode = _wait_harness(process, cancellation=cancellation, accepted=accepted)
+            if not risk_run and not resume_review and not returncode:
                 with get_session_factory()() as session:
                     current = session.get(ResearchEntry, run_id, with_for_update=True)
                     if current.status != "running":
                         return
+                    require_entry_access(session, current)
                     context = dict(current.context_json)
+                    if not sector_run:
+                        context["conversation_answer"] = reply
+                        current.context_json = context
                     if context.get("submitted_draft"):
                         current.context_json = {**context, "execution": {
                             **context.get("execution", {}), "stage": "review",
                             "review_started_at": datetime.now(UTC).isoformat()}}
-                        session.commit()
                         resume_review = True
+                    session.commit()
                 if resume_review:
                     if execution_authorization is not None:
                         execution_authorization()
                     process = launch()
-                    reply, errors = process.communicate(timeout=1800)
-                    returncode = process.returncode
-                else:
+                    reply, errors, returncode = _wait_harness(process, cancellation=cancellation)
+                elif sector_run:
                     reply, errors, returncode = "", 'SECTOR_REVIEW_ERROR {"type":"MissingResearchDraft","summary":"研究生成已结束但未提交完整草稿，本轮未发布研究。"}', 1
+                else:
+                    reply = json.dumps({"answer": reply, "research_result": None,
+                        "research_publication": {"status": "not_requested"}}, ensure_ascii=False)
         if returncode:
             runtime_error = {"type": "ProcessExit", "summary": "研究运行进程退出，未生成有效结果。", "exit_code": returncode}
+            harness_codes = sorted(set(re.findall(r"^dsh: ([A-Z][A-Z_]{1,63}):", errors or "", re.M)))
+            if harness_codes:
+                runtime_error["harness_codes"] = harness_codes
             for line in (errors or "").splitlines():
                 if not line.startswith("SECTOR_REVIEW_ERROR "):
                     continue
@@ -368,11 +518,16 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
             outcome = ("事实核证失败：" if runtime_error["type"] not in {"ProcessExit", "InsufficientBalance", "ModelUnavailable", "MissingResearchDraft", "OutputLimitExceeded", "ProviderContentFilter"} else "") + runtime_error["summary"]
             if sector_run and reply.strip():
                 rejected_reply = reply.strip()
+        elif risk_run and risk_checkpoint is None and not _accepted_submission(run_id, attempt, risk_run=True):
+            outcome = "风控进程已结束，但尚未提交通过范围与证据校验的完整研判。"
+            runtime_error = {"type": "NoAcceptedSubmission", "summary": outcome, "retryable": False,
+                             "stage": "generation"}
         elif reply.strip() or risk_run:
             outcome = reply.strip()
             completed = True
+    except ResearchExecutionInterrupted:
+        raise
     except subprocess.TimeoutExpired:
-        _stop_process_group(process)
         outcome = "研究助手本次运行超时；可以缩小问题范围后重试。"
         runtime_error = {"type": "TimeoutExpired", "summary": outcome, "exit_code": process.returncode,
                          "retryable": resume_review, "stage": "review" if resume_review else "generation"}
@@ -388,9 +543,11 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
     except ValueError as error:
         outcome = str(error) if risk_run else "研究资料不符合本轮分析范围，本次检查未完成。"
         runtime_error = {"type": type(error).__name__, "summary": outcome}
-    except Exception:
+    except Exception as error:
         logging.getLogger(__name__).exception("Research input preparation failed")
         outcome = "研究资料读取失败，本次没有完成检查。"
+        runtime_error = {"type": type(error).__name__, "summary": outcome, "retryable": False,
+                         "stage": "preparation" if process is None else "review" if resume_review else "generation"}
     with principal_context(resolve_token(current_principal().credential, "watchlist")), get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id, with_for_update=True, populate_existing=True)
         if run and run.status == "running":
@@ -404,6 +561,15 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
                                         run.context_json.get("input_snapshot_cutoff"))
                     runtime_error.update(retryable=review_ready, stage="review" if review_ready else "generation")
                 run.context_json = {**run.context_json, "runtime_error": runtime_error}
+                if not sector_run and not risk_run and resume_review:
+                    # A completed private answer and a failed shared publication
+                    # are separate outcomes. Keep both visible; an elapsed review
+                    # deadline is not a worker-loss retry or a publication success.
+                    outcome = json.dumps({"answer": conversation_answer(run.context_json), "research_result": None,
+                        "research_publication": {"status": "failed", "stage": "review",
+                            "message": runtime_error["summary"], "error": runtime_error,
+                            "automatic_retry": False}}, ensure_ascii=False)
+                    completed = True
             if rejected_reply:
                 run.context_json = {**run.context_json, "rejected_reply": rejected_reply}
             if not sector_run and not risk_run and completed:
@@ -417,15 +583,19 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
                     result = document.get("research_result")
                     if result is not None:
                         try:
+                            run.context_json = {**run.context_json, "execution": {
+                                **run.context_json.get("execution", {}), "stage": "publication"}}
                             apply_result(session, run, json.dumps(result, ensure_ascii=False))
                             publication = {"status": "published", "instrument_ids": list(run.context_json.get("reviews", {})),
                                            "message": "已更新共同研究记录，研究追踪与助手将使用同一版本。"}
                         except Exception as error:
                             session.rollback()
-                            run = session.get(ResearchEntry, run_id)
+                            run = session.get(ResearchEntry, run_id, with_for_update=True, populate_existing=True)
+                            require_entry_access(session, run)
                             if not isinstance(error, ValueError):
                                 logging.getLogger(__name__).exception("Conversation research publication failed: %s", run_id)
                             publication = {"status": "conflict" if isinstance(error, ResearchVersionConflict) else "failed",
+                                           "stage": "publication", "automatic_retry": False,
                                            "message": str(error) if isinstance(error, ValueError) else
                                                "共同研究保存未完成，对话回答已保留，本轮未发布研究更新。"}
                     run.context_json = {**run.context_json, "research_publication": publication}
@@ -439,13 +609,21 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
                 else:
                     from watchlist_app.services.risk_officer import apply_result
                 try:
-                    apply_result(session, run, run.context_json["submitted_risk_review"] if risk_run else outcome)
+                    if risk_run:
+                        from watchlist_app.services.research_risk_state import get_risk_submission
+                        submission = risk_checkpoint if risk_checkpoint is not None else get_risk_submission(session, run_id, attempt=attempt)
+                        if submission is None:
+                            raise ValueError("本轮风控尚未提交完整研判")
+                    else:
+                        submission = outcome
+                    apply_result(session, run, submission)
                     run.completed_at = datetime.now(UTC)
                     session.commit()
                     return
                 except (ValueError, KeyError) as error:
                     session.rollback()
-                    run = session.get(ResearchEntry, run_id)
+                    run = session.get(ResearchEntry, run_id, with_for_update=True, populate_existing=True)
+                    require_entry_access(session, run)
                     run.context_json = {**run.context_json, "rejected_reply": outcome, "validation_error": str(error)}
                     completed = False
                     outcome = "风控未提交符合当前范围与证据的完整研判。" if risk_run else "研究追踪未提交有效的完整结果或时间证据，未发布新的风险与机会。"

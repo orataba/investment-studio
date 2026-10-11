@@ -43,6 +43,11 @@ def resolve_quote_return_semantics(
             return configured_semantics
         return "unknown"
 
+    if normalized_instrument_type == "crypto" and normalized_basis in INDEX_LEVEL_QUOTE_BASES:
+        return "price_return"
+    if normalized_instrument_type == "fx" and normalized_basis == "spot":
+        return "price_return"
+
     return "unknown"
 
 
@@ -69,3 +74,43 @@ def confirmed_total_return_quote_bases(
         ):
             confirmed.append(quote_basis)
     return confirmed
+
+
+def analytical_return_quote_bases(
+    *,
+    instrument_type: object,
+    quote_bases: Iterable[object],
+    source_settings: Mapping[str, object] | None = None,
+) -> list[str]:
+    """Select economic return inputs, independently of display/valuation policy.
+
+    Canonical adjusted_close is an ingestion contract for multiplicative total
+    return, not an arbitrary provider's field bearing that name. Raw listed
+    security prices are never an analytical fallback: even price returns need
+    split handling. A price index, spot FX and crypto have distinct explicit
+    price-return contracts; their price changes do not promise income/carry.
+    """
+    kind = _normalized_text(instrument_type)
+    eligible: list[str] = []
+    for raw_basis in quote_bases:
+        basis = _normalized_text(raw_basis)
+        if not basis or basis in eligible:
+            continue
+        semantics = resolve_quote_return_semantics(
+            instrument_type=kind, quote_basis=basis, source_settings=source_settings,
+        )
+        if kind in {"public_fund", "private_fund"}:
+            allowed = basis == "total_return_nav"
+        elif kind in {"equity", "etf"}:
+            allowed = basis == "adjusted_close" and semantics == "total_return"
+        elif kind == "index":
+            allowed = semantics in {"price_return", "total_return"}
+        elif kind == "crypto":
+            allowed = basis in INDEX_LEVEL_QUOTE_BASES and semantics == "price_return"
+        elif kind == "fx":
+            allowed = basis == "spot" and semantics == "price_return"
+        else:
+            allowed = False
+        if allowed:
+            eligible.append(basis)
+    return eligible

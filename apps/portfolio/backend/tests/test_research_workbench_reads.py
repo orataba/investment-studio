@@ -266,7 +266,7 @@ def test_workbench_reuses_only_analysis_and_keeps_settings_live(client, monkeypa
     taxonomy_id, nodes = _create_planning_taxonomy(client)
     settings = dict(planning_taxonomy_id=taxonomy_id, comparator_taxonomy_node_id=None,
                     as_of_date='2026-04-15', lookback_days=90,
-                    calculation_frequency='daily', missing_return_policy='complete_case_drop',
+                    calculation_frequency='daily', missing_return_policy='strict',
                     covariance_model_id='sample_covariance', contribution_mode='abs',
                     capital_mode='unit_notional')
     path = '/api/portfolios/investment-studio/research'

@@ -1,22 +1,24 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date, timedelta
-from decimal import Decimal, InvalidOperation
 from math import sqrt
 
 from portfolio_app.services.calculation_frequency import CalculationFrequency
-from portfolio_app.services.execution_quotes import execution_quote_bases
 from investment_studio_instrument_core import resolve_quote_return_semantics
+from investment_studio_instrument_core.return_series import build_return_intervals, return_interval_unavailable_reason
 from portfolio_app.services.instrument_registry import get_registry_instrument_detail
 from portfolio_app.services.market_data import (
     QuoteSeriesResolution,
     analytical_return_quote_bases,
+    analytical_return_metadata,
     market_calendar_sessions,
+    quote_policy_bases,
     resolve_quote_series,
 )
-from portfolio_app.services.risk_basis import observation_coverage_from_dates, observation_source_settings
+from portfolio_app.services.risk_basis import observation_coverage_from_dates, observation_source_settings, observation_schedule_verified
 
 SUPPORTED_CHART_RANGE_KEYS: tuple[str, ...] = ("1m", "3m", "6m", "ytd", "1y", "all")
 HOLDINGS_PRICE_CHART_RANGE_KEYS: tuple[str, ...] = ("1m", "3m", "6m", "1y")
@@ -42,7 +44,6 @@ ASSET_RISK_MAX_TRAILING_STALENESS_DAYS: dict[CalculationFrequency, int] = {
 }
 ASSET_RISK_MIN_WINDOW_COVERAGE_RATIO = 0.8
 DAYS_PER_YEAR = 365.25
-RAW_SPLIT_SENSITIVE_BASES = frozenset({"close", "last"})
 TREND_RETURN_WINDOWS: tuple[str, ...] = (
     "1w",
     "1m",
@@ -52,7 +53,6 @@ TREND_RETURN_WINDOWS: tuple[str, ...] = (
     "ytd",
     "1y",
 )
-SUPPORTED_SPLIT_FRACTION_TREATMENTS = frozenset({"exact", "truncate", "round_half_up"})
 
 
 @dataclass(frozen=True)
@@ -62,6 +62,7 @@ class ChartSeriesSelection:
     coverage: dict[str, object] | None = None
     reason: str = "quote_series_unavailable"
     split_adjusted: bool = False
+    return_metadata: dict[str, object] | None = None
 
     @property
     def available(self) -> bool:
@@ -197,16 +198,25 @@ def _range_start_date(*, as_of_date: date, range_key: str) -> date | None:
     return None
 
 
-def _candidate_chart_bases(detail: dict[str, object]) -> list[str]:
+def _candidate_analytical_return_bases(detail: dict[str, object]) -> list[str]:
     return analytical_return_quote_bases(detail)
 
 
-def _candidate_total_return_bases(detail: dict[str, object]) -> list[str]:
-    return [
-        quote_basis
-        for quote_basis in analytical_return_quote_bases(detail)
-        if chart_return_semantics(detail, selected_basis=quote_basis) == "total_return"
-    ]
+def _bind_return_segments(points: list[dict[str, object]], detail: dict[str, object], basis: str) -> None:
+    settings = detail.get("source_settings") or {}
+    if not any(key in settings for key in ("total_return_segments", "total_return_unavailable_intervals")):
+        return
+    segment = points[0]["date"].isoformat() if points else None
+    previous = None
+    for point in points:
+        reason = (return_interval_unavailable_reason(previous, point["date"],
+                  source_settings=detail.get("source_settings"), quote_basis=basis)
+                  if previous is not None else None)
+        if reason:
+            segment = point["date"].isoformat()
+            point["return_break_reason"] = reason
+        point["return_segment"] = segment
+        previous = point["date"]
 
 
 def _downsample_points(points: list[dict[str, object]], max_points: int | None) -> list[dict[str, object]]:
@@ -273,103 +283,6 @@ def _trend_coverage(
     }
 
 
-def _split_adjusted_raw_points(
-    detail: dict[str, object],
-    points: list[dict[str, object]],
-    *,
-    quote_basis: str,
-) -> tuple[list[dict[str, object]], bool, str | None]:
-    if quote_basis not in RAW_SPLIT_SENSITIVE_BASES or len(points) < 2:
-        return points, False, None
-    first_date = points[0].get("date")
-    last_date = points[-1].get("date")
-    if not isinstance(first_date, date) or not isinstance(last_date, date):
-        return [], False, "raw_price_split_effective_date_invalid"
-
-    raw_actions = detail.get("corporate_actions")
-    actions = (
-        [event for event in raw_actions if isinstance(event, dict)]
-        if isinstance(raw_actions, list)
-        else []
-    )
-    crossing_actions: list[tuple[date, dict[str, object]]] = []
-    for event in actions:
-        if str(event.get("action_type") or "").strip().lower() != "share_split":
-            continue
-        if str(event.get("status") or "").strip().lower() == "cancelled":
-            continue
-        effective_date = _parse_iso_date(event.get("effective_date"))
-        if effective_date is None:
-            return [], False, "raw_price_split_effective_date_invalid"
-        if first_date < effective_date <= last_date:
-            crossing_actions.append((effective_date, event))
-    if not crossing_actions:
-        return points, False, None
-
-    resolved_actions: list[tuple[date, Decimal]] = []
-    for effective_date, event in sorted(crossing_actions, key=lambda item: item[0]):
-        if str(event.get("status") or "").strip().lower() != "confirmed":
-            return [], False, "raw_price_split_evidence_unconfirmed"
-        try:
-            new_units = Decimal(str(event.get("new_units") or ""))
-            old_units = Decimal(str(event.get("old_units") or ""))
-        except (InvalidOperation, ValueError):
-            return [], False, "raw_price_split_ratio_invalid"
-        if (
-            not new_units.is_finite()
-            or not old_units.is_finite()
-            or new_units <= 0
-            or old_units <= 0
-            or new_units == old_units
-        ):
-            return [], False, "raw_price_split_ratio_invalid"
-        fraction_treatment = str(event.get("quantity_rounding") or "").strip().lower()
-        if fraction_treatment not in SUPPORTED_SPLIT_FRACTION_TREATMENTS:
-            return [], False, "raw_price_split_fraction_treatment_insufficient"
-        resolved_actions.append((effective_date, old_units / new_units))
-
-    adjusted_points: list[dict[str, object]] = []
-    for point in points:
-        point_date = point.get("date")
-        value = _safe_float(point.get("value"))
-        if not isinstance(point_date, date) or value is None:
-            return [], False, "invalid_quote_observation"
-        adjustment_factor = Decimal("1")
-        for effective_date, inverse_ratio in resolved_actions:
-            if point_date < effective_date:
-                adjustment_factor *= inverse_ratio
-        adjusted_point = dict(point)
-        adjusted_point["source_value"] = value
-        adjusted_point["split_adjustment_factor"] = float(adjustment_factor)
-        adjusted_point["value"] = value * float(adjustment_factor)
-        adjusted_points.append(adjusted_point)
-    return adjusted_points, True, None
-
-
-def _selection_rank(
-    points: list[dict[str, object]],
-    *,
-    policy_index: int,
-) -> tuple[int, int, int, int, int, int]:
-    windows = _return_window_names(points)
-    start_date = points[0].get("date") if points else None
-    end_date = points[-1].get("date") if points else None
-    span_days = (
-        (end_date - start_date).days
-        if isinstance(start_date, date) and isinstance(end_date, date)
-        else 0
-    )
-    end_ordinal = end_date.toordinal() if isinstance(end_date, date) else 0
-    return (
-        len(windows),
-        int(len(points) >= 2),
-        -policy_index,
-        span_days,
-        len(points),
-        end_ordinal,
-    )
-
-
 def _resolve_profile_quote_series(
     detail: dict[str, object],
     *,
@@ -388,95 +301,7 @@ def _resolve_profile_quote_series(
     return resolutions[quote_basis]
 
 
-def _select_chart_series(
-    detail: dict[str, object],
-    *,
-    as_of_date: date,
-    resolutions: dict[str, QuoteSeriesResolution] | None = None,
-) -> ChartSeriesSelection:
-    resolutions = {} if resolutions is None else resolutions
-    candidate_bases = _candidate_chart_bases(detail)
-    if not candidate_bases:
-        return ChartSeriesSelection(
-            reason="quote_policy_unavailable",
-            coverage=_empty_trend_coverage(),
-        )
-
-    candidates: list[
-        tuple[tuple[int, int, int, int, int, int], int, str, list[dict[str, object]], bool]
-    ] = []
-    unavailable_reasons: list[str] = []
-    withheld_reasons: list[str] = []
-    for policy_index, quote_basis in enumerate(candidate_bases):
-        resolution = _resolve_profile_quote_series(
-            detail,
-            quote_basis=quote_basis,
-            as_of_date=as_of_date,
-            resolutions=resolutions,
-        )
-        if not resolution.available:
-            if resolution.unavailable_reason:
-                unavailable_reasons.append(resolution.unavailable_reason)
-            continue
-        points = [
-            {
-                "date": point["as_of_date"],
-                "date_iso": point["as_of_date"].isoformat(),
-                "value": point["value"],
-                "currency": point["currency"],
-                "metric_family": point["metric_family"],
-                "quote_basis": point["quote_basis"],
-                "price_unit": point.get("price_unit"),
-                "price_scale": point.get("price_scale"),
-            }
-            for point in resolution.points
-            if isinstance(point.get("as_of_date"), date)
-        ]
-        comparable_points, split_adjusted, split_error = _split_adjusted_raw_points(
-            detail,
-            points,
-            quote_basis=str(resolution.quote_basis or quote_basis),
-        )
-        if split_error is not None:
-            withheld_reasons.append(split_error)
-            continue
-        candidates.append(
-            (
-                _selection_rank(comparable_points, policy_index=policy_index),
-                policy_index,
-                str(resolution.quote_basis or quote_basis),
-                comparable_points,
-                split_adjusted,
-            )
-        )
-
-    if not candidates:
-        return ChartSeriesSelection(
-            reason=(withheld_reasons or unavailable_reasons or ["quote_series_unavailable"])[0],
-            coverage=_empty_trend_coverage(),
-        )
-    _, policy_index, selected_basis, selected_points, split_adjusted = max(
-        candidates,
-        key=lambda item: item[0],
-    )
-    if split_adjusted:
-        reason = "selected_split_adjusted_raw_price_series"
-    elif policy_index > 0:
-        reason = "selected_more_complete_alternate_series"
-    elif len(selected_points) < 2:
-        reason = "selected_series_has_single_observation"
-    else:
-        reason = "selected_policy_series"
-    return ChartSeriesSelection(
-        points=tuple(selected_points),
-        selected_basis=selected_basis,
-        coverage=_trend_coverage(selected_points),
-        reason=reason,
-        split_adjusted=split_adjusted,
-    )
-
-
-def _select_total_return_series(
+def _select_analytical_return_series(
     detail: dict[str, object],
     *,
     as_of_date: date,
@@ -484,11 +309,11 @@ def _select_total_return_series(
 ) -> ChartSeriesSelection:
     resolutions = {} if resolutions is None else resolutions
     analytical_bases = analytical_return_quote_bases(detail)
-    candidate_bases = _candidate_total_return_bases(detail)
+    candidate_bases = _candidate_analytical_return_bases(detail)
     if not candidate_bases:
         return ChartSeriesSelection(
             reason=(
-                "total_return_basis_unavailable"
+                "analytical_return_basis_unavailable"
                 if analytical_bases
                 else "quote_policy_unavailable"
             ),
@@ -521,10 +346,35 @@ def _select_total_return_series(
             for point in resolution.points
             if isinstance(point.get("as_of_date"), date)
         ]
+        _bind_return_segments(points, detail, str(resolution.quote_basis or quote_basis))
+        observation_coverage = observation_coverage_from_dates(
+            [point["date"] for point in points], source_settings=observation_source_settings(detail),
+            end_date=as_of_date,
+        )
+        gap_dates = sorted(observation_coverage["gap_dates"])
+        schedule_verified = observation_schedule_verified(observation_coverage)
+        for previous, current in zip(points, points[1:]):
+            if not schedule_verified:
+                current["risk_break_reason"] = "observation_schedule_unverified"
+            elif bisect_right(gap_dates, current["date_iso"]) > bisect_right(gap_dates, previous["date_iso"]):
+                current["risk_break_reason"] = (
+                    "missing_expected_observation" if observation_coverage["gap_detection_basis"].startswith("market_calendar:")
+                    else "missing_observation_interval"
+                )
+        if gap_dates:
+            segment = points[0]["date_iso"]
+            for point in points:
+                if point.get("risk_break_reason") or point.get("return_break_reason"):
+                    segment = point["date_iso"]
+                point["chart_segment"] = segment
         if len(points) < 2:
             reason = "selected_series_has_single_observation"
+        elif not schedule_verified:
+            reason = "observation_schedule_unverified"
+        elif gap_dates and gap_dates[-1] > points[-1]["date_iso"]:
+            reason = "missing_expected_observation"
         elif policy_index > 0:
-            reason = "selected_alternate_total_return_series"
+            reason = "selected_alternate_analytical_return_series"
         else:
             reason = "selected_policy_series"
         return ChartSeriesSelection(
@@ -533,6 +383,9 @@ def _select_total_return_series(
             coverage=_trend_coverage(points, window_end_date=as_of_date),
             reason=reason,
             split_adjusted=False,
+            return_metadata={**analytical_return_metadata(detail, quote_basis=resolution.quote_basis,
+                                                          currency=resolution.currency),
+                             "observation_coverage": observation_coverage},
         )
 
     blocking_reason = next(
@@ -541,7 +394,7 @@ def _select_total_return_series(
             for reason in unavailable_reasons
             if reason not in {"quote_series_unavailable", "quote_policy_unavailable"}
         ),
-        "total_return_series_unavailable",
+        "analytical_return_series_unavailable",
     )
     return ChartSeriesSelection(
         reason=blocking_reason,
@@ -553,8 +406,11 @@ def _select_price_level_series(
     detail: dict[str, object],
     *,
     as_of_date: date,
+    resolutions: dict[str, QuoteSeriesResolution] | None = None,
 ) -> ChartSeriesSelection:
-    candidate_bases = execution_quote_bases(detail)
+    resolutions = {} if resolutions is None else resolutions
+    candidate_bases = quote_policy_bases(detail, ("valuation", "trading", "reference"))
+    candidate_bases = [basis for basis in candidate_bases if basis not in {"adjusted_close", "total_return_nav"}]
     if not candidate_bases:
         return ChartSeriesSelection(
             reason="execution_quote_policy_unavailable",
@@ -562,10 +418,11 @@ def _select_price_level_series(
         )
     unavailable_reasons: list[str] = []
     for policy_index, quote_basis in enumerate(candidate_bases):
-        resolution = resolve_quote_series(
+        resolution = _resolve_profile_quote_series(
             detail,
-            candidate_bases=[quote_basis],
-            end_date=as_of_date,
+            quote_basis=quote_basis,
+            as_of_date=as_of_date,
+            resolutions=resolutions,
         )
         if not resolution.available:
             if resolution.unavailable_reason:
@@ -585,26 +442,12 @@ def _select_price_level_series(
             for point in resolution.points
             if isinstance(point.get("as_of_date"), date)
         ]
-        comparable_points, split_adjusted, split_error = _split_adjusted_raw_points(
-            detail,
-            points,
-            quote_basis=str(resolution.quote_basis or quote_basis),
-        )
-        if split_error is not None:
-            unavailable_reasons.append(split_error)
-            continue
         return ChartSeriesSelection(
-            points=tuple(comparable_points),
+            points=tuple(points),
             selected_basis=str(resolution.quote_basis or quote_basis),
-            coverage=_trend_coverage(comparable_points),
-            reason=(
-                "selected_split_adjusted_execution_price_series"
-                if split_adjusted
-                else "selected_execution_price_series"
-                if policy_index == 0
-                else "selected_alternate_execution_price_series"
-            ),
-            split_adjusted=split_adjusted,
+            coverage=_trend_coverage(points),
+            reason="selected_raw_valuation_series",
+            split_adjusted=False,
         )
     return ChartSeriesSelection(
         reason=(unavailable_reasons or ["execution_price_series_unavailable"])[0],
@@ -641,6 +484,8 @@ def _return_between_points(
     end_point: dict[str, object] | None,
 ) -> float | None:
     if start_point is None or end_point is None:
+        return None
+    if start_point.get("return_segment") != end_point.get("return_segment"):
         return None
     start_date = start_point.get("date")
     end_date = end_point.get("date")
@@ -701,54 +546,26 @@ def _sample_stddev(values: list[float]) -> float | None:
     return sqrt(max(variance, 0.0))
 
 
-def _period_return_observations(points: list[dict[str, object]]) -> tuple[list[float], date | None, date | None]:
-    returns: list[float] = []
-    first_return_start_date: date | None = None
-    last_return_end_date: date | None = None
-    previous_date: date | None = None
-    previous_value: float | None = None
-    for point in points:
-        point_date = point.get("date")
-        value = _safe_float(point.get("value"))
-        if value is None or not isinstance(point_date, date):
-            continue
-        if previous_value is not None and previous_value > 1e-12 and previous_date is not None and previous_date < point_date:
-            returns.append(value / previous_value - 1)
-            if first_return_start_date is None:
-                first_return_start_date = previous_date
-            last_return_end_date = point_date
-        previous_date = point_date
-        previous_value = value
-    return returns, first_return_start_date, last_return_end_date
-
-
 def _period_return_series(
     points: list[dict[str, object]],
 ) -> tuple[list[dict[str, object]], date | None, date | None]:
-    returns: list[dict[str, object]] = []
-    first_return_start_date: date | None = None
-    last_return_end_date: date | None = None
-    previous_date: date | None = None
-    previous_value: float | None = None
-    for point in points:
-        point_date = point.get("date")
-        value = _safe_float(point.get("value"))
-        if value is None or not isinstance(point_date, date):
-            continue
-        if previous_value is not None and previous_value > 1e-12 and previous_date is not None and previous_date < point_date:
-            returns.append(
-                {
-                    "start_date": previous_date.isoformat(),
-                    "date": point_date.isoformat(),
-                    "value": value / previous_value - 1,
-                }
-            )
-            if first_return_start_date is None:
-                first_return_start_date = previous_date
-            last_return_end_date = point_date
-        previous_date = point_date
-        previous_value = value
-    return returns, first_return_start_date, last_return_end_date
+    breaks = {point["date"]: point.get("return_break_reason") or point["risk_break_reason"]
+              for point in points if point.get("return_break_reason") or point.get("risk_break_reason")}
+    returns = build_return_intervals(points, break_dates=breaks)
+    for item in returns:
+        end = _parse_iso_date(item["date"])
+        if end in breaks:
+            item["reason"] = breaks[end]
+    first = _parse_iso_date(returns[0]["start_date"]) if returns else None
+    last = _parse_iso_date(returns[-1]["date"]) if returns else None
+    return returns, first, last
+
+
+def _period_return_observations(points: list[dict[str, object]]) -> tuple[list[float], date | None, date | None]:
+    returns, first, last = _period_return_series(points)
+    if any(item["status"] != "complete" for item in returns):
+        return [], None, None
+    return [float(item["value"]) for item in returns], first, last
 
 
 def _annualized_volatility(
@@ -843,6 +660,8 @@ def _return_series_payload(
         return _empty_return_series_payload()
     return {
         "first_return_start_date": first_return_start_date.isoformat(),
+        "last_return_end_date": last_return_end_date.isoformat(),
+        "return_measure": "simple",
         "points": returns,
     }
 
@@ -887,12 +706,15 @@ def _window_return_series_payload(
         return _empty_return_series_payload()
     return {
         "first_return_start_date": first_return_start_date.isoformat(),
+        "last_return_end_date": last_return_end_date.isoformat(),
+        "return_measure": "simple",
         "points": returns,
     }
 
 
 def _max_drawdown(points: list[dict[str, object]]) -> float | None:
-    if len(points) < 2:
+    if (len(points) < 2 or len({point.get("return_segment") for point in points}) > 1
+            or any(point.get("risk_break_reason") for point in points[1:])):
         return None
     peak: float | None = None
     max_drawdown = 0.0
@@ -909,6 +731,9 @@ def _max_drawdown(points: list[dict[str, object]]) -> float | None:
 
 
 def _current_drawdown(points: list[dict[str, object]]) -> float | None:
+    if (len({point.get("return_segment") for point in points}) > 1
+            or any(point.get("risk_break_reason") for point in points[1:])):
+        return None
     values = [_safe_float(point.get("value")) for point in points]
     valid_values = [value for value in values if value is not None]
     if not valid_values:
@@ -953,7 +778,7 @@ def build_instrument_trend_metrics_from_detail(
     holding_start_date: date | None = None,
     calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
-    selection = _select_total_return_series(detail, as_of_date=as_of_date)
+    selection = _select_analytical_return_series(detail, as_of_date=as_of_date)
     return _build_instrument_trend_metrics_from_selection(
         selection,
         as_of_date=as_of_date,
@@ -987,7 +812,7 @@ def _build_instrument_trend_metrics_from_selection(
     end_date = end_point.get("date") if isinstance(end_point.get("date"), date) else as_of_date
     holding_points = _points_since(selected_points, start_date=holding_start_date) if holding_start_date else []
 
-    return {
+    result = {
         "instrument_trend_as_of_date": end_date.isoformat(),
         "instrument_trend_basis": selected_basis,
         "instrument_trend_coverage": selection.coverage or _trend_coverage(selected_points),
@@ -1098,6 +923,18 @@ def _build_instrument_trend_metrics_from_selection(
         "instrument_holding_start_date": holding_start_date.isoformat() if holding_start_date else None,
     }
 
+    for key, payload in result.items():
+        if (key.startswith("instrument_return_series_") or key == "instrument_holding_return_series") and isinstance(payload, dict):
+            payload.update(selection.return_metadata or {})
+    source_coverage = (selection.return_metadata or {}).get("observation_coverage") or {}
+    if any(day > end_date.isoformat() for day in source_coverage.get("gap_dates", [])):
+        for key in result:
+            if key.startswith("instrument_volatility_") or key in {
+                "instrument_current_drawdown", "instrument_max_drawdown", "instrument_holding_max_drawdown",
+            }:
+                result[key] = None
+    return result
+
 
 def _full_return_series_payload(
     selected_points: list[dict[str, object]],
@@ -1127,17 +964,17 @@ def build_instrument_risk_return_series_from_detail(
     calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
     """Use the identical full native risk history without rendering holdings charts."""
-    selection = _select_total_return_series(detail, as_of_date=as_of_date)
+    selection = _select_analytical_return_series(detail, as_of_date=as_of_date)
     points = list(selection.points)
     if not points:
         return _empty_return_series_payload()
     last_date = points[-1].get("date")
-    return _full_return_series_payload(
+    return {**_full_return_series_payload(
         points,
         end_date=last_date if isinstance(last_date, date) else as_of_date,
         calculation_frequency=calculation_frequency,
         source_settings=observation_source_settings(detail),
-    )
+    ), **(selection.return_metadata or {})}
 
 
 def build_instrument_trend_metrics(
@@ -1173,9 +1010,44 @@ def _chart_window_points(
         for point in selection.points
         if range_start_date is None or point["date"] >= range_start_date
     ]
-    if not visible_points and selection.points:
-        return [selection.points[-1]]
     return visible_points
+
+
+def _price_display_selection(detail, *, as_of_date, price_mode):
+    if price_mode not in {"return", "raw", "front", "back"}:
+        raise ValueError("Price mode must be return, raw, front or back.")
+    resolutions = {}
+    raw = _select_price_level_series(detail, as_of_date=as_of_date, resolutions=resolutions)
+    modes = ["raw"] if raw.available else []
+    analytical = _select_analytical_return_series(detail, as_of_date=as_of_date, resolutions=resolutions)
+    raw_by_date = {point["date"]: point for point in raw.points}
+    common = [point for point in analytical.points if point["date"] in raw_by_date
+              and point["currency"] == raw_by_date[point["date"]]["currency"]]
+    can_adjust = (str(detail.get("instrument_type")) in {"equity", "etf"}
+                  and (analytical.return_metadata or {}).get("return_kind") == "total_return"
+                  and bool(common))
+    can_adjust_front = can_adjust and common[-1]["date"] == raw.points[-1]["date"]
+    if can_adjust_front:
+        modes.append("front")
+    if can_adjust:
+        modes.append("back")
+    if price_mode == "return":
+        return analytical, modes, None
+    if price_mode == "raw":
+        return raw, modes, None
+    if not can_adjust or price_mode == "front" and not can_adjust_front:
+        return ChartSeriesSelection(reason="confirmed_total_return_for_price_adjustment_unavailable"), modes, None
+    # The anchor belongs to the complete as-of history, never the visible range.
+    anchor = common[-1] if price_mode == "front" else common[0]
+    anchor_price = raw_by_date[anchor["date"]]["value"]
+    factor = float(anchor_price) / float(anchor["value"])
+    points = tuple({**point, "value": float(point["value"]) * factor}
+                   for point in analytical.points
+                   if point.get("return_segment") == anchor.get("return_segment"))
+    selection = ChartSeriesSelection(points=points, selected_basis=analytical.selected_basis,
+        coverage=_trend_coverage(list(points)), reason="derived_total_return_price_display",
+        split_adjusted=True, return_metadata=analytical.return_metadata)
+    return selection, modes, anchor["date"]
 
 
 def build_instrument_price_chart_from_detail(
@@ -1186,12 +1058,13 @@ def build_instrument_price_chart_from_detail(
     range_key: str | None = None,
     max_points: int | None = None,
     price_level: bool = False,
+    price_mode: str = "return",
 ) -> dict[str, object] | None:
     normalized_range_key = normalize_chart_range_key(range_key)
-    selection = (
-        _select_price_level_series(detail, as_of_date=as_of_date)
-        if price_level
-        else _select_chart_series(detail, as_of_date=as_of_date)
+    if price_level:
+        price_mode = "raw"
+    selection, available_modes, anchor_date = _price_display_selection(
+        detail, as_of_date=as_of_date, price_mode=price_mode,
     )
     selected_basis = selection.selected_basis
     visible_points = _chart_window_points(
@@ -1211,11 +1084,13 @@ def build_instrument_price_chart_from_detail(
         market_calendar_sessions(calendar_name, visible_points[0]["date"], as_of_date)
         if calendar_name and visible_points else None
     )
+    comparable_levels = len({point.get("chart_segment", point.get("return_segment")) for point in visible_points}) <= 1
     visible_points = _downsample_points(visible_points, max_points=max_points)
     point_values = [float(point["value"]) for point in visible_points]
     first_value = point_values[0] if point_values else None
     last_value = point_values[-1] if point_values else None
-    change_value = (last_value - first_value) if first_value is not None and last_value is not None else None
+    change_value = ((last_value - first_value)
+                    if comparable_levels and first_value is not None and last_value is not None else None)
     change_pct = (
         (change_value / first_value)
         if change_value is not None and first_value is not None and abs(first_value) > 1e-9
@@ -1233,12 +1108,21 @@ def build_instrument_price_chart_from_detail(
         },
         "as_of_date": as_of_date.isoformat(),
         "range_key": normalized_range_key,
-        "series_role": "price_level" if price_level else "performance",
+        "series_role": "performance" if price_mode == "return" else "price_level",
+        "price_mode": price_mode,
+        "available_price_modes": available_modes,
+        "adjustment_anchor_date": anchor_date.isoformat() if anchor_date else None,
+        "adjustment_method": "total_return_reinvestment" if anchor_date else None,
         "chart_basis": selected_basis,
         "return_semantics": chart_return_semantics(
             detail,
             selected_basis=selected_basis,
         ),
+        "return_kind": chart_return_semantics(detail, selected_basis=selected_basis),
+        "return_measure": "simple",
+        "observation_coverage": (selection.return_metadata or {}).get("observation_coverage"),
+        **{key: settings[key] for key in ("total_return_segments", "total_return_unavailable_intervals")
+           if isinstance(settings, dict) and key in settings},
         "coverage_state": str((selection.coverage or {}).get("state") or "unavailable"),
         "selection_reason": selection.reason,
         "split_adjusted": selection.split_adjusted,
@@ -1260,6 +1144,8 @@ def build_instrument_price_chart_from_detail(
             {
                 "date": point["date_iso"],
                 "value": float(point["value"]),
+                **({"segment_id": point.get("chart_segment", point.get("return_segment"))}
+                   if price_mode == "return" and ("chart_segment" in point or "return_segment" in point) else {}),
             }
             for point in visible_points
         ],
@@ -1267,8 +1153,8 @@ def build_instrument_price_chart_from_detail(
             "point_count": len(visible_points),
             "change_value": change_value,
             "change_pct": change_pct,
-            "high": max(point_values) if point_values else None,
-            "low": min(point_values) if point_values else None,
+            "high": max(point_values) if comparable_levels and point_values else None,
+            "low": min(point_values) if comparable_levels and point_values else None,
         },
     }
 
@@ -1280,6 +1166,7 @@ def build_instrument_price_chart(
     range_key: str | None = None,
     max_points: int | None = None,
     price_level: bool = False,
+    price_mode: str = "return",
 ) -> dict[str, object] | None:
     detail = get_registry_instrument_detail(instrument_id)
     if not isinstance(detail, dict):
@@ -1291,6 +1178,7 @@ def build_instrument_price_chart(
         range_key=range_key,
         max_points=max_points,
         price_level=price_level,
+        price_mode=price_mode,
     )
 
 
@@ -1363,10 +1251,10 @@ def build_instrument_holdings_market_profile_from_detail(
     include_details: bool = True,
 ) -> dict[str, object]:
     resolutions: dict[str, QuoteSeriesResolution] = {}
-    chart_selection = _select_chart_series(
+    chart_selection = _select_price_level_series(
         detail, as_of_date=as_of_date, resolutions=resolutions,
     )
-    trend_selection = _select_total_return_series(
+    trend_selection = _select_analytical_return_series(
         detail, as_of_date=as_of_date, resolutions=resolutions,
     )
     # Holdings exposes only chart points. Full chart metadata and calendar

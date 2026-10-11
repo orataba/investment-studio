@@ -51,10 +51,10 @@ def test_flat_table_profile_accepts_only_final_heads(
 ) -> None:
     expected_heads = {
         "identity": "20260919_0002",
-        "instrument_data": "20260920_0036",
+        "instrument_data": "20261008_0037",
         "data_ingestion": "20260904_0009",
-        "portfolio": "20260929_0070",
-        "watchlist": "20261006_0065",
+        "portfolio": "20261008_0072",
+        "watchlist": "20261009_0068",
         "market_data": "studio_market_0002",
         "briefing": "20260908_0003",
     }
@@ -100,6 +100,210 @@ def test_audit_heads_match_migration_sources(audit_module: ModuleType) -> None:
     for component, path in migration_roots.items():
         migrations = ScriptDirectory(str(REPOSITORY_ROOT / path))
         assert migrations.get_heads() == [audit_module.FINAL_FLAT_TABLE_HEADS[component]]
+
+
+@pytest.mark.parametrize("case,expected_failures", [
+    ("unknown_unavailable_with_observed_price", 0),
+    ("confirmed_price_return", 0), ("confirmed_total_return", 0),
+    ("adjusted_total_return", 0),
+    ("missing_chart", 1), ("missing_payload_contract", 1),
+    ("confirmed_price_return_missing_basis", 1), ("confirmed_total_return_missing_basis", 1),
+    ("legacy_unknown_close", 1), ("unknown_chart_points", 1),
+    ("unknown_return_intervals", 1), ("unknown_return_wealth", 1),
+    ("unknown_research_points", 1), ("unknown_published_return_kind", 1),
+    ("unknown_latest_total_return", 1), ("confirmed_kind_mismatch", 1),
+])
+def test_index_audit_distinguishes_unavailable_analysis_from_missing_or_mislabeled_data(
+    audit_module: ModuleType, case: str, expected_failures: int,
+) -> None:
+    metadata = {"quote_basis": None, "return_kind": None, "basis_type": None,
+                "return_series_status": "unavailable"}
+    payload = {
+        "selected_series": dict(metadata),
+        "series": [{"points": []}],
+        "latest_values": {"valuation": {"value": 110}, "total_return": None},
+        "price_series": {"quote_basis": "close", "points": [{"date": "2026-10-01", "value": 110}]},
+        "return_series": {"metadata": dict(metadata), "intervals": [], "wealth_points": []},
+        "research_returns": {"metadata": dict(metadata), "points": [], "intervals": [], "wealth_points": []},
+    }
+    configured_kind = None
+    if case in {"confirmed_price_return", "confirmed_total_return", "confirmed_kind_mismatch", "adjusted_total_return"}:
+        configured_kind = "price_return" if case != "confirmed_total_return" else "total_return"
+        published_kind = "total_return" if case in {"confirmed_total_return", "confirmed_kind_mismatch", "adjusted_total_return"} else "price_return"
+        payload["selected_series"] = {
+            "quote_basis": "adjusted_close" if case == "adjusted_total_return" else "close",
+            "return_kind": published_kind,
+            "basis_type": "nav_with_dividend" if published_kind == "total_return" else "nav",
+        }
+        payload["series"][0]["points"] = [{"date": "2026-10-01", "value": 110}]
+        if case == "adjusted_total_return":
+            configured_kind = None
+    elif case == "confirmed_price_return_missing_basis":
+        configured_kind = "price_return"
+    elif case == "confirmed_total_return_missing_basis":
+        configured_kind = "total_return"
+    elif case == "missing_payload_contract":
+        del payload["return_series"]
+    elif case == "legacy_unknown_close":
+        payload["selected_series"]["quote_basis"] = "close"
+    elif case == "unknown_chart_points":
+        payload["series"][0]["points"] = [{"date": "2026-10-01", "value": 110}]
+    elif case == "unknown_return_intervals":
+        payload["return_series"]["intervals"] = [{"value": 0.1, "status": "complete"}]
+    elif case == "unknown_return_wealth":
+        payload["return_series"]["wealth_points"] = [{"date": "2026-10-01", "value": 100}]
+    elif case == "unknown_research_points":
+        payload["research_returns"]["points"] = [{"date": "2026-10-01", "value": 100}]
+    elif case == "unknown_published_return_kind":
+        payload["return_series"]["metadata"]["return_kind"] = "price_return"
+    elif case == "unknown_latest_total_return":
+        payload["latest_values"]["total_return"] = {"value": 110}
+
+    # JSON traversal and null semantics stay in the production query. SQLite's
+    # corresponding JSON functions let the offline suite exercise its rows.
+    query = audit_module._watchlist_index_return_semantics_contract_query()
+    query = query.replace("::jsonb", "").replace("jsonb_typeof", "json_type").replace("jsonb_array_length", "json_array_length")
+    with sqlite3.connect(":memory:") as database:
+        database.execute("ATTACH DATABASE ':memory:' AS instrument_data")
+        database.execute("ATTACH DATABASE ':memory:' AS watchlist")
+        database.executescript("""
+            CREATE TABLE instrument_data.instrument (
+                instrument_id TEXT, instrument_type TEXT, source_settings_json TEXT,
+                lifecycle_state_json TEXT
+            );
+            CREATE TABLE watchlist.instrument_chart_read_model (
+                instrument_id TEXT, payload_json TEXT
+            );
+        """)
+        database.execute("INSERT INTO instrument_data.instrument VALUES (?, ?, ?, ?)",
+                         ("index-test", "index", json.dumps({"return_semantics": configured_kind}), '{"status":"active"}'))
+        if case != "missing_chart":
+            database.execute("INSERT INTO watchlist.instrument_chart_read_model VALUES (?, ?)",
+                             ("index-test", json.dumps(payload)))
+        assert database.execute(query).fetchone()[0] == expected_failures
+
+
+@pytest.mark.parametrize("case,expected_failures", [
+    ("hk_etf", 0), ("hk_usd_counter", 0), ("hk_cny_counter", 0),
+    ("us_etf", 0), ("us_equity", 0), ("us_bats_equity", 0),
+    ("fmp_equity", 0), ("tushare_etf", 0), ("fmp_equity_without_fmp_identity", 1),
+    ("missing_pin", 1), ("invalid_pin", 1), ("currency_mismatch", 1),
+    ("missing_provider_currency", 1), ("scaled_price", 1), ("invalid_history_date", 1),
+    ("wrong_market_calendar", 1), ("wrong_frequency", 1), ("wrong_source_mode", 1),
+    ("wrong_return_semantics", 1), ("raw_total_return_policy", 1),
+    ("wrong_ticker", 1), ("malformed_provider_symbol", 1), ("duplicate_provider_symbol", 1),
+    ("missing_provider_symbol", 1), ("symbol_market_mismatch", 1), ("missing_exchange", 1),
+    ("nonlisted_futu", 1), ("mixed_raw_provider", 1), ("mixed_adjusted_provider", 1), ("mixed_bar_provider", 1),
+])
+def test_listed_identity_audit_accepts_only_the_configured_futu_identity_and_price_contract(
+    audit_module: ModuleType, case: str, expected_failures: int,
+) -> None:
+    from datetime import date
+
+    kind, exchange, currency = "etf", "XHKG", "HKD"
+    provider, ticker = "futu:HK.02822", "2822.HK"
+    source = {"source_mode": "api", "source_api_profile": "futu", "expected_frequency": "daily",
+              "market_calendar": exchange, "return_semantics": "price_return", "source_provider_currency": currency,
+              "source_provider_security_id": "100", "source_price_multiplier": "1", "history_start_date": "2004-11-18"}
+    policy = {role: ["adjusted_close"] if role == "total_return" else ["close"]
+              for role in ("trading", "valuation", "total_return", "chart", "reference")}
+    if case == "hk_usd_counter":
+        provider, ticker, currency = "futu:HK.09822", "9822.HK", "USD"
+        source["source_provider_currency"] = currency
+    elif case == "hk_cny_counter":
+        provider, ticker, currency = "futu:HK.82822", "82822.HK", "CNY"
+        source["source_provider_currency"] = currency
+    elif case in {"us_etf", "us_equity", "us_bats_equity"}:
+        kind = "etf" if case == "us_etf" else "equity"
+        exchange = {"us_etf": "ARCX", "us_equity": "XNAS", "us_bats_equity": "BATS"}[case]
+        provider, ticker, currency = "futu:US.SPY", "SPY", "USD"
+        source.update(market_calendar=exchange, source_provider_currency=currency)
+    elif case in {"fmp_equity", "fmp_equity_without_fmp_identity"}:
+        kind, exchange, currency = "equity", "XNYS", "USD"
+        provider, ticker = "fmp:IBM", "IBM"
+        source.update(source_api_profile="fmp", market_calendar=exchange)
+        if case == "fmp_equity_without_fmp_identity":
+            provider = "futu:US.IBM"
+    elif case == "tushare_etf":
+        exchange, currency, provider, ticker = "XSHG", "CNY", "tushare:510300.SH", "510300.SH"
+        source.update(source_api_profile="tushare", market_calendar=exchange)
+    elif case == "missing_pin":
+        del source["source_provider_security_id"]
+    elif case == "invalid_pin":
+        source["source_provider_security_id"] = "0"
+    elif case == "currency_mismatch":
+        source["source_provider_currency"] = "USD"
+    elif case == "missing_provider_currency":
+        del source["source_provider_currency"]
+    elif case == "scaled_price":
+        source["source_price_multiplier"] = "0.01"
+    elif case == "invalid_history_date":
+        source["history_start_date"] = "2004-02-30"
+    elif case == "wrong_market_calendar":
+        source["market_calendar"] = "XNYS"
+    elif case == "wrong_frequency":
+        source["expected_frequency"] = "weekly"
+    elif case == "wrong_source_mode":
+        source["source_mode"] = "manual"
+    elif case == "wrong_return_semantics":
+        source["return_semantics"] = "total_return"
+    elif case == "raw_total_return_policy":
+        policy["total_return"] = ["adjusted_close", "close"]
+    elif case == "wrong_ticker":
+        ticker = "2800.HK"
+    elif case == "malformed_provider_symbol":
+        provider = "futu:HK.2822"
+    elif case == "symbol_market_mismatch":
+        provider, ticker = "futu:US.SPY", "SPY"
+    elif case == "missing_exchange":
+        exchange = None
+    elif case == "nonlisted_futu":
+        kind, exchange = "index", None
+
+    def valid_date(value, _type):
+        try:
+            date.fromisoformat(value)
+            return True
+        except ValueError:
+            return False
+
+    query = audit_module._instrument_type_listed_security_identity_contract_query()
+    query = re.sub(r"instrument.quote_selection_policy_json::jsonb IS DISTINCT FROM\s*('[^']+')::jsonb",
+                   r"NOT json_equal(instrument.quote_selection_policy_json, \1)", query)
+    with sqlite3.connect(":memory:") as database:
+        database.create_function("regexp_like", 2, lambda value, pattern: bool(re.search(pattern, value or "")))
+        database.create_function("pg_input_is_valid", 2, valid_date)
+        database.create_function("lpad", 3, lambda value, width, fill: value.rjust(width, fill))
+        database.create_function("greatest", -1, max)
+        database.create_function("json_equal", 2, lambda left, right: json.loads(left) == json.loads(right))
+        database.executescript("""
+            ATTACH ':memory:' AS instrument_data;
+            CREATE TABLE instrument_data.instrument (
+                instrument_id TEXT, instrument_type TEXT, exchange_code TEXT, currency TEXT,
+                source_settings_json TEXT, quote_selection_policy_json TEXT);
+            CREATE TABLE instrument_data.instrument_identifier (
+                instrument_id TEXT, identifier_type TEXT, identifier_value TEXT);
+            CREATE TABLE instrument_data.instrument_market_data (
+                instrument_id TEXT, metric_family TEXT, quote_basis TEXT, provider TEXT);
+            CREATE TABLE instrument_data.instrument_price_bar (instrument_id TEXT, provider TEXT);
+        """)
+        database.execute("INSERT INTO instrument_data.instrument VALUES (?, ?, ?, ?, ?, ?)",
+                         ("security", kind, exchange, currency, json.dumps(source), json.dumps(policy)))
+        database.execute("INSERT INTO instrument_data.instrument_identifier VALUES (?, ?, ?)",
+                         ("security", "exchange_ticker", ticker))
+        if case != "missing_provider_symbol":
+            database.execute("INSERT INTO instrument_data.instrument_identifier VALUES (?, ?, ?)",
+                             ("security", "provider_symbol", provider))
+        if case == "duplicate_provider_symbol":
+            database.execute("INSERT INTO instrument_data.instrument_identifier VALUES ('security', 'provider_symbol', 'futu:HK.02800')")
+        if source["source_api_profile"] == "futu":
+            database.executemany("INSERT INTO instrument_data.instrument_market_data VALUES (?, ?, ?, ?)", [
+                ("security", "price", "close", "fmp:daily" if case == "mixed_raw_provider" else "futu:history-kline:unadjusted"),
+                ("security", "price", "adjusted_close", "fmp:daily" if case == "mixed_adjusted_provider" else "futu:declared-cash-reinvestment:v1"),
+            ])
+            database.execute("INSERT INTO instrument_data.instrument_price_bar VALUES (?, ?)",
+                             ("security", "fmp:daily" if case == "mixed_bar_provider" else "futu:history-kline:unadjusted"))
+        assert database.execute(query).fetchone()[0] == expected_failures
 
 
 def test_audit_contract_names_cover_registry_0019(

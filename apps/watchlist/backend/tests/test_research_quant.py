@@ -1,15 +1,21 @@
 from copy import deepcopy
+from dataclasses import replace
 import asyncio
 import json
 from types import SimpleNamespace
 
 from fastapi import HTTPException
 import pytest
+from studio_identity import current_principal, principal_context
 
 from watchlist_app import research_mcp as mcp
 from watchlist_app.api.routes import sector_research as routes
+from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
+from watchlist_app.db.session import get_session_factory
+from watchlist_app.services.research_run_evidence import (locked_computation_run, quant_source_catalogue,
+    selected_quant_sources, resolve_reference)
 from watchlist_app.services import research_quant as quant, quant_sandbox
-from watchlist_app.services.research_notebook import ResearchNotebook, research_sources, retain_notebook, validate_notebook
+from watchlist_app.services.research_notebook import ResearchNotebook, retain_notebook, validate_notebook
 
 
 CUTOFF = "2026-09-20T00:00:00+00:00"
@@ -22,7 +28,9 @@ def source(**changes):
 
 
 def run(**changes):
-    return SimpleNamespace(entry_id="run-quant", kind="analysis", status="running", context_json={
+    actor = current_principal()
+    return SimpleNamespace(entry_id="run-quant", topic_id="quant-topic", team_id=actor.team_id,
+        kind="analysis", status="running", context_json={"research_actor": actor.to_dict(), "execution": {"attempt": 1},
         "research_run": True, "cutoff": CUTOFF, "instrument_ids": ["xlk"], "computed_metrics": [source()], **changes})
 
 
@@ -40,6 +48,49 @@ def output(**changes):
                     "series": [{"key": "value", "label": "Value"}], "x_label": "Date", "y_label": "USD"}], "limitations": [], **changes}
 
 
+@pytest.fixture(autouse=True)
+def quant_database(client):
+    """Eligibility tests exercise the same persisted selector as the HTTP route."""
+    actor = replace(current_principal(), resource_scope={"kind": "run", "id": "run-quant", "attempt": "1"})
+    with principal_context(actor):
+        yield
+
+
+def store_run(record):
+    with get_session_factory()() as session:
+        if session.get(ResearchTopic, record.topic_id) is None:
+            session.add(ResearchTopic(topic_id=record.topic_id, title="Quant test", team_id=record.team_id,
+                visibility="private", created_by_user_id=record.context_json["research_actor"]["user_id"]))
+            session.flush()
+        row = session.get(ResearchEntry, record.entry_id)
+        if row is None:
+            row = ResearchEntry(entry_id=record.entry_id, topic_id=record.topic_id, team_id=record.team_id,
+                title="Quant test", kind=record.kind, status=record.status)
+            session.add(row)
+        row.context_json = deepcopy(record.context_json)
+        row.status = record.status
+        session.commit()
+
+
+def catalogue(record, instrument_id="xlk", version_id=None):
+    store_run(record)
+    with get_session_factory()() as session:
+        bound = locked_computation_run(session, record.entry_id)
+        return quant_source_catalogue(session, bound, instrument_id, version_id)
+
+
+def select_inputs(record, instrument_id, source_ids, version_id=None):
+    store_run(record)
+    with get_session_factory()() as session:
+        bound = locked_computation_run(session, record.entry_id)
+        return selected_quant_sources(session, bound, instrument_id, source_ids, version_id)
+
+
+def execute_retained(record, request):
+    selected, cutoff = select_inputs(record, request.instrument_id, request.source_ids, request.version_id)
+    return quant.execute_analysis(record, request, selected_sources=selected, input_cutoff=cutoff)
+
+
 def test_only_authorized_retained_sources_enter_worker_and_all_provenance_survives(monkeypatch):
     record = run(computed_metrics=[source(), source(source_id="computed:other", instrument_id="other")])
     calls = []
@@ -48,8 +99,8 @@ def test_only_authorized_retained_sources_enter_worker_and_all_provenance_surviv
         inputs["computed:input"]["data"]["points"][0]["value"] = 999
         return output(), {"backend": "test-isolation", "available": True}
     monkeypatch.setattr(quant_sandbox, "execute", execute)
-    assert [item["source_id"] for item in quant.input_catalogue(record.context_json, record.entry_id, "xlk")] == ["computed:input"]
-    evidence = quant.execute_analysis(record, request())
+    assert [item["source_id"] for item in catalogue(record)] == ["computed:input"]
+    evidence = execute_retained(record, request())
     assert set(calls[0][1]) == {"computed:input"}
     assert record.context_json["computed_metrics"][0]["data"]["points"][0]["value"] == 10
     assert evidence["as_of"] == CUTOFF
@@ -59,7 +110,7 @@ def test_only_authorized_retained_sources_enter_worker_and_all_provenance_surviv
     assert evidence["methodology"]["input_sources"][0]["as_of"] == "2026-09-18T00:00:00+00:00"
     assert evidence["data"]["analysis_kind"] == "python_quant"
     assert evidence["data"]["charts"][0]["table_key"] == "history"
-    assert evidence in record.context_json["computed_metrics"]
+    assert evidence not in record.context_json["computed_metrics"]  # The transaction caller owns retention.
 
 
 @pytest.mark.parametrize("ids", [["computed:unknown"], ["computed:input", "computed:input"], ["computed:other"]])
@@ -67,21 +118,28 @@ def test_unknown_duplicate_and_other_instrument_inputs_rejected_before_execution
     record = run(computed_metrics=[source(), source(source_id="computed:other", instrument_id="other")])
     monkeypatch.setattr(quant_sandbox, "execute", lambda *a: pytest.fail("unauthorized execution"))
     with pytest.raises(ValueError, match="输入"):
-        quant.execute_analysis(record, request(source_ids=ids))
+        execute_retained(record, request(source_ids=ids))
 
 
-def test_future_data_and_methods_never_become_code_inputs(monkeypatch):
-    record = run(computed_metrics=[source(as_of="2026-09-21T00:00:00+00:00")])
-    assert quant.input_catalogue(record.context_json, record.entry_id, "xlk") == []
+@pytest.mark.parametrize("ineligible", [
+    source(as_of="2026-09-21T00:00:00+00:00"),
+    *(source(role=role) for role in ("research_method", "historical_research", "derived_reference")),
+])
+def test_future_data_and_methods_never_become_code_inputs(monkeypatch, ineligible):
+    record = run(computed_metrics=[ineligible])
+    assert catalogue(record) == []
     monkeypatch.setattr(quant_sandbox, "execute", lambda *a: pytest.fail("future execution"))
     with pytest.raises(ValueError):
-        quant.execute_analysis(record, request())
+        execute_retained(record, request())
 
 
 def test_risk_and_unbound_instrument_are_not_eligible():
-    for context in ({"risk_run": True}, {"instrument_ids": ["other"]}):
-        with pytest.raises(ValueError):
-            quant.execute_analysis(run(**context), request())
+    with pytest.raises(HTTPException) as error:
+        execute_retained(run(risk_run=True), request())
+    assert error.value.status_code == 422
+    assert "风控" in error.value.detail
+    with pytest.raises(ValueError, match="量化标的不在本轮已绑定"):
+        execute_retained(run(instrument_ids=["other"]), request())
 
 
 def test_failed_or_invalid_code_output_does_not_write_a_source(monkeypatch):
@@ -89,7 +147,7 @@ def test_failed_or_invalid_code_output_does_not_write_a_source(monkeypatch):
     before = deepcopy(record.context_json)
     monkeypatch.setattr(quant_sandbox, "execute", lambda *a: (output(charts=[{**output()["charts"][0], "table_key": "invented"}]), {}))
     with pytest.raises(ValueError, match="实际留存"):
-        quant.execute_analysis(record, request())
+        execute_retained(record, request())
     assert record.context_json == before
 
 
@@ -131,28 +189,28 @@ result = {
 }
 inputs["computed:input"]["data"]["points"][0]["value"] = 999
 '''
-    evidence = quant.execute_analysis(record, request(code=code, observation_domain="market"))
+    evidence = execute_retained(record, request(code=code, observation_domain="market"))
     assert evidence["data"]["metrics"]["change"] == 2
-    assert evidence["methodology"]["input_sources"][0]["data"]["points"][0]["value"] == 10
+    assert resolve_reference(evidence["methodology"]["input_sources"][0])["data"]["points"][0]["value"] == 10
     assert record.context_json["computed_metrics"][0]["data"]["points"][0]["value"] == 10
     assert evidence["data"]["tables"][0]["rows"] == source()["data"]["points"]
     validate_notebook(ResearchNotebook(modules=[{"key": "market-quantitative",
-        "figure_source_ids": [evidence["source_id"]]}]), "xlk", research_sources(record.context_json, record.entry_id))
+        "figure_source_ids": [evidence["source_id"]]}]), "xlk", {evidence["source_id"]: evidence})
 
 
 def test_computed_artifact_can_be_published_in_figure_and_reused_from_exact_notebook(monkeypatch):
     record = run()
     monkeypatch.setattr(quant_sandbox, "execute", lambda *a: (output(), {"backend": "test"}))
-    evidence = quant.execute_analysis(record, request())
+    evidence = execute_retained(record, request())
     notebook = ResearchNotebook(modules=[{"key": "pricing", "summary": "A measured observation",
         "source_ids": [evidence["source_id"]], "figure_source_ids": [evidence["source_id"]]}])
-    sources = research_sources(record.context_json, record.entry_id)
+    sources = {evidence["source_id"]: evidence}
     validate_notebook(notebook, "xlk", sources)
     retained = retain_notebook(notebook, None, sources, record.entry_id, CUTOFF)
     assert retained["sources"][0] == evidence
     later = run(computed_metrics=[], research_dossiers=[{"instrument_id": "xlk", "notebook": retained}])
-    catalogue = quant.input_catalogue(later.context_json, later.entry_id, "xlk")
-    assert catalogue[0]["source_id"] == evidence["source_id"]
+    inputs = catalogue(later)
+    assert inputs[0]["source_id"] == evidence["source_id"]
 
 
 def test_historical_version_has_its_own_namespace_and_cannot_fall_back_to_same_current_id(monkeypatch):
@@ -164,32 +222,32 @@ def test_historical_version_has_its_own_namespace_and_cannot_fall_back_to_same_c
         received.append(deepcopy(inputs))
         return output(), {"backend": "test"}
     monkeypatch.setattr(quant_sandbox, "execute", execute)
-    evidence = quant.execute_analysis(record, request(version_id="exact-old"))
+    evidence = execute_retained(record, request(version_id="exact-old"))
     assert received[0]["computed:input"]["data"]["points"][0]["value"] == 7
-    assert evidence["methodology"]["input_sources"] == [historical]
+    assert resolve_reference(evidence["methodology"]["input_sources"][0])["data"] == historical["data"]
     assert evidence["methodology"]["input_version_id"] == "exact-old"
     assert evidence["methodology"]["input_information_cutoff"] == "2026-09-17T10:00:00+00:00"
     assert evidence["as_of"] == CUTOFF  # This calculation was not known on the old date.
     with pytest.raises(ValueError, match="输入"):
-        quant.execute_analysis(record, request(version_id="exact-old", source_ids=[evidence["source_id"]]))
+        execute_retained(record, request(version_id="exact-old", source_ids=[evidence["source_id"]]))
     with pytest.raises(ValueError, match="历史版本"):
-        quant.execute_analysis(record, request(version_id="unbound-version"))
+        execute_retained(record, request(version_id="unbound-version"))
     assert len(received) == 1
 
 
 def test_historical_source_future_to_that_version_is_not_used_even_if_known_now(monkeypatch):
     record = run(referenced_research_versions=[{"instrument_id": "xlk", "version_id": "old",
         "information_cutoff": "2026-09-17T10:00:00+00:00", "sources": [source()]}])
-    assert quant.input_catalogue(record.context_json, record.entry_id, "xlk", "old") == []
+    assert catalogue(record, version_id="old") == []
     monkeypatch.setattr(quant_sandbox, "execute", lambda *a: pytest.fail("future historical evidence"))
     with pytest.raises(ValueError, match="输入"):
-        quant.execute_analysis(record, request(version_id="old"))
+        execute_retained(record, request(version_id="old"))
 
 
 def test_unknown_historical_cutoff_is_not_relabelled_as_current_cutoff(monkeypatch):
     record = run(referenced_research_versions=[{"instrument_id": "xlk", "version_id": "unknown-clock", "sources": [source()]}])
     monkeypatch.setattr(quant_sandbox, "execute", lambda *a: (output(), {}))
-    evidence = quant.execute_analysis(record, request(version_id="unknown-clock"))
+    evidence = execute_retained(record, request(version_id="unknown-clock"))
     assert evidence["methodology"]["input_information_cutoff"] is None
     assert evidence["methodology"]["input_sources"][0]["as_of"] == source()["as_of"]
 
@@ -199,11 +257,40 @@ class Session:
         self.record, self.commits = record, 0
     def scalar(self, _):
         return self.record
+    def get(self, model, identifier):
+        assert model is ResearchTopic and identifier == self.record.topic_id
+        return SimpleNamespace(topic_id=identifier, team_id=self.record.team_id, visibility="private",
+            created_by_user_id=self.record.context_json["research_actor"]["user_id"], portfolio_id=None)
     def commit(self):
         self.commits += 1
 
 
-def test_api_ends_run_writes_and_reports_unavailable_explicitly(monkeypatch):
+@pytest.fixture
+def bound_quant_api(monkeypatch):
+    from watchlist_app.services import research_access
+    from watchlist_app.services import research_run_evidence
+    # The wire adapter uses an in-memory transaction. Source selection below
+    # still runs through the real persisted selector and task/attempt checks.
+    monkeypatch.setattr(research_access, "topic_portfolio_ids", lambda *_: set())
+    def locked(session, run_id):
+        record = session.record
+        research_access.require_entry_access(session, record, tool_write=True)
+        if record.status not in {"queued", "running"}:
+            raise HTTPException(409, "本轮研究已经结束")
+        return record
+    def retained(session, record, evidence):
+        record.retained_evidence = evidence
+        return evidence
+    monkeypatch.setattr(research_run_evidence, "locked_computation_run", locked)
+    monkeypatch.setattr(research_run_evidence, "selected_quant_sources",
+        lambda session, record, iid, ids, version: select_inputs(record, iid, ids, version))
+    monkeypatch.setattr(research_run_evidence, "retain_computed_source", retained)
+    actor = replace(current_principal(), resource_scope={"kind": "run", "id": "run-quant", "attempt": "1"})
+    with principal_context(actor):
+        yield
+
+
+def test_api_ends_run_writes_and_reports_unavailable_explicitly(monkeypatch, bound_quant_api):
     record = run()
     session = Session(record)
     def unavailable(*_):
@@ -218,7 +305,7 @@ def test_api_ends_run_writes_and_reports_unavailable_explicitly(monkeypatch):
     assert error.value.status_code == 409 and session.commits == 0
 
 
-def test_mcp_execution_and_reads_share_one_retained_source_without_rerun(monkeypatch):
+def test_mcp_execution_and_reads_share_one_retained_source_without_rerun(monkeypatch, bound_quant_api):
     record = run()
     calls = []
     def execute(*args):
@@ -228,8 +315,9 @@ def test_mcp_execution_and_reads_share_one_retained_source_without_rerun(monkeyp
     def route(suffix, payload=None, **kwargs):
         if suffix == "quant":
             return routes.run_quant(record.entry_id, quant.QuantAnalysisInput(**payload), Session(record))
-        assert suffix.startswith("computed-source?")
-        return deepcopy(record.context_json["computed_metrics"][-1])
+        assert suffix == "computed-read"
+        from watchlist_app.services.research_numeric_projection import project_quant
+        return project_quant(record.retained_evidence, **{key: payload[key] for key in ("section", "path", "offset", "limit")})
     monkeypatch.setattr(mcp, "request", route)
     receipt = mcp.run_quant_analysis(**request().model_dump())
     assert receipt["source_id"].startswith("computed:")
@@ -245,8 +333,10 @@ def test_large_tables_and_code_inputs_are_readable_under_actual_mcp_wire_budget(
     value = output()
     value["tables"][0]["rows"] = [{"date": f"observation-{i}", "value": i} for i in range(5000)]
     monkeypatch.setattr(quant_sandbox, "execute", lambda *a: (value, {"backend": "test"}))
-    evidence = quant.execute_analysis(record, request())
-    monkeypatch.setattr(mcp, "request", lambda *a, **k: deepcopy(evidence))
+    evidence = execute_retained(record, request())
+    from watchlist_app.services.research_numeric_projection import project_quant
+    monkeypatch.setattr(mcp, "request", lambda suffix, payload, **kwargs: project_quant(evidence,
+        **{key: payload[key] for key in ("section", "path", "offset", "limit")}))
     reconstructed, offset = [], 0
     while offset is not None:
         wire = asyncio.run(mcp.mcp.call_tool("read_quant_analysis", {

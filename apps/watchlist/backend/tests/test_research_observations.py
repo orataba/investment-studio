@@ -14,6 +14,62 @@ def series(points, currency="USD", kind="total_return"):
         "points": [{"date": day, "value": value} for day, value in points]}
 
 
+@pytest.mark.parametrize("calendar,days,cutoff,expected", [
+    ("XNAS", ["2025-11-26", "2025-11-27", "2025-11-28", "2025-11-29"],
+     "2025-11-28T12:59:59-05:00", ["2025-11-26"]),
+    ("XNAS", ["2025-11-26", "2025-11-27", "2025-11-28", "2025-11-29"],
+     "2025-11-28T13:00:00-05:00", ["2025-11-26", "2025-11-28"]),
+    ("XHKG", ["2023-08-31", "2023-09-01", "2023-09-04"],
+     "2023-09-04T16:09:59+08:00", ["2023-08-31"]),
+    ("XHKG", ["2023-08-31", "2023-09-01", "2023-09-04"],
+     "2023-09-04T16:10:00+08:00", ["2023-08-31", "2023-09-04"]),
+    ("XHKG", ["2024-02-08", "2024-02-09"], "2024-02-09T12:09:59+08:00", ["2024-02-08"]),
+    ("XHKG", ["2024-02-08", "2024-02-09"], "2024-02-09T12:10:00+08:00", ["2024-02-08", "2024-02-09"]),
+    ("24/7", ["2026-10-08", "2026-10-09"], "2026-10-09T23:59:59+00:00", ["2026-10-08"]),
+    ("24/7", ["2026-10-08", "2026-10-09"], "2026-10-09T20:00:00-04:00", ["2026-10-08", "2026-10-09"]),
+])
+def test_batch_completed_rows_matches_actual_per_day_close_rules(monkeypatch, calendar, days, cutoff, expected):
+    cutoff = datetime.fromisoformat(cutoff)
+    rows = [{"date": day, "value": index, "source_id": f"retained:{index}"} for index, day in enumerate(days)]
+    original = observations.closed_market_sessions
+    baseline = [row for row in rows if date.fromisoformat(row["date"]) in
+                (original(calendar, date.fromisoformat(row["date"]), date.fromisoformat(row["date"]), cutoff) or ())]
+    calls = []
+    def closed(*args):
+        calls.append(args)
+        return original(*args)
+    monkeypatch.setattr(observations, "closed_market_sessions", closed)
+    actual = observations._completed_rows(rows, calendar, cutoff)
+    assert actual == baseline
+    assert [row["date"] for row in actual] == expected
+    assert calls == [(calendar, date.fromisoformat(min(days)), date.fromisoformat(max(days)), cutoff)]
+
+
+def test_batch_completed_rows_preserves_partial_calendar_verification(monkeypatch):
+    rows = [{"date": "1900-01-01", "value": 1}, {"date": "2026-10-08", "value": 2}]
+    known = date(2026, 10, 8)
+    monkeypatch.setattr(observations, "closed_market_sessions", lambda calendar, start, end, cutoff:
+                        (known,) if start == end == known else None)
+    assert observations._completed_rows(rows, "partial", datetime.now(UTC)) == rows[1:]
+    assert observations._completed_rows([], "partial", datetime.now(UTC)) == []
+
+
+def test_multi_decade_daily_sample_uses_one_close_calendar_without_truncation(monkeypatch):
+    cutoff = datetime(2026, 10, 9, tzinfo=UTC)
+    first, last = date(2000, 1, 3), date(2026, 10, 8)
+    original = observations.closed_market_sessions
+    days = original("XNAS", first, last, cutoff)
+    rows = [{"date": day.isoformat(), "value": index} for index, day in enumerate(days)]
+    assert len(rows) == 6732
+    calls = []
+    def closed(*args):
+        calls.append(args)
+        return original(*args)
+    monkeypatch.setattr(observations, "closed_market_sessions", closed)
+    assert observations._completed_rows(rows, "XNAS", cutoff) == rows
+    assert calls == [("XNAS", first, last, cutoff)]
+
+
 def test_relative_uses_calendar_month_and_same_actual_endpoints():
     target = series([("2026-07-30", 80), ("2026-07-31", 100), ("2026-08-21", 110),
         ("2026-08-24", 112), ("2026-08-27", 115), ("2026-08-28", 121)])
@@ -269,7 +325,7 @@ def test_instrument_observation_reads_actual_retained_market_versions_in_batches
             for symbol in ("FIXTURE", "S0", "S1", "S2") for index, day in enumerate(days)])
         result = observations.instrument_observations(session, "fixture-etf", as_of=cutoff, store=store)
         basket = result["data"]["observations"]["basket"]
-        assert result["data"]["method_version"] == "watchlist-observations/v3"
+        assert result["data"]["method_version"] == "watchlist-observations/v5"
         assert result["data"]["information_cutoff_at"] == cutoff.isoformat()
         assert basket["price_as_of_date"] == "2026-09-25"
         assert basket["information_as_of_date"] == "2026-09-27"
@@ -345,3 +401,36 @@ def test_top10_correlation_rejects_mixed_currency_and_constant_returns(monkeypat
     members['1']['currency'] = 'USD'
     result = observations.top10_correlation(holdings, members, as_of_date=days[-1], calendar='TEST')
     assert result['average'] is None and '恒定收益' in result['limitation']
+
+
+@pytest.mark.parametrize("segmented_side", ["target", "benchmark"])
+def test_relative_performance_checks_both_return_segments_but_keeps_recent_common_windows(segmented_side):
+    target = series([("2026-07-31", 100), ("2026-08-21", 110), ("2026-08-24", 120), ("2026-08-31", 132)])
+    benchmark = deepcopy(target)
+    reset = target if segmented_side == "target" else benchmark
+    reset["metadata"].update(return_series_status="partial", return_segment_breaks=[{"reason": "unresolved_action"}])
+    for index, point in enumerate(reset["points"]):
+        point["segment_id"] = "old" if index < 2 else "new"
+        if index >= 2:
+            point["value"] /= 100
+    week, month = observations.relative_performance(target, benchmark, as_of_date=date(2026, 8, 31))
+    assert week["status"] == "available"
+    assert week["target_return_pct"] == pytest.approx(10)
+    assert week["benchmark_return_pct"] == pytest.approx(10)
+    assert week["difference_pp"] == pytest.approx(0)
+    assert month["status"] == "unavailable"
+    assert month["difference_pp"] is None
+
+
+def test_event_reaction_cannot_cross_a_return_reset_in_target_or_benchmark():
+    target = series([("2026-09-23", 80), ("2026-09-24", 100), ("2026-09-25", 1.1)])
+    target["metadata"].update(return_series_status="partial", return_segment_breaks=[{"reason": "unresolved_action"}])
+    for index, point in enumerate(target["points"]):
+        point["segment_id"] = "old" if index < 2 else "new"
+    kwargs = dict(event_date="2026-09-24", timing="after_close", calendar="XNYS", as_of=datetime(2026, 9, 25, 22, tzinfo=UTC))
+    result = observations.event_reaction(target, **kwargs)
+    assert result["target_return_pct"] is None
+    clean = series([("2026-09-23", 80), ("2026-09-24", 100), ("2026-09-25", 110)])
+    result = observations.event_reaction(clean, benchmark=target, **kwargs)
+    assert result["target_return_pct"] == pytest.approx(10)
+    assert result["benchmark_return_pct"] is None

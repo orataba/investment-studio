@@ -77,6 +77,11 @@ def test_expectation_uses_market_local_date_at_the_utc_boundary():
 
 def test_old_stale_projection_is_refreshed_once_when_corrected_schedule_is_fresh(monkeypatch):
     from watchlist_app.services import read_model_freshness as service
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 7, 27, 0, tzinfo=UTC)
+    monkeypatch.setattr(service, "datetime", Clock)
     monkeypatch.setattr(service, "_source_today", lambda _calendar: date(2026, 7, 27))
     shared = {"instrument_type": "private_fund", "source_settings": {"source_mode": "email", "expected_frequency": "daily", "market_calendar": "XSHG"}}
     assert service._freshness_needs_refresh(shared_instrument=shared, local_latest_date=date(2026, 7, 23), local_data_freshness_status="stale")
@@ -176,3 +181,31 @@ def test_no_trade_proof_respects_identity_isolation_at_its_information_time(clie
     proof = shared_instrument_registry.get_shared_no_trade_evidence
     assert len(proof(instrument, latest_date=date(2026, 9, 30), as_of=captured)) == 1
     assert proof(instrument, latest_date=date(2026, 9, 30), as_of=blocked_at) == []
+
+
+@pytest.mark.parametrize('calendar', [None, 'invalid'])
+def test_unknown_daily_calendar_never_declares_fresh_from_small_calendar_day_age(calendar):
+    reading = assess_latest_observation_freshness(latest_observation_date=date(2026, 10, 7),
+        current_date=date(2026, 10, 8), resolved_frequency='daily', market_calendar=calendar)
+    assert reading['status'] == 'unavailable'
+    assert 'unverified' in reading['reason']
+
+
+@pytest.mark.parametrize('frequency,status', [('weekly', 'unavailable'), ('monthly', 'unavailable'), ('event_driven', 'fresh')])
+def test_non_daily_sources_do_not_inherit_daily_freshness_expectations(frequency, status):
+    reading = assess_latest_observation_freshness(latest_observation_date=date(2026, 10, 1),
+        current_date=date(2026, 10, 8), resolved_frequency=frequency, expected_frequency=frequency, market_calendar='XHKG')
+    assert reading['status'] == status
+    assert reading['expected_latest_date'] is None
+
+
+@pytest.mark.parametrize('calendar', [None, 'unverified'])
+def test_unknown_daily_profile_preserves_observed_gap_without_certifying_alignment(calendar):
+    profile = build_calculation_frequency_context([
+        {'as_of_date': date(2026, 10, 1), 'value': 1}, {'as_of_date': date(2026, 10, 3), 'value': 1.01},
+    ], expected_frequency='daily', market_calendar=calendar)['profile']
+    assert profile['largest_gap_days'] == 2
+    assert profile['gap_detection_basis'] == 'schedule_unverified'
+    assert profile['gap_status'] == 'unverified'
+    assert profile['gap_count'] is None
+    assert 'unverified' in profile['status_label']

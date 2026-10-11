@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import plistlib
+import sqlite3
 import sys
 from types import SimpleNamespace
 
@@ -101,6 +102,7 @@ def test_download_preserves_complete_snapshot_and_excludes_runtime_credentials(t
     assert '/tmp/' not in setup and '/home/studio' not in setup
     command = next(command for kind, command in calls if kind == 'ssh' and 'sha256sum' in command)
     assert all("--exclude-table-data=identity." + table in command for table in sync.PRIVATE_CREDENTIAL_TABLES)
+    assert '--exclude-table-data=watchlist.research_execution' in command
     assert all('--schema=' + name in command for name in sync.SCHEMAS)
     assert '--exclude-table-data=portfolio.' not in command
     assert '--compress=0' in command and 'gzip -n --rsyncable -1' in command
@@ -113,6 +115,50 @@ def test_download_preserves_complete_snapshot_and_excludes_runtime_credentials(t
     assert '--no-whole-file' in transfer and '--stats' in transfer
     assert transfer[-2] == 'cloud:/srv/runtime/.local/state/investment-studio/cloud-sync/snapshot.aB12345678/cloud.pgdump.gz'
     assert any(kind == 'ssh' and 'rmdir --' in command for kind, command in calls)
+
+
+def test_copied_research_stops_without_replaying_or_changing_retained_evidence():
+    database = sqlite3.connect(':memory:')
+    for schema in ('portfolio', 'watchlist'):
+        database.execute(f"ATTACH DATABASE ':memory:' AS {schema}")
+    database.executescript('''
+        CREATE TABLE portfolio.portfolio_calculation_state (daily_snapshot_status TEXT,
+            refresh_request_id TEXT, refresh_started_at TEXT, refresh_completed_at TEXT, error_message TEXT);
+        CREATE TABLE portfolio.research_run_record (status TEXT, finished_at TEXT, error_message TEXT);
+        CREATE TABLE portfolio.transaction_capture_batch (analysis_run_status TEXT,
+            analysis_run_completed_at TEXT, analysis_run_error TEXT);
+        CREATE TABLE watchlist.recalc_job (job_status TEXT, started_at TEXT, heartbeat_at TEXT, lease_token TEXT);
+        CREATE TABLE watchlist.research_entry (entry_id TEXT, kind TEXT, status TEXT,
+            completed_at TEXT, body TEXT, context_json TEXT);
+        CREATE TABLE watchlist.research_execution (run_id TEXT, status TEXT,
+            delegation_token TEXT, owner_id TEXT, heartbeat_at TEXT, lease_expires_at TEXT);
+    ''')
+    evidence = json.dumps({'execution': {'attempt': 1}, 'submitted_draft': {'original': 'retained'},
+                           'web_evidence': [{'review': {'checkpoint': 'bound'}}]})
+    for status in ('queued', 'running', 'completed', 'draft', 'failed'):
+        database.execute('INSERT INTO watchlist.research_entry VALUES (?, ?, ?, ?, ?, ?)',
+                         (status, 'analysis', status, None, 'original response', evidence))
+    # A staged export made before the exclusion was added must be safe too.
+    database.execute('INSERT INTO watchlist.research_execution VALUES (?, ?, ?, ?, ?, ?)',
+                     ('running', 'running', 'cloud-only-grant', 'cloud-worker', 'old', 'future'))
+
+    class Connection:
+        def execute(self, query, parameters=()):
+            return database.execute(query.replace('%s', '?'), parameters)
+
+    sync.reset_copied_jobs(Connection())
+    rows = {row[0]: row[1:] for row in database.execute(
+        'SELECT entry_id,status,completed_at,body,context_json FROM watchlist.research_entry')}
+    for status in ('queued', 'running'):
+        assert rows[status][0] == 'failed'
+        assert rows[status][1] is not None
+        assert '云端快照' in rows[status][2]
+    for status in ('completed', 'draft', 'failed'):
+        assert rows[status][:3] == (status, None, 'original response')
+    assert all(row[3] == evidence for row in rows.values())
+    assert database.execute('SELECT status,delegation_token,owner_id,heartbeat_at,lease_expires_at '
+                            'FROM watchlist.research_execution').fetchall() == [('finished', None, None, None, None)]
+    database.close()
 
 
 @pytest.mark.parametrize('existing_stage', [False, True])

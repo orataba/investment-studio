@@ -134,6 +134,36 @@ it.each(['新对话', '历史对话'])('clears a selected research version when 
   })))
 })
 
+it('keeps a large original out of the DOM while allowing every section and a complete download', async () => {
+  const sourceId = 'comparison:large'
+  const result = { original: 'x'.repeat(4_000_000), final_observation: 'LAST_ORIGINAL_VALUE' }
+  entries = [{ ...answer, context_json: { tool_evidence: [{ source_id: sourceId, tool: 'comparison', result }] } }]
+  const createObjectURL = vi.fn((_blob: Blob) => 'blob:complete-evidence')
+  const revokeObjectURL = vi.fn()
+  vi.stubGlobal('URL', class extends URL { static createObjectURL = createObjectURL; static revokeObjectURL = revokeObjectURL })
+  const download = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+  render(<MemoryRouter initialEntries={['/watchlists/3?topic=chat-1']}><ResearchPage watchlistId="3" /></MemoryRouter>)
+  const snapshot = await screen.findByText('当时证据快照')
+  fireEvent.click(snapshot)
+  const pre = document.querySelector('.research-evidence-json')!
+  expect(pre.textContent!.length).toBeLessThanOrEqual(24_000)
+  expect(screen.queryByText(/LAST_ORIGINAL_VALUE/)).toBeNull()
+  const next = screen.getByRole('button', { name: '下一段' }) as HTMLButtonElement
+  while (!next.disabled) fireEvent.click(next)
+  expect(pre.textContent).toContain('LAST_ORIGINAL_VALUE')
+  expect(pre.textContent!.length).toBeLessThanOrEqual(24_000)
+  fireEvent.click(screen.getByRole('button', { name: '上一段' }))
+  expect(pre.textContent).not.toContain('LAST_ORIGINAL_VALUE')
+  fireEvent.click(screen.getByRole('button', { name: '下载完整证据' }))
+  const blob = createObjectURL.mock.calls[0][0] as Blob
+  const downloaded = await new Promise<string>((resolve) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.readAsText(blob) })
+  expect(JSON.parse(downloaded)).toEqual({ result })
+  expect(download).toHaveBeenCalledOnce()
+  expect(mocks.read.mock.calls.some(([path]) => String(path).includes('/evidence?'))).toBe(false)
+  download.mockRestore()
+  vi.unstubAllGlobals()
+})
+
 it.each([
   { event_case_id: 'event-1', event_version_id: 'event-1:2' },
   { risk_case_id: 'drawdown-1', risk_case_updated_at: '2026-09-12T08:00:00Z' },
@@ -419,26 +449,48 @@ it.each(['portfolio=p-1', 'instruments=fund-a'])('localizes all assistant entry 
   expect(mocks.write).not.toHaveBeenCalled()
 })
 
-it('renders retained evidence receipts and links factual paragraphs to the original snapshot', async () => {
-  entries = [{ ...answer, body: '当时持仓为空。[portfolio:receipt] 原有研究。[instrument:receipt]', context_json: {
-    portfolio_id: 'qa-portfolio', cutoff: '2026-09-05T00:00:00Z',
-    tool_evidence: [
-      { source_id: 'portfolio:receipt', tool: 'portfolio', retrieved_at: '2026-09-05T00:01:00Z', result: { portfolio_id: 'qa-portfolio', as_of_date: '2026-09-04', holdings: [] } },
-      { source_id: 'instrument:receipt', tool: 'instruments', retrieved_at: '2026-09-05T00:02:00Z', result_storage: 'instrument_inputs', request: { instrument_ids: ['fund-a'] }, source_ids: ['retained-a'] },
-      { source_id: 'dossier:receipt', tool: 'dossier', retrieved_at: '2026-09-05T00:03:00Z', result_storage: 'research_dossiers', request: { instrument_ids: ['fund-a'], source_id: 'requested-source' }, source_ids: ['requested-source'] },
-    ], instrument_inputs: [{ instrument_id: 'fund-a', snapshot_label: 'original evidence' }],
-    research_dossiers: [{ instrument_id: 'fund-a', materials: [{ source_id: 'requested-source', body: 'Actually requested original' }, { source_id: 'unread-source', body: 'Unread material must not masquerade as reviewed evidence' }] }],
+it('loads exact retained evidence only when its snapshot is opened and preserves citation links', async () => {
+  const results = {
+    'portfolio:receipt': { portfolio_id: 'qa-portfolio', as_of_date: '2026-09-04', holdings: [] },
+    'instrument:receipt': { retained_snapshot: [{ instrument_id: 'fund-a', snapshot_label: 'original evidence' }] },
+    'dossier:receipt': { retained_source: { source_id: 'requested-source', body: 'Actually requested original' } },
+    'comparison:receipt': { retained_snapshot: [{ data: { conclusion: 'Retained comparison result' } }] },
+    'computed:python': { retained_snapshot: [{ data: { analysis_kind: 'python_quant', metrics: { return_pct: 7.7449 } }, methodology: { code: 'result = actual_retained_inputs()' } }] },
+  }
+  const receipts = Object.keys(results).map((source_id) => ({ source_id, tool: source_id === 'computed:python' ? 'quant' : source_id.split(':')[0], retrieved_at: '2026-09-05T00:01:00Z' }))
+  entries = [{ ...answer, body: '当时持仓为空。[portfolio:receipt] 原有研究。[instrument:receipt] 已执行计算。[computed:python]', context_json: {
+    portfolio_id: 'qa-portfolio', cutoff: '2026-09-05T00:00:00Z', tool_evidence: receipts,
   } }]
+  const defaultRead = mocks.read.getMockImplementation()!
+  mocks.read.mockImplementation(async (path: string) => {
+    if (path.includes('/evidence?')) {
+      const sourceId = new URL(path, 'http://test').searchParams.get('source_id') as keyof typeof results
+      return { ...receipts.find(item => item.source_id === sourceId), result: results[sourceId] }
+    }
+    return defaultRead(path)
+  })
   render(<MemoryRouter initialEntries={['/watchlists/3?topic=chat-1']}><ResearchPage watchlistId="3" /></MemoryRouter>)
   const link = await screen.findByRole('link', { name: 'instrument:receipt' })
   fireEvent.click(link)
   expect(document.getElementById('assistant-evidence-reply-1-instrument:receipt')?.closest('details')?.open).toBe(true)
-  expect(screen.getByText(/original evidence/)).toBeTruthy()
+  expect(mocks.read.mock.calls.some(([path]) => String(path).includes('/evidence?'))).toBe(false)
+  expect(screen.queryByText(/original evidence/)).toBeNull()
+  expect(screen.getByRole('link', { name: 'computed:python' }).getAttribute('href')).toBe('#assistant-evidence-reply-1-computed:python')
+  expect(screen.getByText('Python 量化计算')).toBeTruthy()
+  for (const id of Object.keys(results)) {
+    fireEvent.click(within(document.getElementById(`assistant-evidence-reply-1-${id}`)!).getByText('当时证据快照'))
+  }
+  expect(await screen.findByText(/original evidence/)).toBeTruthy()
+  expect(await screen.findByText(/Actually requested original/)).toBeTruthy()
+  expect(await screen.findByText(/Retained comparison result/)).toBeTruthy()
+  expect(await screen.findByText(/actual_retained_inputs/)).toBeTruthy()
   expect(screen.getByText('估值日期').parentElement?.textContent).toContain('2026-09-04')
-  expect(screen.getAllByText('获取时间', { selector: 'span' })).toHaveLength(3)
-  expect(screen.getByText(/Actually requested original/)).toBeTruthy()
+  expect(screen.getAllByText('获取时间', { selector: 'span' })).toHaveLength(5)
   expect(screen.queryByText(/Unread material must not masquerade/)).toBeNull()
-  expect(mocks.read.mock.calls.filter(([path]) => String(path).includes('holdings'))).toHaveLength(0)
+  const summary = within(document.getElementById('assistant-evidence-reply-1-comparison:receipt')!).getByText('当时证据快照')
+  fireEvent.click(summary)
+  fireEvent.click(summary)
+  await waitFor(() => expect(mocks.read.mock.calls.filter(([path]) => String(path).includes('/evidence?'))).toHaveLength(5))
 })
 
 it.each([

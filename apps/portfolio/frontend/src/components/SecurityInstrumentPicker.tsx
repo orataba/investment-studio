@@ -22,6 +22,20 @@ export function instrumentSearchLabel(instrument: SecuritySearchOption) {
   return `${primaryIdentifier(instrument)} · ${instrument.instrument_name}`
 }
 
+export function registeredSecurityCatalogIdentity(instrument: SharedInstrumentRecord) {
+  const provider = instrument.source_settings?.source_api_profile === 'futu' ? 'futu' : 'fmp'
+  const prefix = `${provider}:`
+  const symbol = instrument.identifiers.find(identifier =>
+    identifier.identifier_type === 'provider_symbol' && identifier.identifier_value.startsWith(prefix),
+  )?.identifier_value.slice(prefix.length)
+  return symbol ? { catalog_provider: provider, catalog_symbol: symbol } as const : null
+}
+
+export function securitySourceLabel(instrument: SharedInstrumentRecord, chinese: boolean) {
+  const source = instrument.source_settings?.source_api_profile || registeredSecurityCatalogIdentity(instrument)?.catalog_provider
+  return source === 'futu' ? (chinese ? '富途' : 'Futu') : source === 'fmp' ? 'FMP' : ''
+}
+
 export default function SecurityInstrumentPicker({
   label,
   value,
@@ -80,7 +94,7 @@ export default function SecurityInstrumentPicker({
     type Result = { key: string; symbol: string; name: string; detail: string; instrument: SharedInstrumentRecord | null; catalog: SecurityCatalogResult | null }
     const options = new Map<string, Result>(matches.map(instrument => [instrument.instrument_id, {
       key: instrument.instrument_id, symbol: primaryIdentifier(instrument), name: instrument.instrument_name,
-      detail: instrument.currency, instrument, catalog: null,
+      detail: [instrument.currency, securitySourceLabel(instrument, language === 'zh-Hans')].filter(Boolean).join(' · '), instrument, catalog: null,
     }]))
     for (const candidate of catalog.results) {
       const existing = instruments.find(instrument => instrument.instrument_id === candidate.existing_instrument_id)
@@ -90,7 +104,8 @@ export default function SecurityInstrumentPicker({
         key,
         symbol: existing ? primaryIdentifier(existing) : candidate.symbol,
         name: existing?.instrument_name ?? candidate.name,
-        detail: existing?.currency ?? `${candidate.exchange_label} · ${candidate.currency}${candidate.currency_verified ? '' : text(' (Currency to be verified)', '（币种待核实）')}`,
+        detail: existing ? [existing.currency, securitySourceLabel(existing, language === 'zh-Hans')].filter(Boolean).join(' · ')
+          : `${candidate.exchange_label} · ${candidate.currency}${candidate.currency_verified ? '' : text(' (Currency to be verified)', '（币种待核实）')} · ${candidate.catalog_provider === 'futu' ? text('Futu', '富途') : 'FMP'}`,
         instrument: existing ?? null, catalog: existing ? null : candidate,
       })
     }
@@ -104,10 +119,8 @@ export default function SecurityInstrumentPicker({
     if (preparingRef.current) return
     setSelectionError(null)
     const registered = result.instrument
-    const providerSymbol = registered?.identifiers.find(identifier =>
-      identifier.identifier_type === 'provider_symbol' && identifier.identifier_value.startsWith('fmp:'),
-    )?.identifier_value.slice(4)
-    const needsPrices = portfolioId && onInstrumentRegistered && registered && providerSymbol &&
+    const catalogIdentity = registered ? registeredSecurityCatalogIdentity(registered) : null
+    const needsPrices = portfolioId && onInstrumentRegistered && registered && catalogIdentity &&
       ['equity', 'etf'].includes(registered.instrument_type) &&
       !registered.latest_market_data.some(point => point.metric_family === 'price' &&
         ['last', 'close'].includes(point.quote_basis) && point.status === 'complete')
@@ -118,7 +131,7 @@ export default function SecurityInstrumentPicker({
     }
     const request = result.catalog ?? (needsPrices ? {
       instrument_type: registered.instrument_type as 'equity' | 'etf',
-      catalog_provider: 'fmp' as const, catalog_symbol: providerSymbol,
+      ...catalogIdentity,
     } : null)
     if (!request || !portfolioId || !onInstrumentRegistered) return
     const selectionGeneration = generation.current

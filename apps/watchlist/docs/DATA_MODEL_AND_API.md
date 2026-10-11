@@ -178,6 +178,8 @@ Watchlist 只直接维护自己的持仓快照。历史 `nav_fact` 只保留为�
 - summary / chart / performance / risk / exposure read models；人工 rating 保存在 research profile，不是计算 read model
 - instrument summary payload
 
+`GET /api/instruments/{instrument_id}/tail-risk` 使用既有 canonical chart 的普通收益区间即时派生历史 VaR／ES；置信度 0.95／0.99，回看 365／1095／1825 天。返回真实样本、披露应到日期、历史缺口及不可用原因，不增加风险快照表、不从显示复权价格重复推导。经济与样本契约见 [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)。
+
 Performance snapshot 的 `return_1w / return_1m / return_3m / return_6m / return_mtd / return_ytd / return_1y` 必须完整投影到 `watchlist_row_read_model`、field registry、筛选/排序和导出。新增窗口时不能只改计算 snapshot 而遗漏 migration、repository 或 serializer。窗口边界及 return semantics 见 [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)。
 
 每个 `watchlist_row_read_model.last_nav_date` 是该 instrument 的 metric as-of，不是名单共用日期。Screener 即使未选日期列也必须在每行返回 `metric_as_of_date`，并在 `snapshot_metadata` 返回行终点的 min/max、是否混合及缺失数量。Peer snapshot 只比较相同 as-of；路径风险还必须记录 Instrument Data frequency/calendar 缺点状态。
@@ -207,7 +209,7 @@ Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会
 
 ### 4.7 Watchlist 投资研究 V1
 
-V1 复用既有 `research_entry`、主题、来源与 `risk_case` JSON；不新增研究平台、事件表或平行总结。页面按机会与风险、重要进展、重点主题、量化观察阅读；基础档案、研究指导、PM 观点及历史保留在辅助入口。数值来源的 `observation_domain=market|fundamental|unclassified` 区分市场观察与经营财务分析；浏览器量化区只显示市场观察，新提交的 `market-quantitative.figure_source_ids` 必须符合该用途。原始历史来源与其版本保持完整，不根据标题猜测分类。
+研究与事件事实继续使用 `research_entry`、主题、来源与 `risk_case`。执行队列由 `research_execution` 保存，风控交付状态由 `research_risk_read_state` 按运行与 attempt 保存，新增计算原件由 `research_run_evidence` 按运行与来源保存；历史原件不改写，当前判断没有平行副本。页面按机会与风险、重要进展、重点主题、量化观察阅读；基础档案、研究指导、PM 观点及历史保留在辅助入口。数值来源的 `observation_domain=market|fundamental|unclassified` 区分市场观察与经营财务分析；浏览器量化区只显示市场观察，新提交的 `market-quantitative.figure_source_ids` 必须符合该用途。原始历史来源与其版本保持完整，不根据标题猜测分类。
 
 - 当前投资判断的同一版本增加 `opportunities`、`risks` 数组，每项包含稳定 `key`、标题、解释、下一观察，以及 `source_ids` / `event_keys` / `theme_ids` 引用；数值依据用 `figure_source_ids`。发布时绑定实际留存证据，历史按原版本读取。数组缺省继续保留旧判断，明确空数组才表示本轮已评估且暂无对应事项。旧记录没有数组时显示覆盖未建立，不推断“没有风险”。`coverage_status` 为 `assessed` / `limited` / `not_established`；`coverage_note` 说明限制。
 - 新重要事件须有整数 `importance_score`（1–5）和具体 `importance_reason`；旧值允许未知。评分不等于确定性、方向或风险严重度。`market_views` 保存有发布者、日期和来源的公开观点；没有样本时不生成共识。`market_reaction` 仅解释绑定的确定性计算及其限制，不写自由浮点行情。
@@ -215,7 +217,7 @@ V1 复用既有 `research_entry`、主题、来源与 `risk_case` JSON；不新�
 - 共享风险变更在既有 `risk_case.history_json` 中追加 `run_id`、发起人 `actor`、绑定 `scope`、`before` / `after` 与 UTC 时间，同一条变更同时保留在风险结果 `case_changes`。只记录实际改变的事项，不回填历史未知归属；现有版本比较和行锁继续阻止并发覆盖。
 - 风险判断独立保存在 `risk_case.evidence_json.risk_assessment`。新风险线索先待复核；团队风控通过绑定事件版本的 `case_assessments` 写入 `pending` / `active` / `resolved` / `dismissed` 及原因。仅停止跟进、主题接管或调整研究方向不能清除既有有效风险；组合私有复核不得修改团队风险状态。Watchlist 和 Portfolio 读取同一风险事项。
 - 研究与团队风控在发布时重新校验当前团队角色／服务研究权限，组合风控重新校验组合访问。PM 跟进与自动风险刷新在行锁下读取最新事项并追加历史；批量风险评估按事项标识排序加锁。首次自动风险创建和阈值更新按标的串行，避免并发创建重复事项或丢失 PM 记录。
-- 风控的暂时失败沿既有 `queue_retry` 恢复同一运行与原发起人，最多三次总尝试；绑定快照、信息截止和已读取页不在恢复中替换。已失去发布权限的发起人不能重排共享研究或风险任务。
+- 风控的暂时失败沿既有 `queue_retry` 恢复同一运行与原发起人，最多三次总尝试；绑定快照和信息截止不在恢复中替换。没有已受理检查点的新尝试清空旧会话已读覆盖并重新阅读；已受理、尚未发布时只恢复原检查点发布，不再次调用模型。已失去发布权限的发起人不能重排共享研究或风险任务。
 - 风控工具保留 48KB 返回上限；单条当前或历史记录过大时，返回同一分区原页的 `deferred` 目录，以 `page_offset` 绑定原页、`path` 定位字段、`offset` 续读该字段。原文、来源与 PM 判断不截断；全部 `next_offset` 和 `deferred.path` 分支实际交付后才通过必读检查，目录本身不能充当已读证据，未完成时返回精确 `missing_reads`。
 - 公开来源统一由 `/research/runs/{run_id}/sector-evidence` 留存；旧 `/tools` 的 `search` / `source` 与任意 `public_result` 写入口已删除。历史 `tool_evidence` 仍可读取，搜索目录不能当作原文证据。PM 讨论引用同时携带 `pm_note_id` 和 `pm_note_revision`，服务器按原版本绑定，失效引用在入队前返回 422。
 
@@ -227,11 +229,11 @@ V1 复用既有 `research_entry`、主题、来源与 `risk_case` JSON；不新�
 | `PATCH /api/sector-research/events/{case_id}/follow-up` | PM 固定／取消固定；须携带 `follow_up_pinned` 和当前 `event_version_id`，拒绝过期版本和只读身份。 |
 | `GET /api/research/instruments/{instrument_id}/themes` | `include_history=false` 返回主题概要投影，不读取完整历史和原文；单个 `themes/{theme_id}` 在展开时读取完整详情。 |
 | 既有 dossier 版本／来源入口 | 保留标的与版本权限；支持精确事件版本，不把当前原文代替历史证据。 |
-| `POST /api/research/runs/{run_id}/numeric` | 新增 `action=observations|event_reaction`，沿用绑定运行与 `computed_metrics` 留存。可传 `benchmark_id`；事件反应须有 `event_date`，`event_timing=date_only|before_open|after_close`，默认日期粒度。计算口径见 [Return Series Contract](./RETURN_SERIES_CONTRACT.md)。 |
+| `POST /api/research/runs/{run_id}/numeric` | 支持 `action=observations|event_reaction`；新增原件按绑定运行与 source_id 写入 `research_run_evidence`，原 `computed_metrics` 历史仍可读取。可传 `benchmark_id`；事件反应须有 `event_date`，`event_timing=date_only|before_open|after_close`，默认日期粒度。计算口径见 [Return Series Contract](./RETURN_SERIES_CONTRACT.md)。 |
 
 #### 启用与回滚边界
 
-本改动不增加数据库 schema 迁移。已有 watch 事件首次进入有权限的研究写路径时，幂等初始化自启用日开始的 30 天期限并追加管理审计；不按古老创建日立即关闭，不改变原事实日期、PM 观点和风险判断。只读页面不写初始化数据；新字段缺失统一兼容读取。
+当前发布须完成执行队列、风控交付状态和计算原件的数据库迁移；0068 仅创建原件表，不搬移或改写历史 JSON。已有 watch 事件首次进入有权限的研究写路径时，幂等初始化自启用日开始的 30 天期限并追加管理审计；不按古老创建日立即关闭，不改变原事实日期、PM 观点和风险判断。只读页面不写初始化数据；新字段缺失统一兼容读取。
 
 正式发布仍需按 [数据库工作流](../../../docs/DATABASE_WORKFLOW.md) 停写、备份并执行仓库发布检查。回滚前停止研究／风险调度与写入并备份新增历史。页面可回退，但后端须保留 V1 的风险独立状态、未知字段兼容读取及来源版本保护，或采用修复后前滚；不能直接让旧版“跟进结束即风险结束”的写路径重新处理 V1 数据。不得删除新历史、批量清空数组、恢复过期判断或将本地研究覆盖到云端。
 
@@ -362,7 +364,8 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 - 这组接口服务 `public_fund / private_fund / etf / equity / index / crypto` 的 Watchlist-local 分类，不把 taxonomy 写回共享 Instrument Data
 - 节点带 `instrument_type`，assignment 必须与资产类型一致；不同类型之间不能交叉赋值
 - 公募、私募、ETF 和指数 assignment 默认允许为空，正式分类由详情页人工 `PUT` 确认
-- 股票分类由 Instrument Data 的 canonical `exchange_code` 映射到市场/交易所节点，接口拒绝人工改写
+- 股票由 Instrument Data 的 canonical `exchange_code` 确定市场分支；用户可在该市场分支内选择行业叶子，不能跨市场赋值。默认的待分类叶子不构成同类组。
+- 原生加密资产的 `crypto-native` 为导航分类，不自动构成同类比较组，也不要求不适用的地域字段。
 - 派生字段统一为 `instrument_taxonomy_level_1..7 / instrument_taxonomy_leaf / instrument_taxonomy_path`
 
 ### 6.7 Screener

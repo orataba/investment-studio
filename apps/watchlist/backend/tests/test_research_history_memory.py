@@ -138,18 +138,21 @@ def test_risk_workspace_stops_after_the_latest_published_result(client, monkeypa
         engine.dispose()
 
 
-def test_startup_recovery_updates_status_without_loading_retained_inputs(client):
+def test_api_startup_preserves_status_without_loading_retained_inputs(client):
     seed_history(newest_status="running")
     def unexpected_load(*_):
         pytest.fail("Startup recovery must not decode retained input snapshots")
     event.listen(ResearchEntry, "load", unexpected_load)
     try:
-        research_runner.interrupt_incomplete_runs()
+        from fastapi.testclient import TestClient
+        from watchlist_app.main import app
+        with TestClient(app):
+            pass
     finally:
         event.remove(ResearchEntry, "load", unexpected_load)
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, "memory-current")
-        assert run.status == "failed" and run.completed_at is not None
+        assert run.status == "running"
         assert run.context_json["retained_input"] == "Original data " * 80000
         assert session.get(ResearchEntry, "memory-old").status == "completed"
 

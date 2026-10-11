@@ -8,10 +8,12 @@ from __future__ import annotations
 from collections import ChainMap
 from collections.abc import Mapping
 from datetime import date, timedelta
-from math import ceil, floor, isfinite
+from math import isfinite
+
+from investment_studio_instrument_core.risk_statistics import empirical_tail
 from urllib.parse import quote
 
-from portfolio_app.services.market_data import market_calendar_sessions, resolve_quote_series
+from portfolio_app.services.market_data import market_calendar_sessions, resolve_quote_series, validate_analytical_return_payload
 from portfolio_app.services.valuation_fx import HistoricalFxInstruments, fx_direct_instrument_map
 
 
@@ -31,40 +33,6 @@ def _date(value):
     return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
 
 
-def empirical_tail(losses: list[float], confidence: float) -> dict[str, object]:
-    """Inverse empirical CDF VaR and integrated upper-tail ES, including atoms.
-
-    Averaging `loss >= VaR` incorrectly changes the requested tail probability
-    for ties and finite samples. Fractional boundary mass preserves it exactly.
-    """
-    if not 0 < confidence < 1:
-        raise ValueError("Confidence must be strictly between zero and one.")
-    if any(_number(value) is None for value in losses):
-        raise ValueError("Historical losses must be finite numbers.")
-    ordered = sorted(float(value) for value in losses)
-    count = len(ordered)
-    mass = count * (1 - confidence)
-    if abs(mass - round(mass)) < 1e-10:
-        mass = float(round(mass))
-    result = {"observation_count": count, "tail_effective_observations": mass,
-              "tail_observation_count": ceil(mass),
-              "tail_max_observation_weight": min(1.0, 1 / mass) if mass else None,
-              "var": None, "expected_shortfall": None}
-    # Below one scenario of tail mass, empirical VaR/ES would both use only the
-    # maximum loss. Suppress that unresolved tail by product policy; the empirical
-    # quantile is mathematically defined. Larger samples do not imply adequacy.
-    if mass < 1:
-        return result
-    rank = ceil(confidence * count - 1e-10) - 1
-    descending = ordered[::-1]
-    whole = floor(mass)
-    tail_sum = sum(descending[:whole])
-    fraction = mass - whole
-    if fraction:
-        tail_sum += fraction * descending[whole]
-    return {**result, "var": ordered[max(rank, 0)], "expected_shortfall": tail_sum / mass}
-
-
 def _daily_periods(points, *, detail, start_date, end_date):
     """Keep observed one-session changes, never relabel weekly changes as daily."""
     settings = (detail or {}).get("source_settings") or {}
@@ -76,7 +44,9 @@ def _daily_periods(points, *, detail, start_date, end_date):
     calendar = str(settings.get("market_calendar") or (detail or {}).get("exchange_code") or "")
     sessions = market_calendar_sessions(calendar, start_date, end_date) if calendar else None
     session_pairs = set(zip(sessions, sessions[1:])) if sessions is not None else None
-    calendar_basis = f"market_calendar:{calendar}" if session_pairs is not None else "consecutive_calendar_dates_only"
+    calendar_basis = f"market_calendar:{calendar}" if session_pairs is not None else None
+    if session_pairs is None:
+        return {}, {"reason": "unverified_daily_calendar", "rejected_period_count": 0, "calendar_basis": None}, None
     periods, rejected, seen_ends = {}, 0, set()
     for point in points:
         if not isinstance(point, dict):
@@ -88,10 +58,13 @@ def _daily_periods(points, *, detail, start_date, end_date):
         if end > end_date or start < start_date or end <= start_date:
             continue
         value = _number(point.get("value"))
+        if value is None and point.get("status") == "unavailable":
+            rejected += 1
+            continue
         if start >= end or value is None or value < -1 or end in seen_ends:
             return {}, {"reason": "invalid_return_period", "rejected_period_count": len(points), "calendar_basis": calendar_basis}, session_pairs
         seen_ends.add(end)
-        one_day = (start, end) in session_pairs if session_pairs is not None else (end - start).days == 1
+        one_day = (start, end) in session_pairs
         if not one_day:
             rejected += 1
             continue
@@ -130,7 +103,7 @@ def _fx_rate_series(currency, base_currency, *, direct, details, as_of_date):
     # Both legs must prove the same daily horizon, including the exchange-code
     # calendar fallback used by _daily_periods. Equal source_settings alone does
     # not establish this: one leg may trade during the other's non-session days.
-    # Otherwise keep the existing explicitly unverified consecutive-date basis.
+    # Otherwise the source calendar stays unverified and the estimate is unavailable.
     def daily_basis(detail):
         settings = (detail or {}).get("source_settings") or {}
         return (
@@ -154,7 +127,10 @@ def _history_coverage(common, expected, *, start_date, end_date):
     trailing = sum(period[0] >= last for period in missing) if missing is not None and last else None
     internal = len(missing) - leading - trailing if leading is not None and trailing is not None else None
     status = "unavailable" if not common else "unverified" if expected is None else "partial" if missing else "complete"
+    gaps = sorted(period for period in (missing or ()) if first is None or period[1] > first)
     return {
+        "missing_intervals": [{"start_date": start.isoformat(), "end_date": end.isoformat()} for start, end in gaps],
+        "missing_return_dates": [end.isoformat() for _, end in gaps],
         "history_coverage_status": status,
         "expected_common_observation_count": len(expected) if expected is not None else None,
         "uncovered_observation_count": len(missing) if missing is not None else None,
@@ -182,6 +158,7 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
     direct = (direct_fx_instruments if direct_fx_instruments is not None
               else fx_direct_instrument_map(fx_payload or {}))
     rows, modeled, issues = [], [], []
+    scenario_calendars = []
     # All rows share the same dated scenario window and base currency. Resolve
     # each foreign currency's observed FX intervals once within this calculation.
     fx_periods_by_currency = {}
@@ -222,11 +199,20 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
             expected = None
             metadata = {"rejected_period_count": 0, "calendar_basis": None}
         else:
-            points = (holding.get("instrument_return_series_all") or {}).get("points") or []
+            payload = holding.get("instrument_return_series_all") or {}
+            try:
+                validate_analytical_return_payload(payload, core)
+            except ValueError:
+                row["reason"] = "unconfirmed_return_contract"
+                continue
+            row.update({key: payload.get(key) for key in ("quote_basis", "return_kind", "return_measure")})
+            row.update(currency=base_currency, source_currency=currency)
+            points = payload.get("points") or []
             local, metadata, expected = _daily_periods(points, detail=detail, start_date=start_date, end_date=as_of_date)
             row.update(metadata)
             if not local:
                 continue
+        required_calendars = [expected] if expected is not None else []
         if currency != base_currency:
             if currency not in fx_periods_by_currency:
                 rates, source_ids, fx_detail = _fx_rate_series(currency, base_currency, direct=direct, details=details, as_of_date=as_of_date)
@@ -234,16 +220,23 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
                 fx_points = [{"start_date": left, "date": right, "value": rates[right] / rates[left] - 1}
                              for left, right in zip(ordered, ordered[1:])]
                 fx_returns, fx_metadata, fx_expected = _daily_periods(fx_points, detail=fx_detail, start_date=start_date, end_date=as_of_date)
+                if not rates:
+                    fx_metadata["reason"] = "missing_aligned_fx_returns"
                 fx_periods_by_currency[currency] = (source_ids, fx_returns, fx_metadata, fx_expected)
             source_ids, fx_returns, fx_metadata, fx_expected = fx_periods_by_currency[currency]
             row["fx_instrument_ids"] = list(source_ids)
             row["fx_rejected_period_count"] = fx_metadata["rejected_period_count"]
             row["unmatched_fx_period_count"] = len(local.keys() - fx_returns.keys()) if local is not None else 0
             if not fx_returns:
-                row["reason"] = "missing_aligned_fx_returns"
+                row["reason"] = ("unverified_daily_calendar" if fx_metadata.get("reason") == "unverified_daily_calendar"
+                                 else "missing_aligned_fx_returns")
                 continue
+            if fx_expected is not None:
+                required_calendars.append(fx_expected)
             if local is None:
                 local = fx_returns
+                row.update(quote_basis="spot", return_kind="price_return", return_measure="simple",
+                           currency=base_currency, source_currency=currency)
                 expected = fx_expected
                 row.update(fx_metadata)
             else:
@@ -260,14 +253,40 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
                    first_scenario_start_date=min(period[0] for period in local).isoformat(),
                    last_scenario_end_date=max(period[1] for period in local).isoformat())
         modeled.append((row, local, expected))
+        scenario_calendars.extend(required_calendars)
 
     common = set.intersection(*(set(series) for _, series, _ in modeled)) if modeled else set()
     expected_common = (set.intersection(*(expected for _, _, expected in modeled))
                        if modeled and all(expected is not None for _, _, expected in modeled) else None)
     history = _history_coverage(common, expected_common, start_date=start_date, end_date=as_of_date)
     ordered_periods = sorted(common, key=lambda item: item[1])
-    losses = [-sum(row["market_value_base"] * series[period] for row, series, _ in modeled) for period in ordered_periods]
+    # This estimator uses observed exact intervals, unlike the covariance
+    # model's aligned wealth path. Proved holidays are not missing prices, but
+    # incompatible daily intervals cannot be deleted to manufacture a sample.
+    first_common = ordered_periods[0][0] if ordered_periods else None
+    incompatible = (set.union(*scenario_calendars) - set.intersection(*scenario_calendars)) if scenario_calendars else set()
+    incompatible = {period for period in incompatible if first_common is None or period[1] > first_common}
+    history["incompatible_intervals"] = [{"start_date": begin.isoformat(), "end_date": end.isoformat()}
+                                         for begin, end in sorted(incompatible)]
+    data_failures = {"unverified_daily_calendar", "invalid_return_period", "missing_aligned_fx_returns",
+                     "no_verified_daily_returns", "unconfirmed_return_contract"}
+    missing_history = (bool(history["missing_internal_observation_count"])
+                       or bool(history["uncovered_trailing_observation_count"]))
+    rejected_history = any(row["rejected_period_count"] or row["fx_rejected_period_count"] for row, _, _ in modeled)
+    calendar_unverified = any(row["reason"] == "unverified_daily_calendar" for row in rows)
+    blocked = (missing_history or rejected_history or bool(incompatible) or expected_common is None
+               or any(row["reason"] in data_failures for row in rows))
+    losses = ([-sum(row["market_value_base"] * series[period] for row, series, _ in modeled) for period in ordered_periods]
+              if not blocked else [])
     distribution = empirical_tail(losses, confidence)
+    if blocked:
+        distribution["observation_count"] = len(common)
+    if missing_history or rejected_history:
+        issues.append("missing_daily_return_intervals")
+    if calendar_unverified:
+        issues.append("requested_history_calendar_unverified")
+    if incompatible:
+        issues.append("incompatible_daily_scenario_intervals")
     excluded = [row for row in rows if row["status"] == "excluded"]
     modeled_gross = sum(abs(row["market_value_base"]) for row, _, _ in modeled)
     excluded_gross = (sum(abs(row["market_value_base"]) for row in excluded)
@@ -279,7 +298,7 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
         issues.append("no_modeled_market_exposure")
     elif not common:
         issues.append("no_common_daily_periods")
-    elif distribution["var"] is None:
+    elif distribution["var"] is None and not blocked:
         issues.append("less_than_one_tail_observation")
     if excluded:
         issues.append("partial_market_risk_coverage")
@@ -344,7 +363,7 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
         }],
         "interpretation": "Observed market shocks applied to current signed exposures; equal scenario probabilities; no square-root-of-time scaling. Positive values are losses. Negative VaR/ES remain signed gains, not clipped losses.",
         "precision_note": "Empirical tail mass is N × (1 − confidence), not independent evidence count. One observation has probability weight up to 1 / tail mass in the ES average, not a bound on its monetary contribution. Dependence, missing sessions and a changing regime limit precision; a numeric result is not a claim of adequate tail coverage.",
-        "scope_note": "FCN and Option daily fair values are not modeled. Excluded assets are not zero-risk assets. Percentages use full portfolio NAV, not renormalized modeled capital. Current holdings replay historical total-return and synchronized FX shocks; historical operational returns are not inputs.",
+        "scope_note": "FCN and Option daily fair values are not modeled. Excluded assets are not zero-risk assets. Percentages use full portfolio NAV, not renormalized modeled capital. Current holdings replay confirmed simple-return intervals and synchronized FX changes; historical operational returns are not inputs.",
     }
 
 

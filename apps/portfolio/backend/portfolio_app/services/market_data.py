@@ -9,13 +9,16 @@ from typing import Callable, Iterable
 
 import exchange_calendars
 from exchange_calendars.errors import CalendarError
+from studio_market.calendars import confirmed_market_closures
 
 from investment_studio_instrument_core import (
-    FUND_INSTRUMENT_TYPES,
-    FUND_TOTAL_RETURN_QUOTE_BASES,
     QUOTE_BASIS_METRIC_FAMILY,
     canonical_price_contract,
     confirmed_total_return_quote_bases,
+    resolve_quote_return_semantics,
+)
+from investment_studio_instrument_core.return_semantics import (
+    analytical_return_quote_bases as confirmed_analytical_quote_bases,
 )
 from portfolio_app.services.asset_deliveries import expand_asset_deliveries
 from portfolio_app.services.transaction_dates import transaction_position_effective_date
@@ -36,9 +39,14 @@ def market_calendar_sessions(
         if calendar_name == "XSHE":
             calendar_name = "XSHG"
         calendar = exchange_calendars.get_calendar(calendar_name)
+        if start_date < calendar.first_session.date() or end_date > calendar.last_session.date():
+            calendar = exchange_calendars.get_calendar(
+                calendar_name, start=start_date.isoformat(), end=end_date.isoformat(),
+            )
+        closures = confirmed_market_closures(calendar_name)
         return tuple(session.date() for session in calendar.sessions_in_range(
             start_date.isoformat(), end_date.isoformat(),
-        ))
+        ) if session.date() not in closures)
     except (CalendarError, ValueError):
         return None
 
@@ -256,24 +264,50 @@ def quote_policy_bases(
 
 
 def analytical_return_quote_bases(detail: dict[str, object]) -> list[str]:
-    """Return the ordered quote bases eligible for analytical return series.
-
-    A fund's unit NAV is a valuation fact, not a total-return substitute. Fund
-    analytics therefore consume only the canonical dividend-reinvested NAV and
-    remain unavailable when it is absent. Listed instruments retain their
-    explicit policy order, including adjusted close and raw-price fallbacks.
-    """
-
-    if _normalized_text(detail.get("instrument_type")) in FUND_INSTRUMENT_TYPES:
-        return [
-            quote_basis
-            for quote_basis in quote_policy_bases(detail, ("total_return", "chart"))
-            if quote_basis in FUND_TOTAL_RETURN_QUOTE_BASES
-        ]
-    return quote_policy_bases(
-        detail,
-        ("total_return", "chart", "valuation", "reference"),
+    """Keep economic return sources separate from raw valuation quotations."""
+    return confirmed_analytical_quote_bases(
+        instrument_type=detail.get("instrument_type"),
+        quote_bases=quote_policy_bases(detail, ("total_return", "chart", "valuation", "reference")),
+        source_settings=detail.get("source_settings") or {},
     )
+
+
+def analytical_return_metadata(
+    detail: dict[str, object], *, quote_basis: str | None, currency: str | None = None,
+) -> dict[str, object]:
+    """The same source contract accompanies native and translated intervals."""
+    settings = detail.get("source_settings") or {}
+    return {
+        "instrument_type": _normalized_text(detail.get("instrument_type")),
+        "quote_basis": quote_basis,
+        "return_kind": resolve_quote_return_semantics(
+            instrument_type=detail.get("instrument_type"), quote_basis=quote_basis,
+            source_settings=detail.get("source_settings") or {},
+        ),
+        "return_measure": "simple",
+        "currency": _normalized_currency(currency or detail.get("currency")),
+        **{key: settings[key] for key in ("total_return_segments", "total_return_unavailable_intervals")
+           if key in settings},
+    }
+
+
+def validate_analytical_return_payload(payload: dict[str, object], instrument: dict[str, object]) -> None:
+    """Reject stale/ambiguous metadata before a model interprets numeric values."""
+    kind = payload.get("return_kind")
+    basis = payload.get("quote_basis")
+    currency = _normalized_currency(payload.get("currency"))
+    if (payload.get("return_measure") != "simple" or kind not in {"total_return", "price_return"}
+            or not currency or currency != _normalized_currency(instrument.get("currency"))):
+        raise ValueError("return series requires explicit simple returns in the instrument currency")
+    eligible = confirmed_analytical_quote_bases(
+        instrument_type=instrument.get("instrument_type"), quote_bases=[basis],
+        source_settings={"return_semantics": kind},
+    )
+    if (basis not in eligible or resolve_quote_return_semantics(
+        instrument_type=instrument.get("instrument_type"), quote_basis=basis,
+        source_settings={"return_semantics": kind},
+    ) != kind):
+        raise ValueError("return series quote basis is not an eligible analytical source")
 
 
 def benchmark_total_return_quote_bases(detail: dict[str, object]) -> list[str]:

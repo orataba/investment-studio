@@ -74,6 +74,7 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-incremental-source-prefix-v1"
     "-observed-session-risk-short-expense-transfer-fx-netting-v1"
     "-holding-quote-change-provenance-v1"
+    "-explicit-return-source-and-segment-contract-v1"
 )
 
 

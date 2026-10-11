@@ -254,6 +254,10 @@ def test_api_preserves_source_versions_and_rejects_late_draft(factory, snapshot)
     assert client.post(f"/api/briefing/reports/{report_id}/draft", params={"mode": "review"}, json=draft()).status_code == 409
     detail = client.get(f"/api/briefing/reports/{report_id}").json()
     assert detail["market_rows"][0]["end_date"] == "2026-09-04"
+    assert any(isinstance(row, dict) and row.get("status") == "historical_price_window_unverified" for row in detail["coverage"]["numeric"])
+    with factory() as session:
+        assert not any(isinstance(row, dict) and row.get("status") == "historical_price_window_unverified"
+                       for row in session.get(Report, report_id).input_json.get("numeric_coverage", []))
     assert detail["report"]["sections"][0]["title"] == "重点信息"
     assert detail["report"]["sections"][0]["groups"][0]["items"][0]["tags"] == ["利率", "就业"]
 

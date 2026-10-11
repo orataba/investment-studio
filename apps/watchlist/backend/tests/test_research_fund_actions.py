@@ -82,7 +82,7 @@ def test_fund_action_cutoff_requires_explicit_timezone(monkeypatch):
 def test_assistant_instrument_source_includes_shared_actions(client, monkeypatch):
     from watchlist_app.services import research_runner
     monkeypatch.setattr(research_runner, "harness_available", lambda: True)
-    monkeypatch.setattr(research_runner, "run_analysis", lambda *args: None)
+    monkeypatch.setattr(research_runner, "run_analysis", lambda *args, **kwargs: None)
     data = record()
     data["instrument_id"] = "sxv264"
     for row in [*data["fund_nav_event_revisions"], *data["fund_nav_reinvestment_evidence_revisions"]]:

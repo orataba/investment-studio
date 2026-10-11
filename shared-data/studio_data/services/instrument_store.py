@@ -113,6 +113,7 @@ def create_instrument(
     exchange_code: str | None = None,
     quote_selection_policy: dict[str, object] | None = None,
     broker_identifiers: list[dict[str, object]] | None = None,
+    source_settings: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return shared_store.create_instrument(
         get_session_factory(),
@@ -123,6 +124,7 @@ def create_instrument(
         identifiers=identifiers,
         quote_selection_policy=quote_selection_policy,
         broker_identifiers=broker_identifiers,
+        **({"source_settings": source_settings} if source_settings is not None else {}),
     )
 
 
@@ -247,7 +249,9 @@ def upsert_source_settings(
     release_lag_days: int | None = None,
     return_semantics: str | None = None,
     source_provider_currency: str | None = None,
+    source_provider_security_id: str | None = None,
     source_price_multiplier: object = _SOURCE_SETTING_UNSET,
+    history_start_date: date | None = None,
 ) -> dict[str, object] | None:
     optional_semantics: dict[str, object] = {}
     if expected_frequency is not None:
@@ -260,8 +264,12 @@ def upsert_source_settings(
         optional_semantics["return_semantics"] = return_semantics
     if source_provider_currency is not None:
         optional_semantics["source_provider_currency"] = source_provider_currency
+    if source_provider_security_id is not None:
+        optional_semantics["source_provider_security_id"] = source_provider_security_id
     if source_price_multiplier is not _SOURCE_SETTING_UNSET:
         optional_semantics["source_price_multiplier"] = source_price_multiplier
+    if history_start_date is not None:
+        optional_semantics["history_start_date"] = history_start_date
     return shared_store.upsert_source_settings(
         get_session_factory(),
         instrument_id=instrument_id,

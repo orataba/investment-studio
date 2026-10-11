@@ -22,6 +22,13 @@ spec.loader.exec_module(schedule)
     ("hk", "2026-07-22T16:30:00+08:00", True),
     ("hk", "2026-07-22T16:00:00+08:00", False),
     ("hk", "2026-07-22T17:00:00+08:00", False),
+    ("hk", "2026-07-22T23:30:00+08:00", True),
+    ("hk", "2026-07-22T23:29:59+08:00", False),
+    ("hk", "2026-07-23T00:00:00+08:00", False),
+    ("hk", "2026-02-16T23:30:00+08:00", True),  # Half-day reconciliation
+    ("hk", "2026-02-17T23:30:00+08:00", False), # No holiday collection
+    ("hk", "2026-10-10T23:30:00+08:00", False), # No weekend collection
+    ("us", "2026-07-22T23:30:00-04:00", False),
     ("us", "2026-11-26T16:30:00-05:00", False),  # Thanksgiving
     ("hk", "2026-02-17T16:30:00+08:00", False),  # Lunar New Year
 ])

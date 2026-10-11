@@ -14,7 +14,7 @@ from watchlist_app import research_mcp as mcp
 from watchlist_app.api.routes import sector_research, workbench
 from watchlist_app.db.models import InstrumentChartReadModel
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
-from watchlist_app.services import research_access, research_metrics, research_run_context
+from watchlist_app.services import research_access, research_metrics, research_run_context, research_run_evidence
 from watchlist_app.services.research_workbench import compare_series
 
 
@@ -24,6 +24,7 @@ CUTOFF = datetime(2026, 9, 13, tzinfo=UTC)
 class RunSession:
     def __init__(self, run, charts=None):
         self.run, self.charts, self.commits = run, charts or {}, 0
+        self.originals = []
 
     def scalar(self, query):
         return self.run
@@ -44,7 +45,7 @@ class RunSession:
 
 def run_context():
     return SimpleNamespace(entry_id="run-one", topic_id="topic", kind="analysis", team_id="default", status="running",
-        context_json={"research_run": True, "cutoff": CUTOFF.isoformat(),
+        context_json={"research_run": True, "cutoff": CUTOFF.isoformat(), "execution": {"attempt": 1},
             "research_actor": {"kind": "user", "user_id": "pm-one"},
             "catalogue": [{"instrument_id": value} for value in ("ONE", "TWO")]})
 
@@ -53,7 +54,7 @@ def run_context():
 def in_memory_run_projection(monkeypatch):
     # These wire tests use an in-memory run. SQL projection and its access
     # boundary are exercised separately against real PostgreSQL.
-    def load_fields(session, run_id, fields):
+    def load_fields(session, run_id, fields, **kwargs):
         run = session.get(ResearchEntry, run_id)
         if run is None or run.kind != "analysis":
             raise HTTPException(404, "研究运行不存在")
@@ -61,8 +62,33 @@ def in_memory_run_projection(monkeypatch):
         return SimpleNamespace(**{key: getattr(run, key) for key in (
             "entry_id", "topic_id", "team_id", "kind", "status")},
             context_json={key: deepcopy(run.context_json[key])
-                          for key in set(fields) | {"research_actor"} if key in run.context_json})
+                          for key in set(fields) | {"research_actor", "execution"} if key in run.context_json})
     monkeypatch.setattr(research_run_context, "load_run_fields", load_fields)
+    def load_item(session, run_id, field, source_id):
+        run = session.get(ResearchEntry, run_id)
+        research_access.require_entry_access(session, run)
+        return next((deepcopy(row) for row in run.context_json.get(field, []) if row.get("source_id") == source_id), None)
+    monkeypatch.setattr(research_run_context, "load_run_list_item", load_item)
+    def locked(session, run_id):
+        run = load_fields(session, run_id, {"cutoff", "instrument_ids", "research_run", "risk_run"})
+        research_access.require_entry_access(session, run, tool_write=True)
+        if run.status not in {"queued", "running"}:
+            raise HTTPException(409, "本轮研究已经结束")
+        return run
+    def retain(session, run, source):
+        research_access.require_entry_access(session, run, tool_write=True)
+        value = {**deepcopy(source), "source_run_id": run.entry_id,
+            "retained_reference": {"run_id": run.entry_id, "path": ["computed_metrics", "*"]}}
+        session.originals.append(value)
+        return value
+    def original(session, run_id, source_id):
+        return next((deepcopy(row) for row in session.originals if row["source_id"] == source_id), None) or load_item(session, run_id, "computed_metrics", source_id)
+    monkeypatch.setattr(research_run_evidence, "locked_computation_run", locked)
+    monkeypatch.setattr(research_run_evidence, "retain_computed_source", retain)
+    monkeypatch.setattr(research_run_evidence, "read_computed_source", original)
+    with principal_context(Principal("pm-one", "PM", "default",
+            resource_scope={"kind": "run", "id": "run-one", "attempt": "1"})):
+        yield
 
 
 def fixture_rows(counts):
@@ -118,6 +144,8 @@ def test_numeric_samples_page_the_original_single_calculation(monkeypatch, count
     def request(suffix, payload=None):
         if suffix == "numeric":
             return sector_research.numeric_research(run.entry_id, sector_research.NumericResearchInput(**payload), session)
+        if suffix == "computed-read":
+            return workbench.read_computed_page(run.entry_id, workbench.ComputedReadInput(**payload), session)
         query = parse_qs(urlsplit(suffix).query)
         assert urlsplit(suffix).path == "computed-source" and payload is None
         return workbench.run_computed_source(run.entry_id, query["source_id"][0], session)
@@ -125,7 +153,7 @@ def test_numeric_samples_page_the_original_single_calculation(monkeypatch, count
     overview = wire("read_research_numbers", {"action": "series", "dataset": "market_series_daily",
         "series_ids": ["ONE", "TWO"], "start": min(row["date"] for row in rows), "end": "2026-09-10"})
     source_id = overview["source_id"]
-    retained = deepcopy(run.context_json["computed_metrics"][0])
+    retained = deepcopy(session.originals[0])
     assert [item["observations"] for item in overview["data"]["series"]] == list(counts)
     assert overview["data"]["series"][0]["first"]["value"] == 100
     read = overview["data"]["series"][0]["points"]["read"]
@@ -136,36 +164,46 @@ def test_numeric_samples_page_the_original_single_calculation(monkeypatch, count
     assert complete("read_research_numbers", source_id, "data") == retained["data"]
     assert complete("read_research_numbers", source_id, "sources") == retained["sources"]
     assert complete("read_research_numbers", source_id, "evidence") == retained
-    assert len(calls) == session.commits == len(run.context_json["computed_metrics"]) == 1
-    assert run.context_json["computed_metrics"][0] == retained
+    assert len(calls) == session.commits == len(session.originals) == 1
+    assert session.originals[0] == retained
+    assert "computed_metrics" not in run.context_json
 
 
 @pytest.mark.parametrize("counts", [(365, 312), (5000, 5000)])
 def test_comparison_dates_and_inputs_page_without_recomputing(monkeypatch, counts):
+    from investment_studio_instrument_core import build_return_intervals
     rows = fixture_rows(counts)
     series = {symbol: {"currency": "USD", "metadata": {"return_series_status": "ready", "return_kind": "price_return", "quote_basis": "close"},
         "points": [{"date": row["date"], "value": row["close"]} for row in rows if row["symbol"] == symbol]} for symbol in ("ONE", "TWO")}
+    for value in series.values():
+        value['frequency'] = {'resolved_frequency': 'daily', 'gap_detection_basis': 'market_calendar:24/7'}
+        value['observation_schedule'] = {'market_calendar': '24/7', 'expected_frequency': 'daily'}
+        value['intervals'] = build_return_intervals(value['points'])
     run = run_context()
     session = RunSession(run, {iid: SimpleNamespace(last_recalculated_at=CUTOFF,
         payload_json={"research_returns": value}) for iid, value in series.items()})
     monkeypatch.setattr(research_access, "topic_portfolio_ids", lambda *_: set())
     computations = []
-    def compare(*args):
+    def compare(*args, **kwargs):
         computations.append(True)
-        return compare_series(*args)
+        return compare_series(*args, **kwargs)
     monkeypatch.setattr(workbench, "compare_series", compare)
     def request(suffix, payload=None):
         if suffix == "tools":
             return workbench.research_tool(run.entry_id, workbench.ResearchToolInput(**payload), session)
-        assert urlsplit(suffix).path == "computed-source" and payload is None
-        return workbench.run_computed_source(run.entry_id, parse_qs(urlsplit(suffix).query)["source_id"][0], session)
+        assert suffix == "computed-read"
+        return workbench.read_computed_page(run.entry_id, workbench.ComputedReadInput(**payload), session)
     monkeypatch.setattr(mcp, "request", request)
-    actor = Principal("pm-one", "PM", "default", resource_scope={"kind": "run", "id": run.entry_id})
+    actor = Principal("pm-one", "PM", "default", resource_scope={"kind": "run", "id": run.entry_id, "attempt": "1"})
     with principal_context(actor):
-        overview = wire("compare_instruments", {"instrument_ids": list(series), "start_date": min(row["date"] for row in rows),
-            "end_date": "2026-09-10", "target_id": "ONE", "benchmark_id": "TWO"})
+        # This is a paging test for an explicitly requested complete historical
+        # window, not permission to silently truncate the shorter input's tail.
+        overview = wire("compare_instruments", {"instrument_ids": list(series),
+            "start_date": max(min(point["date"] for point in value["points"]) for value in series.values()),
+            "end_date": min(max(point["date"] for point in value["points"]) for value in series.values()),
+            "target_id": "ONE", "benchmark_id": "TWO"})
         source_id = overview["source_id"]
-        retained = deepcopy(run.context_json["computed_metrics"][0])
+        retained = deepcopy(session.originals[0])
         assert overview["result"]["rows"] == retained["data"]["rows"]
         assert overview["request"]["target_id"] == "ONE" and overview["request"]["benchmark_id"] == "TWO"
         assert overview["sample_dates"]["count"] == min(counts)
@@ -173,8 +211,9 @@ def test_comparison_dates_and_inputs_page_without_recomputing(monkeypatch, count
         assert complete("compare_instruments", source_id, "result") == retained["data"]
         assert complete("compare_instruments", source_id, "input_series") == retained["input_series"]
         assert complete("compare_instruments", source_id, "evidence") == retained
-    assert len(computations) == session.commits == len(run.context_json["computed_metrics"]) == 1
-    assert run.context_json["computed_metrics"][0] == retained
+    assert len(computations) == session.commits == len(session.originals) == 1
+    assert session.originals[0] == retained
+    assert "computed_metrics" not in run.context_json
 
 
 def test_computed_source_is_run_bound_and_unknown_sources_are_unreadable(monkeypatch):
@@ -182,7 +221,7 @@ def test_computed_source_is_run_bound_and_unknown_sources_are_unreadable(monkeyp
     run = run_context()
     run.context_json["computed_metrics"] = [{"source_id": "computed:one", "source_type": "computed_metric", "data": {"value": 7}}]
     session = RunSession(run)
-    actor = Principal("pm-one", "PM", "default", resource_scope={"kind": "run", "id": "run-one"})
+    actor = Principal("pm-one", "PM", "default", resource_scope={"kind": "run", "id": "run-one", "attempt": "1"})
     with principal_context(actor):
         assert workbench.run_computed_source("run-one", "computed:one", session)["data"]["value"] == 7
         with pytest.raises(HTTPException) as missing:
@@ -215,7 +254,9 @@ def test_observation_overview_pages_large_input_snapshots_losslessly(monkeypatch
         'benchmark_snapshot': {'series': {'points': [{'date': '2026-09-01', 'value': i} for i in range(3000)]}},
         'sources': []}
     def request(suffix, payload=None):
-        return deepcopy(source)
+        from watchlist_app.services.research_numeric_projection import project_numbers
+        return project_numbers(deepcopy(source), **({key: value for key, value in payload.items()
+            if key in {"section", "offset", "limit", "path"}} if suffix == "computed-read" else {}))
     monkeypatch.setattr(mcp, 'request', request)
     overview = wire('read_research_numbers', {'action': 'observations', 'instrument_id': 'ONE'})
     assert overview['data']['metrics'] == {'volatility': 20}

@@ -80,7 +80,7 @@ it('uses the theme revision for its figures, saved evidence and PM context witho
   await screen.findByRole('heading', { name: theme().title })
   await openTheme(theme().title)
   fireEvent.click(await screen.findByRole('button', { name: '讨论这张图表' }))
-  expect(api.source).toHaveBeenCalledWith('gold', source.source_id, expect.any(AbortSignal), 'theme:theme-credit:3')
+  expect(api.source).toHaveBeenCalledWith('gold', source.source_id, expect.any(AbortSignal), 'theme:theme-credit:3', 'figure')
   expect(ask).toHaveBeenLastCalledWith(expect.any(String), { instrument_id: 'gold', theme_id: 'theme-credit', theme_version_id: 'theme:theme-credit:3', source_ids: [source.source_id] })
   fireEvent.click(screen.getByRole('button', { name: '主题背景与证据' }))
   fireEvent.click(screen.getByText('查看已保存的计算依据'))

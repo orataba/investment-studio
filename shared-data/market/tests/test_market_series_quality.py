@@ -145,3 +145,16 @@ def test_one_conflicting_or_invalid_duplicate_rejects_the_entire_date(same_day):
     assert [r["date"].isoformat() for r in rows] == ["2026-09-04"]
     assert rejected[0]["date"] == "2026-09-03"
     assert rejected[0]["row_index"] == 1
+
+
+@pytest.mark.parametrize('changes', [dict(open=103), dict(close=97), dict(low=103), dict(high=97)])
+def test_inconsistent_ohlc_is_rejected_without_repairing_provider_values(changes):
+    bad = price('2026-09-03', **changes)
+    original = dict(bad)
+    rows, rejected = normalize_fmp_market_series([bad, price('2026-09-04')],
+        series_id='DXY', start_date=date(2026, 9, 1), end_date=date(2026, 9, 7),
+        raw_sha256='fixture', collected_at=datetime(2026, 9, 8, tzinfo=timezone.utc))
+    assert bad == original
+    assert [row['date'] for row in rows] == [date(2026, 9, 4)]
+    assert rejected == [{'date':'2026-09-03', 'row_index':0,
+                         'reason':'DXY inconsistent OHLC range on 2026-09-03'}]

@@ -192,11 +192,11 @@ def test_review_counts_complete_inline_snapshot_subtree_but_not_unread_or_partia
     assert review_mcp._evidence_read(sources[1], reads("computed"))
 
 
-def test_reviewer_rejects_directory_only_acceptance_and_accepts_selected_complete_original(monkeypatch, tmp_path):
+def test_reviewer_rejects_directory_only_acceptance_and_accepts_original_passage_without_claiming_full_read(monkeypatch, tmp_path):
     proposed = {"instrument_id": "asset", "summary": "", "events": [], "coverage": [], "research": None,
         "reflection": {"status": "reviewed", "summary": "原件支持本次复核。", "reviewed_update_ids": [], "source_ids": ["original"]}}
     packet = {"draft_reviews": [proposed], "sources": [{"source_id": "original", "source_type": "public_source",
-        "text": "完整原始披露" * 15000, "unrelated_table": list(range(10000))}]}
+        "text": "完整原始披露中的相关论点。\n保留条件、反证与上下文。\n" * 15000, "unrelated_table": list(range(10000))}]}
     _bound(monkeypatch, tmp_path, packet)
     receipts = {"reviews": [{"instrument_id": "asset", "summary": {"decision": "accept"},
         "change_kind": {"decision": "accept"}, "coverage": {"decision": "accept"},
@@ -213,17 +213,74 @@ def test_reviewer_rejects_directory_only_acceptance_and_accepts_selected_complet
     review_mcp.read_review_context(section="sources")
     with pytest.raises(ValueError, match="substantive original"):
         review_mcp.submit_review_receipts(receipts)
-    review_mcp.read_review_source("original", path=["text"])
-    with pytest.raises(ValueError, match="substantive original"):
-        review_mcp.submit_review_receipts(receipts)
-    offset = 12000
-    while offset is not None:
-        offset = review_mcp.read_review_source("original", path=["text"], offset=offset)["next_offset"]
+    page = review_mcp.read_review_source("original", path=["text"], offset=12000)
+    assert page["next_offset"] == 24000 and page["total"] == len(packet["sources"][0]["text"])
+    assert page["text_delivery"] == {"characters": 12000, "complete_value": False}
+    reads = [json.loads(line) for line in (tmp_path / "reads.jsonl").read_text().splitlines()]
+    assert not review_mcp._complete(packet["sources"][0]["text"], ["text"], reads)
     assert review_mcp.submit_review_receipts(receipts)["accepted"]
     result = json.loads((tmp_path / "result.json").read_text())
     assert result["result"]["reviews"][0]["reflection"] == proposed["reflection"]
     assert "unrelated_table" not in (tmp_path / "reads.jsonl").read_text()
     assert "response_schema" not in (tmp_path / "reads.jsonl").read_text()
+
+
+@pytest.mark.parametrize("text", ["", " \t\n" * 9000])
+def test_review_text_exposure_does_not_count_metadata_or_whitespace(monkeypatch, tmp_path, text):
+    source = {"source_id": "original", "source_type": "public_source", "text": text, "title": "Metadata only"}
+    _bound(monkeypatch, tmp_path, {"draft_reviews": [], "sources": [source]})
+    review_mcp.read_review_source("original", path=["title"])
+    review_mcp.read_review_source("original", path=["text"])
+    reads = [json.loads(line) for line in (tmp_path / "reads.jsonl").read_text().splitlines()]
+    assert not review_mcp._evidence_read(source, reads)
+
+
+@pytest.mark.parametrize("offset", [0, 308862])
+def test_text_exposure_is_only_an_exact_delivery_record_without_punctuation_or_length_heuristics(monkeypatch, tmp_path, offset):
+    text = ("Retained original without punctuation " * 10000)[:308863]
+    source = {"source_id": "original", "source_type": "public_source", "version_id": "original-v1", "text": text}
+    _bound(monkeypatch, tmp_path, {"draft_reviews": [], "sources": [source]})
+    page = review_mcp.read_review_source("original", path=["text"], offset=offset)
+    reads = [json.loads(line) for line in (tmp_path / "reads.jsonl").read_text().splitlines()]
+    assert page["text_delivery"] == {"characters": min(12000, len(text) - offset), "complete_value": False}
+    assert reads[0]["version_id"] == "original-v1" and reads[0]["text_delivery"] == page["text_delivery"]
+    # Even a real one-character read proves delivery only, never that the whole
+    # source was read or the draft's claim was supported. The reviewer must read
+    # sufficient surrounding evidence before accepting that claim.
+    assert review_mcp._evidence_read(source, reads)
+    assert not review_mcp._complete(text, ["text"], reads)
+    assert "不代表全文已读或结论有支持" in page["read_note"]
+
+
+@pytest.mark.parametrize("currency,status", [("USD", "comparable"), (None, "limited")])
+def test_complete_empty_estimate_comparison_is_evidence_but_an_empty_table_or_metadata_is_not(monkeypatch, tmp_path, currency, status):
+    from watchlist_app.services.sector_estimates import compare_estimate_snapshots
+    def snapshot(clock):
+        return {"observation_id": clock, "collected_at": clock,
+            "companies": {"AAPL": {"name": "Apple", "annual_estimates": [{"target_period_end": "2027-09-30",
+                "eps_avg": 8.2, "num_analysts_eps": 20, "currency": currency, "collected_at": clock}]}}}
+    source = compare_estimate_snapshots("aapl", snapshot("2026-09-25T00:00:00+00:00"),
+        snapshot("2026-09-24T00:00:00+00:00"), instrument_type="equity")
+    assert source["status"] == status
+    assert all(source[key] == [] for key in ("changes", "observations", "unmatched"))
+    proposed = {"instrument_id": "aapl", "summary": "", "events": [], "coverage": [], "research": None,
+        "reflection": {"status": "reviewed", "summary": "Retained comparison and limitations were checked.",
+                       "reviewed_update_ids": [], "source_ids": [source["source_id"]]}}
+    _bound(monkeypatch, tmp_path, {"draft_reviews": [proposed], "sources": [source]})
+    receipts = {"reviews": [{"instrument_id": "aapl", "summary": {"decision": "accept"},
+        "change_kind": {"decision": "accept"}, "coverage": {"decision": "accept"},
+        "decisions": [], "research": None, "themes": [], "reflection": {"decision": "accept"}}]}
+    _complete_read(review_mcp.read_review_context, section="draft_reviews")
+    review_mcp.read_review_context(section="sources")
+    for path in (["status"], ["coverage"], ["changes"]):
+        page = review_mcp.read_review_source(source["source_id"], path=path)
+        assert not page["deferred"]
+        with pytest.raises(ValueError, match="substantive original"):
+            review_mcp.submit_review_receipts(receipts)
+    full = review_mcp.read_review_source(source["source_id"], limit=100)
+    assert not full["deferred"] and full["next_offset"] is None
+    assert full["data"]["status"] == status and full["data"]["gaps"] == source["gaps"]
+    assert review_mcp.submit_review_receipts(receipts)["accepted"]
 
 
 def test_narrow_correction_uses_one_schema_path_without_skipping_acquisition_or_validation(monkeypatch, tmp_path):
@@ -332,7 +389,64 @@ def test_missing_review_receipt_names_required_fields_without_echoing_values(mon
     assert 'accept' not in str(rejected.value)
 
 
-def test_harness_receipt_is_revalidated_and_originals_never_enter_initial_prompt(monkeypatch):
+def test_review_schema_reports_all_invalid_objects_without_exposing_content_and_accepts_complete_repair(monkeypatch, tmp_path):
+    state = _bound(monkeypatch, tmp_path, {'draft_reviews': [
+        {'instrument_id': 'asset', 'summary': '', 'events': [], 'coverage': []}], 'sources': []})
+    valid = {'reviews': [{'instrument_id': 'asset', 'summary': {'decision': 'accept'},
+        'change_kind': {'decision': 'accept'}, 'coverage': {'decision': 'accept'},
+        'decisions': [], 'research': None, 'themes': [], 'reflection': None}]}
+    invalid = deepcopy(valid)
+    del invalid['reviews'][0]['reflection']
+    invalid['reviews'][0]['summary'] = {'decision': 'correct', 'value': 'private-original-body'}
+    invalid['reviews'][0]['coverage'] = {}
+    invalid['reviews'][0]['private-misplaced-field'] = 'private-rejected-value'
+    before = deepcopy(invalid)
+    with pytest.raises(ValueError, match='Invalid receipt') as rejected:
+        review_mcp.submit_review_receipts(invalid)
+    detail = str(rejected.value)
+    assert "at ['reviews', 0]: required; missing fields: reflection" in detail
+    assert "at ['reviews', 0]: additionalProperties" in detail
+    assert "at ['reviews', 0, 'summary']: oneOf" in detail
+    assert "at ['reviews', 0, 'coverage']: oneOf" in detail
+    assert 'allowed fields:' in detail and 'required fields:' in detail
+    assert 'inspect response_schema path' in detail and 'COMPLETE receipt object' in detail
+    assert all(value not in detail for value in ('private-original-body', 'private-misplaced-field', 'private-rejected-value', 'correct'))
+    assert invalid == before and json.loads((tmp_path / 'packet.json').read_text()) == state
+    assert not (tmp_path / 'result.json').exists()
+    _complete_read(review_mcp.read_review_context, section='draft_reviews')
+    assert review_mcp.submit_review_receipts(valid)['accepted']
+    assert json.loads((tmp_path / 'result.json').read_text())['receipts'] == valid
+
+
+def test_review_schema_reports_both_bound_review_errors_without_treating_union_alternatives_as_required(monkeypatch, tmp_path):
+    _bound(monkeypatch, tmp_path, {'draft_reviews': [
+        {'instrument_id': iid, 'summary': '', 'events': [], 'coverage': []} for iid in ('first', 'second')], 'sources': []})
+    valid = {'reviews': [{'instrument_id': iid, 'summary': {'decision': 'accept'},
+        'change_kind': {'decision': 'accept'}, 'coverage': {'decision': 'accept'},
+        'decisions': [], 'research': None, 'themes': [], 'reflection': None} for iid in ('first', 'second')]}
+    invalid = deepcopy(valid)
+    del invalid['reviews'][0]['themes']
+    del invalid['reviews'][1]['reflection']
+    with pytest.raises(ValueError) as rejected:
+        review_mcp.submit_review_receipts(invalid)
+    lines = [line for line in str(rejected.value).splitlines() if line.startswith('at ')]
+    assert len(lines) == 2
+    assert lines[0].startswith("at ['reviews', 0]: oneOf")
+    assert lines[1].startswith("at ['reviews', 1]: oneOf")
+    assert all('inspect response_schema path' in line for line in lines)
+    # Per-instrument alternatives also reject the other instrument's identity;
+    # those failures must not become contradictory repair requirements.
+    assert 'const' not in str(rejected.value)
+    _complete_read(review_mcp.read_review_context, section='draft_reviews')
+    assert review_mcp.submit_review_receipts(valid)['accepted']
+
+
+@pytest.mark.parametrize("returncode,stderr", [
+    (0, ""),
+    (1, "dsh: NETWORK: private acknowledgement failure"),
+    (1, 'RESEARCH_HARNESS_END {"reason":"max-tokens"}\n'),
+])
+def test_harness_receipt_is_revalidated_and_originals_never_enter_initial_prompt(monkeypatch, returncode, stderr):
     packet = {"run_id": "bound", "cutoff": "2026-09-24T00:00:00Z", "draft_reviews": [],
         "sources": [{"source_id": "large", "text": "original-sentinel" * 100000}]}
     captures = []
@@ -346,12 +460,59 @@ def test_harness_receipt_is_revalidated_and_originals_never_enter_initial_prompt
         path = Path(kwargs["env"]["INVESTMENT_STUDIO_REVIEW_PACKET"])
         assert path.stat().st_mode & 0o777 == 0o600
         assert json.loads(path.read_text())["packet"] == packet
-        Path(kwargs["env"]["INVESTMENT_STUDIO_REVIEW_RESULT"]).write_text(json.dumps({"receipts": {"reviews": []}, "result": {"reviews": []}}))
-        return SimpleNamespace(returncode=0, stderr="")
+        result = Path(kwargs["env"]["INVESTMENT_STUDIO_REVIEW_RESULT"])
+        temporary = result.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"receipts": {"reviews": []}, "result": {"reviews": []}}))
+        temporary.replace(result)
+        return SimpleNamespace(returncode=returncode, stderr=stderr)
     monkeypatch.setattr(agent.subprocess, "run", run)
     assert agent.run_review_agent(packet, review._review_schema([], []), "review instructions", captures.append) == {"reviews": []}
     assert captures[0]["agent_metadata"]["engine"] == "deepseek_harness"
+    assert captures[0]["agent_metadata"]["exit_code"] == returncode
+    assert "error_type" not in captures[0]["agent_metadata"]
     assert captures[0]["compact_result"] == {"reviews": []}
+    assert "private acknowledgement" not in json.dumps(captures)
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+@pytest.mark.parametrize("contents", [
+    '{"receipts": "private-result-sentinel"',
+    '[]',
+    '{"receipts":{"reviews":[]}}',
+    '{"receipts":{},"result":{"reviews":[]}}',
+    '{"receipts":{"reviews":[]},"result":{"reviews":[{"instrument_id":"asset"}]}}',
+])
+def test_reviewer_never_accepts_corrupt_or_incomplete_final_receipt(monkeypatch, returncode, contents):
+    def run(*args, **kwargs):
+        Path(kwargs["env"]["INVESTMENT_STUDIO_REVIEW_RESULT"]).write_text(contents)
+        return SimpleNamespace(returncode=returncode, stderr="private-result-sentinel")
+    monkeypatch.setattr(agent.subprocess, "run", run)
+    captures = []
+    with pytest.raises(agent.ReviewAgentError) as failure:
+        agent.run_review_agent({"sources": [], "draft_reviews": []}, review._review_schema([], []),
+                               "rules", captures.append)
+    assert failure.value.review_transport["error_type"] == "InvalidReviewReceipt"
+    assert not failure.value.retryable
+    assert "compact_result" not in captures[0]
+    assert "private-result-sentinel" not in str(failure.value) + json.dumps(captures)
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+@pytest.mark.parametrize("temporary_only", [False, True])
+def test_reviewer_requires_atomically_published_receipt(monkeypatch, returncode, temporary_only):
+    def run(*args, **kwargs):
+        if temporary_only:
+            Path(kwargs["env"]["INVESTMENT_STUDIO_REVIEW_RESULT"]).with_suffix(".tmp").write_text(
+                json.dumps({"receipts": {"reviews": []}, "result": {"reviews": []}}))
+        return SimpleNamespace(returncode=returncode, stderr="")
+    monkeypatch.setattr(agent.subprocess, "run", run)
+    captures = []
+    with pytest.raises(agent.ReviewAgentError) as failure:
+        agent.run_review_agent({"sources": [], "draft_reviews": []}, review._review_schema([], []),
+                               "rules", captures.append)
+    assert failure.value.review_transport["error_type"] == (
+        "HarnessProcessExit" if returncode else "MissingReviewReceipt")
+    assert "compact_result" not in captures[0]
 
 
 @pytest.mark.parametrize("stderr,retryable", [("dsh: NETWORK: fetch failed", True), ("arbitrary private-token text", False)])

@@ -18,6 +18,11 @@ vi.mock('../lib/api', async (importOriginal) => ({
   getInstrumentTaxonomyTree: api.taxonomy, resolveInstrumentDetail: api.resolve,
 }))
 vi.mock('../components/InstrumentRiskPanel', () => ({ default: ({ mode }: { mode: string }) => <div data-testid="fund-price-risk" data-mode={mode} /> }))
+vi.mock('../components/InstrumentRiskMonitoringPanel', () => ({ default: ({ instrumentId, onAskAssistant }: {
+  instrumentId: string; onAskAssistant: (id: string, question: string) => void
+}) => <section aria-label="当前风险与事项复核" data-instrument={instrumentId}>
+  <button onClick={() => onAskAssistant(instrumentId, '解释当前尾部风险')}>研究当前风险</button>
+</section> }))
 vi.mock('../components/InstrumentRiskDrawer', () => ({ default: ({ instrumentId, instrumentName, watchlistId, onClose, onAskAssistant }: {
   instrumentId: string; instrumentName: string; watchlistId?: string; onClose: () => void; onAskAssistant: (question: string) => void
 }) => <div role="dialog" aria-label="风险提示" data-instrument={instrumentId} data-name={instrumentName} data-watchlist={watchlistId}>
@@ -27,6 +32,12 @@ vi.mock('../components/SectorResearchPanel', () => ({ default: ({ instrumentId, 
 // Keep InstrumentAssistantDrawer's actual close/URL behavior; isolate only its conversation view.
 vi.mock('./ResearchPage', () => ({ default: ({ instrumentId, watchlistId, initialQuestion, onClose }: { instrumentId: string; watchlistId?: string; initialQuestion?: string; onClose: () => void }) =>
   <div role="dialog" aria-label="研究助手" data-instrument={instrumentId} data-watchlist={watchlistId} data-question={initialQuestion}><button onClick={onClose}>关闭研究助手</button></div> }))
+
+function intervalEvidence(points: Array<{ date: string; value: number }>, unavailable = false) {
+  return { metadata: { return_kind: 'total_return', return_series_status: 'complete' }, currency: 'CNY', wealth_points: points,
+    intervals: points.slice(1).map((point, index) => ({ start_date: points[index].date, date: point.date,
+      value: point.value / points[index].value - 1, log_return: null, status: unavailable ? 'unavailable' : 'complete', reason: unavailable ? 'missing_observation' : null })) }
+}
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -43,9 +54,9 @@ beforeEach(() => {
   const dates = ['2025-12-31', '2026-08-31', '2026-09-04']
   const points = dates.map((date, index) => ({ date, value: 1 + index * 0.02 }))
   api.nav.mockResolvedValue({ fund_id: 'fund-1', count: 3, nav_basis_preference: 'auto', nav_basis_type: 'nav_with_dividend', nav_basis_source: 'shared', nav_basis_status: 'ready',
-    return_segment_breaks: [], calculation_frequency_profile: { requested_frequency: 'daily', resolved_frequency: 'daily', inferred_frequency: 'daily', source_frequency_counts: { daily: 3 },
+    return_segment_breaks: [], calculation_frequency_profile: { requested_frequency: 'event_driven', resolved_frequency: 'event_driven', inferred_frequency: 'event_driven', source_frequency_counts: { event_driven: 3 },
       raw_observation_count: 3, observation_count: 3, start_date: dates[0], end_date: dates[2], annualization_periods_per_year: 252, largest_gap_days: 243, gap_count: 0, gap_status: 'aligned', status_label: '日频' },
-    series: points, calculation_series: points, rows: points.map((point) => ({ as_of_date: point.date, nav: point.value, nav_with_dividend: point.value,
+    series: points, calculation_series: points, return_series: intervalEvidence(points), rows: points.map((point) => ({ as_of_date: point.date, nav: point.value, nav_with_dividend: point.value,
       selected_basis_type: 'nav_with_dividend', selected_value: point.value, calculation_included: true, cumulative_distribution: 0, distribution_amount: null, currency: 'CNY', frequency: 'daily', adopted_at: null })) })
   api.performance.mockResolvedValue({ growth_chart_series: [], annual_returns: [], trailing_returns: [], ranking: null, peer_comparison: null, calculation_frequency_profile: null, snapshot_metadata: null })
   api.risk.mockResolvedValue({ risk_overview: null, current_drawdown: null, scatter_points: [], risk_metrics: [], drawdown_summary: null, calculation_frequency_profile: null, snapshot_metadata: null })
@@ -82,7 +93,7 @@ it('loads NAV independently while pending opinions remain explicitly pending and
   expect((await within(overview).findAllByText('1.0400')).length).toBeGreaterThan(0)
   expect(within(overview).queryByText('尚未记录投资观点。')).toBeNull()
   expect(api.nav).toHaveBeenCalledOnce()
-  expect(api.library).not.toHaveBeenCalled()
+  expect(api.library).toHaveBeenCalledOnce()
   fireEvent.click(screen.getByRole('button', { name: '投资观点' }))
   expect(screen.queryByRole('region', { name: '投资观点时间线' })).toBeNull()
   expect(screen.getByText('正在加载标的资料…').closest('[role="status"]')).toBeTruthy()
@@ -169,7 +180,7 @@ it('places the three instrument tools beside the fund title and keeps workspace 
 it('keeps section loading in the content region while retaining the instrument header', async () => {
   let resolvePerformance!: (value: unknown) => void
   api.performance.mockImplementationOnce(() => new Promise(resolve => { resolvePerformance = resolve }))
-  const { container } = show('/instruments/fund-1?tab=risk')
+  const { container } = show('/instruments/fund-1?tab=overview')
   const title = await screen.findByRole('heading', { level: 1, name: '测试基金 TEST' })
   const status = (await screen.findByText('正在加载标的资料…')).closest('[role="status"]')!
   expect(container.contains(status)).toBe(true)
@@ -230,24 +241,34 @@ it('resets instrument drawers when switching funds', async () => {
 
 it.each(['public_fund', 'private_fund'] as const)('keeps %s NAV gaps visible beside the overview metrics without loading the archive', async (type) => {
   const nav = await api.nav()
-  api.nav.mockResolvedValue({ ...nav, calculation_frequency_profile: { ...nav.calculation_frequency_profile, gap_count: 2 } })
+  api.nav.mockResolvedValue({ ...nav, return_series: intervalEvidence(nav.calculation_series, true), calculation_frequency_profile: { ...nav.calculation_frequency_profile, gap_count: 2 } })
   const { container } = show('/instruments/fund-1', type)
   const overview = await screen.findByRole('region', { name: '基金总览' })
   expect(await within(overview).findByText('净值历史存在缺口，路径风险指标暂不可用。')).toBeTruthy()
-  expect(within(overview).getByText('当前回撤').parentElement?.textContent).toBe('当前回撤—')
-  expect(within(overview).getByRole('region', { name: '当前总体观点' })).toBeTruthy()
-  expect(container.querySelector('.fund-overview-judgments')?.contains(screen.getByTestId('fund-research-tracking'))).toBe(true)
-  expect(api.library).not.toHaveBeenCalled()
+  await waitFor(() => expect(container.querySelector('.instrument-chart-stage')).toBeTruthy())
+  expect(within(overview).getByText('当前回撤').parentElement?.querySelector('strong')?.textContent).toBe('—')
+  expect(within(overview).queryByRole('region', { name: '当前总体观点' })).toBeNull()
+  expect(screen.queryByTestId('fund-research-tracking')).toBeNull()
+  expect(api.library).toHaveBeenCalledOnce()
   expect(api.reference).not.toHaveBeenCalled()
-  expect(screen.getByRole('button', { name: '查看基金档案 →' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: '资料' })).toBeTruthy()
 })
 
-it('keeps the overview free of duplicate charts and separates personal opinions from prepared research tracking', async () => {
-  const { container } = show()
-  await screen.findByRole('region', { name: '基金总览' })
+it.each(['public_fund', 'private_fund'] as const)('combines %s overview and performance with one main chart and keeps research separate', async (type) => {
+  const { container } = show('/instruments/fund-1', type)
+  const overview = await screen.findByRole('region', { name: '基金总览' })
   const navigation = container.querySelector('.instrument-detail-tabs')!
-  await waitFor(() => expect(within(navigation as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual(['总览', '投资研究', '投资观点', '绩效指标', '基金档案']))
-  expect(container.querySelector('.instrument-chart-stage')).toBeNull()
+  await waitFor(() => expect(within(navigation as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual(['总览', '风险监测', '投资研究', '投资观点', '资料']))
+  expect(await within(overview).findByText('Rolling Risk')).toBeTruthy()
+  expect(overview.querySelectorAll('.instrument-chart-stage')).toHaveLength(1)
+  expect(overview.querySelectorAll('.instrument-quote-primary-block')).toHaveLength(1)
+  expect(overview.querySelector('.fund-overview-snapshot')).toBeNull()
+  expect(overview.querySelectorAll('.instrument-quote-fact')).toHaveLength(3)
+  expect(overview.querySelector('.instrument-metrics-table')).toBeTruthy()
+  expect(overview.querySelector('.instrument-heatmap-table')).toBeTruthy()
+  expect(overview.querySelector('.instrument-drawdown-chart')).toBeTruthy()
+  expect(screen.queryByRole('region', { name: '当前风险与事项复核' })).toBeNull()
+  expect(screen.queryByTestId('fund-research-tracking')).toBeNull()
   fireEvent.click(within(navigation as HTMLElement).getByRole('button', { name: '投资观点' }))
   expect(await screen.findByRole('region', { name: '投资观点时间线' })).toBeTruthy()
   expect(screen.queryByText('资料与明细')).toBeNull()
@@ -279,21 +300,32 @@ it.each(['public_fund', 'private_fund'] as const)('opens the %s research assista
   expect(screen.getByTestId('fund-research-tracking').getAttribute('data-instrument')).toBe('fund-1')
 })
 
-it('opens an existing risk link in the unified chart and risk surface with a single benchmark selector', async () => {
-  const { container } = show('/instruments/fund-1?tab=risk&start=2025-12-31&end=2026-09-04')
-  await screen.findByText('Rolling Risk')
-  expect(screen.queryByTestId('fund-price-risk')).toBeNull()
-  await waitFor(() => { expect(api.performance).toHaveBeenCalledWith('fund-1'); expect(api.risk).toHaveBeenCalledWith('fund-1') })
-  expect(container.querySelectorAll('.instrument-chart-stage')).toHaveLength(1)
-  expect(screen.getAllByRole('searchbox')).toHaveLength(1)
+it.each(['public_fund', 'private_fund'] as const)('opens the %s risk page separately and preserves its URL during an assistant follow-up', async (type) => {
+  const { container } = show('/instruments/fund-1?tab=risk&start=2025-12-31&end=2026-09-04&currency=CNY', type)
+  const risk = await screen.findByRole('region', { name: '当前风险与事项复核' })
+  expect(risk.getAttribute('data-instrument')).toBe('fund-1')
+  expect(container.querySelector('.instrument-chart-stage')).toBeNull()
+  expect(container.querySelector('.instrument-metrics-table')).toBeNull()
   expect(screen.queryByRole('region', { name: '基金总览' })).toBeNull()
+  for (const request of [api.nav, api.library, api.performance, api.risk]) expect(request).not.toHaveBeenCalled()
+  fireEvent.click(within(risk).getByRole('button', { name: '研究当前风险' }))
+  const assistant = await screen.findByRole('dialog', { name: '研究助手' })
+  expect(assistant.getAttribute('data-instrument')).toBe('fund-1')
+  expect(assistant.getAttribute('data-question')).toBe('解释当前尾部风险')
+  fireEvent.click(within(assistant).getByRole('button', { name: '关闭研究助手' }))
+  const params = new URLSearchParams(screen.getByTestId('fund-detail-location').textContent || '')
+  expect(params.get('tab')).toBe('risk')
+  expect(params.get('start')).toBe('2025-12-31')
+  expect(params.get('end')).toBe('2026-09-04')
+  expect(params.get('currency')).toBe('CNY')
+  expect(screen.getByRole('region', { name: '当前风险与事项复核' })).toBe(risk)
 })
 
 it('explains a benchmark failure from the shared hint and retries only through the text action', async () => {
   const nav = await api.nav()
   api.resolve.mockResolvedValue({ detail_supported: true, canonical_instrument_id: 'benchmark-1', instrument_name: '测试基准', primary_identifier: 'BENCH', instrument_type: 'index' })
   api.nav.mockImplementation((id: string) => id === 'benchmark-1' ? Promise.reject(new Error('价格服务暂时不可用')) : Promise.resolve(nav))
-  const { container } = show('/instruments/fund-1?tab=risk&benchmark=benchmark-1')
+  const { container } = show('/instruments/fund-1?tab=overview&benchmark=benchmark-1')
   const failure = await screen.findByRole('alert')
   expect(failure.textContent).toContain('价格服务暂时不可用')
   const hint = screen.getByRole('button', { name: /基准比较口径: 基准加载失败/ })
@@ -312,19 +344,19 @@ it('explains a benchmark failure from the shared hint and retries only through t
   expect(await screen.findByRole('alert')).toBeTruthy()
 })
 
-it('withholds fund path risk across missing expected observations while keeping endpoint returns', async () => {
+it('withholds affected fund calculations across missing observations', async () => {
   const nav = await api.nav()
-  api.nav.mockResolvedValue({ ...nav, calculation_frequency_profile: {
+  api.nav.mockResolvedValue({ ...nav, return_series: intervalEvidence(nav.calculation_series, true), calculation_frequency_profile: {
     ...nav.calculation_frequency_profile, gap_count: 1, gap_status: 'calendar_gaps',
   } })
-  const { container } = show('/instruments/fund-1?tab=risk')
+  const { container } = show('/instruments/fund-1?tab=overview')
   await screen.findByText('Rolling Risk')
   const table = container.querySelector('.instrument-metrics-table') as HTMLElement
   const rowValues = (label: string) => within(table).getByText(label).closest('tr')!.querySelectorAll('td strong')
   for (const label of ['Ann. Volatility', 'Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio', 'Max DD']) {
     expect([...rowValues(label)].every((node) => node.textContent === '—')).toBe(true)
   }
-  expect([...rowValues('Period Return')].some((node) => node.textContent !== '—')).toBe(true)
+  expect([...rowValues('Period Return')].every((node) => node.textContent === '—')).toBe(true)
   expect(screen.getByText(/不存在缺失观测或待确认的收益断点/)).toBeTruthy()
 })
 
@@ -334,7 +366,7 @@ it.each(['price_return', null, 'total_return'] as const)('requires matched known
   const benchmark = { ...nav, fund_id: 'benchmark-1', return_kind: returnKind }
   api.resolve.mockResolvedValue({ detail_supported: true, canonical_instrument_id: 'benchmark-1', instrument_name: '测试基准', primary_identifier: 'BENCH', instrument_type: 'index' })
   api.nav.mockImplementation((id: string) => Promise.resolve(id === 'benchmark-1' ? benchmark : fund))
-  const { container } = show('/instruments/fund-1?tab=risk&benchmark=benchmark-1')
+  const { container } = show('/instruments/fund-1?tab=overview&benchmark=benchmark-1')
   await screen.findByText('Rolling Risk')
   await waitFor(() => expect(screen.getByRole('button', { name: /基准比较口径: 标的/ })).toBeTruthy())
   const table = container.querySelector('.instrument-metrics-table') as HTMLElement
@@ -345,14 +377,36 @@ it.each(['price_return', null, 'total_return'] as const)('requires matched known
   }
 })
 
-it('preserves old document links and upload access inside the archive', async () => {
+it('preserves old document links and upload access inside information', async () => {
   const { container } = show('/instruments/fund-1?tab=documents', 'public_fund')
   expect(await screen.findByRole('link', { name: '基金合同.pdf' })).toBeTruthy()
   expect(container.querySelector('#fund-archive-documents')?.hasAttribute('open')).toBe(true)
   expect(container.querySelector('#fund-archive-documents input[type="file"]')).toBeTruthy()
   expect(container.querySelectorAll('.instrument-detail-tabs')).toHaveLength(1)
+  expect(screen.getByRole('button', { name: '资料' }).classList.contains('instrument-detail-tab-active')).toBe(true)
 })
 
+
+it.each(['public_fund', 'private_fund'] as const)('keeps every %s archive section and its upload controls reachable from old archive URLs', async type => {
+  const { container } = show('/instruments/fund-1?tab=archive&section=documents&currency=CNY', type)
+  const info = await screen.findByRole('region', { name: '基金资料' })
+  expect(await within(info).findByRole('link', { name: '基金合同.pdf' })).toBeTruthy()
+  for (const section of ['price', 'exposure', 'people', 'strategy', 'documents', 'monitoring']) {
+    expect(info.querySelector(`#fund-archive-${section} > summary`)).toBeTruthy()
+  }
+  expect(info.querySelector('#fund-archive-documents')?.hasAttribute('open')).toBe(true)
+  expect(info.querySelector('input[type="file"]')).toBeTruthy()
+  expect(container.querySelector('.instrument-chart-stage')).toBeNull()
+  expect(screen.getByRole('button', { name: '资料' }).classList.contains('instrument-detail-tab-active')).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: '总览' }))
+  await screen.findByText('Rolling Risk')
+  fireEvent.click(screen.getByRole('button', { name: '资料' }))
+  expect((await screen.findByRole('region', { name: '基金资料' })).querySelector('#fund-archive-documents')?.hasAttribute('open')).toBe(true)
+  const params = new URLSearchParams(screen.getByTestId('fund-detail-location').textContent || '')
+  expect(params.get('tab')).toBe('info')
+  expect(params.get('section')).toBe('documents')
+  expect(params.get('currency')).toBe('CNY')
+})
 
 it.each(['public_fund', 'private_fund'] as const)('opens legacy report links in the unified %s research and preserves PM links', async type => {
   const { unmount } = show('/instruments/fund-1?tab=investment-research&mode=report&currency=CNY', type)
@@ -372,7 +426,7 @@ it('keeps all benchmark matrix periods on common endpoints and marks uncovered 1
   const dates = ['2025-09-09', '2025-12-31', '2026-06-15', '2026-09-30']
   const navFor = (id: string, prices: number[]) => ({ ...template, fund_id: id, return_kind: 'total_return',
     rows: prices.map((price, i) => ({ ...template.rows[0], as_of_date: dates[i], nav: price, nav_with_dividend: price, selected_value: price })),
-    calculation_series: prices.map((value, i) => ({ date: dates[i], value })), series: prices.map((value, i) => ({ date: dates[i], value })) })
+    return_series: intervalEvidence(prices.map((value, i) => ({ date: dates[i], value }))), calculation_series: prices.map((value, i) => ({ date: dates[i], value })), series: prices.map((value, i) => ({ date: dates[i], value })) })
   api.resolve.mockResolvedValue({ detail_supported: true, canonical_instrument_id: 'benchmark-1', instrument_name: 'Benchmark', primary_identifier: 'BENCH', instrument_type: 'index' })
   api.nav.mockImplementation((id: string) => Promise.resolve(id === 'benchmark-1' ? navFor(id, [1, 1.01, 1.02]) : navFor(id, [1, 1.02, 1.142706, 1.051824])))
   const { container } = show('/instruments/fund-1?tab=performance&benchmark=benchmark-1')
@@ -414,6 +468,16 @@ it('excludes since-inception metrics from peer ranking and permits median-only s
   expect(volatilityRow.lastElementChild?.textContent).toBe('—')
 })
 
+it('explains unavailable peer windows instead of hiding missing observations', async () => {
+  api.performance.mockResolvedValue({ growth_chart_series: [], annual_returns: [], trailing_returns: [], ranking: null,
+    peer_comparison: { status: 'insufficient_data', sample_count: 0, metrics: [], peer_path: ['Funds'],
+      excluded_windows: [{ instrument_id: 'peer', metric_key: 'return_1m', reason: '计算区间存在缺失观察值或未确认的收益区间' }] },
+    calculation_frequency_profile: null, snapshot_metadata: null })
+  show('/instruments/fund-1?tab=overview')
+  expect(await screen.findByText('部分同类区间不可用：观察缺口或连续性未确认')).toBeTruthy()
+  expect((screen.getByRole('button', { name: 'Peer Rank' }) as HTMLButtonElement).disabled).toBe(true)
+})
+
 
 it('closes chart settings from an internal control and trigger with Escape and restores focus', async () => {
   show('/instruments/fund-1?tab=performance&currency=CNY')
@@ -431,14 +495,15 @@ it('closes chart settings from an internal control and trigger with Escape and r
   expect(trigger.getAttribute('aria-expanded')).toBe('false')
 })
 
-it('withholds the drawdown plot for calendar gaps without suppressing endpoint returns', async () => {
+it('withholds return and drawdown plots for unconfirmed intervals while retaining NAV quotes', async () => {
   const nav = await api.nav()
-  api.nav.mockResolvedValue({ ...nav, calculation_frequency_profile: { ...nav.calculation_frequency_profile, gap_count: 8 } })
+  api.nav.mockResolvedValue({ ...nav, return_series: intervalEvidence(nav.calculation_series, true), calculation_frequency_profile: { ...nav.calculation_frequency_profile, gap_count: 8 } })
   const { container } = show('/instruments/fund-1?tab=performance&currency=CNY')
   expect(await screen.findByText(/回撤图不可用/)).toBeTruthy()
   expect(container.querySelector('.instrument-drawdown-chart')).toBeNull()
-  expect(container.querySelector('.instrument-line-chart')).toBeTruthy()
-  expect(container.querySelector('.instrument-series-legend')?.textContent).toContain('4.00%')
+  expect(container.querySelector('.instrument-line-chart')).toBeNull()
+  expect(container.querySelector('.instrument-series-legend')?.textContent).not.toContain('4.00%')
+  expect(await screen.findByText(/收益图不可用/)).toBeTruthy()
 })
 
 
@@ -448,4 +513,93 @@ it('distinguishes overview metrics still loading from missing values', async () 
   await screen.findByRole('heading', { name: '测试基金 TEST' })
   expect(container.querySelector('.fund-overview-key-metrics')?.textContent).toContain('加载中…')
   expect(container.querySelector('.fund-overview-key-metrics')?.textContent).not.toContain('—')
+})
+
+it.each(['fund', 'benchmark'] as const)('keeps recent confirmed returns but rejects rebased %s history in the matrix', async segmentedSide => {
+  const template = await api.nav()
+  const dates = ['2025-12-31', '2026-08-31', '2026-09-04']
+  const data = (id: string, segmented: boolean) => {
+    const values = segmented ? [102, 1, 1.1] : [1, 1.02, 1.122]
+    const points = dates.map((date, i) => ({ date, value: values[i], ...(segmented ? { segment_id: i === 0 ? 'old' : 'new' } : {}) }))
+    return { ...template, fund_id: id, return_kind: 'total_return', return_series_status: segmented ? 'partial' : 'ready',
+      return_segment_breaks: segmented ? [{ start_date: dates[0], end_date: dates[1] }] : [],
+      series: points, calculation_series: points,
+      rows: points.map((p, i) => ({ ...template.rows[0], as_of_date: p.date, nav: 1 + i * .02,
+        nav_with_dividend: p.value, selected_value: p.value, segment_id: 'segment_id' in p ? p.segment_id : undefined })),
+    }
+  }
+  api.resolve.mockResolvedValue({ detail_supported: true, canonical_instrument_id: 'benchmark-1', instrument_name: '测试基准', primary_identifier: 'BENCH', instrument_type: 'index' })
+  api.nav.mockImplementation((id: string) => Promise.resolve(data(id, segmentedSide === (id === 'benchmark-1' ? 'benchmark' : 'fund'))))
+  const { container } = show('/instruments/fund-1?tab=overview&benchmark=benchmark-1&basis=nav')
+  await screen.findByText('Rolling Risk')
+  await waitFor(() => expect(screen.getByRole('button', { name: /基准比较口径: 标的/ })).toBeTruthy())
+  const table = container.querySelector('.instrument-metrics-table') as HTMLElement
+  const headers = [...table.querySelectorAll('thead th')]
+  const cell = (label: string, period: string) => within(table).getByText(label).closest('tr')!.querySelectorAll('td')[headers.findIndex(h => h.textContent?.startsWith(period))]
+  expect(cell('Period Return', 'SI').querySelector('strong')?.textContent).toBe('—')
+  expect(cell('Period Return', 'YTD').querySelector('strong')?.textContent).toBe('—')
+  expect(cell('Period Return', 'MTD').querySelector('strong')?.textContent).toContain('10.00%')
+  expect(cell('Excess Return', 'MTD').querySelector('strong')?.textContent).toContain('0.00%')
+  // Unit NAV display does not change the matrix's canonical return basis.
+  fireEvent.click(screen.getByRole('button', { name: 'Chart settings' }))
+  fireEvent.click(screen.getByRole('button', { name: '复权累计净值' }))
+  expect(cell('Period Return', 'SI').querySelector('strong')?.textContent).toBe('—')
+  expect(cell('Period Return', 'MTD').querySelector('strong')?.textContent).toContain('10.00%')
+})
+
+it('keeps drawdown on dividend-reinvested NAV when unit NAV falls on a distribution date', async () => {
+  const template = await api.nav()
+  const values = [100, 110, 105]
+  const points = template.calculation_series.map((p: { date: string }, i: number) => ({ ...p, value: values[i] }))
+  api.nav.mockResolvedValue({ ...template, series: points, calculation_series: points,
+    rows: template.rows.map((row: object, i: number) => ({ ...row, nav: [100, 110, 80][i], nav_with_dividend: values[i], selected_value: values[i] })) })
+  const { container } = show('/instruments/fund-1?tab=overview&basis=nav')
+  await screen.findByText('Rolling Risk')
+  const current = () => container.querySelector('.instrument-drawdown-header-value-primary')?.textContent
+  expect(current()).toBe('-4.55%')
+  fireEvent.click(screen.getByRole('button', { name: 'Chart settings' }))
+  fireEvent.click(screen.getByRole('button', { name: '复权累计净值' }))
+  expect(current()).toBe('-4.55%')
+})
+
+it('retains a daily fund peak between weekly benchmark endpoints and discloses frequency alignment', async () => {
+  const template = await api.nav()
+  const points = [100, 100, 100, 100, 500, 110, 105, 100].map((value, index) => ({ date: `2026-09-${String(index + 1).padStart(2, '0')}`, value }))
+  const source = (id: string) => {
+    const isBenchmark = id === 'benchmark-1'
+    const selected = isBenchmark ? [points[0], points[points.length - 1]] : points
+    return { ...template, fund_id: id, return_kind: 'total_return', series: selected, calculation_series: selected,
+      return_series: intervalEvidence(selected), calculation_frequency_profile: { ...template.calculation_frequency_profile,
+        resolved_frequency: isBenchmark ? 'weekly' : 'daily', gap_detection_basis: 'market_calendar:24/7' },
+      rows: selected.map(point => ({ ...template.rows[0], as_of_date: point.date, nav: point.value, nav_with_dividend: point.value, selected_value: point.value })) }
+  }
+  api.resolve.mockResolvedValue({ detail_supported: true, canonical_instrument_id: 'benchmark-1', instrument_name: 'Weekly comparison', primary_identifier: 'WEEKLY', instrument_type: 'public_fund' })
+  api.nav.mockImplementation((id: string) => Promise.resolve(source(id)))
+  const { container } = show('/instruments/fund-1?tab=overview&benchmark=benchmark-1')
+  await screen.findByText(/披露频率：标的 daily \/ 基准 weekly/)
+  const table = container.querySelector('.instrument-metrics-table') as HTMLElement
+  const headers = [...table.querySelectorAll('thead th')]
+  const oneWeek = headers.findIndex(header => header.textContent?.startsWith('1W'))
+  const maxDrawdown = within(table).getByText('Max DD').closest('tr')!.querySelectorAll('td')[oneWeek]
+  expect(maxDrawdown.querySelector('strong')?.textContent).toBe('-80.00%')
+})
+
+it.each([false, true])('scopes interval completeness to the selected window; recent gap=%s', async recentGap => {
+  const template = await api.nav()
+  const points = [{ date: '2025-12-31', value: 100 }, { date: '2026-08-28', value: 100 },
+    { date: '2026-09-15', value: 110 }, { date: '2026-09-30', value: 105 }]
+  const evidence = intervalEvidence(points)
+  evidence.intervals[recentGap ? 2 : 0].status = 'unavailable'
+  api.nav.mockResolvedValue({ ...template, series: points, calculation_series: points, return_series: evidence,
+    calculation_frequency_profile: { ...template.calculation_frequency_profile, gap_count: 1 },
+    rows: points.map(point => ({ ...template.rows[0], as_of_date: point.date, nav: point.value, nav_with_dividend: point.value, selected_value: point.value })) })
+  const { container } = show('/instruments/fund-1?tab=overview')
+  await screen.findByText('Rolling Risk')
+  const table = container.querySelector('.instrument-metrics-table') as HTMLElement
+  const headers = [...table.querySelectorAll('thead th')]
+  const cell = (label: string, period: string) => within(table).getByText(label).closest('tr')!.querySelectorAll('td')[headers.findIndex(header => header.textContent?.startsWith(period))]
+  expect(cell('Period Return', 'SI').querySelector('strong')?.textContent).toBe('—')
+  expect(cell('Period Return', '1M').querySelector('strong')?.textContent).toBe(recentGap ? '—' : '5.00%')
+  expect(cell('Max DD', '1M').querySelector('strong')?.textContent).toBe(recentGap ? '—' : '-4.55%')
+  if (recentGap) expect(headers.find(header => header.textContent?.startsWith('1M'))?.textContent).toContain('观察不完整或未确认')
 })

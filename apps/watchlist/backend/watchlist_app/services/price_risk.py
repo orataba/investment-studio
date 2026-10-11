@@ -1,6 +1,7 @@
 """Rolling-period loss review lines, calibrated once and then kept fixed."""
 from math import ceil, exp, log, sqrt
 from statistics import stdev
+from watchlist_app.services.return_windows import confirmed_return_points, return_sample_limitation
 
 # Short horizons look for shocks; longer horizons also flag persistent losses.
 # Floors are starting review tolerances, not estimated tail probabilities.
@@ -23,28 +24,39 @@ def _periods(series):
     return {key: (label, windows[key], multiple, floor) for key, (label, _, multiple, floor) in PERIODS.items()}
 
 
-def series_limitation(series: dict) -> str | None:
+def recent_price_risk_points(series):
+    """Use the latest confirmed return chain, never cross a rebasing boundary."""
+    points = confirmed_return_points(series)
+    last_break = 0
+    for index in range(1, len(points)):
+        if points[index].get("segment_id") != points[index - 1].get("segment_id"):
+            last_break = index
+    return points[last_break:]
+
+
+def series_limitation(series: dict, *, sample=None) -> str | None:
     metadata = series.get("metadata") or {}
     frequency = series.get("frequency") or {}
+    if metadata.get("return_kind") not in {"total_return", "price_return"}:
+        return "收益经济口径尚未确认"
     if metadata.get("return_series_status") not in {"ready", "complete", "partial"}:
         return "收益口径尚未就绪"
-    # A partial projection may have a later anchor but a complete recent sample.
-    # Only confirmed canonical points reach this series; a pending break is different.
-    if metadata.get("return_segment_breaks"):
-        return "收益序列存在待确认的断点"
+    points = recent_price_risk_points(series) if sample is None else sample
+    if sample is None:
+        points = points[-366:] if _continuous_daily_market(series) else points[-253:]
+    if not points:
+        return "收益序列缺少有效观察值或已确认的分段身份"
     if frequency.get("resolved_frequency") != "daily":
         return "当前为低频或未知频率数据，未套用日度交易窗口"
-    if frequency.get("gap_count"):
-        return "计算区间存在缺失观察值，未跨缺口计算区间跌幅"
-    return None
+    return return_sample_limitation(series, points)
 
 
 def initial_price_limits(series: dict) -> tuple[dict, dict]:
     """At least one quarter of daily returns; use up to one trading year."""
-    if series_limitation(series):
-        return {}, {}
-    points = series.get("points") or []
+    points = recent_price_risk_points(series)
     sample = points[-366:] if _continuous_daily_market(series) else points[-253:]
+    if series_limitation(series, sample=sample):
+        return {}, {}
     if len(sample) < (91 if _continuous_daily_market(series) else 64):
         return {}, {}
     returns = [log(b["value"] / a["value"]) for a, b in zip(sample, sample[1:])]
@@ -60,14 +72,15 @@ def initial_price_limits(series: dict) -> tuple[dict, dict]:
         "period_observations": {key: value[1] for key, value in _periods(series).items()},
         "calendar_basis": (series.get("frequency") or {}).get("gap_detection_basis"),
         "return_kind": (series.get("metadata") or {}).get("return_kind"),
+        "return_measure": "log",
     }
 
 
 def period_loss_readings(series: dict, limits: dict) -> list[dict]:
-    points = series.get("points") or []
-    limitation = series_limitation(series)
+    points = recent_price_risk_points(series)
     rows = []
     for key, (label, window, _, _) in _periods(series).items():
+        limitation = series_limitation(series, sample=points[-window - 1:])
         reason = limitation or (f"不足 {window + 1} 个日度观察值" if len(points) <= window else None)
         start = points[-window - 1] if not reason else None
         end = points[-1] if points else None
@@ -100,14 +113,14 @@ def price_rule_summary(asset: dict, updated_at=None) -> dict:
     """
     sources = period_rule_sources(asset.get("period_limits") or {}, asset.get("price_risk_calibration") or {})
     risk = asset.get("risk") or {}
-    coverage = ("行情新鲜度不足" if asset.get("freshness") != "fresh" else
-                "风险数据尚未就绪" if (risk.get("data_quality") or {}).get("status") != "ready" else None)
+    coverage = "行情新鲜度不足" if asset.get("freshness") != "fresh" else None
     readings = [{**row, "key": row["period"], "source": sources.get(row["period"], "none")}
                 for row in asset.get("period_readings") or []]
     readings.append({"key": "drawdown", "source": "custom" if asset.get("drawdown_limit") is not None else "none",
         "limit_pct": asset.get("drawdown_limit"), "return_pct": risk.get("current_drawdown"),
         "end_date": next((row.get("end_date") for row in readings if row.get("end_date")), None),
-        "observations": None, "start_date": None, "limitation": None})
+        "observations": None, "start_date": None,
+        "limitation": "风险数据尚未就绪" if (risk.get("data_quality") or {}).get("status") != "ready" else None})
     counts = dict.fromkeys(("configured", "evaluable", "triggered", "unavailable", "default", "custom", "unknown"), 0)
     rules = []
     for reading in readings:
@@ -122,12 +135,15 @@ def price_rule_summary(asset: dict, updated_at=None) -> dict:
             counts["triggered"] += state == "triggered"
         rules.append({"key": reading["key"], "source": reading["source"], "state": state,
             "limit_pct": reading["limit_pct"], "value_pct": reading.get("return_pct"),
+            "metric": "current_drawdown" if reading["key"] == "drawdown" else "rolling_return",
+            "loss_magnitude_pct": max(0.0, -reading["return_pct"]) if reading.get("return_pct") is not None else None,
+            "trigger_at_or_below_pct": -reading["limit_pct"] if configured else None,
             "observations": reading.get("observations"), "start_date": reading.get("start_date"),
             "end_date": reading.get("end_date"), "limitation": limitation if configured else None})
-    return {"contract_version": 1, "settings_updated_at": updated_at, "counts": counts, "rules": rules}
+    return {"contract_version": 2, "settings_updated_at": updated_at, "counts": counts, "rules": rules}
 
 
 def scope_price_rule_summary(instruments: list[dict]) -> dict:
     summaries = [item["price_rule_summary"] for item in instruments]
-    return {"contract_version": 1, "counts": {key: sum(item["counts"][key] for item in summaries)
+    return {"contract_version": 2, "counts": {key: sum(item["counts"][key] for item in summaries)
         for key in ("configured", "evaluable", "triggered", "unavailable", "default", "custom", "unknown")}}

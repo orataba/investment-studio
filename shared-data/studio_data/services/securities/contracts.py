@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 MaterializableSecurityType = Literal["equity", "etf"]
-SecurityCatalogProvider = Literal["fmp"]
+SecurityCatalogProvider = Literal["fmp", "futu"]
 
 
 class SecuritySearchResult(BaseModel):

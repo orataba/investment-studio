@@ -77,6 +77,27 @@ def test_browser_projection_preserves_missing_and_withdrawn_current_view():
         assert result["current_research"] == (None if notebook is None else {"investment_view": None})
 
 
+def test_browser_classifies_only_referenced_figures_without_loading_originals(monkeypatch):
+    from watchlist_app.services import research_run_evidence
+    source = {"source_id": "computed:figure", "source_type": "computed_metric", "title": "Saved figure",
+        "retained_reference": {"run_id": "original-run", "path": ["computed_metrics", "*"]}}
+    unrelated = {**source, "source_id": "computed:not-a-figure"}
+    notebook = {"modules": [{"key": "market-quantitative", "figure_source_ids": [source["source_id"]]}],
+                "sources": [source, unrelated]}
+    calls = []
+    session = object()
+    def resolve(reference, **kwargs):
+        calls.append((reference, kwargs))
+        return {"source_id": reference["source_id"], "observation_domain": "market"}
+    monkeypatch.setattr(research_run_evidence, "resolve_reference", resolve)
+    shown = dossier_view({"notebook": notebook}, session=session)["notebook"]
+    assert calls == [(source, {"session": session, "bound_source": True, "projection": "classification"})]
+    assert shown["sources"][0]["observation_domain"] == "market"
+    assert shown["sources"][1]["observation_domain"] == "unclassified"
+    assert all(not {"data", "input_series", "retained_reference"}.intersection(item) for item in shown["sources"])
+    assert "observation_domain" not in source
+
+
 def test_saved_reviews_keep_notebook_shape_in_browser_and_agent_case_catalogue(activity_client):
     with get_session_factory()() as session:
         first = publish(session, research={"forecasts": [{"key": "financing", "claim": "融资可能改善回款",
@@ -146,6 +167,13 @@ def test_current_dossier_does_not_inline_nested_computation_inputs(activity_clie
     assert not {"sources", "source_ids", "input_series", "input_snapshot", "data"}.intersection(shown)
     assert len(json.dumps(shown)) < len(json.dumps(original)) / 100
     saved = activity_client.get(base, params={"source_id": "original", "version_id": notebook["version_id"]})
-    assert saved.status_code == 200 and saved.json() == original
+    assert saved.status_code == 200
+    returned = saved.json()
+    locator = returned.pop("retained_reference")
+    assert returned == original
+    assert locator == {"run_id": run.entry_id, "path": ["reviews", "xlk", "research", "sources", "*"]}
     with get_session_factory()() as session:
-        assert read_dossier(session, "xlk")["notebook"]["sources"][0] == original
+        reference = read_dossier(session, "xlk")["notebook"]["sources"][0]
+        assert reference["source_id"] == original["source_id"] and reference["retained_reference"] == locator
+        assert "data" not in reference and "input_snapshot" not in reference
+        assert session.get(ResearchEntry, run.entry_id).context_json["reviews"]["xlk"]["research"]["sources"][0] == original

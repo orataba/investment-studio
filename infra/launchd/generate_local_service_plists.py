@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 APP_SERVICES = (
     "home-api",
     "watchlist-api",
+    "research-worker",
     "portfolio-api",
     "briefing-api",
     "home-web",
@@ -105,10 +106,15 @@ def main() -> int:
             "StandardOutPath": str(log_dir / f"{service}.log"),
             "StandardErrorPath": str(log_dir / f"{service}.error.log"),
         }
-        if service in {"home-api", "watchlist-api", "portfolio-api", "briefing-api"}:
+        if service in {"home-api", "watchlist-api", "portfolio-api", "briefing-api", "research-worker"}:
             payload["EnvironmentVariables"] = {
                 "INVESTMENT_STUDIO_LOCAL_DATABASE_URL": database_url,
             }
+        if service == "research-worker":
+            payload["ProcessType"] = "Background"
+            payload["LowPriorityIO"] = True
+            payload["ExitTimeOut"] = 45
+            payload["AbandonProcessGroup"] = False
         _write_plist(launch_agents_dir / f"{label}.plist", payload)
 
     refresh_label = f"{args.label_prefix}.{MARKET_DATA_REFRESH_SERVICE}"

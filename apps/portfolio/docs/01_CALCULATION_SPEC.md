@@ -163,7 +163,11 @@ Holdings 列表、单持仓详情与 Concentration 共用日期解析：晚于�
 
 - 组合账面估值不得静默切到 total-return basis；若分红或派息已作为交易/现金流入账，再用复权价会造成双算；
 - 公募和私募的 research/risk 序列只使用 `total_return_nav`；缺失时结果为 unavailable/NA。`official_nav` 只用于估值和明确标注的单位净值视图，不能作为 total-return 序列的兼容回退；
-- equity 的 research/risk 序列使用 `adjusted_close`；若改用 `close`，必须在结果中标记 quote basis，且不得把除权除息导致的机械跳空当成真实损失；
+- 股票、ETF 的分析序列只接受摄取层已确认的乘法总回报 `adjusted_close`；缺失时不退回 raw `close/last`，即使原始价格可用于估值。指数保留来源明确声明的 price/total return，原生加密现货和 FX spot 保留其 price return；FX spot 变化不是包含利差或融资的投资总回报。这不增加 Portfolio 的资产交易权限。
+- 风险与研究使用有明确 `(start_date, date]` 的收益区间，`value` 是小数形式的简单收益，`return_measure=simple`；`log_return=log(1+value)` 为独立字段，不能代入简单收益的财富连乘、现金 P&L 或组合加权。每条来源合同保留 `quote_basis / return_kind / currency`，Research 存档还保留实际起止日与输入合同；货币转换后继续披露原币、基准币和 FX 来源。
+- `total_return_segments` 的两端为可比较 level 的闭区间；`total_return_unavailable_intervals` 为不可确认收益的 `(start_date,end_date]`。跨段收益保留空值与原因，不删掉后再求变化。风险对齐、FX 转换和研究重放在实际区间上继续检查，端点收益和回撤也不能跨独立归一的段；区间外旧缺口不否定后续完整窗口。
+- 价格图的 `price_mode=return` 为默认分析曲线，保留来源口径及稳定 `segment_id`；显式 `raw` 展示真实估值报价。`front/back` 只把同一已确认 TR 乘法链缩放到截至 as-of 完整历史末/首个共同原始价格锚点，显示窗口不改变锚点，且只展示锚点所在连续段。前复权必须有最新 raw 报价同日的可靠 TR，不能拿较旧锚点冒充最新价格；请求范围没有点就返回空序列。返回 `adjustment_method=total_return_reinvestment` 和锚点日期；无可靠 TR 时不可用，不以 raw 或供应商加法复权替代。这些衍生价格不参与账面估值。
+- 缺少预期交易日观察时，跨缺口区间保留 unavailable，日频波动率与路径回撤不跨缺口推断；TR 端点仍在同一可比较段时可以保留端点收益，观察缺口随 `observation_coverage` 披露。请求截止日之前尚未补齐的交易日也使当前路径风险不可用，已确认休市日不视为缺口。
 - chart / sparkline 必须展示实际采用的 quote basis。basis 缺失时，图表可以降级为 `partial / unavailable`，不能静默换基准。
 
 #### Portfolio 中的基金分红处理
@@ -295,7 +299,7 @@ Holdings 列表、单持仓详情与 Concentration 共用日期解析：晚于�
 
 若观察频率是稳定交易日频，`periods_per_year` 通常接近 `252`；若存在节假日、缺价或非交易日 carry-forward，系统必须记录并使用实际有效收益观察密度，避免把无市场观察的 0 return 当作风险样本。
 
-协方差 / 相关性计算必须先构造 active return matrix。每个 return observation 必须同时携带 `start_date` 与作为 period end 的 `date`；同一矩阵行不只要 end date 相同，还必须代表完全相同的起止期间。默认 `strict` missing-return policy 要求矩阵中的每个收益日期对所有 active series 都完整；任何单成员缺失或 period identity 不一致都进入 coverage / missing 诊断，不得被补成 0 return，也不得用 pairwise dates 拼出一个每个 entry 样本不同的 covariance matrix。`sample_covariance` 使用完整对齐样本的样本协方差估计量，分母为 `n - 1`，且至少需要两个完整 return observations；不得用总体协方差 `n` 分母作为普通样本风险估计。年化必须使用完整样本 index 的实际有效收益观察密度。Research 的 `ewma_vol_shrinkage_corr_covariance` 也必须在 missing-return policy 处理后的完整窗口上估计 EWMA volatility 与 shrinkage correlation。
+协方差 / 相关性计算必须先构造 active return matrix。每个 return observation 必须同时携带 `start_date` 与作为 period end 的 `date`；同一矩阵行不只要 end date 相同，还必须代表完全相同的起止期间。唯一的 `strict` missing-return policy 要求矩阵中的每个收益日期对所有 active series 都完整；任何单成员缺失或 period identity 不一致都进入 coverage / missing 诊断，不得被补成 0 return，也不得用 pairwise dates 拼出一个每个 entry 样本不同的 covariance matrix。`sample_covariance` 使用完整对齐样本的样本协方差估计量，分母为 `n - 1`，且至少需要两个完整 return observations；不得用总体协方差 `n` 分母作为普通样本风险估计。年化必须使用完整样本 index 的实际有效收益观察密度。Research 的 `ewma_vol_shrinkage_corr_covariance` 也必须在 missing-return policy 处理后的完整窗口上估计 EWMA volatility 与 shrinkage correlation。
 
 ### 2.6.1 计算频率与节假日
 
@@ -306,10 +310,10 @@ Risk 与 Research 的 covariance / correlation / risk contribution 固定使用�
 - 组合计算频率只有 `daily`，不是用户设置项。Registry `source_settings.expected_frequency` 只保留 `daily` 与 `event_driven`，不能把组合降级成周频或月频。
 - 对齐规则：在所有成员有效观测日期的并集上，未发布新值的成员沿用最近有效 mark；来源更新日一次性确认自上次发布以来的变化。所有来源均无新观测的日期不进入风险样本。
 - 节假日规则：共同非交易日不生成样本；预期应更新却缺失的数据必须由 `risk_basis` 标记 incomplete，不能用 carry-forward 掩盖数据缺口。
-- Forward RC 与 Research 使用同一 `risk_alignment` 边界：将确切缺失的 expected session 加入诊断日历，即使全部成员同日缺源也不能删除该行。缺失 NAV level 及其后首个跨缺口 return 均为 unavailable；显式 `complete_case_drop` 只能删除这些未配对收益行，不能把跨多日变动当成一天收益。缺少必要 FX 的观察保留为缺失值，不先删除再 carry。来源覆盖检测到请求的 as-of 日期，包含应有而没有发布的尾部 session；已知休市和 event-driven 的合法旧 mark 保持原规则。
-- Missing-return policy：默认 `strict`。`strict` 下共同起点之前的缺失、无法取得初值或预期更新缺口均使风险/研究样本不可解；显式 `complete_case_drop` 可以从第一条完整共同收益开始，但只有这一段连续前缀属于 warm-up boundary，之后的缺口仍受比例限制。两种 policy 都必须校验 latest complete row 的日频尾部新鲜度 `5` 天；结果必须暴露 rows before / after、全部 missing rows、前置非完整行数、起点后缺失比例、latest complete date 与 trailing staleness。Research 仅在所有 active 成员的已知日频市场日历均证明 latest complete row 之后直到请求日全为休市时，以该完整行日期检验新鲜度；实际自然日差仍保留，并另披露 `return_freshness_as_of_date`。不改变请求日或回看窗口，不补休市零收益；未知日历、任一市场开市或真实缺源均不享受此例外。披露 lag 是来源可用时钟，不能从研究的观察日期 EOD 窗口再扣一次。
+- Forward RC 与 Research 使用同一 `risk_alignment` 边界：将确切缺失的 expected session 加入诊断日历，即使全部成员同日缺源也不能删除该行。缺失 NAV level 及其后首个跨缺口 return 均为 unavailable；缺失行不得删除，也不能把跨多日变动当成一天收益。缺少必要 FX 的观察保留为缺失值，不先删除再 carry。来源覆盖检测到请求的 as-of 日期，包含应有而没有发布的尾部 session；已知休市和 event-driven 的合法旧 mark 保持原规则。
+- Missing-return policy：当前配置只允许 `strict`。共同起点之前的缺失、无法取得初值或预期更新缺口均使对应风险/研究窗口不可用，不提供删除缺失样本的选项。旧 `complete_case_drop` 当前设置通过 `20261008_0072` 迁移为 strict，API、计算层和数据库约束拒绝重启；既有 run 的请求/结果保持原始事实，由 solver version 标为需重算。样本还须通过最低观察数和尾部新鲜度检查；对于已知交易日历，请求截止日之前每个应有 session 都必须存在，不能用 5 天自然日阈值容忍缺失 session。只有所有 active 成员的已知日历均证明最新完整行至请求日全为休市时，才以该完整行日期检验新鲜度，同时披露真实自然日差及 `return_freshness_as_of_date`；不移动请求窗口、不补休市零收益。
 - 日频 instrument 配置 `market_calendar` 时，以该日历校验 holiday vs missing：共同非交易日不生成样本；任何日历交易日缺价都进入 coverage / missing 诊断。未配置或日历无法解析时使用保守的日历日 gap threshold，不隐式填值。
-- Portfolio Risk 页的 `risk_basis` 来自 Holdings workspace，是当前 `risk_eligible=true` 非现金 modeled sleeve 的来源覆盖摘要，不是一个风险指标。`resolved_frequency` 恒为 `daily`，`window_start_date / window_end_date` 明示摘要检查的区间（当前回看 366 日）。历史摘要的 `partial` 不得阻断区间外的 Rolling Risk、Correlation 或 Production Forward RC；每项计算只检查其实际成员与所选窗口，窗口内缺源、非法期间或预期更新缺口仍须明确 unavailable。逐标的 `instrument_return_series_all.observation_coverage` 随同实际选定收益序列返回完整、未截断的 `gap_dates`、检测起止范围及 `gap_detection_basis`，供最长 24 个月与各滚动终点逐窗检查，不能用摘要中最多 20 个日期样本代替完整检查。交易日历 basis 的 gap 是确切缺失 session；未知日历的 `calendar_day_threshold` 日期标记超阈值间隔的右端，`event_driven` 不凭间隔推断应披露而未披露。
+- Portfolio Risk 页的 `risk_basis` 来自 Holdings workspace，是当前 `risk_eligible=true` 非现金 modeled sleeve 的来源覆盖摘要，不是一个风险指标。`resolved_frequency` 恒为 `daily`，`window_start_date / window_end_date` 明示摘要检查的区间（当前回看 366 日）。历史摘要的 `partial` 不得阻断区间外的 Rolling Risk、Correlation 或 Production Forward RC；每项计算只检查其实际成员与所选窗口，窗口内缺源、非法期间或预期更新缺口仍须明确 unavailable。逐标的 `instrument_return_series_all.observation_coverage` 随同实际选定收益序列返回完整、未截断的 `gap_dates`、检测起止范围及 `gap_detection_basis`，供最长 24 个月与各滚动终点逐窗检查，不能用摘要中最多 20 个日期样本代替完整检查。交易日历 basis 的 gap 是确切缺失 session；未知日历为 `schedule_unverified`，日频风险不可用，不以自然日阈值推断缺口或完整性；`event_driven` 不凭间隔推断应披露而未披露。
 - 风险来源覆盖与组合估值覆盖独立：买入之前的行情缺口不阻断实际持仓期 NAV；已有明确授权的估值输入可支持当天账本估值，但不能自动替代缺失的证券总回报 NAV。实际组合风险读取核算发布的 market-risk return 与对应期间覆盖；当前持仓历史模拟继续检验所选证券收益序列，不得用组合 NAV 完整推断证券历史完整。
 - Holdings `Forward RC` 和 Risk 页 Current Drift 使用 total-NAV 当前权重：eligible exposure 按 `signed market_value_base / total NAV` 形成权重，衍生品和 base-currency cash 不进入 covariance，但作为 0-return capital 留在分母中。Forward covariance 必须先在全部 eligible leaf instruments 上估计一次；taxonomy / sleeve 的 current risk share 只能把这些 leaf contribution 按同一个 total-portfolio variance 分母相加，禁止先合成 sleeve return、再对 sleeve 重新做 shrinkage covariance。输出同时披露 modeled/excluded exposure、cash 与 coverage。真实成立以来/真实持仓期间的 realized attribution 留在 Performance `Calculation`。Risk 页不再提供单独的 point-in-time Risk Contribution 表；风险预算偏离只在 Current Drift 中展示。
 - Risk 页 Rolling Risk 是窗口内 sample volatility / sample Sharpe 展示层，默认“实际组合”，另可显式选择“当前持仓回溯”。实际组合只读取 Performance 发布的 `daily_series.market_risk_daily_return`，纳入 `market_risk_return_observation_eligible=true` 且对应期间 coverage complete 的观测；不使用 `daily_twr`，不把没有新市场观测的周末 carry 0 加入样本。每个滚动窗口独立检查其实际期间的覆盖与连续性，旧窗口外的断链状态不能永久阻断后续完整样本。年化与 Performance 一致：样本方差分母为 `N - 1`，年化密度为 `N / 窗口实际 EOD 起止跨度 × 365.25`；funded BOD 的首日市场收益保留，计时锚点与展示的首个真实收益日期分别记录，不把锚点描述为成立前的实际历史。
@@ -320,7 +324,7 @@ Risk 与 Research 的 covariance / correlation / risk contribution 固定使用�
 - 每个月度矩阵继承相同的成员、币种、来源覆盖及完整共同样本检查；相邻窗口还要求当期首条收益的起始日不早于前期最后收益的结束日，防止按结束日期分窗但重复使用跨窗收益期间。缺失成员、日期/期间错位、来源缺口、常数收益或跨窗期间重叠均不靠填零、删对象或两两取不同样本补齐。关注仅在浏览器按所选日期与当前篮子重算，不写入共享风险事项，不改变 Production Risk Model、生产波动率、RC、预算偏离或研究求解。
 - 广泛上升提示只说明相关性相对自身历史出现值得复核的变化；对象对及相邻月度变化并不独立，不能据此宣称统计显著、未来损失或危机将发生。负相关减弱也可能触发；方向相反的对象对变化可能在有符号平均中抵消，单个局部结构变化不属于此筛选目标。历史离散度很低但非零时，幅度很小的变化也可能超过上围栏；界面应同时呈现实际水平、变化及广度，不能将关注标记解释成高风险级别。风险判断仍需结合组合波动、跌幅、敞口及其他证据。
 - Risk 页 instrument-scope planning taxonomy 的 Current Drift 用 Securities、Derivatives 与 Accounts workspace 的 `derived_cash_balance_base + pending_settlement_base` 合成当前 NAV；deposit 与 securities account 的现金、待交收都必须计入，证券账户的 position market value 只通过 Holdings 进入一次。Securities 按 taxonomy 顶层节点汇总；Derivatives 固定汇总到 `derivative_bucket:__derivatives__`，现金与待交收固定汇总到 `cash_bucket:__cash__`，两者都不读取 taxonomy assignment。Holdings 中为对账而展示的 settled-cash 与 pending-monetary rows 不得再次计入。
-- Base-currency cash 和事件记账型衍生品资本在组合风险聚合中按 0 return 处理；衍生品行自身没有可观测波动率或 Forward RC，仍显示 `N/A / excluded`。Non-base cash 需要 FX total-return series；非本币资产的本地币种 total return 也不能直接与 base-currency returns 拼接。在显式产出 base-currency total-return series 之前，Forward RC、Rolling Risk 与 Correlation 都必须 fail closed。若组合没有任何可建模市场资产，组合风险为 unavailable，不把纯现金/衍生品组合报告成实际波动率 0。
+- Base-currency cash 和事件记账型衍生品资本在组合风险聚合中按 0 return 处理；衍生品行自身没有可观测波动率或 Forward RC，仍显示 `N/A / excluded`。Non-base cash 需要 observed FX-return series；非本币资产的本地币种 total return 也不能直接与 base-currency returns 拼接。在显式产出已确认的 base-currency return series 之前，Forward RC、Rolling Risk 与 Correlation 都必须 fail closed。若组合没有任何可建模市场资产，组合风险为 unavailable，不把纯现金/衍生品组合报告成实际波动率 0。
 - Risk benchmark 只有在 return semantics 已确认为 `total_return` 或 `price_return` 且 currency 与 portfolio base currency 一致时才参与 rolling comparison。`price_return` 可以作为探索性比较，但必须提示分红口径差异；unknown semantics、raw-currency 或 unavailable coverage 不输出相对风险曲线。
 - Risk Health 的基础监控包括 Production Forward Volatility 及 coverage、SAA/TAA risk-budget absolute gap、非现金 gross-normalized Top-3/HHI、以及 Accounts cash + pending settlement。任何组成字段缺失时对应指标显示 unavailable，不得把缺失金额或权重当成 0。
 - Taxonomy 页 instrument-scope planning taxonomy 的当前覆盖视图使用同一口径：只有 Securities 接受 taxonomy assignment；Derivatives 与 Cash 是不可移动、不可分类的固定系统桶。三类资产共同进入根行 `Actual Weight` 分母，根行必须约等于 100%；`Without Classification` 只表示尚未分类的 Securities，不包含衍生品或现金。
@@ -555,7 +559,7 @@ Holdings 行级 `Weight = market_value_base / portfolio NAV`，所以 written li
 
 Holdings read model 计算 as-of date 当前持仓规模的最新报价与 FX 变动，供 Overview Asset Mix、Top Holdings 和内部快照使用；组合 headline 的 `1D P&L` 则读取估值日真实账本单日投资损益及剔除资金流后的收益，包含当日交易和费用。两者可能有不同方向，不得互相替换或要求数值对平。Overview 将持仓测算命名为 `Quote / FX Move`，可展开逐行查看实际观测起止日期；`NAV reconciled` 只证明账面金额合计与组合 NAV 一致。Security 表不再把 Day P&L / Day Return 作为可选字段：
 
-- 非现金资产优先使用 `quote_selection_policy.total_return` 选出的当前点与上一可用同 basis 点；只有 total-return basis 不可用时才回退到 selected valuation basis。这样已确认的拆分、分配或分红不会被误判为单日价格暴跌；
+- 非现金资产的报价变动优先使用已确认、同段的 total-return 当前点与上一点；缺失时可明确展示 selected valuation basis 的原始报价变化，并记录 `day_change_price_basis=price_return`。后者可能含除权价格跳变，只是报价变动，不能进入分析收益或解释为完整经济损益；两端不得混配 basis。
 - `local_day_return = current_return_point / previous_return_point - 1`；本币市场价值变化先形成 `local_day_change_value`。组合币种总变动必须使用当前与上一估值日各自的 FX：`day_change_value_base = current_local_value × current_fx - previous_local_value × previous_fx`，不能把两端都按当前汇率换算；
 - Holdings read model 同时输出 `local_day_change_value_base = (current_local_value - previous_local_value) × current_fx` 与 `fx_day_change_value_base = previous_local_value × (current_fx - previous_fx)`，两者必须精确加总为 `day_change_value_base`。当前/上一 FX rate、rate date 与 source instrument ids 随行保留；
 - `day_change_price_as_of_date`、`previous_day_change_price_as_of_date` 和 `day_change_price_basis` 随快照保留实际收益观测对；不能用估值日、前一个日历日或展示图表倒推。total-return 对完整时记录该对日期，否则记录实际使用的 valuation-price 对；交易成本估值、事件估值和缺点时不虚构报价变动日期；
@@ -1112,6 +1116,7 @@ $$
 说明：
 
 - `ExcessReturn` 是 arithmetic relative result；
+- Research 相对结果仅发布共同样本起止日、观察数、算术超额收益、tracking error 和 information ratio；不得把 `r_p-r_b` 连乘成财富曲线并计算累计收益、回撤或 Sharpe。基准与模拟行情的已知缺口保留为不可用区间，合法休市延用不变；基准比较在不可确认的区间前截止，较晚起点或提前截止须披露实际范围。
 - 若未来需要 `relative wealth ratio`，必须另起字段，不得复用 `excess_return` 名称。
 
 ### 6.5 Benchmark coverage
@@ -1319,7 +1324,7 @@ Risk 页和 Research solver 使用同一套 covariance model id 与 contribution
 - `sample_covariance`
 - contribution mode: `signed` / `abs`
 
-这里的 `\Sigma` 是年化 covariance matrix。`sample_covariance` 的日频 return 样本使用 `n - 1` 分母；EWMA 和 Ledoit-Wolf 这类模型可在模型内部使用其自身估计口径，但必须通过 model id 明确区分。来源更新节奏不同时，先构造 2.6.1 的日频 mark-to-last 路径，再在共同日期上估计协方差和相关性，并按实际观察密度年化。若完整有效收益不足两期，solver 必须进入 insufficient-history 诊断。
+这里的 `\Sigma` 是年化 covariance matrix。`sample_covariance` 的日频 return 样本使用 `n - 1` 分母；EWMA 和 Ledoit-Wolf 这类模型可在模型内部使用其自身估计口径，但必须通过 model id 明确区分。来源更新节奏不同时，先构造 2.6.1 的日频 mark-to-last 路径，再在共同日期上估计协方差和相关性，并按实际观察密度年化。所有协方差模型共享 `n × 365.25 / (最后收益期末日 − 首笔收益真实起点日的自然日数)`；首期跨周末或长假时保留实际起点，窗口裁剪后从首笔入选收益读取起点，不用相邻期末间距的中位数估计，也不把休市日人为加入行情锚点。原币与必要 FX 先对齐成同一财富路径，再保留共同期间；起点缺失、各成员区间不一致或区间不连续时不可用。历史模拟自身仍使用真实组合成立／EOD 账簿起点，其指标以实际 NAV 点之间的区间年化。若完整有效收益不足两期，solver 必须进入 insufficient-history 诊断。
 
 ### Marginal contribution to variance
 
@@ -1408,7 +1413,7 @@ $$
 - `risk share` 基于参与风险计算的头寸权重；
 - Holdings / Risk covariance 使用合资格证券与外币 monetary rows 的 signed base exposure 除以 total NAV；它输出包含 base-currency cash 与衍生品 0-return capital 稀释的 total-portfolio forward volatility 与 risk share；
 - total NAV、modeled/excluded exposure、cash 和 coverage ratio 必须与 modeled result 一起披露，使用户可以看到可观测市场风险覆盖多少资产负债表；
-- base-currency 现金、待交收和衍生品不进入 covariance matrix，但在权重向量中等价于 0-return capital；non-base monetary exposure 必须有 FX total-return series，否则整个组合结果 unavailable。
+- base-currency 现金、待交收和衍生品不进入 covariance matrix，但在权重向量中等价于 0-return capital；non-base monetary exposure 必须有 observed FX-return series，否则整个组合结果 unavailable。
 
 Instrument-scope planning taxonomy 的根 scope 固定包含两个不可分类、不可移动的系统成员：
 
@@ -1446,7 +1451,7 @@ $$
 - 每个父节点用本节点的配置依据解释直接成员目标。Weight 模式施加硬等式 `W_child = target_value_child × W_parent`；Risk 模式以 `Q_child = target_value_child × Q_parent` 为目标。固定权重 sleeve 是按配置比例组成、整体可缩放的篮子；signed Euler 模式下与先合成 `r_B = Σ p_j r_j`、再将 B 和其他风险单元共同求解等价，完整保留跨 sleeve 协方差。一个求解同时处理不同层级的资金／风险关系，不先独立求子组合风险预算再拼接，也不对每一层重新 shrink covariance。
 - 根使用 `root_allocation_basis`，节点使用 `allocation_basis`；SAA/TAA 共享依据，Research 不提供额外维度覆盖。
 - 多成员父节点必须有 active、完整标量目标；完整 TAA 优先，整层空白 TAA 继承 SAA，部分 TAA 不得回退。目标逐成员明确填写并合计 100%；没有目标不生成等权替代。单成员节点只有唯一内部比例，仍参与全局数据、资本和风险约束检查。未设置目标与明确 0% 含义不同。
-- 全部非零候选证券使用相同基准货币、对齐 period identity 和同一返回窗口；`Σ` 只估计一次。`strict` 下任一 active member 缺失即不可用；`complete_case_drop` 仍按现有前置热身、缺失比例、尾部新鲜度和最低样本合同检验全局共同样本，不能逐 sleeve 使用不同有效日期。
+- 全部非零候选证券使用相同基准货币、对齐 period identity 和同一返回窗口；`Σ` 只估计一次。任一 active member 缺失即不可用；不能删除缺失收益行，也不能逐 sleeve 使用不同有效日期。
 - 风险模型、lookback、calculation frequency、missing-return policy 和 contribution mode 来自组合级 Production Risk Model。最终风险指标、父节点诊断与 Solved Result RC 都从同一最终 leaf 权重和 `Σ` 生成；不存在另一个父节点局部 covariance 风险口径。
 - 权重模式可以保留具有负 signed RC 的证券，显示其对冲贡献；具有正风险分配的父节点若 `Q_parent <= 0`，风险比例不可满足，必须披露 target miss 并将 `execution_ready=false`，不能取绝对值或补 epsilon 伪造风险预算。
 - `frozen` 表示 as-of 实际资本 no-trade，证券仍留在全局 covariance 和 Euler 贡献中。Weight 父节点先固定直接 no-trade 子节点资金，其余可调子节点按原配置相对比例分配剩余资本；Risk 父节点仍将冻结子节点纳入原全局 `Q_child = b × Q_parent` 条件，不能从风险分母移除。顶层硬上下限及资本约束按同一最终权重验证。缺少冻结持仓、目标比例冲突或硬约束使目标无法命中时，明确返回不可行或目标偏差；数值求解器报告成功本身不等于可执行。
@@ -1551,9 +1556,9 @@ Risk 页“历史情景损失”使用当前 signed 基准货币敞口重放真�
 
 对每个共同历史区间，证券基准货币冲击为 `(1 + local_return) × (1 + fx_return) − 1`，包含交叉项；同币种证券只用本地收益，外币现金和待结算只用 FX。情景损失为各当前市值乘以冲击之和取负。基准货币现金不产生市场冲击。FCN/Option 不做日频重估，明确列为未建模；缺失数据和周频基金不会默认为零风险。
 
-仅使用起止日期完全一致且经交易日历验证相邻 session 的观察值；未知日历仅接受相邻自然日。经 USD 中转的交叉汇率还须证明两腿实际日历（含 `exchange_code` 后备来源）及频率一致，否则使用明确标为 `unverified` 的相邻自然日口径，不能沿用其中一腿的交易日历。不补齐缺失收益或 FX，不将多日收益伪装成日收益，不使用平方根时间缩放。证券与 FX 的对齐在进入组合共同样本前完成；每行保留因 FX 无同起止区间而被剔除的证券区间数、无法验证为日频的 FX 区间数及对齐后的实际起止日期。不同持仓可能使用同一 FX 缺口，这些行级计数不能相加当成独立日期数。跨市场日期对齐并不代表日内收盘时刻完全同步。
+仅使用起止日期完全一致且经交易日历验证相邻 session 的观察值。未知日历不可计算，不从相邻自然日猜测交易日频率。经 USD 中转的交叉汇率须证明两腿实际日历（含 `exchange_code` 来源）及频率一致，不能任取一腿日历。当前方法为精确观察区间情景法，不是 covariance 的休市 mark-to-last 财富路径；若不同合法日历产生无法统一的区间，则明确 `incompatible_daily_scenario_intervals` 并停止发布 VaR／ES，不把已确认休市误称缺报价，也不通过交集删除区间后计算。证券及必要 FX 的实际缺失、不可用和跨多日收益同样阻断估计。不补齐收益或 FX，不将多日收益伪装成日收益，不使用平方根时间缩放。跨市场日期对齐并不代表日内收盘时刻完全同步。
 
-资产建模覆盖 `coverage_status` 与历史窗口覆盖 `history_coverage_status` 分开。后者仅在所有建模证券与必要 FX 的日历可验证时，根据请求区间内共同 session pairs 计算应有情景数，以及实际样本之前、之内、之后的未覆盖情景数；前段未覆盖可能来自标的较晚成立或来源历史较短，不宣称基金成立前缺失净值。未知日历为 `unverified`，无共同样本为 `unavailable`。页面将请求区间、实际共同样本起止、共同情景数与尾部等效样本数并列；短历史明确为仅覆盖请求窗口的一部分，不能把选择的一/三/五年当成实际样本跨度。历史跨度比例只描述自然日跨度，不是交易日完整率或统计置信度。
+资产建模覆盖 `coverage_status` 与历史窗口覆盖 `history_coverage_status` 分开。应有区间仅由验证过的日历确定。仅因历史较短、样本前段未覆盖时，可按明确披露的实际共同起止日计算，不宣称成立前缺净值或请求年限已完整覆盖。实际样本内部或尾部有缺口时，返回精确 `missing_intervals`／`missing_return_dates`，VaR／ES 不可用；日历无法核实也不可发布。页面并列请求区间、实际共同样本、观察数和原因。缺口阻断时观察数仅为诊断，不代表删除后重算的有效样本或尾部质量。历史跨度比例只描述自然日跨度，不是交易日完整率或统计置信度。
 
 历史情景等概率。VaR 为损失经验分布的逆分位数；ES 为指定尾部概率的损失积分，正确计入边界观察值的部分概率质量，不能简单平均所有 `loss >= VaR`。负 VaR/ES 保留为 signed gain，不截为零。有效尾部质量 `N × (1 − confidence) < 1` 时按现行样本分辨率保护规则不返回估计；这不是声称经验分位数在数学上不存在。其余始终披露实际共同样本数、尾部质量、实际日期范围及局限，数值可用不代表统计精度充分。尾部质量涉及的观察条数及单条情景在 ES 中的最大概率权重直接显示在估计旁，不藏在折叠说明内；它们不是独立尾部事件数，也不是单条情景货币损益贡献的上限。
 

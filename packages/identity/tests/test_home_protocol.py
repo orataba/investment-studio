@@ -48,10 +48,23 @@ def test_real_protocol_regrant_keeps_actor_and_parent_revocation(monkeypatch, tm
         principal = identity.resolve_token(client.cookies.get(settings.auth_cookie_name), "watchlist")
         assert principal.user_id == owner["user_id"]
         assert identity.team_directory(principal)[0]["user_id"] == owner["user_id"]
-        token = identity.issue_delegation(principal, "watchlist", {"kind": "run", "id": "run-one"})
+        token = identity.issue_delegation(principal, "watchlist", {"kind": "run", "id": "run-one", "attempt": "2"})
         run = identity.resolve_token(token, "watchlist")
+        assert run.resource_scope == {"kind": "run", "id": "run-one", "attempt": "2"}
+        # Portfolio has a distinct, non-retrying research run consumer. Home
+        # allows its scope; Watchlist independently requires a current attempt.
+        portfolio_run = identity.issue_delegation(principal, "portfolio", {"kind": "run", "id": "portfolio-run"})
+        assert identity.resolve_token(portfolio_run, "portfolio").resource_scope == {"kind": "run", "id": "portfolio-run"}
         child = identity.issue_delegation(run, "portfolio", {"kind": "portfolio", "id": "p1"})
         assert identity.resolve_token(child, "portfolio").user_id == principal.user_id
+        capture = identity.issue_delegation(principal, "portfolio", {"kind": "capture", "id": "batch-one", "attempt": "2"})
+        assert identity.resolve_token(capture, "portfolio").resource_scope == {"kind": "capture", "id": "batch-one", "attempt": "2"}
+        for scope in ({"kind": "capture", "id": "batch-one"}, {"kind": "capture", "id": "batch-one", "attempt": "0"},
+                      {"kind": "run", "id": "run-one", "attempt": "0"},
+                      {"kind": "portfolio", "id": "p1", "attempt": "2"}):
+            with pytest.raises(identity.IdentityError) as invalid:
+                identity.issue_delegation(principal, "portfolio", scope)
+            assert invalid.value.status_code == 422
         with pytest.raises(identity.IdentityError) as caught:
             identity.resolve_token(child, "watchlist")
         assert caught.value.status_code == 403

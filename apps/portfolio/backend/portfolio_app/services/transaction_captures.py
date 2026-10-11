@@ -56,7 +56,6 @@ def _parse_utc_timestamp(value: str | None) -> datetime | None:
 def _effective_analysis_run_state(
     row: TransactionCaptureBatchModel,
     *,
-    latest_analysis: TransactionCaptureAnalysisRevisionModel | None,
     now: datetime | None = None,
 ) -> tuple[str, str | None]:
     status = row.analysis_run_status
@@ -64,19 +63,6 @@ def _effective_analysis_run_state(
         return status, row.analysis_run_error
 
     started_at = _parse_utc_timestamp(row.analysis_run_started_at)
-    latest_created_at = _parse_utc_timestamp(
-        latest_analysis.created_at if latest_analysis is not None else None
-    )
-    if (
-        started_at is not None
-        and latest_created_at is not None
-        and latest_created_at >= started_at
-        and latest_analysis is not None
-        and latest_analysis.source == "assistant"
-        and latest_analysis.harness == "deepseek-harness"
-    ):
-        return "succeeded", None
-
     activity_at = started_at or _parse_utc_timestamp(row.updated_at)
     if activity_at is None:
         return status, row.analysis_run_error
@@ -164,10 +150,7 @@ def _serialize_batch(
     latest_analysis: TransactionCaptureAnalysisRevisionModel | None,
 ) -> dict[str, object]:
     ordered_items = sorted(row.items, key=lambda item: item.ordinal)
-    analysis_run_status, analysis_run_error = _effective_analysis_run_state(
-        row,
-        latest_analysis=latest_analysis,
-    )
+    analysis_run_status, analysis_run_error = _effective_analysis_run_state(row)
     proposed_references: list[str] = []
     transaction_import = (
         latest_analysis.transaction_import_json
@@ -559,10 +542,7 @@ def queue_transaction_capture_analysis_run(
                 "Screenshot analysis batch not found."
             )
         latest_analysis = _latest_analysis(session, batch)
-        analysis_run_status, _analysis_run_error = _effective_analysis_run_state(
-            batch,
-            latest_analysis=latest_analysis,
-        )
+        analysis_run_status, _analysis_run_error = _effective_analysis_run_state(batch)
         if analysis_run_status in {"queued", "running"}:
             raise TransactionCaptureAnalysisRunConflictError(
                 "Screenshot analysis is already running for this batch."
@@ -660,6 +640,7 @@ def create_transaction_capture_analysis_revision(
     transaction_import: dict[str, object] | None,
     preview: dict[str, object] | None,
     referenced_capture_ids: set[str],
+    analysis_run_attempt: int | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -673,6 +654,18 @@ def create_transaction_capture_analysis_revision(
         )
         if batch is None:
             raise TransactionCaptureBatchNotFoundError("Screenshot analysis batch not found.")
+
+        if source == "assistant" and (
+            analysis_run_attempt is None
+            or analysis_run_attempt < 1
+            or analysis_run_attempt != batch.analysis_run_attempt
+            or _effective_analysis_run_state(batch)[0] != "running"
+        ):
+            # Check under the batch lock: a request authorized before a retry
+            # must not insert its late draft into the next attempt.
+            raise TransactionCaptureAnalysisRunConflictError(
+                "截图分析执行已结束或已被重试替代，本次结果不能提交。"
+            )
 
         batch_capture_ids = {item.capture_id for item in batch.items}
         invalid_capture_ids = sorted(referenced_capture_ids - batch_capture_ids)

@@ -37,6 +37,19 @@ it('keeps share identifiers in Name and selection labels when optional identifie
   expect(screen.getByRole('checkbox', { name: 'Select Alphabet Inc. · GOOGL' })).toBeTruthy()
   expect(screen.getByText('GOOG').closest('td')?.textContent).toContain('Alphabet Inc.')
 })
+it('discloses an incomplete return window instead of drawing an apparently complete sparkline', async () => {
+  const chartKey = 'return_chart_1m'
+  api.getWatchlistDetail.mockResolvedValue({ ...detail, views: [{ ...view, columns: ['instrument_name', chartKey] }] })
+  const chartField = { ...fields[0], field_key: chartKey, label: 'Return 1M' }
+  api.getFieldRegistry.mockResolvedValue({ fields: [...fields, chartField], column_field_keys: [...fields.map(x => x.field_key), chartKey], filter_field_keys: [] })
+  const reason = 'Missing observation inside the requested return window'
+  api.runScreenerQuery.mockResolvedValue({ ...result(), sparklines: { goog: { [chartKey]: { status: 'unavailable', reason, points: [] } } } })
+  show()
+  const unavailable = await screen.findByLabelText(reason)
+  expect(unavailable.textContent).toBe('—')
+  expect(unavailable.getAttribute('title')).toBe(reason)
+  expect(unavailable.closest('td')?.querySelector('svg')).toBeNull()
+})
 it('mirrors selected return values under the mobile identity without changing the named view', async () => {
   const named = { ...view, name: 'Research returns', columns: ['instrument_name', 'currency', 'return_ytd'] }
   api.getWatchlistDetail.mockResolvedValue({ ...detail, views: [named] })

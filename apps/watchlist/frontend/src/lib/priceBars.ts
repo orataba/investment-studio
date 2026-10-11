@@ -1,9 +1,10 @@
-import type { InstrumentPriceBar } from './api'
+import type { InstrumentPriceBar, InstrumentPriceBarsResponse } from './api'
 
-export type PriceAdjustmentMode = 'qfq' | 'raw'
+export type PriceAdjustmentMode = 'front' | 'back' | 'raw'
 export type PriceRange = '1M' | '3M' | '6M' | '1Y' | 'ALL'
 
 export type DisplayPriceBar = {
+  segment_id?: string | null
   date: string
   open: number
   high: number
@@ -85,6 +86,7 @@ function parseBar(bar: InstrumentPriceBar): DisplayPriceBar | null {
 export function adjustPriceBars(
   sourceBars: InstrumentPriceBar[],
   mode: PriceAdjustmentMode,
+  anchors?: InstrumentPriceBarsResponse['adjustment_anchors'],
 ): DisplayPriceBar[] {
   const parsed = sourceBars
     .map(parseBar)
@@ -94,16 +96,15 @@ export function adjustPriceBars(
     return parsed
   }
 
-  if (
-    !parsed.length ||
-    parsed.some((bar) => bar.adjustmentFactor === null || bar.adjustmentFactor <= 0)
-  ) {
-    return []
-  }
-  const latestFactor = parsed[parsed.length - 1].adjustmentFactor as number
+  const anchor = anchors?.[mode]
+  const anchorFactor = Number(anchor?.factor)
+  if (!anchor || !Number.isFinite(anchorFactor) || anchorFactor <= 0) return []
+  const segmentBars = parsed.filter(bar => bar.date >= anchor.start_date && bar.date <= anchor.end_date)
+  if (segmentBars.some(bar => bar.adjustmentFactor === null || bar.adjustmentFactor <= 0)) return []
 
-  return parsed.map((bar) => {
-    const scale = (bar.adjustmentFactor as number) / latestFactor
+  return segmentBars.map((bar, index) => {
+    const scale = (bar.adjustmentFactor as number) / anchorFactor
+    const previous = segmentBars[index - 1]
     return {
       ...bar,
       open: bar.open * scale,
@@ -111,19 +112,9 @@ export function adjustPriceBars(
       low: bar.low * scale,
       close: bar.close * scale,
       previousClose:
-        bar.previousClose === null ? null : bar.previousClose * scale,
+        previous ? previous.close * (previous.adjustmentFactor as number) / anchorFactor : null,
     }
   })
-}
-
-export function hasCompleteAdjustmentFactors(sourceBars: InstrumentPriceBar[]): boolean {
-  return (
-    sourceBars.length > 0 &&
-    sourceBars.every((bar) => {
-      const factor = finiteNumber(bar.adjustment_factor)
-      return factor !== null && factor > 0
-    })
-  )
 }
 
 export function slicePriceBars(
@@ -137,73 +128,4 @@ export function slicePriceBars(
   if (!latestDate) return []
   const cutoff = shiftIsoMonth(latestDate, RANGE_MONTHS[range])
   return bars.filter((bar) => bar.date >= cutoff)
-}
-
-function calendarReturn(bars: DisplayPriceBar[], months: number): number | null {
-  if (bars.length < 2) {
-    return null
-  }
-  const targetDate = shiftIsoMonth(bars[bars.length - 1].date, months)
-  const anchor = [...bars].reverse().find((bar) => bar.date <= targetDate)?.close
-  const latest = bars[bars.length - 1]?.close
-  return anchor && latest ? (latest / anchor - 1) * 100 : null
-}
-
-export function priceReturnStats(bars: DisplayPriceBar[]) {
-  const latest = bars[bars.length - 1]
-  const previous = bars[bars.length - 2]
-  const latestYear = latest?.date.slice(0, 4)
-  const firstCurrentYearIndex = latestYear
-    ? bars.findIndex((bar) => bar.date.startsWith(latestYear))
-    : -1
-  const ytdAnchorIndex =
-    firstCurrentYearIndex > 0 ? firstCurrentYearIndex - 1 : -1
-  const ytdAnchor = ytdAnchorIndex >= 0 ? bars[ytdAnchorIndex]?.close : null
-  const ytd = latest && ytdAnchor ? (latest.close / ytdAnchor - 1) * 100 : null
-  const dailyChange =
-    latest && previous ? (latest.close / previous.close - 1) * 100 : null
-
-  return {
-    dailyChange,
-    oneMonth: calendarReturn(bars, 1),
-    threeMonth: calendarReturn(bars, 3),
-    sixMonth: calendarReturn(bars, 6),
-    oneYear: calendarReturn(bars, 12),
-    ytd,
-    sinceStart:
-      bars.length > 1
-        ? (bars[bars.length - 1].close / bars[0].close - 1) * 100
-        : null,
-  }
-}
-
-export function priceRiskStats(bars: DisplayPriceBar[]) {
-  const returns: number[] = []
-  let peak = 0
-  let maximumDrawdown = 0
-  for (let index = 0; index < bars.length; index += 1) {
-    const close = bars[index].close
-    peak = Math.max(peak, close)
-    maximumDrawdown = Math.min(maximumDrawdown, close / peak - 1)
-    if (index > 0) {
-      returns.push(close / bars[index - 1].close - 1)
-    }
-  }
-  const mean = returns.length
-    ? returns.reduce((sum, value) => sum + value, 0) / returns.length
-    : null
-  const variance =
-    mean !== null && returns.length > 1
-      ? returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) /
-        (returns.length - 1)
-      : null
-  const latest = bars[bars.length - 1]?.close ?? null
-  const currentPeak = bars.reduce((value, bar) => Math.max(value, bar.close), 0)
-  return {
-    annualizedVolatility: variance === null ? null : Math.sqrt(variance * 252) * 100,
-    maximumDrawdown: maximumDrawdown * 100,
-    currentDrawdown:
-      latest === null || currentPeak <= 0 ? null : (latest / currentPeak - 1) * 100,
-    observationCount: bars.length,
-  }
 }

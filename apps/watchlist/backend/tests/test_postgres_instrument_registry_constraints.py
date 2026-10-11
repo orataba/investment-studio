@@ -173,7 +173,7 @@ def test_dossier_writer_waits_for_publication_and_preserves_new_user_focus(postg
     from sqlalchemy import select
     from studio_identity import current_principal, principal_context
     from watchlist_app.db.session import get_session_factory
-    from watchlist_app.services.research_dossier import read_mandate, save_mandate, ResearchMandateInput
+    from watchlist_app.services.research_dossier import read_mandate, save_mandate, save_guidance, ResearchMandateInput, ResearchGuidanceInput
     iid = postgres_watchlist_env["instrument_id"]
     actor = current_principal()
     factory = get_session_factory()
@@ -184,8 +184,7 @@ def test_dossier_writer_waits_for_publication_and_preserves_new_user_focus(postg
         session.add(InstrumentDetail(instrument_id=iid, instrument_type="public_fund", detail_view_type="public_fund",
             instrument_name="Concurrent Research", metadata_json={}))
         session.commit()
-        initial = payload_from(read_mandate(session, iid), focus=["原用户重点"])
-        save_mandate(session, iid, initial)
+        save_guidance(session, iid, ResearchGuidanceInput(guidance="原用户重点", expected_revision=0))
     entered = Event()
     def research_writer():
         with principal_context(actor), factory() as session:
@@ -201,14 +200,14 @@ def test_dossier_writer_waits_for_publication_and_preserves_new_user_focus(postg
             try:
                 with pytest.raises(TimeoutError):
                     future.result(timeout=0.2)
-                updated = payload_from(read_mandate(session, iid), focus=["新用户重点"])
-                save_mandate(session, iid, updated)
+                updated = read_mandate(session, iid)
+                save_guidance(session, iid, ResearchGuidanceInput(guidance="新用户重点", expected_revision=updated["revision"]))
             finally:
                 session.rollback()
         result = future.result(timeout=5)
-    assert result["user_focus"] == ["新用户重点"]
+    assert result["guidance"] == "新用户重点"
     assert result["version_id"].endswith(":v3")
-    assert [row["user_focus"] for row in result["versions"]] == [["原用户重点"], ["新用户重点"]]
+    assert [row["guidance"] for row in result["versions"]] == ["原用户重点", "新用户重点"]
 
 
 def test_pm_note_write_lock_refreshes_cached_revision_before_edit(postgres_watchlist_env):

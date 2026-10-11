@@ -767,6 +767,7 @@ def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
             {"label": "Transactions", "href": "/transactions", "status": "api-backed"},
             {"label": "Accounts", "href": "/accounts", "status": "api-backed"},
             {"label": "Taxonomies", "href": "/taxonomies", "status": "workspace-backed"},
+            {"label": "Investment Views", "href": "/investment-views", "status": "api-backed"},
             *(
                 [{"label": "Research", "href": "/research", "status": "workspace-backed"}]
                 if get_settings().research_enabled

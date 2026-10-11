@@ -6,6 +6,7 @@ import pytest
 from studio_market.config import MarketSettings
 from studio_market.numeric import NumericStore
 from studio_market.numeric.providers.hkex import daily_quotations_url
+from studio_market.numeric.providers.http_client import PublicHttpError
 from studio_data.services.fmp import eod_capture
 from studio_data.services.fmp.client import FmpApiError
 
@@ -57,6 +58,32 @@ def test_every_missing_tail_session_needs_proof_and_prices_are_unchanged(capture
     collector.raw_eod.assert_called_once()
 
 
+@pytest.mark.parametrize("official_close", ["0.265", "0.30"])
+def test_interior_no_trade_evidence_uses_preceding_actual_close(capture, monkeypatch, official_close):
+    store, collector, statuses = capture
+    def collect(*_args, **_kwargs):
+        store.ingest('raw_eod_daily', [[dict(symbol='2100.HK', date='2026-10-06',
+            open=.30, high=.30, low=.30, close=.30, adjusted_close=.30, volume=1000)]], source='fixture')
+        return {'status': 'ready'}
+    collector.raw_eod.side_effect = collect
+    days = []
+    def report(market, day):
+        days.append(day)
+        publish(market, day, close=official_close)
+    monkeypatch.setattr(eod_capture, 'ensure_session_report', report)
+    if official_close == '0.265':
+        evidence = run(capture)
+        assert {row['date'] for row in evidence} == {'2026-10-02', '2026-10-05'}
+        assert statuses == []
+    else:
+        with pytest.raises(eod_capture.FmpHistoryIncomplete, match='Missing 2 required session'):
+            run(capture)
+        assert statuses[-1]['status'] == 'failed'
+    assert days == [date(2026, 10, 2), date(2026, 10, 5)]
+    # Today's real quote remains; absent sessions acquire no synthetic price.
+    assert {row['date'] for row in store.query('raw_eod_daily')['rows']} == {'2026-09-30', '2026-10-06'}
+
+
 @pytest.mark.parametrize('mismatch', [
     {'status': 'traded'}, {'status': 'suspended'}, {'status': 'unknown'},
     {'currency': 'USD'}, {'close': '0.27'}, {'symbol': '2101.HK'},
@@ -80,3 +107,20 @@ def test_download_failure_and_pending_adjustment_are_not_hidden(capture, monkeyp
         'price_revision_requests': [{'symbol': '2100.HK', 'effective_date': '2026-10-02'}]})
     with pytest.raises(FmpApiError, match='pending adjustment revisions'):
         run(capture)
+
+
+def test_unpublished_hkex_report_is_named_and_later_evidence_recovers(capture, monkeypatch):
+    store, collector, statuses = capture
+    before = store.query('raw_eod_daily')['rows']
+    monkeypatch.setattr(eod_capture, 'ensure_session_report', Mock(
+        side_effect=PublicHttpError('public download failed with HTTP status 404')))
+    with pytest.raises(FmpApiError, match='HKEX daily quotation evidence for 2100.HK on 2026-10-02') as error:
+        run(capture)
+    assert 'No-trade status remains unconfirmed' in str(error.value)
+    assert statuses[-1]['message'] == str(error.value)
+    assert store.query('raw_eod_daily')['rows'] == before
+
+    monkeypatch.setattr(eod_capture, 'ensure_session_report', lambda market, day: publish(market, day))
+    evidence = run(capture)
+    assert {row['date'] for row in evidence} == {'2026-10-02', '2026-10-05', '2026-10-06'}
+    assert store.query('raw_eod_daily')['rows'] == before

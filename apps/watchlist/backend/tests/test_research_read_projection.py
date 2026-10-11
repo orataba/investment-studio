@@ -121,7 +121,7 @@ def test_hydration_occurs_once_per_retained_version_after_scope_filter(client, m
         latest.created_at += timedelta(hours=1)
         session.commit()
     reads = []
-    def hydrate(source):
+    def hydrate(source, **kwargs):
         reads.append(source["version_id"])
         return {**_source(source["source_id"]), **source}
     monkeypatch.setattr(research_notebook, "hydrate_source", hydrate)

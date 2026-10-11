@@ -31,6 +31,7 @@ SYSTEMD_UNIT_PREFIX="${UNIT_PREFIX:-investment-studio}"
 SYSTEMD_UNITS=(
   "$SYSTEMD_UNIT_PREFIX-home-api.service"
   "$SYSTEMD_UNIT_PREFIX-watchlist-api.service"
+  "$SYSTEMD_UNIT_PREFIX-research-worker.service"
   "$SYSTEMD_UNIT_PREFIX-portfolio-api.service"
   "$SYSTEMD_UNIT_PREFIX-home-web.service"
   "$SYSTEMD_UNIT_PREFIX-watchlist-web.service"
@@ -186,8 +187,8 @@ stop_all_managed_services() {
       ;;
     launchd)
       for service in \
-        home-api watchlist-api portfolio-api briefing-api \
-        home-web watchlist-web portfolio-web briefing-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh market-sync; do
+        home-api watchlist-api research-worker portfolio-api briefing-api \
+        home-web watchlist-web portfolio-web briefing-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh market-sync cloud-sync; do
         launchctl bootout \
           "gui/$UID/${LABEL_PREFIX:-com.orataba.investment-studio}.$service" \
           >/dev/null 2>&1 || true

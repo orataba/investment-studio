@@ -132,6 +132,9 @@ def remote_snapshot(config, directory, rsync_path):
                f"--dbname={config['remote_database']}"]
     command += [f"--schema={name}" for name in SCHEMAS]
     command += [f"--exclude-table-data=identity.{name}" for name in PRIVATE_CREDENTIAL_TABLES]
+    # Queue grants belong to the cloud's original identity delegation chain.
+    # Retain business runs/evidence, never copy executable authority or leases.
+    command.append("--exclude-table-data=watchlist.research_execution")
     try:
         print("Preparing a consistent compressed cloud database snapshot", flush=True)
         script = ("set -euo pipefail; umask 077; gzip -n --rsyncable -1 </dev/null >/dev/null; " + shlex.join(command)
@@ -305,7 +308,16 @@ def reset_copied_jobs(connection):
         WHERE status='running'""", (stamp, message))
     connection.execute("""UPDATE portfolio.transaction_capture_batch SET analysis_run_status='failed',
         analysis_run_completed_at=%s,analysis_run_error=%s WHERE analysis_run_status IN ('queued','running')""", (stamp, message))
-    # Watchlist and Briefing recover copied in-flight analysis during startup.
+    # Watchlist API startup no longer owns execution recovery. A copied run has
+    # no transferable queue grant, so terminate it before starting local workers
+    # and preserve its original inputs, draft and publication checkpoints.
+    connection.execute("""UPDATE watchlist.research_entry SET status='failed',completed_at=%s,body=%s
+        WHERE kind='analysis' AND status IN ('queued','running')""", (stamp, message))
+    # Normally empty because export excludes this private table. Also discard
+    # leases/credentials when recovering an older staged snapshot.
+    connection.execute("""UPDATE watchlist.research_execution SET status='finished',delegation_token=NULL,
+        owner_id=NULL,heartbeat_at=NULL,lease_expires_at=NULL""")
+    # Briefing recovers copied in-flight analysis during startup.
     connection.execute("""UPDATE watchlist.recalc_job SET job_status='queued',started_at=NULL,
         heartbeat_at=NULL,lease_token=NULL WHERE job_status='running'""")
 

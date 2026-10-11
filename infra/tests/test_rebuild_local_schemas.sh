@@ -36,7 +36,14 @@ printf '%s\n' \
   'state_file="$2"' \
   'printf "services:%s\n" "$action" >> "$EVENT_LOG"' \
   'if [[ "$action" == "stop" ]]; then printf "%s\n" home-api portfolio-web > "$state_file"; fi' \
+  'if [[ "$action" == "start" && "${START_FAIL:-false}" == true ]]; then exit 1; fi' \
   > "$PROJECT_ROOT/infra/launchd/control_local_services.sh"
+
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf "launchctl:%s\n" "$*" >> "$EVENT_LOG"' \
+  > "$MOCK_BIN/launchctl"
+chmod +x "$MOCK_BIN/launchctl"
 
 printf '%s\n' \
   '#!/usr/bin/env bash' \
@@ -138,4 +145,19 @@ if grep -q '^services:start$' "$EVENT_LOG"; then
   exit 1
 fi
 grep -q 'managed services remain stopped' "$TEST_ROOT/failure.out"
+
+# A partially restored cloud-sync may replace the database immediately because
+# its job runs on load. Failure cleanup must stop it as well as the APIs.
+: > "$EVENT_LOG"
+if PATH="$MOCK_BIN:$PATH" PROJECT_ROOT="$PROJECT_ROOT" \
+  PSQL_BIN="$MOCK_BIN/psql" PYTHON_BIN="$REAL_PYTHON" \
+  TMPDIR="$TEST_ROOT/tmp" START_FAIL=true \
+  INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$DATABASE_URL" \
+  "$REBUILD_SCRIPT" --confirm-destroy-project-schemas \
+  > "$TEST_ROOT/start-failure.out" 2>&1; then
+  echo "Expected partial service restoration failure." >&2
+  exit 1
+fi
+grep -q 'launchctl:bootout .*\.cloud-sync' "$EVENT_LOG"
+grep -q 'launchctl:bootout .*\.research-worker' "$EVENT_LOG"
 echo "explicit, single-target schema rebuild safety test passed."

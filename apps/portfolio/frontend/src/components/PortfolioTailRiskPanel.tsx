@@ -12,10 +12,13 @@ const messages: Record<string, [string, string]> = {
   no_common_daily_periods: ['持仓之间没有起止日期一致的日频情景。', 'Holdings have no common daily observation intervals.'],
   less_than_one_tail_observation: ['所选置信度的尾部不足一个观察样本，暂不显示 VaR / ES。', 'The selected tail contains less than one observation; VaR / ES are unavailable.'],
   partial_market_risk_coverage: ['仅覆盖已建模的市场敞口；未覆盖资产并非零风险。', 'Only modeled market exposures are covered. Excluded assets are not zero risk.'],
-  non_daily_or_unverified_intervals_removed: ['已剔除低频或无法确认日频的收益区间，没有填充缺失收益。', 'Non-daily or unverified intervals were removed; missing returns were not filled.'],
+  non_daily_or_unverified_intervals_removed: ['存在非日频或不可用收益区间；不会删除区间后重算风险。', 'Non-daily or unavailable intervals are present; risk is not recomputed after deleting them.'],
+  incompatible_daily_scenario_intervals: ['各来源的实际单交易日区间不一致；当前精确区间情景法无法比较，暂不计算 VaR / ES。已确认休市不记为缺失报价。', 'Sources have incompatible observed one-session intervals. This exact-interval scenario method cannot compare them; VaR / ES are unavailable. Confirmed holidays are not missing prices.'],
+  missing_daily_return_intervals: ['实际样本内部或尾部存在缺失／不可用区间，VaR / ES 不可用。', 'Missing or unavailable intervals within or after the actual sample prevent VaR / ES.'],
+  unverified_daily_calendar: ['日频交易日历未核实，风险估计不可用。', 'The daily trading calendar is unverified; risk is unavailable.'],
   common_period_intersection: ['仅使用所有建模敞口起止日期均一致的共同情景。', 'Only scenarios with identical start and end dates across modeled exposures are used.'],
   requested_history_partially_covered: ['实际共同样本仅覆盖所选回看的一部分，不能视为所选年限的完整历史。', 'The common sample covers only part of the requested lookback, not the full selected number of years.'],
-  requested_history_calendar_unverified: ['部分来源无法确认共同的日频交易日历，无法验证所选区间是否完整。仅使用可确认的相邻自然日情景。', 'A common daily calendar cannot be verified for all sources, so full-window coverage cannot be established. Only verified consecutive calendar-day scenarios are used.'],
+  requested_history_calendar_unverified: ['部分来源的日频交易日历未核实，无法验证样本完整性，VaR / ES 不可用。', 'A daily calendar cannot be verified for all sources, so sample completeness and VaR / ES are unavailable.'],
   unverified_fx_intervals_removed: ['已剔除非日频或无法验证的汇率区间，没有前向填充汇率。', 'Non-daily or unverified FX intervals were removed; FX was not carried forward.'],
   unmatched_security_fx_periods_removed: ['缺少同起止日期汇率冲击的证券区间已剔除，未补零或改用不同周期。', 'Security intervals without FX shocks at identical boundaries were removed, without zero-filling or substituting another period.'],
   derivative_fair_value_unmodeled: ['固定票息票据与期权未纳入日公允价值模型', 'FCN / Option daily fair values are not modeled'],
@@ -48,7 +51,7 @@ export default function PortfolioTailRiskPanel({ portfolioId, asOfDate }: {
   const number = (value: number | null | undefined, digits = 2) => value == null ? '—'
     : value.toLocaleString(zh ? 'zh-CN' : 'en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits })
   const percent = (value: number | null | undefined) => value == null ? '—' : `${number(value * 100)}%`
-  const prominentLimitations = new Set(['invalid_portfolio_nav', 'no_modeled_market_exposure', 'no_common_daily_periods', 'less_than_one_tail_observation', 'partial_market_risk_coverage'])
+  const prominentLimitations = new Set(['invalid_portfolio_nav', 'no_modeled_market_exposure', 'no_common_daily_periods', 'less_than_one_tail_observation', 'partial_market_risk_coverage', 'missing_daily_return_intervals', 'requested_history_calendar_unverified', 'incompatible_daily_scenario_intervals'])
   const historyWarning = data?.history_coverage_status === 'partial'
     ? 'requested_history_partially_covered'
     : data?.history_coverage_status === 'unverified' ? 'requested_history_calendar_unverified' : null
@@ -112,6 +115,7 @@ export default function PortfolioTailRiskPanel({ portfolioId, asOfDate }: {
           ? `应有 ${number(data.expected_common_observation_count, 0)} 条 · 样本前未覆盖 ${number(data.uncovered_leading_observation_count, 0)} 条 · 区间内缺少 ${number(data.missing_internal_observation_count, 0)} 条 · 样本后未覆盖 ${number(data.uncovered_trailing_observation_count, 0)} 条`
           : `${number(data.expected_common_observation_count, 0)} expected · ${number(data.uncovered_leading_observation_count, 0)} uncovered before the sample · ${number(data.missing_internal_observation_count, 0)} missing within it · ${number(data.uncovered_trailing_observation_count, 0)} uncovered after it`}<InfoHint label={zh ? '历史缺口口径' : 'History gap basis'} detail={zh ? '按所有已建模资产和所需汇率的共同交易日历计算。样本前未覆盖可能来自标的成立较晚或来源历史较短，不代表成立前缺失净值。' : 'Counts use the common trading calendar of modeled assets and required FX. Leading absence may reflect younger instruments or shorter source history; it does not imply missing prices before inception.'} /></p>}
       </div>}
+      {!!data.missing_intervals?.length && <details className="portfolio-tail-risk-warning"><summary>{zh ? '缺失收益区间' : 'Missing return intervals'} ({data.missing_intervals.length})</summary><ul>{data.missing_intervals.map(p => <li key={`${p.start_date}:${p.end_date}`}>{p.start_date} → {p.end_date}</li>)}</ul></details>}
       {data.limitations.some((code) => prominentLimitations.has(code)) && <ul className="portfolio-tail-risk-limitations">{data.limitations.filter((code) => prominentLimitations.has(code)).map((code) => <li key={code}>{label(code)}</li>)}</ul>}
       <p className="portfolio-tail-risk-coverage">
         <span>{zh ? '已建模账面总额 / NAV' : 'Modeled Gross Carrying Amount / NAV'}: <strong>{percent(data.modeled_gross_nav_fraction)}</strong></span>

@@ -67,14 +67,14 @@ def canonical_quote_policy(instrument_type: str) -> dict[str, list[str]]:
         "etf": {
             "trading": ["last", "close"],
             "valuation": ["close", "last"],
-            "total_return": ["adjusted_close", "close", "last"],
+            "total_return": ["adjusted_close"],
             "chart": ["adjusted_close", "close", "last"],
             "reference": ["close", "last"],
         },
         "equity": {
             "trading": ["last", "close"],
             "valuation": ["close", "last"],
-            "total_return": ["adjusted_close", "close", "last"],
+            "total_return": ["adjusted_close"],
             "chart": ["adjusted_close", "close", "last"],
             "reference": ["close", "last"],
         },
@@ -522,6 +522,7 @@ def seed_shared_instrument(instrument: dict[str, object]) -> None:
                 else None
             ),
             market_calendar=source_settings.get("market_calendar"),
+            return_semantics=source_settings.get("return_semantics"),
             release_lag_days=(
                 int(source_settings["release_lag_days"])
                 if source_settings.get("release_lag_days") is not None
@@ -695,15 +696,28 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch, request) -> TestClient:
         if match:
             from watchlist_app.db.models.workbench import ResearchEntry
             with session_module.get_session_factory()() as session:
-                run = session.get(ResearchEntry, match[1])
+                from watchlist_app.services.research_access import _entry_access_projection
+                run = _entry_access_projection(session, match[1])
                 saved = (run.context_json or {}).get("research_actor", {}) if run else {}
+                from watchlist_app.services.research_access import run_attempt
+                attempt = run_attempt(run) if run else 1
+                finished_read = run is not None and run.status not in {"queued", "running"} and request.method in {"GET", "HEAD"}
             subject = replace(actor, user_id=saved.get("user_id", actor.user_id), display_name=saved.get("display_name", actor.display_name))
-        return replace(subject, resource_scope={"kind": "run", "id": match[1]} if match else None)
+        return replace(subject, resource_scope={"kind": "run", "id": match[1],
+            "attempt": request.headers.get("X-Test-Run-Attempt", str(attempt))} if match and not finished_read else None)
     monkeypatch.setattr(main_module, "resolve_request", domain_identity)
-    monkeypatch.setattr(research_runner, "resolve_token", lambda token, audience: actor)
+    grants = {}
+    def issue_test_delegation(principal, audience, resource_scope, ttl_seconds=3600):
+        token = "fixture-run:" + resource_scope["id"] + ":" + resource_scope["attempt"]
+        grants[token] = replace(principal, credential=token, resource_scope=resource_scope)
+        return token
+    monkeypatch.setattr(research_runner, "resolve_token", lambda token, audience: grants.get(token, actor))
     monkeypatch.setattr(research_runner, "service_principal", lambda audience: actor)
-    monkeypatch.setattr(research_runner, "issue_delegation", lambda *args, **kwargs: "fixture-run")
+    monkeypatch.setattr(research_runner, "issue_delegation", issue_test_delegation)
     monkeypatch.setattr(research_runner, "revoke_delegation", lambda *args, **kwargs: None)
+    from watchlist_app.services import research_execution
+    monkeypatch.setattr(research_execution, "resolve_token", lambda token, audience: grants.get(token, actor))
+    monkeypatch.setattr(research_execution, "revoke_delegation", lambda *args, **kwargs: None)
     from watchlist_app.api.routes import workbench, sector_research, risk_officer
     import studio_identity
     monkeypatch.setattr(studio_identity, "issue_delegation", lambda *args, **kwargs: "fixture-run")
@@ -714,6 +728,8 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch, request) -> TestClient:
     def identify_test_entry(_mapper, _connection, entry):
         if entry.kind == "analysis" and not (entry.context_json or {}).get("research_actor"):
             entry.context_json = {**(entry.context_json or {}), "research_actor": actor.to_dict()}
+        if entry.kind == "analysis" and entry.status == "running" and "execution" not in (entry.context_json or {}):
+            entry.context_json = {**(entry.context_json or {}), "execution": {"attempt": 1}}
     def identify_test_topic(_mapper, _connection, topic):
         if topic.created_by_user_id is None:
             topic.created_by_user_id = actor.user_id

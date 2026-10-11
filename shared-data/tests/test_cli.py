@@ -204,6 +204,8 @@ requests.Session.request = no_network
 engine = get_engine()
 Base.metadata.create_all(engine)
 InstrumentRegistryBase.metadata.create_all(engine)
+from sqlalchemy import Column, JSON, MetaData, String, Table
+Table("current", MetaData(), Column("dataset", String), Column("payload", JSON)).create(engine)
 with get_session_factory()() as session:
     session.add(FmpEquityCatalog(fmp_symbol="GOOGL", exchange_ticker="GOOGL",
         company_name="Alphabet Inc.", exchange_code="XNAS", market="US", currency="USD"))

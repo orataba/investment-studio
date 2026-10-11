@@ -6,11 +6,11 @@ import io
 import json
 import os
 import traceback
-from datetime import date, datetime, timedelta, timezone, time
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from studio_market.config import MarketSettings
+from studio_market.calendars import MarketCalendarUnavailable, closed_market_sessions, latest_closed_market_session
 from .raw import archive_response
 from .store import NumericStore
 from .price_revisions import history_start, pending_revisions
@@ -34,7 +34,7 @@ def failure_summary(exc):
     status=getattr(exc,'status',None) or getattr(exc,'code',None) or getattr(getattr(exc,'response',None),'status_code',None)
     result={'error_type':kind,'error':kind}
     if isinstance(status,int):result.update(http_status=status,error=f'{kind}: HTTP {status}')
-    if isinstance(exc,(FmpResponseError,FmpTransportError,PublicHttpError,CnFuturesError)):result['error']=str(exc)
+    if isinstance(exc,(FmpResponseError,FmpTransportError,PublicHttpError,CnFuturesError,MarketCalendarUnavailable)):result['error']=str(exc)
     if isinstance(exc, (us_market.PriceHistoryUnavailable, PriceIdentityUnavailable)):
         result.update(error=str(exc), **exc.details)
     frames = traceback.extract_tb(exc.__traceback__)
@@ -44,39 +44,60 @@ def failure_summary(exc):
     return result
 
 
-def symbol_market(symbol):
-    name=symbol.upper()
-    if name.endswith('.HK') or name in {'^HSI','^HSCE','^HSTECH'}:return 'hk'
-    if name.endswith(('.SS','.SZ','.SH','.BJ')):return 'cn'
-    if name.endswith(('.L','.DE','.PA','.AS','.MI','.SW')):return 'eu'
-    if '.' not in name or name.endswith(('.A','.B')):return 'us'
-    raise ValueError('No configured closing-time contract for this FMP symbol')
+def symbol_calendar(symbol, *, exchange_code=None):
+    """A registered MIC overrides the FMP symbol's documented market suffix.
+
+    An explicit but unknown exchange must fail calendar resolution, never fall
+    back to the ticker. Unsuffixed US symbols retain the US acquisition contract.
+    """
+    if exchange_code is not None:
+        return str(exchange_code).strip().upper()
+    name = symbol.strip().upper()
+    if name in {'^HSI', '^HSCE', '^HSTECH'}:
+        return 'XHKG'
+    for suffix, calendar in {'.HK':'XHKG', '.SS':'XSHG', '.SH':'XSHG', '.SZ':'XSHE',
+                             '.L':'XLON', '.DE':'XETR', '.PA':'XPAR', '.AS':'XAMS',
+                             '.MI':'XMIL', '.SW':'XSWX'}.items():
+        if name.endswith(suffix):
+            return calendar
+    if name and ('.' not in name or name.endswith(('.A', '.B'))):
+        return 'XNYS'
+    raise MarketCalendarUnavailable('No verified session calendar for this FMP symbol')
 
 
-def closed_symbol_date(symbol,now):
-    market=symbol_market(symbol)
-    if market=='us':return closed_us_date(now)
-    zone,hour,minute={'cn':('Asia/Shanghai',15,30),'hk':('Asia/Hong_Kong',17,0),'eu':('Europe/Paris',18,0)}[market]
-    if symbol.upper().endswith('.L'):zone,hour,minute='Europe/London',17,0
-    local=now.astimezone(ZoneInfo(zone))
-    day=local.date() if local.time()>=time(hour,minute) else local.date()-timedelta(days=1)
-    while day.weekday()>4:day-=timedelta(days=1)
-    return day
+def symbol_market(symbol, *, exchange_code=None):
+    calendar = symbol_calendar(symbol, exchange_code=exchange_code)
+    for market, names in {'us':{'XNYS','XNAS','XASE','ARCX','BATS'}, 'hk':{'XHKG'},
+                          'cn':{'XSHG','XSHE'}, 'eu':{'XLON','XETR','XPAR','XAMS','XMIL','XSWX'}}.items():
+        if calendar in names:
+            return market
+    raise MarketCalendarUnavailable('No configured market scope for this listing exchange')
+
+
+def closed_symbol_date(symbol,now,*,exchange_code=None):
+    return latest_closed_market_session(symbol_calendar(symbol, exchange_code=exchange_code), now)
 
 
 def closed_us_date(now: datetime) -> date:
-    eastern=now.astimezone(ZoneInfo("America/New_York"))
-    day=eastern.date() if eastern.time()>=time(17) else eastern.date()-timedelta(days=1)
-    while day.weekday()>4: day-=timedelta(days=1)
-    return day
+    return latest_closed_market_session('XNYS', now)
 
 
 class Collector:
-    def __init__(self,settings: MarketSettings,*,store=None,client=None):
+    def __init__(self,settings: MarketSettings,*,store=None,client=None,now=None,exchanges=None):
+        self.now = now or datetime.now(UTC)
+        if self.now.tzinfo is None or self.now.utcoffset() is None:
+            raise ValueError('A timezone-aware market cutoff is required')
+        self.exchanges = {symbol.strip().upper(): value for symbol, value in (exchanges or {}).items()}
         self.settings=settings
         self.store=store or NumericStore(settings)
         self._client=client
         self.results=[]
+
+    def _closed_symbol_date(self, symbol, *, now=None, exchanges=None):
+        identities = {**self.exchanges, **{key.strip().upper(): value for key, value in (exchanges or {}).items()}}
+        key = symbol.strip().upper()
+        exchange = str(identities[key] or '') if key in identities else None
+        return closed_symbol_date(symbol, now or self.now, exchange_code=exchange)
 
     @property
     def fmp(self):
@@ -134,22 +155,36 @@ class Collector:
         else:raise ValueError("Delisted directory exceeded provider pagination")
 
     def eod(self,start,end,symbols):
-        end=min(end,closed_us_date(datetime.now(UTC)))
         if symbols:
-            due = pending_revisions(self.store, dataset='us_eod_daily', symbols=symbols, end=end)
             for symbol in symbols:
+                stop = min(end, self._closed_symbol_date(symbol))
+                if start > stop:
+                    continue
+                due = pending_revisions(self.store, dataset='us_eod_daily', symbols=[symbol], end=stop)
                 self.symbol_prices([symbol], history_start(self.store, 'us_eod_daily', symbol) if symbol in due else start,
-                                   end, revision_requests={symbol: due[symbol]} if symbol in due else None)
+                                   stop, revision_requests={symbol: due[symbol]} if symbol in due else None)
+            return
+        end=min(end,closed_us_date(self.now))
+        if start > end:
             return
         allowed=self.universe()
         deferred = pending_revisions(self.store, dataset='us_eod_daily', symbols=allowed, end=end)
         identities = price_identities(self.store, symbols=sorted(allowed))
         bases = price_capture_bases(self.store, 'us_eod_daily', identities)
-        # Provider SPY daily history supplies actual sessions, including holidays.
+        # The exchange supplies expected sessions. Retain the SPY response as
+        # evidence, but a missing provider day cannot redefine that calendar.
         response=self.fmp.get_json("historical-price-eod/full",{"symbol":"SPY","from":start.isoformat(),"to":end.isoformat()})
         _,calendar_ref=self.archive(response)
         if not isinstance(response.payload,list):raise ValueError("Trading-session response is not a list")
         days=sorted({date.fromisoformat(str(row["date"])[:10]) for row in response.payload if row.get("date")})
+        expected = closed_market_sessions('XNYS', start, end, self.now)
+        if expected is None:
+            raise MarketCalendarUnavailable('No verified session calendar for the requested US EOD range')
+        missing = sorted(set(expected) - set(days))
+        if missing:
+            raise us_market.PriceHistoryUnavailable('expected_session_dates_missing', 'SPY', [day.isoformat() for day in missing])
+        if any(start <= day <= end and day not in expected for day in days):
+            raise ValueError('US EOD calendar response contains a non-session date')
         for day in days:
             if not start<=day<=end:continue
             response=self.fmp.get_bulk_bytes("eod-bulk",{"date":day.isoformat()})
@@ -200,7 +235,7 @@ class Collector:
         results = []
         for symbol, request_id in sorted(requests.items()):
             try:
-                stop = min(end, closed_symbol_date(symbol, datetime.now(UTC))) if raw else end
+                stop = min(end, self._closed_symbol_date(symbol))
                 due = pending_revisions(self.store, dataset=dataset, symbols=[symbol], end=stop) if stop < end else {symbol:request_id}
                 if not due:continue
                 self.symbol_prices([symbol], history_start(self.store, dataset, symbol), stop, raw=raw, revision_requests=due)
@@ -212,18 +247,18 @@ class Collector:
                 'coverage':'quarantined' if quarantined else 'eligible_identities'}
 
     def price_revisions(self, start, end, symbols):
-        return self.reconcile_price_revisions(min(end, closed_us_date(datetime.now(UTC))), symbols=symbols)
+        return self.reconcile_price_revisions(end, symbols=symbols)
 
     def raw_price_revisions(self, start, end, symbols):
         if not symbols:raise ValueError('Raw price revisions require explicit registered symbols')
         return self.reconcile_price_revisions(end, symbols=symbols, raw=True)
 
-    def raw_eod(self,start,end,symbols):
+    def raw_eod(self,start,end,symbols,*,now=None,exchanges=None):
         if not symbols: raise ValueError("raw_eod requires explicit registered symbols")
         results = []
         for symbol in symbols:
             try:
-                stop=min(end,closed_symbol_date(symbol,datetime.now(UTC)))
+                stop=min(end,self._closed_symbol_date(symbol, now=now, exchanges=exchanges))
                 if stop < start:continue
                 latest = self.store.latest('raw_eod_daily',symbols=[symbol],limit=1)['rows']
                 # Retain an observed overlap and fill every missed close after
@@ -231,16 +266,16 @@ class Collector:
                 begin = min(start,date.fromisoformat(latest[0]['date'])) if latest else start
                 requests = pending_revisions(self.store, dataset='raw_eod_daily', symbols=[symbol], end=stop)
                 if not requests:
-                    self.symbol_prices([symbol],begin,stop,raw=True)
+                    self.symbol_prices([symbol],begin,stop,raw=True,now=now,exchanges=exchanges)
                     requests = pending_revisions(self.store, dataset='raw_eod_daily', symbols=[symbol], end=stop)
                 if requests:
-                    self.symbol_prices([symbol],history_start(self.store, "raw_eod_daily", symbol),stop,raw=True,revision_requests=requests)
+                    self.symbol_prices([symbol],history_start(self.store, "raw_eod_daily", symbol),stop,raw=True,revision_requests=requests,now=now,exchanges=exchanges)
                 results.append({'symbol':symbol,'status':'ready'})
             except Exception as exc:
                 results.append({'symbol':symbol,'status':'failed',**failure_summary(exc)})
         return {'status':'failed' if any(r['status']=='failed' for r in results) else 'ready','symbols':results}
 
-    def symbol_prices(self,symbols,start,end,raw=False,revision_requests=None):
+    def symbol_prices(self,symbols,start,end,raw=False,revision_requests=None,*,now=None,exchanges=None):
         dataset = "raw_eod_daily" if raw else "us_eod_daily"
         identities = price_identities(self.store, symbols=symbols)
         bases = price_capture_bases(self.store, dataset, identities)
@@ -252,7 +287,9 @@ class Collector:
             base = bases.get(symbol)
             full_identity = bool(identity and (revision_id or not base or start <= date.fromisoformat(identity['history_start'])))
             begin = date.fromisoformat(identity['history_start']) if full_identity else start
-            stop = min(end,date.fromisoformat(identity['history_end'])) if identity and identity.get('history_end') else end
+            stop = min(end, self._closed_symbol_date(symbol, now=now, exchanges=exchanges))
+            if identity and identity.get('history_end'):
+                stop = min(stop, date.fromisoformat(identity['history_end']))
             if begin > stop:
                 if full_identity:
                     raise PriceIdentityUnavailable(symbol,'security_history_not_yet_available',identity_source_id=identity['source_id'])
@@ -580,7 +617,10 @@ class Collector:
         source_issues=[]
         for series_id,provider_symbol in market_series.FMP_PROVIDER_SYMBOLS.items():
             if symbols and series_id not in symbols:continue
-            stop=min(end,datetime.now(UTC).date()-timedelta(days=1) if series_id=="BTCUSD" else closed_us_date(datetime.now(UTC)))
+            # BTC uses complete UTC days. XAUUSD/DXY have no verified source
+            # session clock: the previous UTC date is only a conservative
+            # request bound, not evidence of session or coverage completeness.
+            stop=min(end,self.now.astimezone(UTC).date()-timedelta(days=1))
             cursor=start
             while cursor<=stop:
                 hi=min(stop,cursor+timedelta(days=1459))
@@ -618,12 +658,13 @@ class Collector:
             day+=timedelta(days=1)
 
 
-def collect(settings: MarketSettings, *, groups: list[str] | None=None, start: date | None=None,end: date | None=None,symbols: list[str] | None=None,progress=None) -> dict:
-    end=end or datetime.now(UTC).date()
+def collect(settings: MarketSettings, *, groups: list[str] | None=None, start: date | None=None,end: date | None=None,symbols: list[str] | None=None,progress=None,now: datetime | None=None,exchanges=None) -> dict:
+    now=now or datetime.now(UTC)
+    end=end or now.astimezone(UTC).date()
     start=start or end-timedelta(days=7)
     if start>end:raise ValueError("start must not follow end")
-    collector=Collector(settings)
-    started_at=datetime.now(UTC).isoformat()
+    collector=Collector(settings,now=now,exchanges=exchanges)
+    started_at=now.isoformat()
     selected=groups or list(DEFAULT_GROUPS)
     allowed=set(DEFAULT_GROUPS)|{"financial_history","financial_details","rating_history","etf_history","cn_futures","tushare","raw_eod","official_etf","price_revisions","raw_price_revisions"}
     if set(selected)-allowed:raise ValueError("Unknown collection group")

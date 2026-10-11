@@ -1,5 +1,6 @@
 # Layered on the research-only sector preset. A reviewer cannot generate new
-# evidence or mutate research: its only connector reads one immutable packet.
+# evidence or mutate research: its connector reads the fixed packet and exact
+# retained quant input paths through the authorized run's read API.
 - id: mcp-watchlist-research
   disabled: true
 - id: system-prompt
@@ -18,5 +19,8 @@
           INVESTMENT_STUDIO_REVIEW_PACKET: !!js process.env.INVESTMENT_STUDIO_REVIEW_PACKET
           INVESTMENT_STUDIO_REVIEW_RESULT: !!js process.env.INVESTMENT_STUDIO_REVIEW_RESULT
           INVESTMENT_STUDIO_REVIEW_READS: !!js process.env.INVESTMENT_STUDIO_REVIEW_READS
-        toolCallTimeoutMs: 30000
+          INVESTMENT_STUDIO_RESEARCH_RUN_ID: !!js process.env.INVESTMENT_STUDIO_RESEARCH_RUN_ID
+          INVESTMENT_STUDIO_RESEARCH_API_BASE_URL: !!js process.env.INVESTMENT_STUDIO_RESEARCH_API_BASE_URL
+          INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN: !!js process.env.INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN
+        toolCallTimeoutMs: 180000
         failOnStartupError: true

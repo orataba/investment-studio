@@ -33,6 +33,15 @@ def market_store(client):
     return store, ingest
 
 
+@pytest.fixture
+def estimate_reader(market_store):
+    register_company_source("xlk", "etf", "XLK")
+    def read(instrument_id="xlk", **kwargs):
+        with get_session_factory()() as session:
+            return read_estimate_evidence(session, instrument_id, **kwargs)
+    return read
+
+
 def test_shared_holdings_keep_cash_price_basis_and_unknown_currency(market_store):
     store, _ = market_store
     raw = market.read_sector_market_data(None, " xlk ")
@@ -62,20 +71,20 @@ def test_shared_latest_and_historical_cutoff_do_not_mix_captures(market_store):
         market.read_sector_market_data(None, "XLK", as_of=datetime(2026, 9, 5))
 
 
-def test_two_captures_compare_without_running_research_or_registering_constituents(market_store):
+def test_two_captures_compare_without_running_research_or_registering_constituents(market_store, estimate_reader):
     _, ingest = market_store
-    baseline = read_estimate_evidence(None, "xlk")
+    baseline = estimate_reader()
     assert baseline["status"] == "baseline"
     ingest("financial_statements", [{"symbol": "AAA", "statement_type": "income", "period_end": "2026-06-30", "fiscal_year": 2026, "fiscal_period": "Q2", "reported_currency": "USD"}], "2026-09-04T08:00:00+00:00")
     ingest("analyst_estimates", [{"symbol": "AAA", "estimate_period": frequency, "target_period_end": "2026-12-31", "revenue_avg": 110, "eps_avg": 2, "num_analysts_revenue": 10, "num_analysts_eps": 9} for frequency in ["annual", "quarter"]], "2026-09-06T08:00:00+00:00")
-    result = read_estimate_evidence(None, "xlk", as_of=datetime(2026, 9, 6, 12, tzinfo=UTC))
+    result = estimate_reader(as_of=datetime(2026, 9, 6, 12, tzinfo=UTC))
     assert result["status"] == "comparable"
     assert len(result["changes"]) == 2
     assert all(row["delta"] == 10 and row["currency"] == "USD" for row in result["changes"])
     assert result["source_ids"]
-    earlier = read_estimate_evidence(None, "xlk", as_of=datetime(2026, 9, 5, 12, tzinfo=UTC))
+    earlier = estimate_reader(as_of=datetime(2026, 9, 5, 12, tzinfo=UTC))
     assert earlier["status"] == "baseline" and not earlier["changes"]
-    assert read_estimate_evidence(None, "512880")["status"] == "unsupported"
+    assert estimate_reader("512880")["status"] == "unsupported"
 
 
 def test_bound_statement_versions_match_historical_queries_and_tie_order(market_store):
@@ -107,7 +116,7 @@ def test_bound_statement_versions_match_historical_queries_and_tie_order(market_
 
 
 @pytest.mark.parametrize("page_limit", [None, 2])
-def test_estimate_currencies_reuse_one_complete_bound_statement_history(market_store, monkeypatch, page_limit):
+def test_estimate_currencies_reuse_one_complete_bound_statement_history(market_store, estimate_reader, monkeypatch, page_limit):
     store, ingest = market_store
     income = {"symbol": "AAA", "statement_type": "income", "period_end": "2026-06-30",
               "fiscal_year": 2026, "fiscal_period": "Q2", "reported_currency": "USD"}
@@ -131,7 +140,7 @@ def test_estimate_currencies_reuse_one_complete_bound_statement_history(market_s
         return query(dataset, **kwargs)
 
     monkeypatch.setattr(store, "query", counted_query)
-    result = read_estimate_evidence(None, "xlk", as_of=datetime(2026, 9, 6, 12, tzinfo=UTC))
+    result = estimate_reader(as_of=datetime(2026, 9, 6, 12, tzinfo=UTC))
     assert result["changes"] == []
     assert len(result["observations"]) == 2
     for row in result["observations"]:
@@ -240,7 +249,7 @@ def test_registered_equity_and_broad_fund_share_real_company_captures_and_bound_
 
 
 @pytest.mark.parametrize("iid,symbol,name", [("tlt", "TLT", "US TREASURY NOTE"), ("gold", "GLD", "GOLD BULLION"), ("oil", "USO", "WTI FUTURE")])
-def test_non_equity_fund_exposure_does_not_become_company_estimates(client, market_store, iid, symbol, name):
+def test_unknown_fund_holdings_cannot_be_classified_from_a_non_equity_sounding_name(client, market_store, iid, symbol, name):
     _, ingest = market_store
     register_company_source(iid, "etf", symbol)
     ingest("etf_info", [{"symbol": symbol, "name": name}])
@@ -248,6 +257,66 @@ def test_non_equity_fund_exposure_does_not_become_company_estimates(client, mark
                              "weight_percent": 100, "snapshot_date": "2026-09-05"}])
     with get_session_factory()() as session:
         result = read_estimate_evidence(session, iid)
-    assert result["status"] == "not_applicable" and not result["supported"]
+    assert result["status"] == "limited" and result["supported"]
     assert not result["changes"] and not result["coverage"]
-    assert "EPS" in result["gaps"][0]
+    assert result["gap_codes"] == ["holding_type_unconfirmed"]
+
+
+def test_estimate_api_requires_registry_identity_even_for_legacy_sector_codes(client, market_store):
+    # Real public numerical facts can exist before this security is registered.
+    # Its name is not permission to invent the shared type or provider identity.
+    response = client.get("/api/sector-research/estimates?instrument_id=xlk")
+    assert response.status_code == 200
+    assert response.json()["status"] == "unsupported"
+    assert not response.json()["supported"]
+    register_company_source("xlk", "etf", "XLK")
+    assert client.get("/api/sector-research/estimates?instrument_id=xlk").json()["status"] == "baseline"
+
+
+@pytest.mark.parametrize("flags", [{}, {"is_etf": None, "is_fund": None}, {"is_etf": False}, {"is_fund": False}])
+def test_missing_holding_classification_cannot_become_company_eps(market_store, estimate_reader, flags):
+    _, ingest = market_store
+    ingest("company_profiles", [{"symbol": "AAA", "company_name": "Unknown security", **flags}],
+           "2026-09-06T08:00:00+00:00")
+    raw = market.read_sector_market_data(None, "XLK")
+    assert raw["companies"] == []
+    assert raw["holdings"][0]["holding_type"] == "unclassified"
+    assert {"kind": "unclassified_holding", "symbol": "AAA"} in raw["gaps"]
+    result = estimate_reader()
+    assert result["status"] == "limited"
+    assert result["changes"] == []
+    assert result["gap_codes"] == ["holding_type_unconfirmed"]
+
+
+def test_confirmed_fund_holding_is_distinct_from_unconfirmed_exposure(market_store, estimate_reader):
+    _, ingest = market_store
+    ingest("company_profiles", [{"symbol": "AAA", "company_name": "Other fund", "is_etf": True}],
+           "2026-09-06T08:00:00+00:00")
+    result = estimate_reader()
+    assert result["status"] == "not_applicable"
+    assert result["supported"] is False
+
+
+def test_unclassified_constituent_limits_coverage_but_keeps_confirmed_company_facts(market_store, estimate_reader):
+    _, ingest = market_store
+    ingest("etf_holdings", [
+        {"etf_symbol": "XLK", "holding_key": "AAA", "holding_symbol": "AAA", "holding_name": "Alpha", "weight_percent": 60, "snapshot_date": "2026-09-06"},
+        {"etf_symbol": "XLK", "holding_key": "UNKNOWN", "holding_symbol": "UNKNOWN", "holding_name": "Unknown", "weight_percent": 40, "snapshot_date": "2026-09-06"},
+    ], "2026-09-06T08:00:00+00:00")
+    result = estimate_reader()
+    assert result["company_symbols"] == ["AAA"]
+    assert result["coverage"]["equity_weight_pct"] == 60
+    assert result["status"] == "limited"
+    assert "holding_type_unconfirmed" in result["gap_codes"]
+
+
+def test_retained_research_snapshot_cannot_turn_missing_weight_into_zero(market_store, estimate_reader):
+    from watchlist_app.services.sector_research import sector_snapshot
+    _, ingest = market_store
+    ingest("etf_holdings", [{"etf_symbol": "XLK", "holding_key": "AAA", "holding_symbol": "AAA", "holding_name": "Alpha",
+                             "weight_percent": None, "snapshot_date": "2026-09-06"}], "2026-09-06T08:00:00+00:00")
+    with get_session_factory()() as session:
+        snapshot = sector_snapshot("xlk", session)[1]
+    assert snapshot["stock_count"] == 1
+    assert snapshot["stock_weight_pct"] is None
+    assert any("权重缺失" in gap for gap in snapshot["data_gaps"])

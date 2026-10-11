@@ -226,7 +226,7 @@ def test_registry_daily_frequency_is_reflected_in_profile() -> None:
 
     assert context["profile"]["expected_frequency"] == "daily"
     assert context["profile"]["resolved_frequency"] == "daily"
-    assert context["profile"]["frequency_source"] == "daily_policy"
+    assert context["profile"]["frequency_source"] == "source_contract"
     assert context["profile"]["observation_count"] == 3
 
 
@@ -630,7 +630,8 @@ def test_completed_recalc_marks_missing_canonical_series_unavailable() -> None:
     }
 
 
-def test_listed_summary_exposes_type_specific_detail_tabs() -> None:
+@pytest.mark.parametrize("instrument_type", ["public_fund", "private_fund", "equity", "etf", "index", "crypto"])
+def test_summary_exposes_unified_detail_tabs(instrument_type) -> None:
     from watchlist_app.services.canonical_recalc import CanonicalRecalcService
 
     now = datetime(2026, 8, 23, 8, tzinfo=UTC)
@@ -638,7 +639,7 @@ def test_listed_summary_exposes_type_specific_detail_tabs() -> None:
         instrument=SimpleNamespace(
             instrument_id="listed-equity",
             instrument_name="Listed Equity",
-            instrument_type="equity",
+            instrument_type=instrument_type,
             primary_identifier_value="AAPL",
             metadata_json={},
         ),
@@ -657,16 +658,7 @@ def test_listed_summary_exposes_type_specific_detail_tabs() -> None:
         now=now,
     )
 
-    assert payload["tabs"] == [
-        "overview",
-        "research",
-        "performance",
-        "risk",
-        "price",
-        "fundamentals",
-        "events",
-        "monitoring",
-    ]
+    assert payload["tabs"] == ["overview", "risk", "investment-research", "views", "info"]
     assert payload["instrument_name"] == "Listed Equity"
     assert "fund_name" not in payload
     assert "series_snapshot" in payload
@@ -704,6 +696,7 @@ def test_partial_total_return_with_source_gaps_remains_fresh_without_event_break
         attributes={},
         taxonomy_context={},
         source_cutoff_at=now,
+        source_settings={"expected_frequency": "daily", "market_calendar": "24/7"},
         now=now,
     )
 
@@ -747,6 +740,7 @@ def test_partial_total_return_with_segment_break_stays_actionable() -> None:
         attributes={},
         taxonomy_context={},
         source_cutoff_at=now,
+        source_settings={"expected_frequency": "daily", "market_calendar": "24/7"},
         now=now,
     )
 
@@ -1924,10 +1918,10 @@ def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
     assert payload["rows"][0]["latest_cumulative_nav"] == 101.236476
     assert payload["rows"][0]["latest_cumulative_nav_date"] == "2026-04-14"
     assert payload["rows"][0]["metric_as_of_date"] == "2026-04-14"
-    assert payload["rows"][0]["data_freshness_status"] == "stale"
-    assert payload["rows"][0]["return_1w"] == pytest.approx(1.236476, abs=1e-6)
-    assert payload["rows"][0]["return_mtd"] == pytest.approx(2.259067, abs=1e-6)
-    assert payload["rows"][0]["return_3m"] == pytest.approx(3.832283, abs=1e-6)
+    assert payload["rows"][0]["data_freshness_status"] == "unavailable"
+    assert payload["rows"][0]["return_1w"] is None  # Sparse daily observations are not complete performance.
+    assert payload["rows"][0]["return_mtd"] is None  # Sparse daily observations are not complete performance.
+    assert payload["rows"][0]["return_3m"] is None  # Sparse daily observations are not complete performance.
     assert payload["rows"][0]["return_6m"] is None
     assert payload["rows"][0]["annualized_return"] is None
     assert payload["snapshot_metadata"]["as_of_date"] == "2026-04-14"
@@ -2004,6 +1998,8 @@ def test_adding_existing_watchlist_item_is_noop_without_membership_recalc(
 def test_screener_sort_keeps_missing_values_last_for_descending_metrics(
     client: TestClient,
 ) -> None:
+    seed_shared_instrument({**deepcopy(TEST_SHARED_INSTRUMENTS["sxv264"]),
+        "source_settings": {"expected_frequency": "event_driven"}})
     seed_shared_instrument(
         {
             "instrument_id": "fund-no-return",
@@ -2059,6 +2055,7 @@ def test_calendar_period_returns_use_prior_close_as_base(
             "instrument_id": "calendar-boundary-fund",
             "instrument_name": "Calendar Boundary Fund",
             "instrument_type": "public_fund",
+            "source_settings": {"expected_frequency": "event_driven"},
             "currency": "USD",
             "quote_selection_policy": canonical_quote_policy("public_fund"),
             "identifiers": [
@@ -2184,7 +2181,7 @@ def test_aligned_decimal_nav_series_materializes_path_risk_metrics(
     assert metrics["sharpe_ratio"] is not None
 
 
-def test_index_close_series_calculates_watchlist_performance_metrics(
+def test_sparse_daily_index_quotes_do_not_publish_incomplete_performance_metrics(
     client: TestClient,
 ) -> None:
     seed_shared_instrument(
@@ -2193,7 +2190,7 @@ def test_index_close_series_calculates_watchlist_performance_metrics(
             "instrument_name": "Close Only Index",
             "instrument_type": "index",
             "currency": "USD",
-            "source_settings": {"return_semantics": "price_return"},
+            "source_settings": {"return_semantics": "price_return", "expected_frequency": "daily", "market_calendar": "XNYS"},
             "quote_selection_policy": canonical_quote_policy("index"),
             "identifiers": [
                 {
@@ -2267,14 +2264,13 @@ def test_index_close_series_calculates_watchlist_performance_metrics(
     row = screener.json()["rows"][0]
     assert row["ticker_or_isin"] == "CLOSEIDX"
     assert row["instrument_type"] == "index"
-    assert row["return_ytd"] == pytest.approx(21.0, abs=1e-6)
-    assert row["return_mtd"] == pytest.approx(10.0, abs=1e-6)
-    assert row["return_1m"] == pytest.approx(10.0, abs=1e-6)
-    assert row["return_3m"] == pytest.approx(21.0, abs=1e-6)
-    assert row["return_6m"] == pytest.approx(34.444444, abs=1e-6)
-    # Endpoint-to-endpoint returns remain available because their boundaries
-    # exist. Annualized and path-dependent risk metrics fail closed because the
-    # intentionally sparse daily series cannot reveal the path inside gaps.
+    assert row["return_ytd"] is None
+    assert row["return_mtd"] is None
+    assert row["return_1m"] is None
+    assert row["return_3m"] is None
+    assert row["return_6m"] is None
+    # The same named performance windows must match the detail page: unknown
+    # daily observations are not repaired by publishing just an endpoint ratio.
     assert row["annualized_return"] is None
     assert row["max_drawdown"] is None
     assert row["volatility"] is None
@@ -2319,6 +2315,7 @@ def test_screener_returns_are_anchored_to_each_instruments_own_as_of_date(
                 "instrument_id": instrument_id,
                 "instrument_name": instrument_name,
                 "instrument_type": "private_fund",
+                "source_settings": {"expected_frequency": "event_driven"},
                 "currency": "USD",
                 "quote_selection_policy": canonical_quote_policy("private_fund"),
                 "identifiers": [
@@ -2416,18 +2413,21 @@ def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
         for row in performance_payload["trailing_returns"]
     }
     assert performance_payload["snapshot_metadata"]["as_of_date"] == "2026-04-14"
-    assert trailing_by_window["MTD"]["investment_nav"] == pytest.approx(2.259067, abs=1e-6)
+    assert trailing_by_window["MTD"]["investment_nav"] is None
+    assert trailing_by_window["MTD"]["observation_status"] == "unavailable"
+    assert trailing_by_window["MTD"]["reason"]
     assert trailing_by_window["MTD"]["requested_start_date"] == "2026-04-01"
     assert trailing_by_window["MTD"]["anchor_mode"] == "strictly_before"
     assert trailing_by_window["MTD"]["anchor_date"] == "2026-03-14"
     assert trailing_by_window["MTD"]["end_date"] == "2026-04-14"
-    assert trailing_by_window["YTD"]["investment_nav"] == pytest.approx(3.832283, abs=1e-6)
+    assert trailing_by_window["YTD"]["investment_nav"] is None
     assert trailing_by_window["YTD"]["anchor_date"] == "2025-12-31"
     annual_by_year = {
         row["year"]: row
         for row in performance_payload["annual_returns"]
     }
-    assert annual_by_year[2026]["investment_nav"] == pytest.approx(3.832283, abs=1e-6)
+    assert annual_by_year[2026]["investment_nav"] is None
+    assert annual_by_year[2026]["observation_status"] == "unavailable"
     assert annual_by_year[2026]["anchor_date"] == "2025-12-31"
     assert annual_by_year[2026]["end_date"] == "2026-04-14"
     assert trailing_by_window["Ann."]["investment_nav"] is None
@@ -2452,10 +2452,11 @@ def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
     assert risk_payload["risk_structure"] is None
     assert risk_payload["current_watch"] is None
     assert risk_payload["change_monitor"] is None
-    assert risk_payload["data_quality"]["status"] == "partial_missing_observations"
+    assert risk_payload["data_quality"]["status"] == "unverified_observation_schedule"
     assert risk_payload["data_quality"]["note"]
     assert risk_payload["calculation_frequency_profile"]["resolved_frequency"] == "daily"
-    assert risk_payload["calculation_frequency_profile"]["gap_count"] > 0
+    assert risk_payload["calculation_frequency_profile"]["gap_count"] is None
+    assert risk_payload["calculation_frequency_profile"]["gap_status"] == "unverified"
     assert performance_payload["calculation_frequency_profile"]["resolved_frequency"] == "daily"
 
 
@@ -2533,7 +2534,7 @@ def test_instrument_detail_payload_uses_daily_calculation_frequency(
     risk_response = client.get("/api/instruments/weekly-risk-fund/risk")
     assert risk_response.status_code == 200
     risk_payload = risk_response.json()
-    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v9"
+    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v11"
     assert risk_payload["calculation_frequency_profile"]["resolved_frequency"] == "daily"
     assert risk_payload["calculation_frequency_profile"]["annualization_periods_per_year"] == pytest.approx(
         52.178571,
@@ -2544,6 +2545,9 @@ def test_instrument_detail_payload_uses_daily_calculation_frequency(
 def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     client: TestClient,
 ) -> None:
+    # These deliberately sparse disclosures are event-driven, not complete daily observations.
+    seed_shared_instrument({**deepcopy(TEST_SHARED_INSTRUMENTS["sxv264"]),
+        "source_settings": {"expected_frequency": "event_driven"}})
     for instrument_id, instrument_name, ticker, values in (
         (
             "peer-strong",
@@ -2587,6 +2591,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
                 "instrument_id": instrument_id,
                 "instrument_name": instrument_name,
                 "instrument_type": "private_fund",
+                "source_settings": {"expected_frequency": "event_driven"},
                 "currency": "USD",
                 "quote_selection_policy": canonical_quote_policy("private_fund"),
                 "identifiers": [
@@ -2622,6 +2627,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
             "instrument_id": "peer-stale-date",
             "instrument_name": "Peer Stale Date Fund",
             "instrument_type": "private_fund",
+                "source_settings": {"expected_frequency": "event_driven"},
             "currency": "USD",
             "quote_selection_policy": canonical_quote_policy("private_fund"),
             "identifiers": [

@@ -119,3 +119,15 @@ describe('watchlist calendar-period returns', () => {
     expect(rows[1].ytd).toBeCloseTo(20)
   })
 })
+
+it('withholds monthly and annual returns that cross a corporate-action segment break', () => {
+  const points = [
+    { date: '2025-12-31', value: 200, segment_id: 'old' },
+    { date: '2026-01-30', value: 100, segment_id: 'new' },
+    { date: '2026-02-27', value: 110, segment_id: 'new' },
+    { date: '2026-12-31', value: 120, segment_id: 'new' },
+  ]
+  expect(buildMonthlyReturnWindows(points)).toHaveLength(1)
+  expect(buildMonthlyReturnWindows(points)[0].value).toBeCloseTo(10)
+  expect(buildAnnualReturnSeries(points)).toEqual([])
+})

@@ -148,6 +148,41 @@ def test_first_capture_protects_retained_dates_only_inside_reviewed_symbol_lifec
     assert store.query('us_eod_daily', versions=True)['total'] == 5
 
 
+def test_renamed_provider_segments_do_not_join_by_shared_security_identity(store):
+    seed(store, symbol='OLD', day='2025-03-31', close=10)
+    seed(store, symbol='OLD', day='2025-04-01', close=11)
+    legacy = store.query('us_eod_daily', symbols=['OLD'])['rows']
+    record_price_identities(store, [
+        decision(symbol='OLD', history_end='2025-03-31', symbol_end='2025-03-31'),
+        decision(symbol='NEW', history_start='2025-04-01', symbol_start='2025-04-01'),
+    ], apply=True, observed_at=REVIEW)
+    # Separate provider adjustments cannot be spliced merely because both
+    # aliases identify the same security.
+    class SegmentedPrices(Prices):
+        def get_json(self, endpoint, params):
+            self.adjusted = 20 if params['symbol'] == 'OLD' else 50
+            return super().get_json(endpoint, params)
+
+    client = SegmentedPrices(days=['2025-03-31', '2025-04-01'])
+    result = Collector(store.settings, store=store, client=client).reconcile_price_revisions(
+        END, symbols=['OLD', 'NEW'])
+    assert result['status'] == 'ready'
+    old = store.query('us_eod_daily', symbols=['OLD'])['rows']
+    new = store.query('us_eod_daily', symbols=['NEW'])['rows']
+    assert {r['security_id'] for r in old + new} == {'isin:NEW-SECURITY'}
+    assert all(r['symbol'] == r['provider_symbol'] == 'OLD' and r['date'] <= '2025-03-31'
+               and r['adjusted_close'] == 20 for r in old)
+    assert all(r['symbol'] == r['provider_symbol'] == 'NEW' and r['date'] >= '2025-04-01'
+               and r['adjusted_close'] == 50 for r in new)
+    assert old and new
+    assert {p['to'] for _, p in client.calls if p['symbol'] == 'OLD'} == {'2025-03-31'}
+    assert {p['from'] for _, p in client.calls if p['symbol'] == 'NEW'} == {'2025-04-01'}
+    assert all(store.read_source(row['source_id'])['close'] in (10, 11) for row in legacy)
+    store.ingest('dividends', [], source='fixture', observed_at=CAPTURE + timedelta(days=1), details={
+        'price_revision_requests': [{'symbol': 'NEW', 'effective_date': END.isoformat()}]})
+    assert set(pending_revisions(store, dataset='us_eod_daily', symbols=['OLD', 'NEW'], end=END)) == {'NEW'}
+
+
 def test_identity_raw_evidence_is_included_in_replication_bundle(store, tmp_path):
     _, ref = archive_response(store.settings, 'price_diagnostics', b'{"invalid_adjusted_price":0}')
     approve(store, source_refs=[ref, 'https://exchange.example/listing/new'])

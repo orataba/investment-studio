@@ -1,13 +1,13 @@
 from datetime import date, datetime, UTC
 from typing import Literal
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from watchlist_app.db.session import get_db_session
 from watchlist_app.db.models.workbench import ResearchEntry, RiskCase
 from watchlist_app.services import sector_research as service
-from watchlist_app.services.research_runner import harness_available, run_analysis
+from watchlist_app.services.research_runner import harness_available
 from watchlist_app.services.sector_estimates import read_estimate_evidence
 from watchlist_app.services.research_user_commands import UserCommand
 from watchlist_app.services.research_quant import QuantAnalysisInput
@@ -130,7 +130,7 @@ def pin_event(case_id: str, request: EventFollowUpPatch, session: Session = Depe
 
 
 @router.post("/sector-research/runs", status_code=202)
-def start_run(request: RunInput, background: BackgroundTasks, session: Session = Depends(get_db_session)):
+def start_run(request: RunInput, session: Session = Depends(get_db_session)):
     if not harness_available():
         raise HTTPException(503, "研究助手尚未配置DeepSeek运行环境")
     try:
@@ -139,21 +139,24 @@ def start_run(request: RunInput, background: BackgroundTasks, session: Session =
         raise HTTPException(409, str(error)) from error
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
-    if created:
+    if created or run.status == "queued":
         from studio_identity import current_principal
-        from watchlist_app.services.research_runner import authorize_run
-        token = authorize_run(current_principal(), run.entry_id)
-        background.add_task(run_analysis, run.entry_id, token, current_principal())
+        from watchlist_app.services.research_execution import enqueue_run
+        from watchlist_app.services.research_access import run_attempt
+        attempt = run_attempt(run)
+        enqueue_run(current_principal(), run.entry_id, attempt=attempt)
     return {"run_id": run.entry_id, "status": run.status}
 
 
 def current_run(session, run_id, *, writing=False):
     query = select(ResearchEntry).where(ResearchEntry.entry_id == run_id)
     if writing:
-        query = query.with_for_update()
+        query = query.with_for_update().execution_options(populate_existing=True)
     run = session.scalar(query)
     if not run or not (run.context_json.get("sector_run") or run.context_json.get("research_run")):
         raise HTTPException(404, "事件检查不存在")
+    from watchlist_app.services.research_access import require_entry_access
+    require_entry_access(session, run, tool_write=writing)
     if writing and run.status not in {"queued", "running"}:
         raise HTTPException(409, "本轮检查已经结束")
     return run
@@ -199,9 +202,11 @@ class MarketSearch(BaseModel):
 
 
 def market_run(session, run_id):
-    run = session.scalar(select(ResearchEntry).where(ResearchEntry.entry_id == run_id).with_for_update())
+    run = session.scalar(select(ResearchEntry).where(ResearchEntry.entry_id == run_id).with_for_update().execution_options(populate_existing=True))
     if run is None or run.kind != "analysis":
         raise HTTPException(404, "研究任务不存在")
+    from watchlist_app.services.research_access import require_entry_access
+    require_entry_access(session, run, tool_write=True)
     if run.status not in {"queued", "running"}:
         raise HTTPException(409, "本轮研究已经结束")
     if run.context_json.get("risk_run"):
@@ -301,17 +306,16 @@ def financial_research(run_id: str, request: FinancialResearchInput, session: Se
 @router.post("/research/runs/{run_id}/numeric")
 def numeric_research(run_id: str, request: NumericResearchInput, session: Session = Depends(get_db_session)):
     from watchlist_app.services.research_metrics import research_numeric_data, instrument_price_risk
-    run = market_run(session, run_id)
+    from watchlist_app.services.research_run_evidence import locked_computation_run, bound_input_cutoff, retain_computed_source
+    run = locked_computation_run(session, run_id)
     try:
         if request.action in {"price_risk", "observations", "event_reaction"}:
-            from watchlist_app.services.sector_research import bind_research_instruments
             if not request.instrument_id:
                 raise ValueError("请选择需要观察风险的标的")
-            bind_research_instruments(session, run, [request.instrument_id])
+            if request.instrument_id not in run.context_json.get("instrument_ids", []):
+                raise ValueError("请先读取并绑定该标的，再计算其数值证据")
             context = run.context_json
-            asset = next((row for row in context.get("instrument_inputs", [])
-                          if row["instrument_id"] == request.instrument_id), {})
-            cutoff = asset.get("snapshot_cutoff") or context.get("input_snapshot_cutoff") or context["cutoff"]
+            cutoff = bound_input_cutoff(session, run_id, request.instrument_id) or context.get("input_snapshot_cutoff") or context["cutoff"]
             if request.action == "price_risk":
                 result = instrument_price_risk(session, request.instrument_id, as_of=cutoff)
             else:
@@ -330,15 +334,17 @@ def numeric_research(run_id: str, request: NumericResearchInput, session: Sessio
                 start=request.start, end=request.end)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
-    run.context_json = {**run.context_json, "computed_metrics": [*run.context_json.get("computed_metrics", []), result]}
+    result = retain_computed_source(session, run, result)
     session.commit()
-    return result
+    from watchlist_app.services.research_numeric_projection import project_numbers
+    return project_numbers(result)
 
 
 @router.post("/research/runs/{run_id}/stored-data")
 def stored_research_data(run_id: str, request: StoredDataRequest, session: Session = Depends(get_db_session)):
     from watchlist_app.services.research_data import stored_market_data
-    run = market_run(session, run_id)
+    from watchlist_app.services.research_run_evidence import locked_computation_run, retain_computed_source
+    run = locked_computation_run(session, run_id)
     context = run.context_json
     cutoff = context.get("input_snapshot_cutoff") or context["cutoff"]
     try:
@@ -346,8 +352,7 @@ def stored_research_data(run_id: str, request: StoredDataRequest, session: Sessi
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     if result.get("source_id"):
-        result["source_run_id"] = run_id
-        run.context_json = {**context, "computed_metrics": [*context.get("computed_metrics", []), result]}
+        result = retain_computed_source(session, run, result)
         session.commit()
     return result
 
@@ -378,18 +383,19 @@ def submit_draft(run_id: str, request: service.ReviewResult, session: Session = 
 def quant_availability(run_id: str, session: Session = Depends(get_db_session)):
     from watchlist_app.services.quant_sandbox import availability
     from watchlist_app.services.research_quant import QuantOutput
-    market_run(session, run_id)
+    from watchlist_app.services.research_run_evidence import locked_computation_run
+    locked_computation_run(session, run_id)
     return {**availability(), "output_schema": QuantOutput.model_json_schema(),
             "input_contract": "inputs[source_id] holds the exact retained source; params holds explicit assumptions. Define result as a JSON-compatible dictionary. No network, host files or package installation."}
 
 
 @router.get("/research/runs/{run_id}/quant-inputs")
 def quant_inputs(run_id: str, instrument_id: str, version_id: str | None = None, session: Session = Depends(get_db_session)):
-    from watchlist_app.services.research_quant import input_catalogue
-    run = market_run(session, run_id)
+    from watchlist_app.services.research_run_evidence import locked_computation_run, quant_source_catalogue
+    run = locked_computation_run(session, run_id)
     try:
         return {"instrument_id": instrument_id, "version_id": version_id,
-                "sources": input_catalogue(run.context_json, run_id, instrument_id, version_id)}
+                "sources": quant_source_catalogue(session, run, instrument_id, version_id)}
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
 
@@ -398,9 +404,12 @@ def quant_inputs(run_id: str, instrument_id: str, version_id: str | None = None,
 def run_quant(run_id: str, request: QuantAnalysisInput, session: Session = Depends(get_db_session)):
     from watchlist_app.services.quant_sandbox import SandboxUnavailable
     from watchlist_app.services.research_quant import execute_analysis, analysis_overview
-    run = market_run(session, run_id)
+    from watchlist_app.services.research_run_evidence import locked_computation_run, selected_quant_sources, retain_computed_source
+    run = locked_computation_run(session, run_id)
     try:
-        evidence = execute_analysis(run, request)
+        sources, cutoff = selected_quant_sources(session, run, request.instrument_id, request.source_ids, request.version_id)
+        evidence = execute_analysis(run, request, selected_sources=sources, input_cutoff=cutoff)
+        evidence = retain_computed_source(session, run, evidence)
     except SandboxUnavailable as error:
         raise HTTPException(503, str(error)) from error
     except ValueError as error:

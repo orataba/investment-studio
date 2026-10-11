@@ -140,6 +140,7 @@ def test_adjusted_history_cannot_borrow_raw_close_for_inception_anchor(monkeypat
     state = replace(risk_budget_state(), as_of_date=date(2026, 1, 7))
     state.instrument_detail_cache["a"] = {
         "instrument_id": "a", "instrument_type": "equity", "currency": "CNY",
+        "source_settings": {"expected_frequency": "daily", "market_calendar": "24/5"},
         "quote_selection_policy": {"total_return": ["adjusted_close", "close"]},
         "market_data": [
             {"metric_family": "price", "quote_basis": basis, "as_of_date": day, "value": value,
@@ -157,6 +158,7 @@ def test_missing_expected_exchange_session_stops_reliable_prefix(monkeypatch, cu
     state = replace(risk_budget_state(), as_of_date=date(2026, 1, 8))
     detail = state.instrument_detail_cache["a"]
     detail["exchange_code"] = "XNYS"
+    detail["source_settings"] = {"expected_frequency": "daily", "market_calendar": "XNYS"}
     detail["currency"] = currency
     detail["market_data"] = [row for row in detail["market_data"] if row["as_of_date"] != "2026-01-05"]
     for point in detail["market_data"]:
@@ -166,6 +168,17 @@ def test_missing_expected_exchange_session_stops_reliable_prefix(monkeypatch, cu
     result, _, _ = run_history(monkeypatch, state=state, securities={"a": 100.0}, initial_currency=currency)
     assert len(result["points"]) == 1
     assert "2026-01-05 holding valuation is unavailable" in result["point_in_time_coverage"]["unavailable_reason"]
+
+
+def test_unknown_source_schedule_rejects_replay_instead_of_excluding_required_asset(monkeypatch):
+    state = replace(risk_budget_state(), as_of_date=date(2026, 1, 9))
+    detail = state.instrument_detail_cache["a"]
+    detail.pop("exchange_code", None)
+    detail["source_settings"] = {"expected_frequency": "daily"}
+    detail["market_data"] = [row for row in detail["market_data"]
+                             if row["as_of_date"] in {"2026-01-02", "2026-01-08", "2026-01-09"}]
+    with pytest.raises(ValueError, match="Historical return path unavailable for a: a daily risk unavailable: observation schedule unverified"):
+        run_history(monkeypatch, state=state, securities={"a": 100.0})
 
 
 @pytest.mark.parametrize("quote_day, inception, available", [("2026-01-02", "2026-01-04", True), ("2026-01-02", "2026-01-05", False)])

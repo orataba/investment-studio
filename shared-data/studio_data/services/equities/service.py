@@ -218,12 +218,13 @@ def materialize_equity(
     )
     if ensured is None:
         raise RuntimeError(f"Registry equity disappeared during materialization: {instrument_id}")
-    _source_settings(
-        instrument_id,
-        exchange.exchange_code,
-        provider_currency=provider_currency,
-        price_multiplier=price_multiplier,
-    )
+    if str(dict(existing.get("source_settings") or {}).get("source_api_profile") or "").lower() != "futu":
+        _source_settings(
+            instrument_id,
+            exchange.exchange_code,
+            provider_currency=provider_currency,
+            price_multiplier=price_multiplier,
+        )
     if refresh_eod:
         coverage = get_price_bar_coverage(instrument_id=instrument_id)
         refresh_equity_eod(
@@ -242,6 +243,13 @@ def refresh_equity_eod(
     full_history: bool = False,
     store=None,
 ) -> dict[str, object]:
+    instrument = get_instrument(instrument_id)
+    if instrument is None:
+        raise ValueError(f"Registry instrument not found: {instrument_id}")
+    if str(dict(instrument.get("source_settings") or {}).get("source_api_profile") or "").lower() == "futu":
+        from studio_data.services.futu import refresh_futu_eod
+
+        return refresh_futu_eod(instrument_id, full_history=full_history, store=store)
     from studio_data.services.fmp.eod import refresh_fmp_eod
 
     return refresh_fmp_eod(

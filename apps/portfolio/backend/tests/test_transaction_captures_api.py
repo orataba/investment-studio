@@ -17,10 +17,9 @@ def capture_identity_contract(monkeypatch):
     from studio_identity import Principal
     from portfolio_app.api.routes import transaction_captures
     from portfolio_app.services import transaction_capture_runner
-    monkeypatch.setattr(transaction_captures, "issue_delegation", lambda principal, audience, resource_scope: "test-run:" + resource_scope["id"])
-    monkeypatch.setattr(transaction_captures, "revoke_delegation", lambda token: None)
+    monkeypatch.setattr(transaction_captures, "issue_delegation", lambda principal, audience, resource_scope: "test-run:" + resource_scope["id"] + ":" + resource_scope["attempt"])
     monkeypatch.setattr(transaction_capture_runner, "revoke_delegation", lambda token: None)
-    monkeypatch.setattr(transaction_capture_runner, "resolve_token", lambda token, audience: Principal("test-manager", "Test Manager", "default", resource_scope={"kind": "capture", "id": token.removeprefix("test-run:")}))
+    monkeypatch.setattr(transaction_capture_runner, "resolve_token", lambda token, audience: Principal("test-manager", "Test Manager", "default", resource_scope={"kind": "capture", "id": token.removeprefix("test-run:").rsplit(":", 1)[0], "attempt": token.rsplit(":", 1)[1]}))
 
 PNG_SCREENSHOT = b"\x89PNG\r\n\x1a\nportfolio-screenshot-fixture"
 PNG_SCREENSHOT_OVERLAP = b"\x89PNG\r\n\x1a\nportfolio-overlap-fixture"
@@ -54,6 +53,14 @@ def _create_batch(
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def _start_capture_run(batch):
+    from portfolio_app.services.transaction_captures import queue_transaction_capture_analysis_run, mark_transaction_capture_analysis_run_started
+    queued = queue_transaction_capture_analysis_run(portfolio_id="investment-studio", batch_id=batch["batch_id"])
+    started, _ = mark_transaction_capture_analysis_run_started(portfolio_id="investment-studio", batch_id=batch["batch_id"], attempt=queued["analysis_run_attempt"])
+    assert started
+    return queued["analysis_run_attempt"]
 
 
 def _observed_field(capture_id: str, name: str, value: object):
@@ -180,6 +187,7 @@ def test_multiple_screenshots_form_one_reusable_agent_batch(client, monkeypatch)
         batch["batch_id"]
     ]
 
+    _start_capture_run(batch)
     context = client.get(
         "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/agent-context",
@@ -278,7 +286,7 @@ def test_screenshot_analysis_run_is_queued_once(client, monkeypatch) -> None:
             "portfolio_id": "investment-studio",
             "batch_id": batch["batch_id"],
             "attempt": 1,
-            "run_token": "test-run:" + batch["batch_id"],
+            "run_token": "test-run:" + batch["batch_id"] + ":1",
         }
     ]
 
@@ -359,12 +367,12 @@ def test_interrupted_screenshot_analysis_can_be_retried(
             "portfolio_id": "investment-studio",
             "batch_id": batch["batch_id"],
             "attempt": 2,
-            "run_token": "test-run:" + batch["batch_id"],
+            "run_token": "test-run:" + batch["batch_id"] + ":2",
         }
     ]
 
 
-def test_completed_revision_recovers_a_run_interrupted_before_status_update(client) -> None:
+def test_submitted_draft_does_not_claim_a_running_or_interrupted_run_succeeded(client) -> None:
     from portfolio_app.db.models import TransactionCaptureBatchModel
     from portfolio_app.db.session import get_session_factory
     from portfolio_app.services.transaction_captures import (
@@ -410,7 +418,7 @@ def test_completed_revision_recovers_a_run_interrupted_before_status_update(clie
         headers={"X-Test-Capture-Batch": batch["batch_id"]},
     )
     assert revision.status_code == 200, revision.text
-    assert revision.json()["batch"]["analysis_run_status"] == "succeeded"
+    assert revision.json()["batch"]["analysis_run_status"] == "running"
 
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -423,8 +431,15 @@ def test_completed_revision_recovers_a_run_interrupted_before_status_update(clie
         f"{batch['batch_id']}"
     )
     assert detail.status_code == 200, detail.text
-    assert detail.json()["analysis_run_status"] == "succeeded"
+    assert detail.json()["analysis_run_status"] == "running"
     assert detail.json()["analysis_run_error"] is None
+    with session_factory() as session:
+        stored = session.get(TransactionCaptureBatchModel, batch["batch_id"])
+        stored.analysis_run_started_at = "2020-01-01T00:00:00Z"
+        session.commit()
+    interrupted = client.get(f"/api/portfolios/investment-studio/transaction-capture-batches/{batch['batch_id']}").json()
+    assert interrupted["analysis_run_status"] == "failed"
+    assert interrupted["latest_analysis_revision"] == 1
 
 
 @pytest.mark.parametrize(("return_code", "expected_error"), [
@@ -458,7 +473,7 @@ def test_screenshot_analysis_runner_marks_missing_revision_as_failed(
         portfolio_id="investment-studio",
         batch_id=batch["batch_id"],
         attempt=queued["analysis_run_attempt"],
-        run_token="test-run:" + batch["batch_id"],
+        run_token="test-run:" + batch["batch_id"] + ":1",
     )
 
     detail = client.get(
@@ -489,10 +504,12 @@ def test_capture_runner_classifies_errors_without_exposing_provider_output(stder
 
 
 @pytest.mark.parametrize(
-    ("source", "harness", "expected_status"),
+    ("source", "harness", "return_code", "timed_out", "expected_status"),
     [
-        ("assistant", "deepseek-harness", "succeeded"),
-        ("human", None, "failed"),
+        ("assistant", "deepseek-harness", 0, False, "succeeded"),
+        ("assistant", "deepseek-harness", 1, False, "failed"),
+        ("assistant", "deepseek-harness", -15, True, "failed"),
+        ("human", None, 0, False, "failed"),
     ],
 )
 def test_screenshot_analysis_runner_requires_an_agent_revision(
@@ -500,6 +517,8 @@ def test_screenshot_analysis_runner_requires_an_agent_revision(
     monkeypatch,
     source: str,
     harness: str | None,
+    return_code: int,
+    timed_out: bool,
     expected_status: str,
 ) -> None:
     from portfolio_app.services import transaction_capture_runner
@@ -540,8 +559,9 @@ def test_screenshot_analysis_runner_requires_an_agent_revision(
             transaction_import=None,
             preview=None,
             referenced_capture_ids={capture["capture_id"]},
+            analysis_run_attempt=queued["analysis_run_attempt"] if source == "assistant" else None,
         )
-        return 0, False, None
+        return return_code, timed_out, None
 
     monkeypatch.setattr(
         transaction_capture_runner,
@@ -553,7 +573,7 @@ def test_screenshot_analysis_runner_requires_an_agent_revision(
         portfolio_id="investment-studio",
         batch_id=batch["batch_id"],
         attempt=queued["analysis_run_attempt"],
-        run_token="test-run:" + batch["batch_id"],
+        run_token="test-run:" + batch["batch_id"] + ":1",
     )
 
     detail = client.get(
@@ -562,6 +582,61 @@ def test_screenshot_analysis_runner_requires_an_agent_revision(
     )
     assert detail.status_code == 200, detail.text
     assert detail.json()["analysis_run_status"] == expected_status
+    assert detail.json()["latest_analysis_revision"] == 1
+    if source == "assistant" and expected_status == "failed":
+        assert "草稿仍保留" in detail.json()["analysis_run_error"]
+
+
+def test_retry_rejects_old_attempt_at_tool_boundary_and_locked_revision_write(client):
+    from portfolio_app.db.models import TransactionCaptureBatchModel
+    from portfolio_app.db.session import get_session_factory
+    from portfolio_app.services.transaction_captures import (
+        create_transaction_capture_analysis_revision, TransactionCaptureAnalysisRunConflictError,
+        finish_transaction_capture_analysis_run,
+    )
+    capture = _upload_capture(client)
+    batch = _create_batch(client, [capture["capture_id"]])
+    assert _start_capture_run(batch) == 1
+    with get_session_factory()() as session:
+        row = session.get(TransactionCaptureBatchModel, batch["batch_id"])
+        row.analysis_run_started_at = "2020-01-01T00:00:00Z"
+        session.commit()
+    assert _start_capture_run(batch) == 2
+    base = f"/api/portfolios/investment-studio/transaction-capture-batches/{batch['batch_id']}"
+    old = {"X-Test-Capture-Batch": batch["batch_id"], "X-Test-Capture-Attempt": "1"}
+    current = {**old, "X-Test-Capture-Attempt": "2"}
+    assert client.get(base + "/agent-context", headers=old).status_code == 409
+    assert client.get(base + "/agent-context", headers=current).status_code == 200
+    analysis = {"summary": "No transaction proposal.", "documents": [{"capture_id": capture["capture_id"], "document_kind": "unknown"}], "candidates": [], "questions": []}
+    payload = {"source": "assistant", "harness": "deepseek-harness", "provider": "deepseek", "model_name": "fixture", "analysis": analysis}
+    assert client.post(base + "/analysis-revisions", headers=old, json=payload).status_code == 409
+    # Reproduce a request that passed authorization before the retry took its lock.
+    with pytest.raises(TransactionCaptureAnalysisRunConflictError, match="重试替代"):
+        create_transaction_capture_analysis_revision(portfolio_id="investment-studio", batch_id=batch["batch_id"], source="assistant",
+            harness="deepseek-harness", provider="deepseek", model="fixture", harness_session_id=None, finish_reason=None,
+            schema_version="portfolio.transaction-capture-analysis.v2", analysis=analysis, transaction_import=None, preview=None,
+            referenced_capture_ids={capture["capture_id"]}, analysis_run_attempt=1)
+    assert not finish_transaction_capture_analysis_run(portfolio_id="investment-studio", batch_id=batch["batch_id"], attempt=1, succeeded=True)
+    result = client.post(base + "/analysis-revisions", headers=current, json=payload)
+    assert result.status_code == 200, result.text
+    assert result.json()["batch"]["latest_analysis_revision"] == 1
+    assert result.json()["batch"]["analysis_run_status"] == "running"
+
+
+def test_capture_grant_failure_leaves_a_failed_attempt_instead_of_queued_work(client, monkeypatch):
+    from portfolio_app.api.routes import transaction_captures
+    capture = _upload_capture(client)
+    batch = _create_batch(client, [capture["capture_id"]])
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("offline identity failure")
+    monkeypatch.setattr(transaction_captures, "issue_delegation", unavailable)
+    base = f"/api/portfolios/investment-studio/transaction-capture-batches/{batch['batch_id']}"
+    with pytest.raises(RuntimeError, match="Request failed; diagnostic request_id="):
+        client.post(base + "/analysis-runs")
+    failed = client.get(base).json()
+    assert failed["analysis_run_status"] == "failed"
+    assert failed["analysis_run_attempt"] == 1
+    assert "无法取得" in failed["analysis_run_error"]
 
 
 def test_agent_analysis_is_batch_scoped_preview_and_never_auto_commits(client) -> None:
@@ -572,6 +647,7 @@ def test_agent_analysis_is_batch_scoped_preview_and_never_auto_commits(client) -
         filename="broker-fill-overlap.png",
     )
     batch = _create_batch(client, [first["capture_id"], second["capture_id"]])
+    _start_capture_run(batch)
     before = client.get(
         "/api/portfolios/investment-studio/transactions"
     ).json()["summary"]["total_transactions"]
@@ -787,6 +863,7 @@ def test_position_snapshot_analysis_does_not_require_fake_transactions(client) -
         [capture["capture_id"]],
         purpose="portfolio_initialization",
     )
+    _start_capture_run(batch)
     response = client.post(
         "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-revisions",
@@ -879,6 +956,7 @@ def test_existing_transaction_match_is_preserved_without_a_duplicate_proposal(cl
 def test_ambiguous_account_assignment_stays_reviewable_without_a_proposal(client) -> None:
     capture = _upload_capture(client)
     batch = _create_batch(client, [capture["capture_id"]])
+    _start_capture_run(batch)
     response = client.post(
         "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-revisions",

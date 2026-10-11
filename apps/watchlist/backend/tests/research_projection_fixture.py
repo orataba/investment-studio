@@ -5,6 +5,9 @@ from watchlist_app.services.research_estimate_tools import estimate_company
 
 def server_projection(backend):
     def request(suffix, payload=None):
+        if suffix == "risk-portfolio":
+            from watchlist_app.services.risk_portfolio_projection import project_portfolio_risk
+            return project_portfolio_risk(backend("context"), **payload)
         if suffix == "read":
             selector = dict(payload)
             resource = selector.pop("resource")

@@ -86,7 +86,10 @@ def holding_type(name, symbol, profile):
     if re.fullmatch(r"(?:IX[A-Z]|XA[RS])[HMUZ]\d{1,2}", symbol or ""):
         return "future"
     if profile:
-        return "fund" if profile.get("is_etf") or profile.get("is_fund") else "equity"
+        if profile.get("is_etf") is True or profile.get("is_fund") is True:
+            return "fund"
+        if profile.get("is_etf") is False and profile.get("is_fund") is False:
+            return "equity"
     return "unclassified"
 
 

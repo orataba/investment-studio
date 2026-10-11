@@ -17,6 +17,8 @@ from investment_studio_instrument_core import (
     FUND_TOTAL_RETURN_QUOTE_BASES,
     QUOTE_BASIS_METRIC_FAMILY,
     resolve_quote_return_semantics,
+    analytical_return_quote_bases,
+    build_return_intervals,
     validate_market_data_identity,
 )
 
@@ -72,6 +74,7 @@ from watchlist_app.services.return_windows import (
     period_return_percent,
     resolve_return_window,
     return_window_metadata,
+    return_sample_limitation,
 )
 from watchlist_app.services.shared_instrument_registry import (
     SharedInstrumentRegistryError,
@@ -82,38 +85,11 @@ from watchlist_app.services.shared_instrument_registry import (
 )
 
 
-FUND_DETAIL_TABS = [
-    "overview",
-    "performance",
-    "risk",
-    "price",
-    "exposure",
-    "people",
-    "strategy",
-    "documents",
-    "research",
-    "monitoring",
-]
+INSTRUMENT_DETAIL_TABS = ["overview", "risk", "investment-research", "views", "info"]
 
-LISTED_DETAIL_TABS = {
-    "crypto": ["overview", "research", "events", "performance", "risk", "price", "monitoring"],
-    "etf": ["overview", "research", "performance", "risk", "price", "portfolio", "monitoring"],
-    "equity": [
-        "overview",
-        "research",
-        "performance",
-        "risk",
-        "price",
-        "fundamentals",
-        "events",
-        "monitoring",
-    ],
-    "index": ["overview", "research", "performance", "risk", "price", "methodology", "monitoring"],
-}
-
-PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v9"
-RISK_METHODOLOGY_VERSION = "canonical-risk/v9"
-PEER_COMPARISON_POLICY_VERSION = "peer-comparison/v5"
+PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v11"
+RISK_METHODOLOGY_VERSION = "canonical-risk/v11"
+PEER_COMPARISON_POLICY_VERSION = "peer-comparison/v6"
 
 
 class RecalcJobLeaseLostError(RuntimeError):
@@ -256,10 +232,6 @@ def _normalize_nav_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
         if str(value).strip()
     ]
     return normalized
-
-
-def _allows_listed_price_return_basis(instrument_type: object) -> bool:
-    return str(instrument_type or "").strip().lower() in {"equity", "etf", "index", "crypto"}
 
 
 def _normalize_quote_basis(value: object) -> str:
@@ -409,6 +381,7 @@ def _peer_taxonomy_is_comparable(node: object | None) -> bool:
         node_id.endswith("-unclassified")
         or node_id.endswith("-other")
         or node_id.startswith("equity-market-")
+        or node_id == "crypto-native"
     )
 
 
@@ -797,12 +770,12 @@ def _compute_sharpe(nav_points: list[dict[str, Any]]) -> float | None:
 
 def _periodic_returns(nav_points: list[dict[str, Any]]) -> list[float]:
     nav_points = _numeric_nav_points(nav_points)
-    returns: list[float] = []
-    for previous, current in zip(nav_points, nav_points[1:], strict=False):
-        if previous["value"] <= 0:
-            continue
-        returns.append(current["value"] / previous["value"] - 1)
-    return returns
+    if len({point.get("segment_id") for point in nav_points}) > 1:
+        return []
+    intervals = build_return_intervals(nav_points, date_key="as_of_date")
+    if any(item["status"] != "complete" for item in intervals):
+        return []
+    return [float(item["value"]) for item in intervals]
 
 
 def _annualization_periods_per_year(nav_points: list[dict[str, Any]], return_count: int) -> float | None:
@@ -874,6 +847,7 @@ def _monthly_return_series(nav_points: list[dict[str, Any]]) -> list[dict[str, A
                 current["as_of_date"],
             )
             or previous["value"] <= 0
+            or previous.get("segment_id") != current.get("segment_id")
         ):
             continue
         returns.append({
@@ -1232,19 +1206,28 @@ def _performance_window_metadata(
     return return_window_metadata(window) if window is not None else {}
 
 
-def _peer_comparison_basis(*, snapshot, nav_points, selection, frequency, currency):
+def _peer_comparison_basis(*, snapshot, nav_points, selection, frequency, currency, return_series):
     """Small, snapshot-bound provenance for fixed-window peer comparisons.
 
     Since-inception risk and return descriptors do not share a period across
     funds, so they remain individual metrics and never enter a peer rank.
     """
+    windows = {}
+    for definition in PEER_COMPARISON_METRICS:
+        window = _performance_window_metadata(nav_points, definition["window"])
+        if window:
+            sample = [point for point in nav_points
+                if window["anchor_date"] <= point["as_of_date"].isoformat() <= window["end_date"]]
+            reason = return_sample_limitation({**return_series, "frequency": frequency}, sample)
+            window = {**window, "observation_status": "unavailable" if reason else "complete", "reason": reason}
+        windows[definition["metric_key"]] = window
     return {
         "snapshot_id": getattr(snapshot, "snapshot_id", None),
+        "comparison_policy_version": PEER_COMPARISON_POLICY_VERSION,
         "currency": currency,
         "return_kind": selection.get("return_kind"),
         "frequency": frequency.get("resolved_frequency"),
-        "windows": {definition["metric_key"]: _performance_window_metadata(nav_points, definition["window"])
-                    for definition in PEER_COMPARISON_METRICS},
+        "windows": windows,
     }
 
 
@@ -1256,13 +1239,15 @@ def _comparable_peer_window(target, candidate, metric_key):
             return False
     target_window = (target.get("windows") or {}).get(metric_key) or {}
     candidate_window = (candidate.get("windows") or {}).get(metric_key) or {}
+    if any(window.get("observation_status") != "complete" for window in (target_window, candidate_window)):
+        return False
     return all(target_window.get(key) is not None and target_window[key] == candidate_window.get(key)
                for key in ("anchor_date", "end_date"))
 
 
 def _growth_of_100(nav_points: list[dict[str, Any]]) -> float | None:
     nav_points = _numeric_nav_points(nav_points)
-    if len(nav_points) < 2 or nav_points[0]["value"] <= 0:
+    if len(nav_points) < 2 or nav_points[0]["value"] <= 0 or len({point.get("segment_id") for point in nav_points}) > 1:
         return None
     return nav_points[-1]["value"] / nav_points[0]["value"] * 100
 
@@ -1311,7 +1296,7 @@ def _validated_shared_quote_point(
         "as_of_date": as_of_date,
         "value": value,
         "currency": currency,
-        "frequency": "daily",
+        "frequency": str(item.get("frequency") or "").strip().lower() or None,
         "adopted_at": None,
         "metric_family": metric_family,
         "quote_basis": quote_basis,
@@ -1422,7 +1407,12 @@ def _selection_candidates(
     instrument_type: object,
 ) -> list[str]:
     normalized_preference = (preference or "auto").strip().lower()
-    candidates = _quote_policy_candidates(shared_instrument, role=role)
+    # chart.series feeds return comparisons and metrics. Registry's chart
+    # policy can legitimately select raw prices for a price display, so this
+    # analytical consumer must share the total-return input policy.
+    candidates = _quote_policy_candidates(
+        shared_instrument, role="total_return" if role == "chart" else role,
+    )
     if not candidates:
         return []
     normalized_instrument_type = str(instrument_type or "").strip().lower()
@@ -1433,19 +1423,19 @@ def _selection_candidates(
             return []
         return [basis for basis in candidates if basis in FUND_TOTAL_RETURN_QUOTE_BASES]
 
-    allow_ordinary_nav = _allows_listed_price_return_basis(normalized_instrument_type)
-    if normalized_preference == "nav_with_dividend":
-        return [basis for basis in candidates if basis in TOTAL_RETURN_QUOTE_BASES]
-    if normalized_preference == "nav":
-        return (
-            [basis for basis in candidates if basis in UNIT_OR_RAW_QUOTE_BASES]
-            if allow_ordinary_nav
-            else []
-        )
-
-    if allow_ordinary_nav:
+    if role in {"trading", "valuation", "reference"}:
         return candidates
-    return [basis for basis in candidates if basis in TOTAL_RETURN_QUOTE_BASES]
+    settings = (shared_instrument or {}).get("source_settings") or {}
+    candidates = analytical_return_quote_bases(
+        instrument_type=normalized_instrument_type,
+        quote_bases=candidates,
+        source_settings=settings,
+    )
+    if normalized_preference == "nav_with_dividend":
+        return [basis for basis in candidates if resolve_quote_return_semantics(
+            instrument_type=normalized_instrument_type, quote_basis=basis,
+            source_settings=settings) == "total_return"]
+    return candidates
 
 
 def _return_kind_for_quote_basis(
@@ -1455,7 +1445,7 @@ def _return_kind_for_quote_basis(
     instrument_type: object,
 ) -> str | None:
     if quote_basis == "official_nav":
-        return "unit_nav_return"
+        return None
     source_settings = (
         shared_instrument.get("source_settings")
         if isinstance(shared_instrument, dict)
@@ -1468,11 +1458,6 @@ def _return_kind_for_quote_basis(
     )
     if resolved in {"total_return", "price_return"}:
         return resolved
-    if (
-        str(instrument_type or "").strip().lower() != "index"
-        and quote_basis in {"close", "last"}
-    ):
-        return "price_return"
     return None
 
 
@@ -1548,7 +1533,26 @@ def _select_quote_series(
             if isinstance(projection_evidence, dict)
             else []
         )
+        source_settings = dict((shared_instrument or {}).get("source_settings") or {})
+        if role in {"total_return", "chart"}:
+            break_dates = [item.get("as_of_date") for item in segment_breaks
+                if isinstance(item, dict) and item.get("as_of_date")]
+            intervals = build_return_intervals(points, date_key="as_of_date",
+                source_settings=source_settings, quote_basis=quote_basis,
+                break_dates=break_dates)
+            by_date = {item["date"]: item for item in intervals}
+            segment_id = points[0]["as_of_date"].isoformat()
+            for point in points:
+                interval = by_date.get(point["as_of_date"].isoformat())
+                if interval and interval["status"] != "complete":
+                    segment_id = point["as_of_date"].isoformat()
+                    segment_breaks.append({"as_of_date": segment_id, "reason": interval["reason"]})
+                point["segment_id"] = segment_id
+            if segment_breaks:
+                projection_status = "partial"
         return {
+            "source_settings": source_settings,
+            "instrument_type": instrument_type,
             "nav_basis_type": row_slot,
             "nav_basis_source": str(points[-1].get("source") or "shared"),
             "nav_basis_status": (
@@ -1656,6 +1660,8 @@ def _selection_metadata(selection: dict[str, object]) -> dict[str, object]:
         "label": selection.get("selected_series_label"),
         "date_label": selection.get("selected_date_label"),
         "return_kind": selection.get("return_kind"),
+        "return_measure": "simple" if selection.get("selected_role") in {"total_return", "chart"} else None,
+        "level_kind": "return_input" if selection.get("selected_role") in {"total_return", "chart"} else "observed_quote",
         "return_series_status": selection.get("return_series_status"),
         "return_anchor_date": selection.get("return_anchor_date"),
         "return_segment_breaks": list(
@@ -1728,13 +1734,56 @@ def _build_chart_payload(
                     # These levels are calculation inputs for interactive return
                     # windows, not formatted labels. Rounding small spot prices
                     # here changes returns and can erase positive observations.
-                    {"date": point["as_of_date"].isoformat(), "value": float(point["value"])}
+                    {"date": point["as_of_date"].isoformat(), "value": float(point["value"]),
+                     **({"segment_id": point.get("segment_id")} if metadata.get("return_segment_breaks") else {})}
                     for point in nav_points
                 ],
             }
         ],
+        "price_series": {
+            "quote_basis": (valuation_selection or {}).get("selected_quote_basis"),
+            "currency": currency,
+            "points": [{"date": point["as_of_date"].isoformat(), "value": float(point["value"])}
+                for point in (valuation_selection or {}).get("points", [])],
+        },
         "available_compare_targets": [],
     }
+
+
+def _build_return_series(selection: dict[str, object], frequency_context: dict[str, Any]) -> dict[str, object]:
+    """Derived returns/wealth never replace observed prices or official unit NAV."""
+    points = frequency_context["points"]
+    economic_breaks = [item["as_of_date"] for item in selection.get("return_segment_breaks", [])
+        if isinstance(item, dict) and item.get("as_of_date")]
+    intervals = build_return_intervals(points, date_key="as_of_date",
+        break_dates=[*frequency_context.get("missing_observation_dates", []), *economic_breaks],
+        source_settings=selection.get("source_settings"),
+        quote_basis=selection.get("selected_quote_basis"))
+    wealth = []
+    segments = []
+    anchor = None
+    segment = None
+    for point in points:
+        point_segment = point.get("segment_id") or points[0]["as_of_date"].isoformat()
+        if point_segment != segment:
+            anchor, segment = float(point["value"]), point_segment
+            segments.append({"segment_id": segment, "start_date": point["as_of_date"].isoformat()})
+        segments[-1]["end_date"] = point["as_of_date"].isoformat()
+        wealth.append({"date": point["as_of_date"].isoformat(),
+            "value": float(point["value"]) / anchor * 100,
+            "segment_id": segment})
+    profile = {**frequency_context["profile"],
+        "unavailable_return_interval_count": sum(item["status"] != "complete" for item in intervals),
+        "economic_segment_break_count": len(economic_breaks), "return_measure": "simple"}
+    settings = selection.get("source_settings") or {}
+    schedule = {key: settings.get(key) for key in
+        ("market_calendar", "expected_frequency", "release_lag_days", "source_mode")}
+    schedule["instrument_type"] = selection.get("instrument_type")
+    return {"metadata": {**_selection_metadata(selection), "level_kind": "derived_wealth", "wealth_base": 100},
+        "observation_schedule": schedule,
+        "frequency": profile,
+        "currency": str(points[-1]["currency"]) if points else None,
+        "intervals": intervals, "wealth_points": wealth, "segments": segments}
 
 
 class CanonicalRecalcService:
@@ -1811,6 +1860,11 @@ class CanonicalRecalcService:
             expected_frequency=source_settings.get("expected_frequency"),
             market_calendar=str(source_settings.get("market_calendar") or "") or None,
         )
+        return_series = _build_return_series(selection, frequency_context)
+        segment_by_date = {
+            point["as_of_date"]: point.get("segment_id")
+            for point in selection["points"]
+        }
         calculation_dates = {
             point["as_of_date"]
             for point in frequency_context["points"]
@@ -1835,7 +1889,9 @@ class CanonicalRecalcService:
             "return_segment_breaks": list(
                 selection.get("return_segment_breaks") or []
             ),
-            "calculation_frequency_profile": frequency_context["profile"],
+            "calculation_frequency_profile": return_series["frequency"],
+            "return_measure": "simple",
+            "return_series": return_series,
             "compare_settings": {
                 "default_benchmark_instrument_id": nav_settings.get("default_benchmark_instrument_id"),
                 "peer_instrument_ids": list(nav_settings.get("peer_baseline_instrument_ids") or []),
@@ -1863,6 +1919,7 @@ class CanonicalRecalcService:
                         and row.get(selection["nav_basis_type"]) is not None
                         else None
                     ),
+                    "segment_id": segment_by_date.get(row["as_of_date"]),
                     "calculation_included": row["as_of_date"] in calculation_dates,
                 }
                 for row in selection["rows"]
@@ -2210,7 +2267,8 @@ class CanonicalRecalcService:
             market_calendar=str(source_settings.get("market_calendar") or "") or None,
         )
         calculation_nav_points = frequency_context["points"]
-        calculation_frequency_profile = frequency_context["profile"]
+        return_series = _build_return_series(nav_selection, frequency_context)
+        calculation_frequency_profile = return_series["frequency"]
         quote_selection = _select_quote_series(
             quote_points_by_basis,
             shared_instrument=shared_instrument,
@@ -2248,9 +2306,7 @@ class CanonicalRecalcService:
             taxonomy_context=taxonomy_context,
             instrument_attributes=raw_attributes,
         )
-        has_unresolved_gaps = int(
-            calculation_frequency_profile.get("gap_count") or 0
-        ) > 0
+        has_unresolved_gaps = return_sample_limitation(return_series, calculation_nav_points) is not None
         current_drawdown = (
             None
             if has_unresolved_gaps
@@ -2261,33 +2317,35 @@ class CanonicalRecalcService:
         else:
             watchlist_attributes.pop("current_drawdown", None)
 
-        performance_snapshot = self.snapshot_repository.get_current_performance(session, instrument_id)
-        risk_snapshot = self.snapshot_repository.get_current_risk(session, instrument_id)
         exposure_snapshot = self.snapshot_repository.get_current_exposure(session, instrument_id)
 
-        if job_type in {"performance", "all"}:
-            if calculation_nav_points:
-                performance_snapshot = self._replace_performance_snapshot(
-                    session,
-                    instrument_id=instrument_id,
-                    nav_points=calculation_nav_points,
-                    calculation_frequency_profile=calculation_frequency_profile,
-                    source_cutoff_at=market_data_source_cutoff,
-                    now=now,
-                )
-                risk_snapshot = self._replace_risk_snapshot(
-                    session,
-                    instrument_id=instrument_id,
-                    nav_points=calculation_nav_points,
-                    calculation_frequency_profile=calculation_frequency_profile,
-                    source_cutoff_at=market_data_source_cutoff,
-                    now=now,
-                )
-            else:
-                self.snapshot_repository.clear_performance(session, instrument_id=instrument_id)
-                self.snapshot_repository.clear_risk(session, instrument_id=instrument_id)
-                performance_snapshot = None
-                risk_snapshot = None
+        # Every job publishes the current chart and its window metadata below.
+        # Publish their scalar snapshots from that same captured sample, even
+        # when holdings triggered this job; never re-label retained old returns.
+        if calculation_nav_points:
+            performance_snapshot = self._replace_performance_snapshot(
+                session,
+                instrument_id=instrument_id,
+                nav_points=calculation_nav_points,
+                calculation_frequency_profile=calculation_frequency_profile,
+                return_series=return_series,
+                source_cutoff_at=market_data_source_cutoff,
+                now=now,
+            )
+            risk_snapshot = self._replace_risk_snapshot(
+                session,
+                instrument_id=instrument_id,
+                nav_points=calculation_nav_points,
+                calculation_frequency_profile=calculation_frequency_profile,
+                return_series=return_series,
+                source_cutoff_at=market_data_source_cutoff,
+                now=now,
+            )
+        else:
+            self.snapshot_repository.clear_performance(session, instrument_id=instrument_id)
+            self.snapshot_repository.clear_risk(session, instrument_id=instrument_id)
+            performance_snapshot = None
+            risk_snapshot = None
 
         if job_type in {"exposure", "all"} and holding_snapshot is not None:
             exposure_snapshot = self._replace_exposure_snapshot(
@@ -2332,23 +2390,16 @@ class CanonicalRecalcService:
             valuation_selection=valuation_selection,
             total_return_selection=nav_selection,
         )
+        chart_payload["return_series"] = return_series
         chart_payload["research_returns"] = {
-            "metadata": _selection_metadata(nav_selection),
-            "frequency": calculation_frequency_profile,
-            "currency": str(nav_selection["points"][-1]["currency"]) if nav_selection["points"] else shared_currency,
-            "points": [{"date": p["as_of_date"].isoformat(), "value": p["value"]} for p in calculation_nav_points],
+            **return_series, "points": return_series["wealth_points"],
         }
         comparison_basis = _peer_comparison_basis(
             snapshot=performance_snapshot, nav_points=calculation_nav_points,
             selection=nav_selection, frequency=calculation_frequency_profile,
             currency=chart_payload["research_returns"]["currency"],
+            return_series=return_series,
         )
-        if job_type not in {"performance", "all"}:
-            # An exposure-only refresh must not bind a retained performance
-            # snapshot to today's potentially revised price observations.
-            comparison_basis = session.scalar(select(
-                InstrumentPerformanceReadModel.payload_json["comparison_basis"]
-            ).where(InstrumentPerformanceReadModel.instrument_id == instrument_id)) or {}
         peer_comparison = self._peer_comparison_payload(
             session,
             instrument_id=instrument_id,
@@ -2361,6 +2412,7 @@ class CanonicalRecalcService:
             peer_comparison=peer_comparison,
             nav_points=calculation_nav_points,
             calculation_frequency_profile=calculation_frequency_profile,
+            return_series=return_series,
         )
         performance_payload["comparison_basis"] = comparison_basis
         risk_payload = self._risk_payload(
@@ -2368,6 +2420,7 @@ class CanonicalRecalcService:
             performance_snapshot=performance_snapshot,
             nav_points=calculation_nav_points,
             calculation_frequency_profile=calculation_frequency_profile,
+            return_series=return_series,
         )
         exposure_payload = self._exposure_payload(exposure_snapshot)
         holdings_payload = self._holdings_payload(holding_snapshot)
@@ -2445,6 +2498,7 @@ class CanonicalRecalcService:
         instrument_id: str,
         nav_points: list[dict[str, Any]],
         calculation_frequency_profile: dict[str, object],
+        return_series: dict[str, object],
         source_cutoff_at: datetime,
         now: datetime,
     ):
@@ -2470,7 +2524,7 @@ class CanonicalRecalcService:
             )
             returns[key] = (
                 _safe_decimal(period_return_percent(window))
-                if window is not None
+                if window is not None and return_sample_limitation(return_series, list(window.points)) is None
                 else None
             )
 
@@ -2482,7 +2536,7 @@ class CanonicalRecalcService:
         )
         annualized_return = (
             annualized_return_percent(since_inception_window)
-            if since_inception_window is not None
+            if since_inception_window is not None and return_sample_limitation(return_series, list(since_inception_window.points)) is None
             else None
         )
         annualized_windows = {
@@ -2501,12 +2555,10 @@ class CanonicalRecalcService:
             )
             annualized_window_returns[key] = (
                 _safe_decimal(annualized_return_percent(window))
-                if window is not None
+                if window is not None and return_sample_limitation(return_series, list(window.points)) is None
                 else None
             )
-        has_unresolved_gaps = int(
-            calculation_frequency_profile.get("gap_count") or 0
-        ) > 0
+        has_unresolved_gaps = return_sample_limitation(return_series, nav_points) is not None
         max_drawdown = None if has_unresolved_gaps else _compute_drawdown(nav_points)
         calmar = annualized_return / abs(max_drawdown) if annualized_return is not None and max_drawdown not in {None, 0} else None
         return self.snapshot_repository.replace_performance(
@@ -2522,6 +2574,7 @@ class CanonicalRecalcService:
                         "nav_points": nav_points,
                         "calculation_frequency_profile": calculation_frequency_profile,
                         "return_window_policy": RETURN_WINDOW_POLICY_VERSION,
+                        "return_intervals": return_series.get("intervals"),
                     }
                 ),
                 "calculated_at": now,
@@ -2550,13 +2603,12 @@ class CanonicalRecalcService:
         instrument_id: str,
         nav_points: list[dict[str, Any]],
         calculation_frequency_profile: dict[str, object],
+        return_series: dict[str, object],
         source_cutoff_at: datetime,
         now: datetime,
     ):
         latest = nav_points[-1]
-        has_unresolved_gaps = int(
-            calculation_frequency_profile.get("gap_count") or 0
-        ) > 0
+        has_unresolved_gaps = return_sample_limitation(return_series, nav_points) is not None
         volatility = None if has_unresolved_gaps else _compute_volatility(nav_points)
         downside_volatility = (
             None if has_unresolved_gaps else _compute_downside_deviation(nav_points)
@@ -2575,6 +2627,7 @@ class CanonicalRecalcService:
                     {
                         "nav_points": nav_points,
                         "calculation_frequency_profile": calculation_frequency_profile,
+                        "return_intervals": return_series.get("intervals"),
                     }
                 ),
                 "calculated_at": now,
@@ -2731,7 +2784,6 @@ class CanonicalRecalcService:
         resolved_frequency = str(
             calculation_frequency_profile.get("resolved_frequency") or "daily"
         ).strip().lower()
-        resolved_frequency = "daily"
         observation_freshness = assess_latest_observation_freshness(
             latest_observation_date=(
                 latest_observation_date
@@ -2739,6 +2791,7 @@ class CanonicalRecalcService:
                 else None
             ),
             current_date=source_calendar_date(now, source_settings.get("market_calendar")),
+            now=now,
             resolved_frequency=resolved_frequency,
             expected_frequency=source_settings.get("expected_frequency"),
             market_calendar=source_settings.get("market_calendar"),
@@ -2749,7 +2802,7 @@ class CanonicalRecalcService:
         )
         freshness_status = (
             "unavailable"
-            if not nav_selection["points"]
+            if not nav_selection["points"] or observation_freshness["status"] == "unavailable"
             else "partial"
             if has_unconfirmed_return_break
             else "stale"
@@ -2762,7 +2815,7 @@ class CanonicalRecalcService:
             else "Canonical total-return series stops at an unconfirmed return-series event."
             if has_unconfirmed_return_break
             else observation_freshness.get("reason")
-            if observation_freshness["status"] == "stale"
+            if observation_freshness["status"] in {"stale", "unavailable"}
             else None
         )
         return {
@@ -2862,14 +2915,11 @@ class CanonicalRecalcService:
                 "release_lag_trading_days": observation_freshness.get("release_lag_trading_days"),
             },
             "quick_monitoring_items": [],
-            "tabs": (
-                FUND_DETAIL_TABS
-                if str(instrument.instrument_type) in {"public_fund", "private_fund"}
-                else LISTED_DETAIL_TABS[str(instrument.instrument_type)]
-            ),
+            "tabs": list(INSTRUMENT_DETAIL_TABS),
         }
 
     def _peer_comparison_context(self, session: Session) -> dict[str, object]:
+        from watchlist_app.services.read_model_freshness import recalculation_freshness_overrides
         nodes = self.taxonomy_repository.list_nodes(
             session,
             taxonomy_code=INSTRUMENT_TAXONOMY_CODE,
@@ -2901,12 +2951,15 @@ class CanonicalRecalcService:
             if snapshot.methodology_version == PERFORMANCE_METHODOLOGY_VERSION:
                 performance_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
         comparison_basis_by_asset = {}
+        pending_configuration = recalculation_freshness_overrides(session, active_peer_instrument_ids, configuration_only=True)
         for instrument_id, basis in session.execute(select(
             InstrumentPerformanceReadModel.instrument_id,
             InstrumentPerformanceReadModel.payload_json["comparison_basis"],
         ).where(InstrumentPerformanceReadModel.instrument_id.in_(sorted(active_peer_instrument_ids)))):
             snapshot = performance_by_asset.get(instrument_id)
-            if isinstance(basis, dict) and basis.get("snapshot_id") == getattr(snapshot, "snapshot_id", None):
+            if (instrument_id not in pending_configuration and isinstance(basis, dict)
+                and basis.get("comparison_policy_version") == PEER_COMPARISON_POLICY_VERSION
+                and basis.get("snapshot_id") == getattr(snapshot, "snapshot_id", None)):
                 comparison_basis_by_asset[instrument_id] = basis
         return {
             "comparison_basis_by_asset": comparison_basis_by_asset,
@@ -3055,6 +3108,7 @@ class CanonicalRecalcService:
         )
         comparison_instrument_ids = [instrument_id, *eligible_peer_instrument_ids]
         metric_rows: list[dict[str, object]] = []
+        excluded_windows: list[dict[str, object]] = []
         comparable_peer_ids: set[str] = set()
         for definition in PEER_COMPARISON_METRICS:
             metric_key = str(definition["metric_key"])
@@ -3080,6 +3134,10 @@ class CanonicalRecalcService:
                         mismatched_as_of_count += 1
                     continue
                 if not _comparable_peer_window(target_basis, comparison_basis_by_asset.get(candidate_instrument_id), metric_key):
+                    candidate_window = ((comparison_basis_by_asset.get(candidate_instrument_id) or {}).get("windows") or {}).get(metric_key) or {}
+                    if candidate_window.get("observation_status") == "unavailable":
+                        excluded_windows.append({"instrument_id": candidate_instrument_id, "metric_key": metric_key,
+                            "reason": candidate_window.get("reason")})
                     if candidate_instrument_id != instrument_id:
                         mismatched_basis_count += 1
                     continue
@@ -3169,6 +3227,7 @@ class CanonicalRecalcService:
             ),
             "excluded_mismatched_as_of_count": excluded_mismatched_as_of_count,
             "metrics": metric_rows,
+            "excluded_windows": excluded_windows,
             "summary": {
                 "available_metric_count": len(metric_rows),
                 "ranked_metric_count": ranked_metric_count,
@@ -3254,9 +3313,16 @@ class CanonicalRecalcService:
         peer_comparison: dict[str, object] | None,
         nav_points: list[dict[str, Any]],
         calculation_frequency_profile: dict[str, object],
+        return_series: dict[str, object],
     ) -> dict[str, object]:
         trailing_returns: list[dict[str, Any]] = []
         annual_returns = _compute_calendar_year_returns(nav_points)
+        def qualify_window(row):
+            sample = [point for point in nav_points if row.get("anchor_date", "") <= point["as_of_date"].isoformat() <= row.get("end_date", "")]
+            reason = return_sample_limitation(return_series, sample)
+            return {**row, "investment_nav": None if reason else row["investment_nav"],
+                    "observation_status": "unavailable" if reason else "complete", "reason": reason}
+        annual_returns = [qualify_window(row) for row in annual_returns]
         growth_chart_series: list[dict[str, Any]] = []
         peer_metrics_by_key = {
             str(row.get("metric_key")): row
@@ -3295,7 +3361,8 @@ class CanonicalRecalcService:
                 }
                 for row in trailing_returns
             ]
-        growth_of_100 = _growth_of_100(nav_points)
+        trailing_returns = [qualify_window(row) for row in trailing_returns]
+        growth_of_100 = _growth_of_100(nav_points) if return_sample_limitation(return_series, nav_points) is None else None
         if growth_of_100 is not None:
             growth_chart_series = [{"name": "Growth of 100", "value": growth_of_100}]
         return {
@@ -3316,10 +3383,10 @@ class CanonicalRecalcService:
         performance_snapshot,
         nav_points: list[dict[str, Any]],
         calculation_frequency_profile: dict[str, object],
+        return_series: dict[str, object],
     ) -> dict[str, object]:
-        has_unresolved_gaps = int(
-            calculation_frequency_profile.get("gap_count") or 0
-        ) > 0
+        sample_limitation = return_sample_limitation(return_series, nav_points)
+        has_unresolved_gaps = sample_limitation is not None
         volatility = _safe_float(getattr(risk_snapshot, "volatility", None))
         annualized_return = _safe_float(getattr(performance_snapshot, "annualized_return", None))
         drawdown_summary = (
@@ -3330,17 +3397,17 @@ class CanonicalRecalcService:
         )
         current_watch = (
             None
-            if has_unresolved_gaps
+            if has_unresolved_gaps or calculation_frequency_profile.get("resolved_frequency") != "daily"
             else _build_current_risk_watch(nav_points, drawdown_summary)
         )
         risk_structure = (
             None
-            if has_unresolved_gaps
+            if has_unresolved_gaps or calculation_frequency_profile.get("resolved_frequency") != "daily"
             else _build_risk_structure(nav_points, drawdown_summary)
         )
         change_monitor = (
             None
-            if has_unresolved_gaps
+            if has_unresolved_gaps or calculation_frequency_profile.get("resolved_frequency") != "daily"
             else _build_risk_change_monitor(nav_points, drawdown_summary)
         )
         return {
@@ -3377,22 +3444,21 @@ class CanonicalRecalcService:
             "change_monitor": change_monitor,
             "data_quality": {
                 "status": (
-                    "partial_missing_observations"
-                    if has_unresolved_gaps
-                    else "ready"
+                    "unavailable" if not nav_points else
+                    "unverified_observation_schedule" if calculation_frequency_profile.get("gap_status") == "unverified" else
+                    "partial_missing_observations" if has_unresolved_gaps else "ready"
                 ),
-                "gap_count": int(
-                    calculation_frequency_profile.get("gap_count") or 0
-                ),
+                "gap_count": calculation_frequency_profile.get("gap_count"),
                 "gap_detection_basis": calculation_frequency_profile.get(
                     "gap_detection_basis"
                 ),
                 "note": (
-                    "Path-dependent risk metrics are withheld because canonical sessions are missing. Endpoint returns remain available."
+                    sample_limitation
                     if has_unresolved_gaps
                     else None
                 ),
             },
+            "return_measure": "simple",
             "calculation_frequency_profile": calculation_frequency_profile,
             "snapshot_metadata": _snapshot_metadata(risk_snapshot),
         }

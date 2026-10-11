@@ -72,6 +72,17 @@ def test_same_period_revisions_use_current_exposure_once_and_explain_analyst_cha
     assert result["current_snapshot"]["holdings_as_of"] == "2026-09-04"
 
 
+def test_unknown_company_weight_is_not_zero_coverage():
+    current = snapshot("current", {"AAA": company(estimate(), weight=None)})
+    result = compare_estimate_snapshots("fund", current)
+    assert result["coverage"]["equity_weight_pct"] is None
+    metric = next(row for row in result["coverage"]["metrics"]
+                  if row["frequency"] == "annual" and row["metric"] == "revenue_avg")
+    assert metric["current_company_count"] == 1
+    assert metric["current_weight_pct"] is None
+    assert "current_weight_missing" in result["gap_codes"]
+
+
 def test_rollover_new_coverage_unverified_currency_and_unchanged_clock_are_not_revisions():
     old = snapshot("old", {
         "ROLL": company(estimate(clock=OLD_CLOCK)),

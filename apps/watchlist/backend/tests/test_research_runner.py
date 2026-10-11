@@ -206,11 +206,20 @@ def test_chat_runner_keeps_answer_and_shared_publication_outcome_independent(cli
 
     class CompletedProcess:
         returncode = 0
+        def __init__(self, review):
+            self.review = review
         def communicate(self, timeout):
             assert timeout == 1800
+            if not self.review:
+                with get_session_factory()() as session:
+                    run = session.get(ResearchEntry, "chat-run")
+                    run.context_json = {**run.context_json, "submitted_draft": payload}
+                    session.commit()
+                return answer, ""
             return json.dumps({"answer": answer, "research_result": payload}), ""
 
-    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: CompletedProcess())
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: CompletedProcess(
+        kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW"] == "1"))
     def publish(session, run, raw):
         assert calls == [("prepare", "chat-run")]
         assert json.loads(raw) == payload
@@ -248,10 +257,19 @@ def test_chat_runner_retains_answer_when_independent_reviewer_declines_publicati
     monkeypatch.setattr(sector_research, "apply_result", lambda *args: pytest.fail("A rejected review must not publish"))
     class CompletedProcess:
         returncode = 0
+        def __init__(self, review):
+            self.review = review
         def communicate(self, timeout):
+            if not self.review:
+                with get_session_factory()() as session:
+                    run = session.get(ResearchEntry, "review-failed-chat")
+                    run.context_json = {**run.context_json, "submitted_draft": {"reviews": []}}
+                    session.commit()
+                return answer, ""
             return json.dumps({"answer": answer, "research_result": None,
                 "research_publication": {"status": "failed", "message": "核证未完成，研究记录未更新。"}}), ""
-    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: CompletedProcess())
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: CompletedProcess(
+        kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW"] == "1"))
     runner.run_analysis("review-failed-chat")
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, "review-failed-chat")
@@ -264,23 +282,31 @@ def test_chat_runner_retains_answer_when_independent_reviewer_declines_publicati
 def test_unexpected_publication_failure_rolls_back_and_finishes_the_run(client, monkeypatch, surface):
     from watchlist_app.services import risk_officer
     context = {"sector_run": surface == "sector", "risk_run": surface == "risk", "retained": "original-input"}
-    if surface == "sector":
+    if surface in {"sector", "conversation"}:
         context["submitted_draft"] = {"reviews": []}
-    if surface == "risk":
-        context["submitted_risk_review"] = {"summary": "retained draft"}
     with get_session_factory()() as session:
         session.add(ResearchTopic(topic_id="unexpected-failure-topic", title="研究"))
         session.flush()
         session.add(ResearchEntry(entry_id="unexpected-failure", topic_id="unexpected-failure-topic", kind="analysis",
             title="研究", status="queued", context_json=context))
+        if surface == "risk":
+            from watchlist_app.db.models.workbench import ResearchRiskReadState
+            session.flush()
+            session.add(ResearchRiskReadState(run_id="unexpected-failure", attempt=1,
+                submitted_review={"summary": "retained draft"}))
         session.commit()
     monkeypatch.setattr(sector_research, "prepare_run", lambda _: None)
     monkeypatch.setattr(risk_officer, "prepare_run", lambda _: None)
     class CompletedProcess:
         returncode = 0
+        def __init__(self, review):
+            self.review = review
         def communicate(self, timeout):
+            if surface == "conversation" and not self.review:
+                return "讨论完成", ""
             return json.dumps({"answer": "讨论完成", "research_result": {"reviews": []}}), ""
-    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: CompletedProcess())
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: CompletedProcess(
+        kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW"] == "1"))
     def broken_publish(session, run, result):
         run.context_json = {**run.context_json, "partially_published": True}
         session.flush()
@@ -304,7 +330,7 @@ def test_unexpected_publication_failure_rolls_back_and_finishes_the_run(client, 
         assert "private-provider-detail" not in json.dumps(run.context_json) + run.body
 
 
-def test_restart_marks_only_incomplete_runs_failed_with_a_terminal_clock(client):
+def test_api_restart_preserves_all_research_run_states(client):
     with get_session_factory()() as session:
         session.add(ResearchTopic(topic_id="restart-topic", title="研究"))
         session.flush()
@@ -313,12 +339,15 @@ def test_restart_marks_only_incomplete_runs_failed_with_a_terminal_clock(client)
                 title="研究", status=status, body="original", context_json={"retained": True}))
         session.commit()
 
-    runner.interrupt_incomplete_runs()
+    from fastapi.testclient import TestClient
+    from watchlist_app.main import app
+    with TestClient(app):
+        pass
 
     with get_session_factory()() as session:
         for status in ("queued", "running"):
             run = session.get(ResearchEntry, f"restart-{status}")
-            assert run.status == "failed" and run.completed_at is not None
+            assert run.status == status and run.completed_at is None
             assert run.context_json["retained"] is True
         for status in ("completed", "draft", "failed"):
             run = session.get(ResearchEntry, f"restart-{status}")
@@ -342,17 +371,17 @@ def test_execution_revalidates_original_issuer_after_preparation_outlasts_first_
         if token == "initial-grant" and prepared:
             raise IdentityError(401, "expired fixture grant")
         assert token in {"initial-grant", "execution-grant"}
-        return replace(issuer, credential=token, resource_scope={"kind": "run", "id": run_id})
+        return replace(issuer, credential=token, resource_scope={"kind": "run", "id": run_id, "attempt": "1"})
     def issue(principal, **kwargs):
         assert prepared and principal is issuer
-        assert kwargs == {"audience": "watchlist", "resource_scope": {"kind": "run", "id": run_id}}
+        assert kwargs == {"audience": "watchlist", "resource_scope": {"kind": "run", "id": run_id, "attempt": "1"}}
         if issuer_revoked:
             raise IdentityError(403, "fixture issuer was revoked")
         return "execution-grant"
     class CompletedProcess:
         returncode = 0
         def communicate(self, timeout):
-            return json.dumps({"answer": "原样本讨论完成", "research_result": None}), ""
+            return "原样本讨论完成", ""
     def launch(*args, **kwargs):
         assert not issuer_revoked
         assert kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN"] == "execution-grant"
@@ -363,7 +392,7 @@ def test_execution_revalidates_original_issuer_after_preparation_outlasts_first_
     monkeypatch.setattr(runner, "issue_delegation", issue)
     monkeypatch.setattr(runner, "revoke_delegation", lambda token, principal: revoked.append((token, principal)))
     monkeypatch.setattr(runner.subprocess, "Popen", launch)
-    runner.run_analysis(run_id, "initial-grant", issuer)
+    runner.run_analysis(run_id, "initial-grant", issuer, attempt=1)
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id)
         assert run.context_json["retained"] == "original-input"
@@ -442,7 +471,7 @@ def test_review_renews_original_issuer_grant_without_reusing_expired_generation_
     generation_finished = []
     def issue(principal, **kwargs):
         assert principal is issuer
-        assert kwargs == {"audience": "watchlist", "resource_scope": {"kind": "run", "id": run_id}}
+        assert kwargs == {"audience": "watchlist", "resource_scope": {"kind": "run", "id": run_id, "attempt": "1"}}
         if generation_finished and review_authority_revoked:
             raise IdentityError(403, "original issuer revoked before review")
         token = "review-grant" if generation_finished else "generation-grant"
@@ -451,7 +480,7 @@ def test_review_renews_original_issuer_grant_without_reusing_expired_generation_
     def resolve(token, audience):
         if generation_finished and token in {"initial-grant", "generation-grant"}:
             raise IdentityError(401, "expired earlier stage grant")
-        return replace(issuer, credential=token, resource_scope={"kind": "run", "id": run_id})
+        return replace(issuer, credential=token, resource_scope={"kind": "run", "id": run_id, "attempt": "1"})
     class Process:
         returncode = 0
         def __init__(self, review):
@@ -477,7 +506,7 @@ def test_review_renews_original_issuer_grant_without_reusing_expired_generation_
     monkeypatch.setattr(runner, "resolve_token", resolve)
     monkeypatch.setattr(runner, "revoke_delegation", lambda token, principal: revoked.append(token))
     monkeypatch.setattr(runner.subprocess, "Popen", launch)
-    runner.run_analysis(run_id, "initial-grant", issuer)
+    runner.run_analysis(run_id, "initial-grant", issuer, attempt=1)
     assert launched == issued == (["generation-grant"] if review_authority_revoked else ["generation-grant", "review-grant"])
     assert set(revoked) == {"initial-grant", *issued}
     with get_session_factory()() as session:

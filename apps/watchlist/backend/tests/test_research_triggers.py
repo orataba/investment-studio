@@ -303,7 +303,7 @@ def test_scheduled_run_reopens_for_same_day_source_and_does_not_retry_consumed_t
     monkeypatch.setattr(service, "datetime", Clock)
     with get_session_factory()() as database:
         database.add(Instrument(instrument_id="trigger-gold", instrument_name="Gold ETF", instrument_type="etf",
-            currency="USD", exchange_code="XNYS", quote_selection_policy_json={}, source_settings_json={"market_calendar": "XNYS"},
+            currency="USD", exchange_code="XNYS", quote_selection_policy_json={"total_return": ["adjusted_close"]}, source_settings_json={"market_calendar": "XNYS"},
             lifecycle_state_json={"status": "active"}))
         database.add(InstrumentDetail(instrument_id="trigger-gold", instrument_name="Gold ETF", instrument_type="etf",
             detail_view_type="etf", metadata_json={}))

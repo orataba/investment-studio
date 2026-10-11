@@ -65,11 +65,11 @@ def normalize_fmp_market_series(
             high_value = _positive_number(item.get("high"), f"{series_id} high", observed)
             low_value = _positive_number(item.get("low"), f"{series_id} low", observed)
             close_value = _positive_number(item.get("close"), f"{series_id} close", observed)
+            if not low_value <= min(open_value, close_value) <= max(open_value, close_value) <= high_value:
+                raise ValueError(f"{series_id} inconsistent OHLC range on {observed}")
         except ValueError as error:
             reject(observed, row_index, str(error))
             continue
-        high_value = max(high_value, open_value, low_value, close_value)
-        low_value = min(low_value, open_value, high_value, close_value)
         volume = _optional_number(item.get("volume"), minimum=0.0)
         vwap = _optional_number(item.get("vwap"), minimum=0.0, strict=True)
         row = {

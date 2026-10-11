@@ -67,3 +67,17 @@ describe('performance metrics', () => {
     expect(snapshot.annualizedReturn).toBeCloseTo(10)
   })
 })
+
+it('never treats independently rebased return chains as a loss, even for direct lifetime snapshots', () => {
+  const points = [
+    { date: '2026-08-30', value: 100, segment_id: 'old' },
+    { date: '2026-08-31', value: 102, segment_id: 'old' },
+    { date: '2026-09-01', value: 1, segment_id: 'new' },
+    { date: '2026-09-30', value: 1.1, segment_id: 'new' },
+  ]
+  const invalid = buildPerformanceMetricSnapshot(points)
+  expect(invalid.periodReturn).toBeNull()
+  expect(invalid.maxDrawdown).toBeNull()
+  expect(buildPerformanceMetricSnapshot(points.slice(2)).periodReturn).toBeCloseTo(10)
+  expect(buildPerformanceMetricPeriodSnapshots(points).find(p => p.key === 'SI')?.snapshot.periodReturn).toBeNull()
+})

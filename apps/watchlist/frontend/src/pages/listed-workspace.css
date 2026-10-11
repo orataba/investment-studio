@@ -1,25 +1,18 @@
-.listed-overview { display: grid; gap: 28px; min-width: 0; padding-top: 16px; }
-.listed-overview-main { display: grid; grid-template-columns: minmax(0, 1.85fr) minmax(300px, 1fr); gap: 28px; align-items: start; }
-.listed-overview-market, .listed-overview-judgments, .listed-overview-reference > * { min-width: 0; }
-.listed-overview-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 0 0 12px; }
-.listed-overview-section-heading h2 { margin: 0; font-size: 16px; font-weight: 500; }
-.listed-overview-section-heading button { flex-shrink: 0; font-size: 12px; }
+.listed-overview { display: grid; gap: 24px; min-width: 0; padding-top: 16px; }
+.listed-overview > * { min-width: 0; }
 .listed-overview .listed-overview-quote { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .listed-overview-quote .listed-metric-card { padding-top: 13px; padding-bottom: 12px; }
 .listed-overview-quote .listed-metric-value { font-size: 22px; }
-.listed-overview-market .listed-chart-toolbar { flex-direction: column; gap: 12px; }
-.listed-overview-market .listed-chart-controls { justify-content: flex-start; }
-.listed-overview-judgments { padding-left: 24px; border-left: 1px solid var(--line); }
-.listed-overview-opinion { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line-strong); }
-.listed-overview-opinion time { color: var(--muted); font-size: 11px; }
-.listed-overview-opinion h3 { margin: 9px 0 0; font-size: 14px; font-weight: 500; }
-.listed-overview-opinion p { margin: 8px 0 0; font-size: 13px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
-.listed-overview-quality { font-size: 12px; line-height: 1.6; color: var(--warning); }
-.listed-overview-reference { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; align-items: start; }
-.listed-overview-reference > :only-child { grid-column: 1 / -1; }
-.listed-risk-metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.listed-overview-quality { margin: 0; font-size: 12px; line-height: 1.6; color: var(--warning); }
+.listed-risk-metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .listed-drawdown-line { stroke: var(--studio-negative); stroke-width: 2; }
-.listed-overview-reference .listed-etf-profile { padding: 18px 0 0; border-top: 1px solid var(--line-strong); }
+.listed-info { padding-top: 18px; }
+.listed-info .listed-etf-profile, .listed-reference-profile { min-width: 0; padding: 0; }
+.listed-reference-profile h2 { margin: 0 0 18px; font-size: 17px; font-weight: 500; }
+.listed-reference-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px 28px; padding: 0 0 24px; margin: 0 0 24px; border-bottom: 1px solid var(--line); }
+.listed-reference-facts dt { color: var(--muted); font-size: 12px; }
+.listed-reference-facts dd { margin: 6px 0 0; font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+.listed-reference-description { white-space: pre-wrap; line-height: 1.8; max-width: 90ch; }
 .listed-etf-profile-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
 .listed-etf-profile h3, .listed-etf-profile h4 { margin: 0; font-size: 15px; font-weight: 500; }
 .listed-etf-profile-heading a { color: var(--accent); font-size: 12px; }
@@ -47,7 +40,7 @@
 
 .listed-index-performance-shell .instrument-performance-section-monthly .table-shell { max-height: 380px; overflow: auto; }
 .listed-index-performance-shell .instrument-heatmap-table thead { position: sticky; top: 0; background: #fff; z-index: 1; }
-.listed-overview-reference .listed-estimate-history { padding: 18px 0 0; border-top: 1px solid var(--line-strong); font-size: 12px; line-height: 1.7; }
+.listed-detail-page .listed-estimate-history { padding: 18px 0 0; border-top: 1px solid var(--line-strong); font-size: 12px; line-height: 1.7; }
 .listed-estimate-history h3 { margin: 0 0 16px; font-size: 15px; font-weight: 500; line-height: 1.6; }
 .listed-estimate-history p { color: var(--muted, #64748b); }
 .listed-estimate-history .listed-estimate-coverage { color: var(--ink); font-size: 14px; }
@@ -64,21 +57,14 @@
 .listed-hero-side .listed-hero-quote span { grid-column: 1 / -1; }
 .listed-hero-side .listed-hero-quote strong { font-size: 24px; }
 .listed-hero-side .listed-hero-quote em { font-size: 13px; }
-@media (max-width: 1000px) {
-  .listed-overview-main { grid-template-columns: minmax(0, 1fr); }
-  .listed-overview-judgments { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; border-left: 0; padding-left: 0; }
-  .listed-overview-opinion { margin-top: 0; padding-top: 0; border-top: 0; }
-}
 @media (max-width: 780px) {
   .listed-detail-page .listed-detail-hero { flex-direction: column; gap: 14px; }
   .listed-hero-side { width: 100%; flex-direction: row-reverse; justify-content: space-between; align-items: center; flex-wrap: wrap; }
   .listed-hero-side .listed-hero-quote { text-align: left; justify-items: start; }
 }
 @media (max-width: 640px) {
-  .listed-overview-main, .listed-overview-reference, .listed-overview-judgments { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .listed-reference-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
   .listed-overview .listed-overview-quote { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .listed-overview-quote .listed-metric-card:nth-child(3) { padding-left: 0; border-left: 0; }
   .listed-overview-quote .listed-metric-card:nth-child(n+3) { border-top: 1px solid var(--line); }
-  .listed-overview-opinion { padding-top: 18px; border-top: 1px solid var(--line-strong); }
-  .listed-overview-section-heading { flex-wrap: wrap; }
 }

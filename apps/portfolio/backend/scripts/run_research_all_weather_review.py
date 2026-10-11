@@ -469,7 +469,7 @@ def setup() -> str:
             "as_of_date": AS_OF,
             "lookback_days": 180,
             "calculation_frequency": "daily",
-            "missing_return_policy": "complete_case_drop",
+            "missing_return_policy": "strict",
             "covariance_model_id": "ewma_vol_shrinkage_corr_covariance",
             "contribution_mode": "signed",
             "capital_mode": "volatility_cap",

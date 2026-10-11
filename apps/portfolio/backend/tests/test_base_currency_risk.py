@@ -84,11 +84,11 @@ def test_missing_path_and_invalid_selected_path_never_fall_back_to_native_return
         converted(native, histories=[bad, fx()])
 
 
-def test_threshold_missing_interval_survives_base_currency_composition():
+def test_calendar_day_threshold_cannot_authorize_base_currency_daily_risk():
     native = pd.Series([100., 101., 102., 103.], index=DAYS)
-    _, returns, _ = converted(native, histories=[fx()],
-        coverage={"gap_detection_basis": "calendar_day_threshold", "gap_dates": [str(DAYS[2])]})
-    assert pd.isna(returns.at[DAYS[2], "asset"])
+    with pytest.raises(ValueError, match="observation schedule unverified"):
+        converted(native, histories=[fx()],
+            coverage={"gap_detection_basis": "calendar_day_threshold", "gap_dates": [str(DAYS[2])]})
 
 
 def risk_fx_history(*, missing=None):
@@ -121,22 +121,21 @@ def test_forward_risk_models_foreign_securities_and_signed_monetary_exposures_in
     assert rows[1]["forward_contribution_to_variance"] / rows[3]["forward_contribution_to_variance"] == pytest.approx(-2 / 3)
     returns = pd.DataFrame({row["line_id"]: {p["date"]: p["value"] for p in row["risk_return_series"]["points"]} for row in rows})
     returns = returns.loc[returns.index > result["forward_risk"]["coverage"]["window_start_date"]]
-    # Existing model annualizes by observed periods / elapsed span, including
-    # the median opening interval: 22 daily observations across 30 days here.
+    # The 22 selected returns run from the actual June 24 anchor to July 24,
+    # so the real elapsed span is 30 days (no estimated opening interval).
     assert len(returns) == 22
     covariance = returns.cov().to_numpy() * (22 / 30 * 365.25)
     weights = np.array([.7, .2, .4, -.3])
     assert result["forward_risk"]["portfolio_variance"] == pytest.approx(weights @ covariance @ weights)
 
 
-@pytest.mark.parametrize("policy,status", [("strict", "unavailable"), ("complete_case_drop", "ok")])
-def test_forward_fx_gap_preserves_null_intervals_and_covariance_policy(policy, status):
+def test_forward_fx_gap_preserves_null_intervals_and_blocks_covariance():
     missing = date.fromisoformat(_return_points()[10]["date"])
     history = risk_fx_history(missing=missing)
     result = enrich_holdings_forward_risk(_workspace([_holding("foreign", 1, currency="HKD")], base_currency="USD"),
-        as_of_date=AS_OF_DATE, calculation_frequency="daily", risk_policy=_risk_policy(missing_return_policy=policy),
+        as_of_date=AS_OF_DATE, calculation_frequency="daily", risk_policy=_risk_policy(),
         fx_histories={history.instrument_id: history})
-    assert result["forward_risk"]["status"] == status
+    assert result["forward_risk"]["status"] == "unavailable"
     assert result["forward_risk"]["coverage"]["missing_row_count"] == 2
     assert sum(point["value"] is None for point in result["rows"][0]["risk_return_series"]["points"]) == 2
 
@@ -152,7 +151,7 @@ def test_pure_foreign_cash_portfolio_has_fx_risk_and_full_observed_history():
     assert row["risk_return_series"]["first_return_start_date"] == history.levels.index[0].isoformat()
 
 
-@pytest.mark.parametrize("gap_kind", ["native", "fx", "threshold", "none"])
+@pytest.mark.parametrize("gap_kind", ["native", "fx", "none"])
 def test_converted_research_second_alignment_preserves_production_return_intervals(gap_kind):
     native = pd.Series([100., 101., 102., 103.], index=DAYS)
     coverage = dict(CALENDAR)
@@ -161,15 +160,10 @@ def test_converted_research_second_alignment_preserves_production_return_interva
         native = native.drop(DAYS[1]); coverage["gap_dates"] = [str(DAYS[1])]
     if gap_kind == "fx":
         history = fx(values=[8., 7.8, 7.7], days=[DAYS[0], DAYS[2], DAYS[3]], gaps=[DAYS[1]])
-    if gap_kind == "threshold":
-        coverage = {"gap_detection_basis": "calendar_day_threshold", "gap_dates": [str(DAYS[1])]}
     navs, first_returns, metadata = converted(native, histories=[history], coverage=coverage)
     _, second_returns = align_risk_navs({"asset": navs["asset"]},
         coverage_by_key={"asset": metadata["asset"]["observation_coverage"]})
     pd.testing.assert_frame_equal(first_returns, second_returns)
-    if gap_kind == "threshold":
-        assert pd.isna(second_returns.at[DAYS[1], "asset"])
-        assert pd.notna(second_returns.at[DAYS[2], "asset"])
 
 
 def test_composite_carry_on_closed_weekend_requires_all_source_calendars_and_cutoff():
@@ -184,9 +178,9 @@ def test_composite_carry_on_closed_weekend_requires_all_source_calendars_and_cut
     assert carried.at[saturday, "asset"] == 0
     unknown = deepcopy(coverage)
     unknown["component_coverage"]["fx:fx-usd-hkd"]["gap_detection_basis"] = "calendar_day_threshold"
-    _, missing = align_risk_navs({"asset": navs["asset"]},
-        coverage_by_key={"asset": unknown}, calendar=[*days, saturday], end_date=saturday)
-    assert pd.isna(missing.at[saturday, "asset"])
+    with pytest.raises(ValueError, match="observation schedule unverified"):
+        align_risk_navs({"asset": navs["asset"]},
+            coverage_by_key={"asset": unknown}, calendar=[*days, saturday], end_date=saturday)
     expired = {**coverage, "end_date": str(friday)}
     _, beyond = align_risk_navs({"asset": navs["asset"]},
         coverage_by_key={"asset": expired}, calendar=[*days, saturday], end_date=saturday)

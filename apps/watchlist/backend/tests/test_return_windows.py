@@ -140,9 +140,13 @@ def test_total_return_window_anchor_stays_on_requested_as_of_when_latest_nav_is_
 
 
 def test_sparkline_is_normalized_by_calendar_window_and_keeps_quality_metadata() -> None:
+    from investment_studio_instrument_core import build_return_intervals
+    points = [{"date": "2026-07-03", "value": 1.0}, {"date": "2026-07-10", "value": 1.05}]
     chart = SimpleNamespace(
         instrument_id="private-fund",
         payload_json={
+            "return_series": {"metadata": {"quote_basis": "total_return_nav", "return_kind": "total_return", "return_series_status": "partial"},
+                              "frequency": {"resolved_frequency": "weekly"}, "wealth_points": points, "intervals": build_return_intervals(points)},
             "selected_series": {
                 "quote_basis": "total_return_nav",
                 "return_kind": "total_return",

@@ -31,6 +31,8 @@ export type PortfolioTailRisk = {
   lookback_days: number
   window_start_date: string
   window_end_date: string
+  missing_intervals?: Array<{ start_date: string; end_date: string }>
+  missing_return_dates?: string[]
   history_coverage_status: 'complete' | 'partial' | 'unavailable' | 'unverified'
   expected_common_observation_count: number | null
   uncovered_observation_count: number | null

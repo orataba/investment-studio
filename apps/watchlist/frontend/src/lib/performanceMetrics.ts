@@ -1,3 +1,4 @@
+import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 import type { InstrumentChartPoint } from './api'
 import {
   actualYearFraction,
@@ -60,7 +61,7 @@ function orderedPoints(points: InstrumentChartPoint[]) {
     const pointDate = String(point.date || '').slice(0, 10)
     const value = Number(point.value)
     if (pointDate && Number.isFinite(value) && value > 0) {
-      byDate.set(pointDate, { date: pointDate, value })
+      byDate.set(pointDate, { ...point, date: pointDate, value })
     }
   })
   return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date))
@@ -167,7 +168,7 @@ export function buildPerformanceMetricSnapshot(
     recoveryOpen: false,
   }
   const ordered = orderedPoints(points)
-  if (ordered.length < 2) {
+  if (ordered.length < 2 || !sameReturnSegment(ordered)) {
     return unavailable
   }
 

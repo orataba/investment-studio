@@ -126,7 +126,7 @@ def test_long_price_history_outside_calendar_coverage_does_not_disable_recent_ew
     days = [day for day in days if day.weekday() < 5][-506:]
     monkeypatch.setattr(metrics, "_market_calendar_sessions",
         lambda calendar, start, end: tuple(day for day in days if start <= day <= end))
-    series = {"metadata": {"quote_basis": "adjusted_close", "return_series_status": "ready"},
+    series = {"metadata": {"quote_basis": "adjusted_close", "return_kind": "total_return", "return_series_status": "ready"},
         "points": [{"date": "2000-01-03", "value": 50},
                    *[{"date": day.isoformat(), "value": 100 + i % 7} for i, day in enumerate(days)]]}
     result = metrics.ewma_price_evidence(series, instrument_type="etf", calendar="XNYS", as_of=stamp(1))
@@ -173,3 +173,32 @@ def test_price_tool_does_not_read_later_recalculated_snapshot(monkeypatch):
     assert latest["data"]["status"] == "available"
     assert latest["input_snapshot"]["known_at"] == stamp(3).isoformat()
     assert latest["data"]["input_points"] == series["points"]
+
+
+def test_raw_security_prices_cannot_reenter_ewma_via_a_price_return_label(monkeypatch):
+    series, _ = price_series(monkeypatch)
+    series["metadata"].update(quote_basis="close", return_kind="price_return")
+    for kind in ("equity", "etf"):
+        result = metrics.ewma_price_evidence(series, instrument_type=kind, calendar="XNYS", as_of=stamp(1))
+        assert result["status"] == "unavailable"
+    confirmed_index = metrics.ewma_price_evidence(series, instrument_type="index", calendar="XNYS", as_of=stamp(1))
+    assert confirmed_index["status"] == "available"
+
+
+def test_ewma_restarts_at_return_reset_and_uses_confirmed_new_segment(monkeypatch):
+    series, returns = price_series(monkeypatch)
+    series["metadata"].update(return_series_status="partial", return_segment_breaks=[{"reason": "unresolved_action"}])
+    for index, point in enumerate(series["points"]):
+        point["segment_id"] = "old" if index < 20 else "new"
+        if index >= 20:
+            point["value"] /= 100  # Independent rebasing is not a 99% daily loss.
+    result = metrics.ewma_price_evidence(series, instrument_type="etf", calendar="XNYS", as_of=stamp(1))
+    assert result["status"] == "available"
+    assert result["current"]["returns"] == 80
+    sample = returns[20:]
+    weights = [2 ** (-(len(sample) - 1 - i) / 21) for i in range(len(sample))]
+    mean = sum(w * r for w, r in zip(weights, sample)) / sum(weights)
+    expected = sqrt(sum(w * (r - mean) ** 2 for w, r in zip(weights, sample)) / sum(weights) * 252) * 100
+    assert result["current"]["volatility_pct"] == pytest.approx(expected)
+    del series["points"][-1]["segment_id"]
+    assert metrics.ewma_price_evidence(series, instrument_type="etf", calendar="XNYS", as_of=stamp(1))["status"] == "unavailable"

@@ -156,11 +156,19 @@ export type SparklinePoint = {
 export type ReturnSeriesPoint = {
   start_date?: string | null
   date: string
-  value: number
+  value: number | null
+  log_return?: number | null
+  status?: 'complete' | 'unavailable'
+  reason?: string | null
 }
 
 export type HoldingReturnSeries = {
   first_return_start_date?: string | null
+  last_return_end_date?: string | null
+  quote_basis?: string | null
+  return_kind?: PortfolioReturnSemantics
+  return_measure?: 'simple'
+  currency?: string
   points: ReturnSeriesPoint[]
   observation_coverage?: {
     start_date: string | null
@@ -178,9 +186,11 @@ export type RiskReturnSeries = Omit<HoldingReturnSeries, 'points'> & {
 }
 
 export type PortfolioInstrumentChartRangeKey = '1m' | '3m' | '6m' | 'ytd' | '1y' | 'all'
+export type PortfolioPriceMode = 'return' | 'raw' | 'front' | 'back'
 export type PortfolioReturnSemantics = 'unknown' | 'price_return' | 'total_return'
 
 export type PortfolioInstrumentPriceChartPoint = {
+  segment_id?: string | null
   date: string
   value: number
 }
@@ -194,6 +204,12 @@ export type PortfolioInstrumentPriceChartSummary = {
 }
 
 export type PortfolioInstrumentPriceChartResponse = {
+  observation_coverage?: HoldingReturnSeries['observation_coverage'] | null
+  price_mode?: PortfolioPriceMode
+  available_price_modes?: Array<'raw' | 'front' | 'back'>
+  adjustment_anchor_date?: string | null
+  adjustment_method?: string | null
+  return_measure?: 'simple'
   portfolio_id: string
   instrument_core: InstrumentCore
   as_of_date: string
@@ -1005,6 +1021,7 @@ export type HoldingsWorkspaceResponse = {
     coverage_state?: PortfolioPerformanceCoverageState
     gap_count?: number
     gap_instrument_ids?: string[]
+    unverified_schedule_instrument_ids?: string[]
     gap_details?: Array<{
       instrument_id: string
       gap_count: number
@@ -1067,6 +1084,7 @@ export type SharedInstrumentRecord = InstrumentCore & {
   latest_market_data: SharedMarketDataPoint[]
   quote_selection_policy: QuoteSelectionPolicy
   coverage_state: DataStatus
+  source_settings?: { source_api_profile?: string }
 }
 
 export type SecuritySearchOption = SharedInstrumentRecord
@@ -1074,7 +1092,7 @@ export type SecuritySearchOption = SharedInstrumentRecord
 export type SecurityCatalogResult = {
   instrument_type: 'equity' | 'etf'
   symbol: string
-  catalog_provider: 'fmp'
+  catalog_provider: 'fmp' | 'futu'
   catalog_symbol: string
   name: string
   exchange_code: string
@@ -1106,6 +1124,7 @@ export function materializePortfolioSecurity(portfolioId: string, security: Pick
       coverage_state: instrument.coverage_state,
       latest_market_data: instrument.latest_market_data,
       quote_selection_policy: instrument.quote_selection_policy,
+      source_settings: instrument.source_settings,
     }))
 }
 
@@ -1119,6 +1138,7 @@ type RawSharedInstrumentRecord = {
   coverage_state: DataStatus
   latest_market_data: SharedMarketDataPoint[]
   quote_selection_policy: QuoteSelectionPolicy
+  source_settings?: { source_api_profile?: string }
 }
 
 type RawPortfolioSharedInstrumentsResponse = {
@@ -1289,6 +1309,7 @@ export type PortfolioTaxonomyCatalogResponse = {
     coverage_state?: PortfolioPerformanceCoverageState
     gap_count?: number
     gap_instrument_ids?: string[]
+    unverified_schedule_instrument_ids?: string[]
   } | null
   taxonomies: PortfolioTaxonomyRecord[]
   taxonomy_nodes: PortfolioTaxonomyNodeRecord[]
@@ -1313,7 +1334,8 @@ export type PortfolioResearchRunStatus = 'running' | 'completed' | 'failed'
 export type PortfolioResearchTargetDimension = 'weight' | 'risk_budget'
 export type PortfolioResearchCapitalMode = 'unit_notional' | 'fixed_gross' | 'target_volatility' | 'volatility_cap'
 export type PortfolioResearchCalculationFrequency = 'daily'
-export type PortfolioResearchMissingReturnPolicy = 'strict' | 'complete_case_drop'
+export type PortfolioResearchMissingReturnPolicy = 'strict'
+export type HistoricalResearchMissingReturnPolicy = 'strict' | 'complete_case_drop'
 export type PortfolioResearchBacktestRebalanceFrequency = '1w' | '1m' | '3m'
 export type PortfolioResearchArtifactPreviewKind = 'text' | 'html' | 'binary'
 export type PortfolioResearchAsOfMode = 'dynamic' | 'pinned'
@@ -1579,7 +1601,7 @@ export type PortfolioResearchSolveEventRecord = {
   covariance_model?: string | null
   covariance_observations?: number | null
   risk_contribution_mode?: string | null
-  missing_return_policy?: PortfolioResearchMissingReturnPolicy | null
+  missing_return_policy?: HistoricalResearchMissingReturnPolicy | null
   return_rows_before_policy?: number | null
   return_rows_after_policy?: number | null
   missing_return_row_count?: number | null
@@ -1871,7 +1893,11 @@ export type PortfolioResearchBacktestBenchmarkRecord = {
   warnings: string[]
 }
 
-export type PortfolioResearchBacktestRelativeMetricsRecord = PortfolioResearchBacktestMetricsRecord & {
+export type PortfolioResearchBacktestRelativeMetricsRecord = {
+  start_date?: string | null
+  end_date?: string | null
+  observation_count?: number | null
+  return_measure?: 'simple'
   excess_return?: number | null
   tracking_error?: number | null
   information_ratio?: number | null
@@ -3573,6 +3599,7 @@ export function getPortfolioInstrumentPriceChart(
     as_of_date?: string
     range?: PortfolioInstrumentChartRangeKey
     price_level?: boolean
+    price_mode?: PortfolioPriceMode
   } = {},
   signal?: AbortSignal,
 ) {
@@ -3580,6 +3607,7 @@ export function getPortfolioInstrumentPriceChart(
     as_of_date: filters.as_of_date,
     range: filters.range,
     price_level: filters.price_level ? 'true' : undefined,
+    price_mode: filters.price_mode,
   })
   return fetchJson<PortfolioInstrumentPriceChartResponse>(
     API_BASE_URL,
@@ -4237,6 +4265,7 @@ export function getPortfolioInstruments(portfolioId: string, signal?: AbortSigna
         coverage_state: instrument.coverage_state,
         latest_market_data: instrument.latest_market_data,
         quote_selection_policy: instrument.quote_selection_policy,
+        source_settings: instrument.source_settings,
       })),
     }),
   )

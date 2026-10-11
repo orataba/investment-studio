@@ -3,7 +3,8 @@
 
 The default is a read-only scope preview. Load the target Watchlist/market/identity
 environment before running. For a controlled batch, stop the automatic research
-worker using research_worker_enabled; the API and its restricted tools stay up.
+scheduler using research_worker_enabled; the independent execution worker, API
+and its restricted tools stay up.
 No report, PM opinion, source clock or run status is written directly by this CLI.
 """
 from __future__ import annotations
@@ -19,13 +20,14 @@ import time
 
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
-from studio_identity import principal_context, service_principal
+from studio_identity import current_principal, principal_context, service_principal
 from watchlist_app.core.settings import get_settings
 from watchlist_app.db.models.workbench import ResearchEntry
 from watchlist_app.db.models.instruments import InstrumentDetail
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services import sector_research
-from watchlist_app.services.research_runner import harness_available, queue_retry, run_analysis
+from watchlist_app.services.research_runner import harness_available, queue_retry
+from watchlist_app.services.research_execution import enqueue_run
 from watchlist_app.services.research_access import instrument_run_scope
 from watchlist_app.services.research_run_context import load_run_fields
 
@@ -114,11 +116,12 @@ def refresh_one(instrument_id, resume_run_id=None, on_dispatch=None):
         if on_dispatch:
             on_dispatch(instrument_id, run_id, status)
         if created:
-            run_analysis(run_id)
-        elif status in {"queued", "running"}:
-            # Existing owner keeps its run; do not launch a second process or change
-            # its state. A bounded wait covers the runner's 30-minute execution.
-            deadline = time.monotonic() + 2100
+            enqueue_run(current_principal(), run_id)
+        if status in {"queued", "running"}:
+            # Every entry uses the independent worker's global database capacity.
+            # This CLI waits for both generation and review; it never adds model
+            # processes outside that gate. Queued work survives a CLI timeout.
+            deadline = time.monotonic() + 3900
             while status in {"queued", "running"} and time.monotonic() < deadline:
                 time.sleep(10)
                 status = run_state(run_id, instrument_id)["status"]
@@ -141,7 +144,7 @@ def main():
     parser.add_argument("--resume", action="store_true", help="Recheck completed runs in --output and execute remaining current members.")
     parser.add_argument("--instrument-id", action="append", dest="instrument_ids", help="Limit to named currently Proposed/Invested members.")
     parser.add_argument("--workers", type=int, choices=range(1, 5), default=get_settings().research_worker_concurrency,
-                        help="Concurrent research runs; defaults to the configured research worker concurrency (1).")
+                        help="Concurrent batch dispatch/waits; actual research stays within the worker database-wide limit.")
     args = parser.parse_args()
     if args.execute and args.output is None:
         parser.error("--execute requires --output")

@@ -223,11 +223,12 @@ def numeric_monitor_inputs(session, instrument_id):
     holdings = session.scalar(select(InstrumentExposureHoldingsReadModel.payload_json).where(
         InstrumentExposureHoldingsReadModel.instrument_id == instrument_id)) or {}
     metadata = chart.get("metadata") or {}
-    return {"series": {"points": [{key: point.get(key) for key in ("date", "value", "status")}
+    return {"series": {"points": [{key: point.get(key) for key in ("date", "value", "status", "segment_id")}
                 for point in (chart.get("points") or [])[-51:]],
-            "currency": chart.get("currency"), "frequency": chart_payload.get("frequency"),
-            "status": chart_payload.get("return_series_status"),
-            "metadata": {key: metadata.get(key) for key in ("currency", "return_kind", "frequency", "calculation_version", "quote_basis")}},
+            "currency": chart.get("currency"), "frequency": chart.get("frequency"),
+            "status": metadata.get("return_series_status"),
+            "intervals": (chart.get("intervals") or [])[-50:],
+            "metadata": {key: metadata.get(key) for key in ("return_kind", "return_measure", "level_kind", "quote_basis", "return_segment_breaks")}},
         "holdings": {"rows": sorted([{key: row.get(key) for key in (
                 "holding_name", "holding_type", "portfolio_weight", "currency")}
                 for row in holdings.get("rows") or []], key=lambda row: (str(row["holding_name"]), str(row["holding_type"]))),

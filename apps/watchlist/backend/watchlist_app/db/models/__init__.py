@@ -74,3 +74,6 @@ __all__ = [
 ]
 
 from watchlist_app.db.models.workbench import ResearchTopic, ResearchEntry, RiskCase, RiskReviewRule
+from watchlist_app.db.models.research_execution import ResearchExecution
+
+from watchlist_app.db.models.research_run_evidence import ResearchRunEvidence

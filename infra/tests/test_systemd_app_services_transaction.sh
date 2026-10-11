@@ -201,6 +201,7 @@ chmod 600 "$ENV_ROOT/data.env" "$ENV_ROOT/watchlist.env" "$ENV_ROOT/portfolio.en
 MANAGED_UNITS=(
   investment-studio-home-api.service
   investment-studio-watchlist-api.service
+  investment-studio-research-worker.service
   investment-studio-portfolio-api.service
   investment-studio-briefing-api.service
   investment-studio-home-web.service
@@ -223,6 +224,7 @@ ORIGINAL_ENABLED_UNITS=(
   investment-studio-us-reference-data-refresh.timer
   investment-studio-home-api.service
   investment-studio-watchlist-api.service
+  investment-studio-research-worker.service
 )
 
 prepare_case() {

@@ -8,6 +8,7 @@ from portfolio_app.api.routes import (
     health,
     instrument_events,
     instrument_risk,
+    investment_views,
     ledger_postings,
     performance,
     portfolios,
@@ -28,6 +29,7 @@ api_router = APIRouter()
 protected = {"dependencies": [Depends(portfolio_request_context)]}
 api_router.include_router(health.router, tags=["health"])
 api_router.include_router(portfolios.router, prefix="/portfolios", tags=["portfolios"], **protected)
+api_router.include_router(investment_views.router, prefix="/portfolios", tags=["investment-views"], **protected)
 api_router.include_router(portfolio_risk_context.router, prefix="/portfolios", tags=["portfolio-risk-context"], **protected)
 api_router.include_router(concentration.router, prefix="/portfolios", tags=["concentration"], **protected)
 api_router.include_router(tail_risk.router, prefix="/portfolios", tags=["tail-risk"], **protected)

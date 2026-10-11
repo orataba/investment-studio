@@ -1,11 +1,12 @@
 # Investment Studio Server Deployment
 
-This project runs eight user-systemd services in production:
+The service installer defines nine user-systemd services:
 
 - `investment-studio-home-api.service`
 - `investment-studio-home-web.service`
 - `investment-studio-watchlist-api.service`
 - `investment-studio-watchlist-web.service`
+- `investment-studio-research-worker.service`
 - `investment-studio-portfolio-api.service`
 - `investment-studio-portfolio-web.service`
 - `investment-studio-briefing-api.service`
@@ -14,6 +15,11 @@ This project runs eight user-systemd services in production:
 Five data schedules are installed separately. Each uses an `investment-studio-<name>.service` and `.timer` pair: `market-data-refresh` for nightly settlement; `cn-market-data-refresh`, `hk-market-data-refresh`, and `us-market-data-refresh` for closing prices; `cn-hk-reference-data-refresh` for pre-open Tushare reference acquisition. FMP references are projected by the public collection or arrival pipeline.
 
 Hong Kong and US closing-price timers probe the exchange calendar every hour. With `Restart=no`, their service start limit is disabled: `ExecCondition` probes count as starts even when the market has not closed, so a three-start/three-hour limit can block a valid closing-price run. Jobs configured to restart on failure retain their bounded restart policy.
+
+Hong Kong additionally reconciles at 23:30 on the same trading day. Its initial
+close run can precede the HKEX daily quotation used to confirm a no-trade session.
+The late run retains the same evidence and coverage checks; a missing quotation
+still fails explicitly. Holidays and weekends do not trigger this extra run.
 
 ## Deployment ownership
 
@@ -203,6 +209,22 @@ PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
   infra/systemd/install_app_services.sh
 ```
 
+The installer also manages `investment-studio-research-worker.service`. It shares
+Watchlist's external configuration and database, owns research scheduling and
+execution, and uses one database-wide concurrency gate (default 1) for manual,
+scheduled and controlled batch requests. API restarts do not abort its tasks.
+The worker waits for Watchlist and the configured identity service before claiming
+new work; its process group is stopped with the service. Active-state checks and
+the existing eight HTTP readiness checks both remain required. Verify model and
+research outcomes separately from process readiness.
+
+Include this worker in writer-stop, migration, restore and rollback inventories.
+The first queue migration preserves old in-process inputs/drafts but marks old
+queued/running requests failed: they have no transferable original-subject queue
+grant. Reissue those requests after release acceptance; do not invent service
+authority for earlier user jobs. No memory cap is assumed from service installation;
+keep shared-host concurrency at 1 until actual resource use has been measured.
+
 The installer binds both API and web services to `127.0.0.1` by default. Set
 `API_HOST` or `WEB_HOST` explicitly only when a reverse proxy or network policy
 requires another bind address.
@@ -225,7 +247,7 @@ bundles inside the live `current` target. Complete these steps in order:
    configuration: they may refer to an older Studio release than `current`.
    Retain every still-referenced release, including its virtual environment.
 3. Put external writes into maintenance. Stop scheduled triggers first, then
-   their workers and the eight Studio app services. Include public-market and
+   their workers and the nine Studio application services, including `research-worker`. Include public-market and
    Briefing jobs, the retired US reference job, independent Regime timers/source
    workers, and any source containers. Verify they are inactive; the Studio app
    installer does not control the independent Regime installation. Preserve public
@@ -250,7 +272,7 @@ bundles inside the live `current` target. Complete these steps in order:
    loopback health, authenticated resource permissions, enabled Research, catalog
    discovery, diagnostic records, compressed/cacheable assets and a previous
    manifest's lazy chunk through the actual ingress. Run the public Regime check
-   above as a required gate; its UI is served outside the eight Studio services.
+   above as a required gate; its UI is served outside the nine Studio services.
 6. Accept the release before reopening writes and restoring the previously active
    schedules, excluding retired units. A persistent market timer can immediately
    catch up when reactivated; inspect the resulting job state. Keep previously
@@ -268,14 +290,15 @@ forward-repair rule below instead of automatically restoring the old database.
 For an application-only follow-up to an already accepted release, verify that
 the migration files, calculation versions and persisted-data contracts are
 unchanged before using `RUN_MIGRATIONS=false`. Finish active research and
-Briefing work before replacing their APIs. External write maintenance alone does
-not stop an in-process research worker. Hold a short PostgreSQL `SHARE` lock on
+Briefing work before replacing their APIs. Watchlist research runs in the independent
+`investment-studio-research-worker.service`; stop that writer explicitly as well as
+the APIs. API-only restart no longer fails or owns its queued/running research. Hold a short PostgreSQL `SHARE` lock on
 the affected job-entry tables, check queued/running work in that same transaction,
 then stop and confirm the old app services before releasing the lock. Use a
 bounded lock timeout; abort without stopping services if the lock is unavailable
 or work remains active. Release the lock before starting the new applications.
 The outer failure handler must restore the previously active app services when
-it stopped them before invoking the installer. This path updates the eight app
+it stopped them before invoking the installer. This path updates the nine application
 services without pausing independent collectors or Regime; preserve their
 existing timer state and software paths. If a crashed Portfolio calculation
 left a `running` record, stop all Portfolio calculation/API writers and run
@@ -502,7 +525,7 @@ verify the configured URL during deployment, and rotate the key if transport
 exposure is suspected. Do not hide the limitation with certificate bypasses or
 an automatic provider fallback.
 
-The installer generates all eight replacement units privately before changing
+The installer generates all nine replacement units privately before changing
 systemd state. It snapshots the previous unit files, enablement, and active set,
 including the market-data refresh service/timer. Before migration it stops every
 database writer and creates a verified backup of the project schemas with
@@ -525,7 +548,7 @@ depending on a browser visit to synchronize the directories. The backup covers `
 Data Ingestion raw-evidence storage exists before destructive shared NAV cleanup.
 
 Before accepting an upgrade, the installer checks HTTP readiness for all eight
-API and web endpoints; a running process alone is insufficient. `HEALTH_ATTEMPTS`
+API and web endpoints and the research worker's active state; a running API process alone is insufficient. `HEALTH_ATTEMPTS`
 defaults to 60, with bounded requests and a one-second pause between attempts.
 These loopback checks cannot establish Nginx access to Regime's staged files.
 The outer release procedure must also pass the worker-access preflight before
@@ -611,10 +634,12 @@ active instruments whose latest coverage status is `Proposed` or `Invested`.
 
 For a controlled batch, temporarily set
 `INVESTMENT_STUDIO_WATCHLIST_RESEARCH_WORKER_ENABLED=false` in the external
-Watchlist runtime configuration before starting the upgraded API. This pauses
-automatic dispatch while keeping authenticated research tools available. Do not
-restart the API during an executing batch: startup marks interrupted work as
-failed and leaves its inputs for recovery.
+Watchlist runtime configuration before starting the upgraded research worker.
+This pauses automatic daily dispatch while the independent worker still consumes
+authorized manual and batch jobs. Restart the research worker to apply this
+configuration; an API restart does not terminate its queued or running tasks.
+Worker interruption preserves retained stages for bounded recovery under the
+original subject's queue authorization.
 
 With the target runtime configuration loaded as the service user:
 
@@ -634,8 +659,9 @@ Automatic and batch research default to one concurrent instrument, controlled by
 `--workers` overrides the batch setting. Increase concurrency only after measuring
 the combined API, Harness, fact-review and data-refresh memory peak on the target
 host. Restore overdue collection schedules before starting a research batch and
-let their catch-up work settle. An OOM kill can restart the API and interrupt
-otherwise valid research; inspect the kernel and service journals before retrying.
+let their catch-up work settle. An OOM kill can interrupt the research worker
+and delay otherwise valid research; inspect the kernel and worker journals and
+its retained execution state before retrying.
 On a memory-constrained host, a private, persistent swap file can absorb short
 peaks while those workloads are serialized. Verify free disk space, restrictive
 file permissions and activation after reboot; swap does not justify retaining

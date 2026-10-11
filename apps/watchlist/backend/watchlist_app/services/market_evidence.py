@@ -126,12 +126,18 @@ def original_source(document: dict) -> dict:
 
 def source_reference(source: dict) -> dict:
     """Keep the immutable version reference; its body remains in the shared store."""
+    if source.get("source_type") == "computed_metric":
+        from watchlist_app.services.research_run_evidence import computed_reference
+        return computed_reference(source)
     if not source.get("document_id"):
         return source
     return {key: value for key, value in source.items() if key not in {"text", "content_text", "raw_path"}}
 
 
-def hydrate_source(source: dict, *, cutoff: datetime | None = None) -> dict:
+def hydrate_source(source: dict, *, cutoff: datetime | None = None, bound_source=False) -> dict:
+    if source.get("retained_reference") and "data" not in source:
+        from watchlist_app.services.research_run_evidence import resolve_reference
+        source = resolve_reference(source, bound_source=bound_source)
     if not source.get("document_id") or source.get("text"):
         return source
     document = text_store().read(source["document_id"], version_id=source["version_id"], as_of=cutoff)

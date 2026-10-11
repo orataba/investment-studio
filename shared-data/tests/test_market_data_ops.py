@@ -1688,6 +1688,7 @@ def test_public_item_timeout_uses_configured_limit_and_returns_failed_status(mon
         return {"instrument_id": kwargs["instrument_id"]}
 
     monkeypatch.setattr(market_data_ops, "get_settings", lambda: FakeSettings())
+    monkeypatch.setattr(market_data_ops, "get_instrument", lambda _: {"instrument_id": "fund-a"})
     monkeypatch.setattr(market_data_ops, "_BatchItemTimeout", ImmediateTimeout)
     monkeypatch.setattr(market_data_ops, "refresh_market_data", fail_unwrapped_refresh)
     monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
@@ -1698,7 +1699,7 @@ def test_public_item_timeout_uses_configured_limit_and_returns_failed_status(mon
         source="tushare",
     )
 
-    assert record == {"instrument_id": "fund-a"}
+    assert record == {"instrument_id": "fund-a", "canonical_changed": False}
     assert captured["seconds"] == 17
     assert captured["instrument_id"] == "fund-a"
     assert captured["refresh_status"] == {
@@ -2456,7 +2457,7 @@ def test_listed_security_refresh_repairs_missing_factor_and_bar_history(
             "quote_selection_policy": {
                 "trading": ["last", "close"],
                 "valuation": ["close", "last"],
-                "total_return": ["adjusted_close", "close", "last"],
+                "total_return": ["adjusted_close"],
                 "chart": ["adjusted_close", "close", "last"],
                 "reference": ["close", "last"],
             },
@@ -2563,7 +2564,7 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypat
         "quote_selection_policy": {
             "trading": ["last", "close"],
             "valuation": ["close", "last"],
-            "total_return": ["adjusted_close", "close", "last"],
+            "total_return": ["adjusted_close"],
             "chart": ["adjusted_close", "close", "last"],
             "reference": ["close", "last"],
         },
@@ -2651,7 +2652,7 @@ def test_empty_listed_security_response_preserves_existing_history(monkeypatch) 
             "quote_selection_policy": {
                 "trading": ["last", "close"],
                 "valuation": ["close", "last"],
-                "total_return": ["adjusted_close", "close", "last"],
+                "total_return": ["adjusted_close"],
                 "chart": ["adjusted_close", "close", "last"],
                 "reference": ["close", "last"],
             },

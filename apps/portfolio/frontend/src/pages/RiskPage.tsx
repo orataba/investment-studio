@@ -1,3 +1,4 @@
+import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -307,7 +308,7 @@ function buildBenchmarkReturnPoints(chart: PortfolioInstrumentPriceChartResponse
   for (let index = 1; index < points.length; index += 1) {
     const previous = points[index - 1]
     const current = points[index]
-    if (previous.value > 0 && current.value > 0) {
+    if (previous.value > 0 && current.value > 0 && sameReturnSegment([previous, current])) {
       returns.push({
         start_date: previous.date,
         date: current.date,

@@ -1,0 +1,13 @@
+.instrument-risk-monitoring { display: grid; gap: 24px; }
+.instrument-tail-risk { border-bottom: 1px solid var(--border-color, #dedee3); padding-bottom: 20px; }
+.instrument-tail-risk-heading, .instrument-tail-risk-controls, .instrument-tail-risk-heading h2 { display: flex; align-items: center; gap: 10px; }
+.instrument-tail-risk-heading { justify-content: space-between; flex-wrap: wrap; }
+.instrument-tail-risk-heading h2 { margin: 0; font-size: 16px; }
+.instrument-tail-risk-controls label { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.instrument-tail-risk-controls select { min-height: 30px; border: 1px solid var(--border-color, #dedee3); border-radius: 0; background: var(--surface, #fff); color: inherit; }
+.instrument-tail-risk-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 20px 0 14px; gap: 16px; }
+.instrument-tail-risk-metrics > div { display: grid; gap: 8px; font-size: 12px; }
+.instrument-tail-risk-metrics strong { font-size: 22px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.instrument-tail-risk-sample { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--text-secondary, #666); margin: 8px 0; }
+.instrument-tail-risk-warning { font-size: 12px; color: var(--warning-text, #8a5700); line-height: 1.65; margin: 8px 0; }
+@media (max-width: 640px) { .instrument-tail-risk-metrics { grid-template-columns: 1fr; } }

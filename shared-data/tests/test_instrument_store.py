@@ -493,7 +493,7 @@ def test_raw_price_bars_are_idempotent_and_validate_ohlc(
         quote_selection_policy={
             "trading": ["last", "close"],
             "valuation": ["close", "last"],
-            "total_return": ["adjusted_close", "close", "last"],
+            "total_return": ["adjusted_close"],
             "chart": ["adjusted_close", "close", "last"],
             "reference": ["close", "last"],
         },
@@ -2697,5 +2697,48 @@ def test_fmp_projection_replays_old_adjustment_revisions_and_is_idempotent(isola
         assert replay["market_data_updated_at"] == revised["market_data_updated_at"]
         assert replay["refresh_status"]["status"] == "no_new_data"
         assert source.query("raw_eod_daily", versions=True)["total"] == 3
+    finally:
+        source.close()
+
+
+def test_fmp_missing_refresh_session_keeps_real_prices_and_change_notification(
+    isolated_store: Path, tmp_path: Path, monkeypatch,
+) -> None:
+    from contextlib import nullcontext
+    from datetime import UTC, datetime
+    from studio_data.services import market_data_ops
+    from studio_data.services.fmp import eod
+    from studio_data.services.fmp.eod_capture import FmpHistoryIncomplete
+
+    instrument = create_instrument(instrument_name="Incomplete refresh equity", instrument_type="equity", currency="USD",
+        exchange_code="XNAS", identifiers=[{"identifier_type": "provider_symbol", "identifier_value": "fmp:GAP", "is_primary": True}])
+    iid = instrument["instrument_id"]
+    settings = eod.MarketSettings(f"sqlite:///{tmp_path / 'numeric.db'}", tmp_path / "numeric")
+    source = eod.NumericStore(settings)
+    source.create_schema_for_testing()
+    clock = datetime(2026, 9, 9, 8, tzinfo=UTC)
+    rows = [dict(date=day, symbol="GAP", open=100, high=110, low=90, close=100, adjusted_close=99)
+            for day in ("2026-09-02", "2026-09-08")]
+    source.ingest("raw_eod_daily", [rows], source="fmp", observed_at=clock)
+    def incomplete(*_args, **_kwargs):
+        raise FmpHistoryIncomplete("Missing required sessions: 2026-09-03, 2026-09-04.", no_trade_evidence=[])
+    monkeypatch.setattr(eod, "ensure_fmp_security_history", incomplete)
+    monkeypatch.setattr(eod, "NumericStore", lambda _: source)
+    monkeypatch.setattr(eod.MarketSettings, "from_environment", lambda: settings)
+    monkeypatch.setattr(market_data_ops, "market_data_item_timeout", lambda _: nullcontext())
+    monkeypatch.setattr(market_data_ops, "refresh_market_data", lambda **_kwargs:
+        eod.refresh_fmp_eod(iid, instrument_type="equity", acquire_history=True, now=clock))
+    try:
+        result = market_data_ops.refresh_market_data_with_timeout(instrument_id=iid, updated_by=None)
+        assert result["refresh_status"]["status"] == "failed"
+        assert "2026-09-03, 2026-09-04" in result["refresh_status"]["message"]
+        assert result["canonical_changed"] is True
+        actual_dates = {row["date"] for row in instrument_store.get_price_bars(instrument_id=iid)}
+        assert actual_dates == {"2026-09-02", "2026-09-08"}
+        assert {row["quote_basis"] for row in get_instrument(iid)["market_data"]} == {"close", "adjusted_close"}
+        # A retry with no changed observation must not manufacture a watermark.
+        retry = market_data_ops.refresh_market_data_with_timeout(instrument_id=iid, updated_by=None)
+        assert retry["refresh_status"]["status"] == "failed"
+        assert retry["canonical_changed"] is False
     finally:
         source.close()

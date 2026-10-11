@@ -11,9 +11,6 @@ from portfolio_app.services.instrument_registry import get_registry_instrument_d
 from portfolio_app.services.market_data import market_calendar_sessions as _market_calendar_sessions
 
 
-_EXPECTED_MAX_GAP_DAYS = 4
-
-
 def observation_source_settings(detail: dict[str, object]) -> dict[str, object]:
     """Use the declared source schedule, then the instrument's exchange calendar."""
     settings = detail.get("source_settings")
@@ -42,7 +39,7 @@ def _missing_observation_dates(
     market_calendar: str | None,
 ) -> tuple[list[date], str]:
     ordered_dates = sorted(set(dates))
-    if len(ordered_dates) < 2:
+    if not ordered_dates:
         return [], "insufficient_history"
     if market_calendar:
         sessions = _market_calendar_sessions(
@@ -60,13 +57,22 @@ def _missing_observation_dates(
                 ],
                 f"market_calendar:{market_calendar}",
             )
-    missing_dates: list[date] = []
-    for index in range(1, len(ordered_dates)):
-        previous_date = ordered_dates[index - 1]
-        point_date = ordered_dates[index]
-        if (point_date - previous_date).days > _EXPECTED_MAX_GAP_DAYS:
-            missing_dates.append(point_date)
-    return missing_dates, "calendar_day_threshold"
+    # Observed spacing cannot distinguish a closure from a missing publication.
+    # Do not turn a short outage into a complete daily history.
+    return [], "schedule_unverified"
+
+
+def observation_schedule_verified(coverage: object) -> bool:
+    if not isinstance(coverage, dict):
+        return False
+    basis = str(coverage.get("gap_detection_basis") or "")
+    if (basis.startswith("market_calendar:") and basis.removeprefix("market_calendar:").strip()) or basis == "event_driven":
+        return True
+    if basis == "base_currency_components":
+        components = coverage.get("component_coverage")
+        return (isinstance(components, dict) and bool(components)
+                and all(observation_schedule_verified(component) for component in components.values()))
+    return False
 
 
 def observation_coverage_from_dates(
@@ -152,6 +158,7 @@ def calculation_frequency_profile_from_observation_dates(
     missing_instrument_ids: list[str] = []
     insufficient_history_instrument_ids: list[str] = []
     gap_instrument_ids: list[str] = []
+    unverified_schedule_instrument_ids: list[str] = []
     gap_details: list[dict[str, object]] = []
     for instrument_id in normalized_instrument_ids:
         if instrument_id not in observation_dates_by_instrument:
@@ -165,16 +172,20 @@ def calculation_frequency_profile_from_observation_dates(
         if len(set(dates)) < 2:
             insufficient_history_instrument_ids.append(instrument_id)
             continue
-        market_calendar, event_driven = _source_schedule(
+        _, event_driven = _source_schedule(
             source_settings_by_instrument.get(instrument_id)
         )
         source_frequency_by_instrument[instrument_id] = "daily"
         if event_driven:
             continue
-        missing_dates, detection_basis = _missing_observation_dates(
-            dates,
-            market_calendar=market_calendar,
+        coverage = observation_coverage_from_dates(
+            dates, source_settings=source_settings_by_instrument.get(instrument_id),
+            end_date=end_date,
         )
+        missing_dates = [date.fromisoformat(day) for day in coverage["gap_dates"]]
+        detection_basis = coverage["gap_detection_basis"]
+        if not observation_schedule_verified(coverage):
+            unverified_schedule_instrument_ids.append(instrument_id)
         if missing_dates:
             gap_instrument_ids.append(instrument_id)
             gap_details.append(
@@ -207,6 +218,7 @@ def calculation_frequency_profile_from_observation_dates(
         insufficient_history_instrument_ids
     )
     profile["gap_instrument_ids"] = gap_instrument_ids
+    profile["unverified_schedule_instrument_ids"] = unverified_schedule_instrument_ids
     profile["gap_count"] = sum(
         int(detail.get("gap_count") or 0)
         for detail in gap_details
@@ -216,8 +228,18 @@ def calculation_frequency_profile_from_observation_dates(
         normalized_instrument_ids
         and len(source_frequency_by_instrument) == len(normalized_instrument_ids)
         and not gap_instrument_ids
+        and not unverified_schedule_instrument_ids
     ):
         profile["coverage_state"] = "complete"
+    elif unverified_schedule_instrument_ids:
+        profile["coverage_state"] = "partial" if (
+            len(unverified_schedule_instrument_ids) < len(normalized_instrument_ids)
+        ) else "unavailable"
+        profile["status_label"] = (
+            "Daily risk unavailable - observation schedule unverified for "
+            + ", ".join(unverified_schedule_instrument_ids)
+            + "; requires a verified market calendar or explicit event_driven source contract"
+        )
     elif source_frequency_by_instrument:
         profile["coverage_state"] = "partial"
         profile["status_label"] = (

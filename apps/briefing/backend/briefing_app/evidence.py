@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, UTC
 import re
 from zoneinfo import ZoneInfo
 
+from studio_market.numeric.reporting import select_report_price_window
+
 TEXT_METADATA = ("source_id", "document_id", "version_id", "channel_id", "source_name", "title", "url",
                  "published_at", "published_at_precision", "occurred_at", "occurred_at_precision", "observed_at",
                  "received_at", "information_type", "entities", "event_ids", "content_completeness", "content_warnings")
@@ -129,6 +131,12 @@ def related_equity_snapshot(store, documents: list[dict], *, report_type: str,
             keys.add(("hk" if suffix == "HK" else "cn", code.lstrip("0") or "0"))
         linked = keys.intersection(references)
         matched.update(linked)
+        if linked and (profile.get("is_etf") is not False or profile.get("is_fund") is not False):
+            result["sources"].append(profile)
+            result["coverage"].append({"symbol": symbol, "status": "security_type_unverified",
+                "identity_source_ids": [profile["source_id"]],
+                "related_document_source_ids": sorted(set().union(*(references[key]["document_source_ids"] for key in linked)))})
+            continue
         if linked and symbol not in existing_symbols:
             candidates[symbol] = {"profile": profile,
                 "entity_ids": sorted(set().union(*(references[key]["entity_ids"] for key in linked))),
@@ -151,32 +159,24 @@ def related_equity_snapshot(store, documents: list[dict], *, report_type: str,
             candidate = candidates[symbol]
             profile = candidate["profile"]
             rows = prices[symbol]  # NumericStore orders actual dates newest first.
-            if report_type == "daily":
-                final = rows[0] if rows else None
-                base = rows[1] if len(rows) > 1 else None
-            else:
-                final = next((r for r in rows if r["date"] >= period_start.isoformat()), None)
-                base = next((r for r in rows if r["date"] < period_start.isoformat()), None)
             metadata = {"symbol": symbol, "label": profile.get("company_name") or symbol,
                 "asset_type": "equity", "entity_ids": candidate["entity_ids"],
                 "related_document_source_ids": candidate["related_document_source_ids"],
                 "identity_source_ids": [profile["source_id"]]}
             result["sources"].append(profile)
-            if final is None or base is None:
-                result["coverage"].append({**metadata, "status": "insufficient_history",
-                    "latest_date": rows[0]["date"] if rows else None})
+            calendar = {"NASDAQ": "XNAS", "NYSE": "XNYS", "AMEX": "XASE", "HKSE": "XHKG",
+                        "SHH": "XSHG", "SHZ": "XSHG"}.get(str(profile.get("exchange") or "").upper())
+            base, final, state = select_report_price_window(rows, report_kind=report_type,
+                period_start=period_start, period_end=period_end, cutoff=cutoff, calendar_name=calendar)
+            result["coverage"].append({**metadata, **state})
+            if base is None or final is None:
                 continue
-            first, last = base.get("close"), final.get("close")
-            if first is None or last is None or first <= 0:
-                result["coverage"].append({**metadata, "status": "missing_comparable_prices"})
-                continue
+            first, last = base["close"], final["close"]
             result["market_rows"].append({**metadata, "start_date": base["date"], "end_date": final["date"],
                 "start_close": first, "end_close": last, "return_pct": (last / first - 1) * 100,
                 "price_field": "close", "return_basis": "split_adjusted_price" if dataset == "us_eod_daily" else "unadjusted_price",
                 "source_ids": [base["source_id"], final["source_id"]]})
             result["sources"].extend([base, final])
-            result["coverage"].append({**metadata, "status": "available", "effective_date": final["date"],
-                "observed_at": final["observed_at"]})
     return result
 
 
@@ -193,8 +193,8 @@ def build_input(report_type: str, cutoff: datetime, settings) -> dict:
         documents, text_coverage = collect_text(text_store, window)
     finally:
         text_store.close()
-    # The daily price return uses the last two valid closes, whereas the text window
-    # uses 24 hours. Weekly returns start at the last close before local Monday.
+    # Price windows use confirmed closed market sessions as of the cutoff.
+    # Missing sessions are disclosed; text windows retain their own clocks.
     local_end = datetime.fromisoformat(window["period_end"]).date()
     price_start = local_end if report_type == "daily" else datetime.fromisoformat(window["period_start"]).date()
     numeric = build_report_snapshot(market, report_kind=report_type, period_start=price_start,
@@ -225,6 +225,7 @@ def build_input(report_type: str, cutoff: datetime, settings) -> dict:
                        "by_completeness": {kind: sum(row["content_completeness"] == kind for row in documents)
                                            for kind in sorted({row["content_completeness"] for row in documents})}}
     return {**window, "edition_role": settings.edition_role, "sources": sources, "market_rows": numeric["market_rows"], "macro_rows": numeric["macro_rows"],
+            "price_window_method_version": numeric.get("price_window_method_version"),
             "numeric_coverage": numeric["coverage"], "text_coverage": text_coverage,
             "source_count": len(documents), "document_counts": document_counts, "numeric_status": numeric["status"],
             "prepared_at": datetime.now(UTC).isoformat()}

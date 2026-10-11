@@ -1,3 +1,4 @@
+import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 import WorkspaceSwitcher from '../../../../../packages/ui/src/WorkspaceSwitcher'
 import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
 import FreshnessNote from '../components/FreshnessNote'
@@ -15,11 +16,12 @@ import {
 import { Link, useParams, useSearchParams } from 'react-router'
 
 import LoadingOverlay from '../components/LoadingOverlay'
-import InvestmentOpinionTimeline, { currentInvestmentOpinion } from '../components/InvestmentOpinionTimeline'
+import InvestmentOpinionTimeline from '../components/InvestmentOpinionTimeline'
 import InstrumentAssistantDrawer from '../components/InstrumentAssistantDrawer'
 import type { ResearchReference } from '../lib/researchDossierApi'
 import { RESEARCH_UPDATED } from '../lib/researchUpdates'
 import InstrumentRiskDrawer from '../components/InstrumentRiskDrawer'
+import InstrumentRiskMonitoringPanel from '../components/InstrumentRiskMonitoringPanel'
 import SectorResearchPanel from '../components/SectorResearchPanel'
 import WorkspaceTools from '../../../../../packages/ui/src/WorkspaceTools'
 import './fund-detail.css'
@@ -105,6 +107,7 @@ import {
   normalizeCumulativeReturn,
   resolveAlignedReturnWindows,
   resolveReturnWindow,
+  returnWindowObservationLimitation,
   shiftIsoDate,
 } from '../lib/returnWindows'
 import { buildMonthlyReturnMatrix } from '../lib/calendarReturns'
@@ -290,8 +293,6 @@ const PERFORMANCE_MATRIX_MODE_OPTIONS: Array<{
   { value: 'peer_median_delta', label: 'vs Median' },
 ]
 
-const RISK_MATRIX_PERIOD_KEYS = new Set<PerformanceMetricPeriodKey>(['1Y', '3Y', '5Y', 'SI'])
-
 const ROLLING_RISK_WINDOW_OPTIONS: Array<{
   months: RollingRiskWindowMonths
   label: string
@@ -367,8 +368,8 @@ const TAB_LABELS: Record<DetailTab, LocalizedText> = {
   overview: { en: 'Overview', zh: '总览' },
   'investment-research': { en: 'Investment Research', zh: '投资研究' },
   views: { en: 'Investment Views', zh: '投资观点' },
-  performance: { en: 'Performance Metrics', zh: '绩效指标' },
-  archive: { en: 'Fund Archive', zh: '基金档案' },
+  risk: { en: 'Risk', zh: '风险' },
+  info: { en: 'Information', zh: '资料' },
 }
 
 const NAV_BASIS_LABELS: Record<string, LocalizedText> = {
@@ -610,7 +611,6 @@ function localizeTaxonomyPath(value: string, language: string) {
 }
 
 const MONTH_SHORT_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-const ROLLING_WINDOW_MONTHS = 12
 const MIN_ROLLING_RETURN_OBSERVATIONS = 3
 const ROLLING_CHART_MAX_POINTS = 520
 
@@ -1388,8 +1388,8 @@ function defaultCalculationFrequencyProfile(): CalculationFrequencyProfile {
     end_date: null,
     annualization_periods_per_year: null,
     largest_gap_days: null,
-    gap_count: 0,
-    gap_status: 'aligned',
+    gap_count: null,
+    gap_status: 'unverified',
     status_label: 'Unavailable',
   }
 }
@@ -1998,12 +1998,13 @@ function getRollingWindowPoints(
   return sortedPoints.slice(startIndex, endIndex + 1)
 }
 
-function buildRollingAnnualizedVolatilitySeries(points: FundChartPoint[], windowMonths = ROLLING_WINDOW_MONTHS) {
+function buildRollingAnnualizedVolatilitySeries(points: FundChartPoint[], windowMonths: number, source: FundNavSeriesResponse | null) {
   const sortedPoints = sortSeriesByDate(points)
   const rollingVolatility: FundChartPoint[] = []
 
   for (let index = 1; index < sortedPoints.length; index += 1) {
     const windowPoints = getRollingWindowPoints(sortedPoints, index, windowMonths)
+    if (returnWindowObservationLimitation(windowPoints, source)) continue
     const windowReturns = buildPeriodicReturnSeries(windowPoints).map((point) => point.value)
     if (windowReturns.length < MIN_ROLLING_RETURN_OBSERVATIONS) {
       continue
@@ -2022,12 +2023,13 @@ function buildRollingAnnualizedVolatilitySeries(points: FundChartPoint[], window
   return rollingVolatility
 }
 
-function buildRollingSharpeSeries(points: FundChartPoint[], windowMonths = ROLLING_WINDOW_MONTHS) {
+function buildRollingSharpeSeries(points: FundChartPoint[], windowMonths: number, source: FundNavSeriesResponse | null) {
   const sortedPoints = sortSeriesByDate(points)
   const rollingSharpe: FundChartPoint[] = []
 
   for (let index = 1; index < sortedPoints.length; index += 1) {
     const windowPoints = getRollingWindowPoints(sortedPoints, index, windowMonths)
+    if (returnWindowObservationLimitation(windowPoints, source)) continue
     const windowReturns = buildPeriodicReturnSeries(windowPoints).map((point) => point.value)
     if (windowReturns.length < MIN_ROLLING_RETURN_OBSERVATIONS) {
       continue
@@ -2460,7 +2462,7 @@ function buildPerformanceMetricSnapshot(
   points: FundChartPoint[],
   pathRiskAvailable = true,
 ): PerformanceMetricSnapshot {
-  if (points.length < 2) {
+  if (!pathRiskAvailable || points.length < 2 || !sameReturnSegment(points)) {
     return {
       periodReturn: null,
       annualizedReturn: null,
@@ -2477,17 +2479,11 @@ function buildPerformanceMetricSnapshot(
 
   const periodReturn = getPeriodReturnFromPoints(points)
   const annualizedReturn = getAnnualizedReturnFromPoints(points)
-  const annualizedVolatility = pathRiskAvailable
-    ? getAnnualizedVolatilityFromPoints(points)
-    : null
-  const annualizedDownsideDeviation = pathRiskAvailable
-    ? getAnnualizedDownsideDeviationFromPoints(points)
-    : null
-  const sharpe = pathRiskAvailable ? getSharpeRatioFromPoints(points) : null
-  const sortino = pathRiskAvailable ? getSortinoRatioFromPoints(points) : null
-  const drawdownStats = pathRiskAvailable
-    ? getMaxDrawdownStatsFromPoints(points)
-    : { maxDrawdown: null, recoveryDays: null, recoveryOpen: false }
+  const annualizedVolatility = getAnnualizedVolatilityFromPoints(points)
+  const annualizedDownsideDeviation = getAnnualizedDownsideDeviationFromPoints(points)
+  const sharpe = getSharpeRatioFromPoints(points)
+  const sortino = getSortinoRatioFromPoints(points)
+  const drawdownStats = getMaxDrawdownStatsFromPoints(points)
   const calmar =
     annualizedReturn != null &&
     drawdownStats.maxDrawdown != null &&
@@ -2528,7 +2524,7 @@ function getHeatmapCellStyle(value: number | null, maxAbsValue: number) {
 
 function buildCalculationPointSeries(series: FundNavSeriesResponse['calculation_series']) {
   return series
-    .map((point) => ({ date: point.date, value: point.value }))
+    .map((point) => ({ date: point.date, value: point.value, segment_id: point.segment_id }))
     .sort((left, right) => left.date.localeCompare(right.date))
 }
 
@@ -2799,7 +2795,6 @@ export default function FundDetailPage({
       const next = new URLSearchParams(current)
       if (id) { next.set('risk', '1'); next.set('risk_instrument', id) }
       else { next.delete('risk'); next.delete('risk_instrument') }
-      if (next.get('tab') === 'risk') next.set('tab', 'performance')
       return next
     }, { replace: true })
   }
@@ -2818,9 +2813,15 @@ export default function FundDetailPage({
   }
   function setActiveTab(tab: DetailTab) {
     setActiveTabState(tab)
-    setDetailSearchParams((params) => { const next = new URLSearchParams(params); next.set('tab', tab); return next }, { replace: true })
+    setDetailSearchParams((params) => {
+      const next = new URLSearchParams(params)
+      next.set('tab', tab)
+      if (tab === 'info') next.set('section', archiveSection)
+      else next.delete('section')
+      return next
+    }, { replace: true })
   }
-  const activeDataSection = activeTab === 'archive' ? archiveSection : activeTab
+  const activeDataSection = activeTab === 'info' ? archiveSection : activeTab
   const [quoteBasis, setQuoteBasis] = useState<QuoteBasis>(() => {
     const requested = detailSearchParams.get('basis')
     return requested === 'nav' || requested === 'nav_with_dividend'
@@ -2928,7 +2929,7 @@ export default function FundDetailPage({
     detailUrlSyncRef.current = detailSearchKey
     const requested = resolveFundDetailLocation(detailSearchParams.get('tab'), detailSearchParams.get('section'), fundType)
     setActiveTabState(requested.tab)
-    setArchiveSection(requested.section)
+    if (requested.tab === 'info') setArchiveSection(requested.section)
     const requestedBasis = detailSearchParams.get('basis')
     setQuoteBasis(
       requestedBasis === 'nav' || requestedBasis === 'nav_with_dividend'
@@ -2957,7 +2958,7 @@ export default function FundDetailPage({
           }
         }
         setOrDelete('tab', activeTab, 'overview')
-        setOrDelete('section', activeTab === 'archive' ? archiveSection : '')
+        setOrDelete('section', activeTab === 'info' ? archiveSection : '')
         setOrDelete('basis', quoteBasis, 'nav_with_dividend')
         next.delete('frequency')
         setOrDelete('currency', selectedCurrency, 'USD')
@@ -3106,19 +3107,19 @@ export default function FundDetailPage({
   const resourceRequests = useMemo(() => {
     type LazyRequest = { key: keyof FundDetailBundle; label: string; load: () => Promise<unknown> }
     const requests: LazyRequest[] = []
-    if (activeTab === 'overview' || activeTab === 'performance' || activeDataSection === 'monitoring') {
+    if (activeTab === 'overview' || activeDataSection === 'monitoring') {
       requests.push({ key: 'navSeries', label: 'NAV series', load: () => getInstrumentNavSeries(fundId) })
     }
-    if (activeTab === 'overview' || activeTab === 'views' || activeTab === 'performance') {
+    if (activeTab === 'overview' || activeTab === 'views') {
       requests.push({ key: 'research', label: 'investment views', load: () => getInstrumentResearch(fundId) })
     }
-    if (activeTab === 'performance') {
+    if (activeTab === 'overview') {
       requests.push(
         { key: 'library', label: 'benchmark library', load: () => getInstrumentLibrary() },
         { key: 'performance', label: 'performance', load: () => getInstrumentPerformance(fundId) },
         { key: 'risk', label: 'risk', load: () => getInstrumentRisk(fundId) },
       )
-    } else if (activeTab === 'archive') {
+    } else if (activeTab === 'info') {
       if (activeDataSection === 'price' || activeDataSection === 'exposure' || activeDataSection === 'monitoring') {
         requests.push({ key: 'reference', label: 'provider reference', load: () => getInstrumentReferenceData(fundId) })
       }
@@ -3166,7 +3167,7 @@ export default function FundDetailPage({
   const activeResourceLoading = resourceRequests.some(request => loadingSectionKeys.has(`${detailBundleKey}:${request.key}`))
   const activeResourceErrors = resourceRequests.map(request => sectionLoadErrors[request.key]).filter(Boolean)
   const resourceErrorKey = `${fundId}:${activeTab}:${sectionRetryToken}:${activeResourceErrors.join(' ')}`
-  const sectionReady = resourceRequests.filter(request => request.key !== 'library' && !(activeTab === 'performance' && request.key === 'research')).every(request => resourceReady(request.key))
+  const sectionReady = resourceRequests.filter(request => request.key !== 'library' && !(activeTab === 'overview' && request.key === 'research')).every(request => resourceReady(request.key))
 
   useEffect(() => {
     setTimelineNoteCaptureMode(false)
@@ -3306,7 +3307,7 @@ export default function FundDetailPage({
     let cancelled = false
 
     async function loadBenchmark() {
-      if (activeTab !== 'performance') return
+      if (activeTab !== 'overview') return
       if (!benchmarkFundId || benchmarkFundId === fundId) {
         setBenchmarkNavSeries(null)
         setBenchmarkLoadError(null)
@@ -3573,7 +3574,7 @@ export default function FundDetailPage({
   }
 
   function focusTimelineNoteInQuote(noteDate: string) {
-    setActiveTab('performance')
+    setActiveTab('overview')
     setChartStartDate('')
     setChartEndDate('')
     setTimelineNoteViewAnchorDate(noteDate)
@@ -3832,18 +3833,17 @@ export default function FundDetailPage({
       'on_or_before',
     )
   const benchmarkReturnWindow = alignedChartReturnWindows?.right ?? null
+  const chartReturnComplete = fundReturnWindow != null && returnWindowObservationLimitation(fundReturnWindow.points, navSeries) == null &&
+    (!hasBenchmarkSelection || (benchmarkReturnWindow != null && returnWindowObservationLimitation(benchmarkReturnWindow.points, benchmarkNavSeries) == null))
   const visibleNavSeries = fundReturnWindow
     ? resampleSeriesPreservingBounds(fundReturnWindow.points)
     : []
-  const benchmarkVisibleNavSeries = benchmarkReturnWindow
-    ? resampleSeriesPreservingBounds(benchmarkReturnWindow.points)
-    : []
-  const chartNavSeries = fundReturnWindow
+  const chartNavSeries = fundReturnWindow && chartReturnComplete
     ? resampleSeriesPreservingBounds(
         normalizeCumulativeReturn(fundReturnWindow),
       )
     : []
-  const chartBenchmarkSeries = benchmarkReturnWindow
+  const chartBenchmarkSeries = benchmarkReturnWindow && chartReturnComplete
     ? resampleSeriesPreservingBounds(
         normalizeCumulativeReturn(benchmarkReturnWindow),
       )
@@ -3854,13 +3854,22 @@ export default function FundDetailPage({
   }
   const hasUnconfirmedReturnSegmentBreak =
     navSeries.return_series_status === 'partial' && navSeries.return_segment_breaks.length > 0
-  const fundPathRiskAvailable = calculationBasisSeries.length >= 2 &&
-    navSeries.calculation_frequency_profile.gap_count === 0 && !hasUnconfirmedReturnSegmentBreak
-  const benchmarkPathRiskAvailable = benchmarkCalculationSeries.length >= 2 &&
-    benchmarkNavSeries?.calculation_frequency_profile.gap_count === 0 &&
-    !benchmarkNavSeries.return_segment_breaks.length
-  const drawdownSeries = fundPathRiskAvailable ? buildDrawdownSeries(visibleNavSeries) : []
-  const benchmarkDrawdownSeries = benchmarkPathRiskAvailable ? buildDrawdownSeries(benchmarkVisibleNavSeries) : []
+  const fundPathRiskAvailable = returnWindowObservationLimitation(calculationBasisSeries, navSeries) == null
+  // Display NAV choice does not change economic path risk. Compute drawdown
+  // before chart resampling so an omitted daily peak still belongs to the path.
+  const alignedDrawdownWindows = hasBenchmarkSelection
+    ? resolveAlignedReturnWindows(calculationBasisSeries, benchmarkCalculationSeries,
+        requestedChartWindow.start, requestedChartWindow.end, 'on_or_before')
+    : null
+  const fundDrawdownWindow = hasBenchmarkSelection
+    ? alignedDrawdownWindows?.left ?? null
+    : resolveReturnWindow(calculationBasisSeries, requestedChartWindow.start, requestedChartWindow.end, 'on_or_before')
+  const benchmarkDrawdownWindow = alignedDrawdownWindows?.right ?? null
+  const fundDrawdownAvailable = Boolean(fundDrawdownWindow) && returnWindowObservationLimitation(fundDrawdownWindow?.points || [], navSeries) == null
+  const drawdownSeries = fundDrawdownAvailable && fundDrawdownWindow
+    ? resampleSeriesPreservingBounds(buildDrawdownSeries(fundDrawdownWindow.points)) : []
+  const benchmarkDrawdownSeries = benchmarkDrawdownWindow && returnWindowObservationLimitation(benchmarkDrawdownWindow.points, benchmarkNavSeries) == null
+    ? resampleSeriesPreservingBounds(buildDrawdownSeries(benchmarkDrawdownWindow.points)) : []
   const chartCumulativeReturn = chartNavSeries[chartNavSeries.length - 1]?.value ?? null
   const chartBenchmarkCumulativeReturn =
     chartBenchmarkSeries[chartBenchmarkSeries.length - 1]?.value ?? null
@@ -4771,33 +4780,42 @@ export default function FundDetailPage({
       : null
     const comparisonFundWindow = alignedComparisonWindows?.left.points ?? []
     const benchmarkWindow = alignedComparisonWindows?.right.points ?? []
+    const fundLimitation = returnWindowObservationLimitation(fundWindow, navSeries)
+    const comparisonFundLimitation = returnWindowObservationLimitation(comparisonFundWindow, navSeries)
+    const benchmarkLimitation = returnWindowObservationLimitation(benchmarkWindow, benchmarkNavSeries)
+    const comparisonComplete = comparisonFundLimitation == null && benchmarkLimitation == null
     return {
       ...period,
+      limitation: selectedBenchmark ? comparisonFundLimitation || benchmarkLimitation : fundLimitation,
       effectiveDates: selectedBenchmark
         ? alignedComparisonWindows ? { anchor: alignedComparisonWindows.left.anchorDate, end: alignedComparisonWindows.left.endDate } : null
         : fundWindow.length >= 2 ? { anchor: fundWindow[0].date, end: fundWindow[fundWindow.length - 1].date } : null,
-      fund: buildPerformanceMetricSnapshot(fundWindow, fundPathRiskAvailable),
+      fund: buildPerformanceMetricSnapshot(fundWindow, fundLimitation == null),
       comparisonFund: buildPerformanceMetricSnapshot(
         comparisonFundWindow,
-        fundPathRiskAvailable,
+        comparisonComplete,
       ),
       benchmark:
         benchmarkWindow.length >= 2
           ? buildPerformanceMetricSnapshot(
               benchmarkWindow,
-              benchmarkPathRiskAvailable,
+              comparisonComplete,
             )
           : null,
       relative:
         benchmarkWindow.length >= 2 &&
         benchmarkReturnKindsMatch &&
-        fundPathRiskAvailable &&
-        benchmarkPathRiskAvailable
+        comparisonComplete
           ? buildPerformanceRelativeSnapshot(comparisonFundWindow, benchmarkWindow)
           : null,
     }
   })
-  const monthlyReturnMatrixRows = buildMonthlyReturnMatrix(calculationBasisSeries)
+  const monthlyReturnMatrixRows = buildMonthlyReturnMatrix(calculationBasisSeries).map(row => {
+    const complete = (window: { anchorDate: string; endDate: string } | null) => window != null &&
+      returnWindowObservationLimitation(calculationBasisSeries.filter(point => point.date >= window.anchorDate && point.date <= window.endDate), navSeries) == null
+    return { ...row, months: row.months.map((value, index) => complete(row.monthWindows[index]) ? value : null),
+      ytd: complete(row.ytdWindow) ? row.ytd : null }
+  })
   const monthlyReturnMatrixMaxAbs = monthlyReturnMatrixRows.reduce((maxAbs, row) => {
     const rowMax = Math.max(
       ...[...row.months, row.ytd]
@@ -4813,10 +4831,9 @@ export default function FundDetailPage({
       ? performance.peer_comparison
       : null
   const peerRankingAvailable = peerComparison?.status === 'ready'
-  const peerComparisonPathLabel =
-    peerComparison?.peer_path?.filter(Boolean).join(' / ') ||
-    performance.ranking?.peer_group ||
-    'Taxonomy peers'
+  const peerObservationLimitations = Array.from(new Set(
+    (performance.peer_comparison?.excluded_windows || []).map((row) => row.reason).filter(Boolean),
+  ))
   const peerComparisonMetricByKey = new Map(
     (peerComparison?.metrics || []).map((metric) => [metric.metric_key, metric]),
   )
@@ -5079,112 +5096,55 @@ export default function FundDetailPage({
       ),
     }
   })
-  const riskMatrixSnapshots = performancePeriodSnapshots.filter(({ key }) => RISK_MATRIX_PERIOD_KEYS.has(key))
-  const lifetimeRiskSnapshot =
-    riskMatrixSnapshots.find(({ key }) => key === 'SI')?.fund ||
-    buildPerformanceMetricSnapshot(calculationBasisSeries, fundPathRiskAvailable)
   const riskCalculationSeries = fundPathRiskAvailable ? calculationBasisSeries : []
-  const benchmarkRiskCalculationSeries =
-    benchmarkPathRiskAvailable ? benchmarkCalculationSeries : []
   const returnDrawdownSeries = buildDrawdownSeries(riskCalculationSeries)
   const rollingRiskWindowLabel =
     ROLLING_RISK_WINDOW_OPTIONS.find((option) => option.months === rollingRiskWindowMonths)?.label ||
     `${rollingRiskWindowMonths}M`
   const rollingVolatilitySeries = buildRollingAnnualizedVolatilitySeries(
-    riskCalculationSeries,
+    calculationBasisSeries,
     rollingRiskWindowMonths,
+    navSeries,
   ).slice(-ROLLING_CHART_MAX_POINTS)
   const benchmarkRollingVolatilitySeries =
-    selectedBenchmark && benchmarkRiskCalculationSeries.length > 0
+    selectedBenchmark && benchmarkCalculationSeries.length > 0
       ? buildRollingAnnualizedVolatilitySeries(
-          benchmarkRiskCalculationSeries,
+          benchmarkCalculationSeries,
           rollingRiskWindowMonths,
+          benchmarkNavSeries,
         ).slice(-ROLLING_CHART_MAX_POINTS)
       : []
-  const rollingSharpeSeries = buildRollingSharpeSeries(riskCalculationSeries, rollingRiskWindowMonths).slice(
+  const rollingSharpeSeries = buildRollingSharpeSeries(calculationBasisSeries, rollingRiskWindowMonths, navSeries).slice(
     -ROLLING_CHART_MAX_POINTS,
   )
   const benchmarkRollingSharpeSeries =
-    selectedBenchmark && benchmarkRiskCalculationSeries.length > 0
-      ? buildRollingSharpeSeries(benchmarkRiskCalculationSeries, rollingRiskWindowMonths).slice(
+    selectedBenchmark && benchmarkCalculationSeries.length > 0
+      ? buildRollingSharpeSeries(benchmarkCalculationSeries, rollingRiskWindowMonths, benchmarkNavSeries).slice(
           -ROLLING_CHART_MAX_POINTS,
         )
       : []
   const currentDrawdownValue =
     returnDrawdownSeries.length > 0 ? returnDrawdownSeries[returnDrawdownSeries.length - 1].value : null
-  const latest1WReturn = performancePeriodSnapshots.find(({ key }) => key === '1W')?.fund.periodReturn ?? null
-  const latestMtdReturn = performancePeriodSnapshots.find(({ key }) => key === 'MTD')?.fund.periodReturn ?? null
   const latestYtdReturn = performancePeriodSnapshots.find(({ key }) => key === 'YTD')?.fund.periodReturn ?? null
   const lifetimePerformanceSnapshot =
     performancePeriodSnapshots.find(({ key }) => key === 'SI')?.fund ||
     buildPerformanceMetricSnapshot(calculationBasisSeries, fundPathRiskAvailable)
-  const currentOpinion = currentInvestmentOpinion(research)
-  const overviewRankingValue =
-    performance.ranking
-      ? [
-          performance.ranking.rank == null || performance.ranking.sample_count == null
-            ? null
-            : `${formatNumber(performance.ranking.rank, 0)} / ${formatNumber(performance.ranking.sample_count, 0)}`,
-          performance.ranking.quartile == null ? null : `Q${performance.ranking.quartile}`,
-          performance.ranking.percentile == null
-            ? null
-            : `${formatNumber(performance.ranking.percentile, 0)} pct`,
-        ]
-          .filter(Boolean)
-          .join(' / ') || '—'
-      : '—'
   const overviewSideMetricRows = [
     {
-      label: '1W Return',
-      value: latest1WReturn == null ? '—' : formatPercent(latest1WReturn),
-      note: 'Latest',
-    },
-    {
-      label: 'MTD Return',
-      value: latestMtdReturn == null ? '—' : formatPercent(latestMtdReturn),
-      note: 'Current month',
-    },
-    {
-      label: 'YTD Return',
+      label: language === 'zh-Hans' ? '今年以来' : 'YTD Return',
       value: latestYtdReturn == null ? '—' : formatPercent(latestYtdReturn),
-      note: 'Year to date',
+      note: 'YTD',
     },
     {
-      label: 'Ann. Return',
-      value:
-        lifetimePerformanceSnapshot.annualizedReturn == null
-          ? '—'
-          : formatPercent(lifetimePerformanceSnapshot.annualizedReturn),
-      note: 'SI',
+      label: language === 'zh-Hans' ? '可用历史年化收益' : 'Annualized Return',
+      value: lifetimePerformanceSnapshot.annualizedReturn == null
+        ? '—' : formatPercent(lifetimePerformanceSnapshot.annualizedReturn),
+      note: language === 'zh-Hans' ? '可用历史' : 'Available history',
     },
     {
-      label: 'Ann. Vol',
-      value:
-        lifetimePerformanceSnapshot.annualizedVolatility == null
-          ? '—'
-          : formatPercent(lifetimePerformanceSnapshot.annualizedVolatility),
-      note: 'SI',
-    },
-    {
-      label: 'Max DD',
-      value:
-        lifetimeRiskSnapshot.maxDrawdown == null ? '—' : formatPercent(lifetimeRiskSnapshot.maxDrawdown),
-      note: 'SI',
-    },
-    {
-      label: 'Current DD',
+      label: language === 'zh-Hans' ? '当前回撤' : 'Current Drawdown',
       value: currentDrawdownValue == null ? '—' : formatPercent(currentDrawdownValue),
-      note: 'From peak',
-    },
-    {
-      label: 'SI Sharpe',
-      value: lifetimePerformanceSnapshot.sharpe == null ? '—' : formatNumber(lifetimePerformanceSnapshot.sharpe, 2),
-      note: 'rf = 0',
-    },
-    {
-      label: 'Peer Rank',
-      value: overviewRankingValue,
-      note: peerComparisonPathLabel,
+      note: language === 'zh-Hans' ? '相对前高' : 'From peak',
     },
   ]
   const rawTaxonomyPathLabel =
@@ -5246,7 +5206,7 @@ export default function FundDetailPage({
   const riskPathMetricsUnavailable = !fundPathRiskAvailable
   const renderBenchmarkSearch = (ariaLabel: string, extraClassName = '') => {
     const className = ['instrument-chart-compare', extraClassName].filter(Boolean).join(' ')
-    const statusText = benchmarkStatusText + (activeTab === 'performance' && comparisonReferenceEndDate
+    const statusText = benchmarkStatusText + (activeTab === 'overview' && comparisonReferenceEndDate
       ? language === 'zh-Hans' ? ` 共同截至日期 ${formatDate(comparisonReferenceEndDate)}，双方使用该日或之前的共同有效观察区间。` : ` Common endpoint ${formatDate(comparisonReferenceEndDate)}; both series use common observations through that date.` : '')
     return (
       <div className={className}>
@@ -5878,8 +5838,7 @@ export default function FundDetailPage({
 
       {activeTab === 'overview' ? (
         <section className="fund-overview" aria-label={language === 'zh-Hans' ? '基金总览' : 'Fund overview'}>
-          <header className="fund-overview-heading"><h2>{language === 'zh-Hans' ? '净值与绩效' : 'NAV & performance'}</h2><button type="button" onClick={() => setActiveTab('performance')}>{language === 'zh-Hans' ? '全部绩效指标' : 'All performance metrics'} →</button></header>
-          <div className="fund-overview-snapshot" aria-busy={!resourceReady('navSeries') && !sectionLoadErrors.navSeries}>
+          {!sectionReady ? <div className="fund-overview-snapshot" aria-busy={!resourceReady('navSeries') && !sectionLoadErrors.navSeries}>
             <div className="fund-overview-nav">
               <span>{localize(language, QUOTE_BASIS_LABELS.nav)}</span>
               <strong>{unitNavValue == null ? '—' : formatNumber(unitNavValue, 4)}</strong>
@@ -5897,28 +5856,13 @@ export default function FundDetailPage({
                 { label: language === 'zh-Hans' ? '当前回撤' : 'Current drawdown', value: currentDrawdownValue },
               ].map((row) => <div key={row.label}><span>{row.label}</span><strong>{!resourceReady('navSeries') ? (language === 'zh-Hans' ? sectionLoadErrors.navSeries ? '读取失败' : '加载中…' : sectionLoadErrors.navSeries ? 'Load failed' : 'Loading…') : row.value == null ? '—' : formatPercent(row.value)}</strong></div>)}
             </div>
-          </div>
+          </div> : null}
           {resourceReady('navSeries') ? <p className="fund-overview-date-note">{language === 'zh-Hans' ? '可用历史' : 'Available history'} {formatDate(calculationBasisSeries[0]?.date)} — {formatDate(performanceReferenceEndDate)} · {calculationFrequencyStatus}</p> : null}
           {summary.freshness.staleness_reason && <p className="fund-overview-date-note" role="status"><FreshnessNote reason={summary.freshness.staleness_reason} observationDate={performanceReferenceEndDate || unitNavDate} /></p>}
-          {resourceReady('navSeries') && (navSeries.calculation_frequency_profile.gap_count > 0 || hasUnconfirmedReturnSegmentBreak) ? <p className="fund-overview-quality" role="status">{hasUnconfirmedReturnSegmentBreak
+          {resourceReady('navSeries') && ((navSeries.calculation_frequency_profile.gap_count ?? 0) > 0 || hasUnconfirmedReturnSegmentBreak) ? <p className="fund-overview-quality" role="status">{hasUnconfirmedReturnSegmentBreak
             ? (language === 'zh-Hans' ? '存在尚未确认的基金事件，完整收益历史与风险指标暂不可用。' : 'An unconfirmed fund event prevents complete return history and path risk metrics.')
             : (language === 'zh-Hans' ? '净值历史存在缺口，路径风险指标暂不可用。' : 'NAV history has gaps; path risk metrics are unavailable.')}</p> : null}
-          <div className="fund-overview-judgments">
-          <SectorResearchPanel instrumentId={fundId} variant="summary" onOpenEvents={() => setActiveTab('investment-research')} />
-          <section className="fund-overview-section" aria-label={language === 'zh-Hans' ? '当前总体观点' : 'Current overall view'}>
-            <header><h2>{language === 'zh-Hans' ? '当前总体观点' : 'Current overall view'}</h2><button type="button" onClick={() => setActiveTab('views')}>{language === 'zh-Hans' ? '查看与记录观点' : 'View / record opinions'}</button></header>
-            {!resourceReady('research') ? <p aria-busy={!sectionLoadErrors.research}>{sectionLoadErrors.research ? (language === 'zh-Hans' ? '投资观点暂时无法读取。' : 'Investment views unavailable.') : 'Loading'}</p> : currentOpinion ? <><time>{currentOpinion.noteDate}</time><h3>{currentOpinion.title}</h3><p className="overview-opinion-excerpt">{currentOpinion.body}</p></>
-              : <p className="muted">{language === 'zh-Hans' ? '尚未记录投资观点。' : 'No investment view recorded yet.'}</p>}
-          </section>
-          </div>
-          <footer className="fund-overview-reference">
-            {summary.management_firm_name ? <p><span>{language === 'zh-Hans' ? '基金管理人' : 'Fund manager'}</span>{summary.management_firm_name}</p> : <p>{language === 'zh-Hans' ? '基金资料' : 'Fund reference'}</p>}
-            <button type="button" onClick={() => setActiveTab('archive')}>{language === 'zh-Hans' ? '查看基金档案' : 'View fund archive'} →</button>
-          </footer>
-        </section>
-      ) : null}
-
-      {activeTab === 'performance' && sectionReady ? (
+      {sectionReady ? (
         <>
           <section className="panel instrument-quote-panel">
             <div className="instrument-chart-shell">
@@ -5975,14 +5919,16 @@ export default function FundDetailPage({
 
                 {hasUnconfirmedReturnSegmentBreak ? (
                   <div className="instrument-quote-action-notice" role="status">
-                    Total-return history stops before an unconfirmed fund event
+                    Total-return history has an unconfirmed fund event
                     {latestReturnSegmentBreak?.as_of_date
                       ? ` on ${formatDate(String(latestReturnSegmentBreak.as_of_date))}`
                       : ''}
-                    . Returns after that break remain unavailable until the event is reviewed.
+                    . Windows crossing that event are unavailable; independently confirmed segments remain usable.
                   </div>
                 ) : null}
 
+                    {!chartReturnComplete && <p className="fund-overview-quality" role="status">{language === 'zh-Hans' ? '收益图不可用：当前窗口的观察值、收益区间或日历尚未完整确认；净值报价仍保留。' : 'Return chart unavailable: observations, return intervals or calendar are incomplete or unconfirmed for this window. NAV quotes remain available.'}</p>}
+                    {showDrawdownPanel && !fundDrawdownAvailable && <p className="fund-overview-quality" role="status">{language === 'zh-Hans' ? '回撤图不可用：当前窗口的观察值或收益连续性未完整确认。' : 'Drawdown chart unavailable: observations or return continuity are incomplete or unconfirmed for this window.'}</p>}
                 <div className="instrument-chart-stage instrument-chart-stage-interactive">
                   {scaledVisibleSeries.length > 1 ? (
                     <>
@@ -6423,8 +6369,7 @@ export default function FundDetailPage({
                       </div>
                     ) : null}
 
-                    {showDrawdownPanel && !fundPathRiskAvailable && <p className="fund-overview-quality" role="status">{language === 'zh-Hans' ? '回撤图不可用：净值路径存在缺口或未确认的分段，端点收益仍按可用数据展示。' : 'Drawdown chart unavailable: the NAV path has gaps or unconfirmed segments. Endpoint returns remain available.'}</p>}
-                    {showDrawdownPanel && fundPathRiskAvailable ? (
+                    {showDrawdownPanel && fundDrawdownAvailable ? (
                       <div className="instrument-drawdown-shell">
                         <div className="instrument-drawdown-header">
                           <span>Drawdown</span>
@@ -6708,7 +6653,7 @@ export default function FundDetailPage({
         </>
       ) : null}
 
-      {activeTab === 'performance' && sectionReady ? (
+      {sectionReady ? (
         <section className="panel instrument-performance-shell">
           <div className="instrument-price-topline" />
 
@@ -6721,9 +6666,14 @@ export default function FundDetailPage({
                   {peerComparison?.status === 'limited_sample' ? (
                     <span
                       className="context-chip"
-                      title={language === 'zh-Hans' ? '仅比较实际起止日、币种、频率和收益口径一致的同类；样本不足时只展示中位数。' : 'Peers must share actual start/end dates, currency, frequency and return basis. Small samples support medians only.'}
+                      title={language === 'zh-Hans' ? '仅比较区间观察完整、实际起止日、币种、频率和收益口径一致的同类；样本不足时只展示中位数。' : 'Peers require complete interval observations and matching actual dates, currency, frequency and return basis. Small samples support medians only.'}
                     >
                       Peer median only · {formatNumber(peerComparison.sample_count, 0)} peers
+                    </span>
+                  ) : null}
+                  {peerObservationLimitations.length ? (
+                    <span className="context-chip" title={peerObservationLimitations.join('；')}>
+                      {language === 'zh-Hans' ? '部分同类区间不可用：观察缺口或连续性未确认' : 'Some peer windows unavailable: missing or unconfirmed observations'}
                     </span>
                   ) : null}
                 </div>
@@ -6751,6 +6701,12 @@ export default function FundDetailPage({
                   ? `比较矩阵：所有周期按共同观察日计算，截至 ${comparisonReferenceEndDate || '尚无共同日期'}；覆盖不足的周期不展示独立最新值。标的独立最新指标及月表截至 ${performanceReferenceEndDate || '—'}。`
                   : `Comparison matrix: all periods use common observation dates through ${comparisonReferenceEndDate || 'no common date'}. Periods without coverage are unavailable. Standalone instrument metrics and the monthly table are through ${performanceReferenceEndDate || '—'}.`
                 : language === 'zh-Hans' ? `标的独立指标截至 ${performanceReferenceEndDate || '—'}；每列标明实际锚点与终点。` : `Standalone instrument metrics through ${performanceReferenceEndDate || '—'}; each column shows its actual anchor and end.`}</p>
+              <p className="fund-overview-date-note" role="note">{language === 'zh-Hans'
+                ? '每个窗口独立核验观察完整性；缺失交易日、收益区间证据或未确认交易日历时该窗口不可用。历史问题不代表近期完整窗口不可用。'
+                : 'Each window requires complete interval evidence and a confirmed calendar for daily data. Missing observations make that window unavailable; older gaps do not invalidate a later complete window.'}</p>
+              {selectedBenchmark && <p className="fund-overview-date-note" role="note">{language === 'zh-Hans'
+                ? `回撤与标的自身风险保留共同首尾内各自完整路径；相关风险按共同相邻区间对齐，不删点掩盖缺口。披露频率：标的 ${calculationFrequencyProfile.resolved_frequency} / 基准 ${benchmarkNavSeries?.calculation_frequency_profile.resolved_frequency || '未确认'}。`
+                : `Drawdown and each instrument's risk retain their full paths between common endpoints; relative risk uses common intervals after completeness checks. Observation frequency: instrument ${calculationFrequencyProfile.resolved_frequency} / benchmark ${benchmarkNavSeries?.calculation_frequency_profile.resolved_frequency || 'unconfirmed'}.`}</p>}
               {activePerformanceMatrixMode !== 'values' && <p className="fund-overview-date-note" role="note">{language === 'zh-Hans'
                 ? '同类比较仅使用实际起止日、币种、频率和收益口径一致的固定区间收益；成立以来收益和风险指标不参与排名或中位数比较。'
                 : 'Peer comparisons use fixed-window returns with matching actual start/end dates, currency, frequency and return basis. Since-inception returns and risk metrics are excluded from ranks and medians.'}</p>}
@@ -6760,7 +6716,7 @@ export default function FundDetailPage({
                     <tr>
                       <th>Metric</th>
                       {performancePeriodSnapshots.map((period) => (
-                        <th key={period.key}>{period.label}<small className="instrument-metric-dates">{period.effectiveDates ? <><time dateTime={period.effectiveDates.anchor}>{period.effectiveDates.anchor}</time><span aria-hidden="true"> → </span><time dateTime={period.effectiveDates.end}>{period.effectiveDates.end}</time></> : language === 'zh-Hans' ? '区间覆盖不足' : 'Insufficient coverage'}</small></th>
+                        <th key={period.key}>{period.label}<small className="instrument-metric-dates">{period.effectiveDates ? <><time dateTime={period.effectiveDates.anchor}>{period.effectiveDates.anchor}</time><span aria-hidden="true"> → </span><time dateTime={period.effectiveDates.end}>{period.effectiveDates.end}</time>{period.limitation && <span>{language === 'zh-Hans' ? ' · 观察不完整或未确认' : ' · Incomplete or unconfirmed observations'}</span>}</> : language === 'zh-Hans' ? '区间覆盖不足' : 'Insufficient coverage'}</small></th>
                       ))}
                     </tr>
                   </thead>
@@ -6863,7 +6819,7 @@ export default function FundDetailPage({
         </section>
       ) : null}
 
-      {activeTab === 'performance' && sectionReady ? (
+      {sectionReady ? (
         <section className="panel instrument-risk-shell">
           <div className="instrument-price-topline" />
           <section className="instrument-risk-section instrument-risk-section-rolling">
@@ -6882,8 +6838,8 @@ export default function FundDetailPage({
               {riskPathMetricsUnavailable ? (
                 <div className="instrument-placeholder">
                   {language === 'zh-Hans'
-                    ? '路径风险至少需要两个有效观测，且不存在缺失观测或待确认的收益断点。区间收益仍可查看。'
-                    : 'Path risk needs at least two valid observations with no expected gaps or unconfirmed return breaks. Period returns remain available.'}
+                    ? '路径风险至少需要两个有效观测，且不存在缺失观测或待确认的收益断点。独立完整窗口可另行查看。'
+                    : 'Path risk needs at least two valid observations and complete interval evidence. Independently complete windows remain usable.'}
                 </div>
               ) : null}
               <div className="instrument-risk-visual-grid instrument-risk-rolling-grid">
@@ -6911,10 +6867,19 @@ export default function FundDetailPage({
         </section>
       ) : null}
 
-      {activeTab === 'archive' ? (
-        <section className={`fund-archive-layout fund-archive-${fundType}`} aria-label={language === 'zh-Hans' ? '基金档案' : 'Fund archive'}>
+        </section>
+      ) : null}
+
+      {activeTab === 'risk' ? (
+        <InstrumentRiskMonitoringPanel instrumentId={fundId} onAskAssistant={(instrumentId, question, reference) => {
+          if (instrumentId === fundId) openAssistant(question, reference)
+        }} />
+      ) : null}
+
+      {activeTab === 'info' ? (
+        <section className={`fund-archive-layout fund-archive-${fundType}`} aria-label={language === 'zh-Hans' ? '基金资料' : 'Fund information'}>
           <header className="fund-workspace-heading">
-            <div><h2>{language === 'zh-Hans' ? '基金档案' : 'Fund archive'}</h2>
+            <div><h2>{language === 'zh-Hans' ? '基金资料' : 'Fund information'}</h2>
               <p>{fundType === 'public_fund'
                 ? (language === 'zh-Hans' ? '持仓与风格以披露期为准，结合管理团队与基金材料阅读。' : 'Read holdings and style at their disclosure dates alongside manager and fund documents.')
                 : (language === 'zh-Hans' ? '策略、流动性与交易条款，以及净值披露和基金材料。' : 'Strategy, liquidity and dealing terms, NAV disclosures and fund documents.')}</p>

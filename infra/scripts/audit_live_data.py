@@ -31,10 +31,10 @@ from investment_studio_instrument_core import (  # noqa: E402
 
 FINAL_FLAT_TABLE_HEADS = {
     "identity": "20260919_0002",
-    "instrument_data": "20260920_0036",
+    "instrument_data": "20261008_0037",
     "data_ingestion": "20260904_0009",
-    "portfolio": "20260929_0070",
-    "watchlist": "20261006_0065",
+    "portfolio": "20261008_0072",
+    "watchlist": "20261009_0068",
     "market_data": "studio_market_0002",  # This migration chain also owns market_text.
     "briefing": "20260908_0003",
 }
@@ -765,6 +765,224 @@ def _watchlist_crypto_scope_contract_query() -> str:
     """
 
 
+def _instrument_type_listed_security_identity_contract_query() -> str:
+    return """
+        SELECT count(*)
+        FROM instrument_data.instrument instrument
+        WHERE instrument.instrument_type NOT IN (
+                'public_fund', 'private_fund', 'etf', 'index',
+                'equity', 'crypto', 'cash', 'fx', 'other'
+              )
+           OR (
+                instrument.instrument_type = 'equity'
+                AND coalesce(instrument.source_settings_json ->> 'source_api_profile', '') <> 'futu'
+                AND (
+                    instrument.exchange_code NOT IN (
+                        'XNAS', 'XNYS', 'XASE', 'XHKG', 'XSHG', 'XSHE',
+                        'XLON', 'XETR', 'XPAR', 'XAMS', 'XMIL', 'XSWX'
+                    )
+                    OR coalesce(
+                        instrument.source_settings_json ->> 'source_mode',
+                        ''
+                    ) <> 'api'
+                    OR coalesce(
+                        instrument.source_settings_json ->> 'source_api_profile',
+                        ''
+                    ) <> 'fmp'
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM instrument_data.instrument_identifier identifier
+                        WHERE identifier.instrument_id = instrument.instrument_id
+                          AND identifier.identifier_type = 'exchange_ticker'
+                    )
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM instrument_data.instrument_identifier identifier
+                        WHERE identifier.instrument_id = instrument.instrument_id
+                          AND identifier.identifier_type = 'provider_symbol'
+                          AND identifier.identifier_value LIKE 'fmp:%'
+                    )
+                )
+              )
+           OR (
+                instrument.instrument_type = 'etf'
+                AND coalesce(instrument.source_settings_json ->> 'source_api_profile', '') <> 'futu'
+                AND (
+                    instrument.exchange_code NOT IN (
+                        'XNAS', 'XNYS', 'XASE', 'ARCX', 'BATS',
+                        'XHKG', 'XSHG', 'XSHE',
+                        'XLON', 'XETR', 'XPAR', 'XAMS', 'XMIL', 'XSWX'
+                    )
+                    OR coalesce(
+                        instrument.source_settings_json ->> 'source_mode',
+                        ''
+                    ) <> 'api'
+                    OR coalesce(
+                        instrument.source_settings_json ->> 'source_api_profile',
+                        ''
+                    ) NOT IN ('fmp', 'tushare', 'tushare_pro', 'tushare-pro')
+                    OR coalesce(
+                        instrument.source_settings_json ->> 'market_calendar',
+                        ''
+                    ) <> instrument.exchange_code
+                    OR (
+                        coalesce(
+                            instrument.source_settings_json ->> 'source_api_profile',
+                            ''
+                        ) = 'fmp'
+                        AND (
+                            coalesce(
+                                instrument.source_settings_json ->> 'market_calendar',
+                                ''
+                            ) NOT IN (
+                                'XNAS', 'XNYS', 'XASE', 'ARCX', 'BATS',
+                                'XHKG', 'XSHG', 'XSHE',
+                                'XLON', 'XETR', 'XPAR', 'XAMS',
+                                'XMIL', 'XSWX'
+                            )
+                            OR NOT EXISTS (
+                                SELECT 1
+                                FROM instrument_data.instrument_identifier identifier
+                                WHERE identifier.instrument_id = instrument.instrument_id
+                                  AND identifier.identifier_type = 'exchange_ticker'
+                            )
+                            OR NOT EXISTS (
+                                SELECT 1
+                                FROM instrument_data.instrument_identifier identifier
+                                WHERE identifier.instrument_id = instrument.instrument_id
+                                  AND identifier.identifier_type = 'provider_symbol'
+                                  AND identifier.identifier_value LIKE 'fmp:%'
+                            )
+                        )
+                    )
+                )
+              )
+           OR (
+                instrument.instrument_type <> 'equity'
+                AND instrument.instrument_type <> 'etf'
+                AND instrument.exchange_code IS NOT NULL
+              )
+           OR (
+                instrument.source_settings_json ->> 'source_api_profile' = 'futu'
+                AND (
+                    instrument.instrument_type NOT IN ('equity', 'etf')
+                    OR instrument.source_settings_json ->> 'source_mode' IS DISTINCT FROM 'api'
+                    OR instrument.source_settings_json ->> 'expected_frequency' IS DISTINCT FROM 'daily'
+                    OR instrument.source_settings_json ->> 'market_calendar' IS DISTINCT FROM instrument.exchange_code
+                    OR instrument.source_settings_json ->> 'return_semantics' IS DISTINCT FROM 'price_return'
+                    OR upper(coalesce(instrument.source_settings_json ->> 'source_provider_currency', ''))
+                        IS DISTINCT FROM instrument.currency
+                    OR coalesce(instrument.currency, '') = ''
+                    OR NOT regexp_like(coalesce(instrument.source_settings_json ->> 'source_price_multiplier', ''), '^1([.]0+)?$')
+                    OR NOT regexp_like(coalesce(instrument.source_settings_json ->> 'source_provider_security_id', ''), '^[1-9][0-9]*$')
+                    OR NOT regexp_like(coalesce(instrument.source_settings_json ->> 'history_start_date', ''), '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+                    OR NOT pg_input_is_valid(coalesce(instrument.source_settings_json ->> 'history_start_date', ''), 'date')
+                    OR instrument.quote_selection_policy_json::jsonb IS DISTINCT FROM
+                        '{"trading":["close"],"valuation":["close"],"total_return":["adjusted_close"],"chart":["close"],"reference":["close"]}'::jsonb
+                    OR (SELECT count(*) FROM instrument_data.instrument_identifier identifier
+                        WHERE identifier.instrument_id = instrument.instrument_id
+                          AND identifier.identifier_type = 'provider_symbol'
+                          AND identifier.identifier_value LIKE 'futu:%') <> 1
+                    OR (SELECT count(*) FROM instrument_data.instrument_identifier identifier
+                        WHERE identifier.instrument_id = instrument.instrument_id
+                          AND identifier.identifier_type = 'exchange_ticker') <> 1
+                    OR NOT EXISTS (
+                        SELECT 1 FROM instrument_data.instrument_identifier provider
+                        JOIN instrument_data.instrument_identifier ticker
+                          ON ticker.instrument_id = provider.instrument_id AND ticker.identifier_type = 'exchange_ticker'
+                        WHERE provider.instrument_id = instrument.instrument_id
+                          AND provider.identifier_type = 'provider_symbol'
+                          AND ticker.identifier_value = CASE
+                            WHEN regexp_like(provider.identifier_value, '^futu:HK[.][0-9]{5}$')
+                              AND instrument.exchange_code = 'XHKG'
+                            THEN lpad(CAST(CAST(substr(provider.identifier_value, 9) AS INTEGER) AS TEXT),
+                                greatest(4, length(CAST(CAST(substr(provider.identifier_value, 9) AS INTEGER) AS TEXT))), '0') || '.HK'
+                            WHEN regexp_like(provider.identifier_value, '^futu:US[.][A-Z0-9][A-Z0-9.-]*$')
+                              AND instrument.exchange_code IN ('XNAS', 'XNYS', 'XASE', 'ARCX', 'BATS')
+                            THEN substr(provider.identifier_value, 9)
+                            ELSE NULL END
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM instrument_data.instrument_market_data observation
+                        WHERE observation.instrument_id = instrument.instrument_id
+                          AND (observation.metric_family IS DISTINCT FROM 'price'
+                            OR NOT ((observation.quote_basis = 'close'
+                                AND observation.provider = 'futu:history-kline:unadjusted')
+                              OR (observation.quote_basis = 'adjusted_close'
+                                AND observation.provider = 'futu:declared-cash-reinvestment:v1'))
+                            OR observation.provider IS NULL OR observation.quote_basis IS NULL)
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM instrument_data.instrument_price_bar bar
+                        WHERE bar.instrument_id = instrument.instrument_id
+                          AND bar.provider IS DISTINCT FROM 'futu:history-kline:unadjusted'
+                    )
+                )
+              )
+    """
+
+
+def _watchlist_index_return_semantics_contract_query() -> str:
+    return """
+        WITH active_indices AS (
+            SELECT instrument.instrument_id,
+                lower(trim(coalesce(instrument.source_settings_json::jsonb
+                    ->> 'return_semantics', ''))) AS configured_return_kind
+            FROM instrument_data.instrument instrument
+            WHERE instrument.instrument_type = 'index'
+              AND coalesce(instrument.lifecycle_state_json::jsonb ->> 'status', 'active') = 'active'
+        ), observed AS (
+            SELECT active.*, chart.instrument_id AS chart_instrument_id,
+                chart.payload_json::jsonb AS payload,
+                chart.payload_json::jsonb -> 'selected_series' ->> 'quote_basis' AS selected_quote_basis,
+                chart.payload_json::jsonb -> 'selected_series' ->> 'return_kind' AS published_return_kind,
+                chart.payload_json::jsonb -> 'selected_series' ->> 'basis_type' AS published_basis_type
+            FROM active_indices active
+            LEFT JOIN watchlist.instrument_chart_read_model chart
+              ON chart.instrument_id = active.instrument_id
+        ), expected AS (
+            SELECT observed.*,
+                CASE
+                    WHEN selected_quote_basis IN ('adjusted_close', 'total_return_nav') THEN 'total_return'
+                    WHEN selected_quote_basis IN ('close', 'last')
+                      AND configured_return_kind IN ('price_return', 'total_return') THEN configured_return_kind
+                    ELSE NULL
+                END AS expected_return_kind
+            FROM observed
+        )
+        SELECT count(*) FROM expected
+        WHERE chart_instrument_id IS NULL
+           OR (selected_quote_basis IS NULL AND (
+                configured_return_kind IN ('price_return', 'total_return')
+                OR NOT coalesce(
+                    published_return_kind IS NULL AND published_basis_type IS NULL
+                    AND payload -> 'selected_series' ->> 'return_series_status' = 'unavailable'
+                    AND CASE WHEN jsonb_typeof(payload -> 'series') = 'array'
+                        THEN jsonb_array_length(payload -> 'series') ELSE -1 END = 1
+                    AND payload -> 'series' -> 0 -> 'points' = '[]'::jsonb
+                    AND payload -> 'latest_values' -> 'total_return' = 'null'::jsonb
+                    AND payload -> 'return_series' -> 'metadata' ->> 'quote_basis' IS NULL
+                    AND payload -> 'return_series' -> 'metadata' ->> 'return_kind' IS NULL
+                    AND payload -> 'return_series' -> 'metadata' ->> 'basis_type' IS NULL
+                    AND payload -> 'return_series' -> 'metadata' ->> 'return_series_status' = 'unavailable'
+                    AND payload -> 'return_series' -> 'intervals' = '[]'::jsonb
+                    AND payload -> 'return_series' -> 'wealth_points' = '[]'::jsonb
+                    AND payload -> 'research_returns' -> 'metadata' ->> 'return_kind' IS NULL
+                    AND payload -> 'research_returns' -> 'metadata' ->> 'return_series_status' = 'unavailable'
+                    AND payload -> 'research_returns' -> 'points' = '[]'::jsonb
+                    AND payload -> 'research_returns' -> 'intervals' = '[]'::jsonb
+                    AND payload -> 'research_returns' -> 'wealth_points' = '[]'::jsonb,
+                    false)
+              ))
+           OR (selected_quote_basis IS NOT NULL AND (
+                expected_return_kind IS NULL
+                OR published_return_kind IS DISTINCT FROM expected_return_kind
+                OR (expected_return_kind = 'total_return' AND published_basis_type IS DISTINCT FROM 'nav_with_dividend')
+                OR (expected_return_kind = 'price_return' AND published_basis_type IS DISTINCT FROM 'nav')
+              ))
+    """
+
+
 def _watchlist_system_contract_query() -> str:
     return """
                         WITH specs(
@@ -1058,105 +1276,11 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                 _count_check(
                     cursor,
                     name="instrument_type_listed_security_identity_contract",
-                    query="""
-                        SELECT count(*)
-                        FROM instrument_data.instrument instrument
-                        WHERE instrument.instrument_type NOT IN (
-                                'public_fund', 'private_fund', 'etf', 'index',
-                                'equity', 'crypto', 'cash', 'fx', 'other'
-                              )
-                           OR (
-                                instrument.instrument_type = 'equity'
-                                AND (
-                                    instrument.exchange_code NOT IN (
-                                        'XNAS', 'XNYS', 'XASE', 'XHKG', 'XSHG', 'XSHE',
-                                        'XLON', 'XETR', 'XPAR', 'XAMS', 'XMIL', 'XSWX'
-                                    )
-                                    OR coalesce(
-                                        instrument.source_settings_json ->> 'source_mode',
-                                        ''
-                                    ) <> 'api'
-                                    OR coalesce(
-                                        instrument.source_settings_json ->> 'source_api_profile',
-                                        ''
-                                    ) <> 'fmp'
-                                    OR NOT EXISTS (
-                                        SELECT 1
-                                        FROM instrument_data.instrument_identifier identifier
-                                        WHERE identifier.instrument_id = instrument.instrument_id
-                                          AND identifier.identifier_type = 'exchange_ticker'
-                                    )
-                                    OR NOT EXISTS (
-                                        SELECT 1
-                                        FROM instrument_data.instrument_identifier identifier
-                                        WHERE identifier.instrument_id = instrument.instrument_id
-                                          AND identifier.identifier_type = 'provider_symbol'
-                                          AND identifier.identifier_value LIKE 'fmp:%'
-                                    )
-                                )
-                              )
-                           OR (
-                                instrument.instrument_type = 'etf'
-                                AND (
-                                    instrument.exchange_code NOT IN (
-                                        'XNAS', 'XNYS', 'XASE', 'ARCX', 'BATS',
-                                        'XHKG', 'XSHG', 'XSHE',
-                                        'XLON', 'XETR', 'XPAR', 'XAMS', 'XMIL', 'XSWX'
-                                    )
-                                    OR coalesce(
-                                        instrument.source_settings_json ->> 'source_mode',
-                                        ''
-                                    ) <> 'api'
-                                    OR coalesce(
-                                        instrument.source_settings_json ->> 'source_api_profile',
-                                        ''
-                                    ) NOT IN ('fmp', 'tushare', 'tushare_pro', 'tushare-pro')
-                                    OR coalesce(
-                                        instrument.source_settings_json ->> 'market_calendar',
-                                        ''
-                                    ) <> instrument.exchange_code
-                                    OR (
-                                        coalesce(
-                                            instrument.source_settings_json ->> 'source_api_profile',
-                                            ''
-                                        ) = 'fmp'
-                                        AND (
-                                            coalesce(
-                                                instrument.source_settings_json ->> 'market_calendar',
-                                                ''
-                                            ) NOT IN (
-                                                'XNAS', 'XNYS', 'XASE', 'ARCX', 'BATS',
-                                                'XHKG', 'XSHG', 'XSHE',
-                                                'XLON', 'XETR', 'XPAR', 'XAMS',
-                                                'XMIL', 'XSWX'
-                                            )
-                                            OR NOT EXISTS (
-                                                SELECT 1
-                                                FROM instrument_data.instrument_identifier identifier
-                                                WHERE identifier.instrument_id = instrument.instrument_id
-                                                  AND identifier.identifier_type = 'exchange_ticker'
-                                            )
-                                            OR NOT EXISTS (
-                                                SELECT 1
-                                                FROM instrument_data.instrument_identifier identifier
-                                                WHERE identifier.instrument_id = instrument.instrument_id
-                                                  AND identifier.identifier_type = 'provider_symbol'
-                                                  AND identifier.identifier_value LIKE 'fmp:%'
-                                            )
-                                        )
-                                    )
-                                )
-                              )
-                           OR (
-                                instrument.instrument_type <> 'equity'
-                                AND instrument.instrument_type <> 'etf'
-                                AND instrument.exchange_code IS NOT NULL
-                              )
-                    """,
+                    query=_instrument_type_listed_security_identity_contract_query(),
                     detail=(
                         "Registry instrument types must use the split public/private fund "
                         "contract; stocks and ETFs must carry canonical listing identity, "
-                        "use their configured FMP or Tushare source contract, and "
+                        "use their configured FMP, Tushare, or identity-pinned Futu source contract, and "
                         "non-listed instruments must not carry exchange identity."
                     ),
                 )
@@ -2643,6 +2767,9 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         FROM instrument_data.instrument instrument
                         WHERE json_typeof(instrument.quote_selection_policy_json)
                                   IS DISTINCT FROM 'object'
+                           OR (instrument.instrument_type IN ('equity', 'etf')
+                               AND instrument.quote_selection_policy_json::jsonb -> 'total_return'
+                                   IS DISTINCT FROM '["adjusted_close"]'::jsonb)
                            OR (
                                 SELECT count(*)
                                 FROM json_object_keys(
@@ -2737,7 +2864,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     """,
                     detail=(
                         "Every instrument must persist exactly five non-empty, unique, "
-                        "canonical quote-selection roles."
+                        "canonical quote-selection roles; listed economic returns require adjusted_close only."
                     ),
                 )
             )
@@ -2933,73 +3060,13 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                 _count_check(
                     cursor,
                     name="watchlist_index_return_semantics_contract",
-                    query="""
-                        WITH active_indices AS (
-                            SELECT
-                                instrument.instrument_id,
-                                lower(trim(coalesce(
-                                    instrument.source_settings_json::jsonb
-                                        ->> 'return_semantics',
-                                    ''
-                                ))) AS configured_return_kind
-                            FROM instrument_data.instrument instrument
-                            WHERE instrument.instrument_type = 'index'
-                              AND coalesce(
-                                    instrument.lifecycle_state_json::jsonb ->> 'status',
-                                    'active'
-                                  ) = 'active'
-                        ), observed AS (
-                            SELECT
-                                active.instrument_id,
-                                active.configured_return_kind,
-                                chart.payload_json::jsonb
-                                    #>> '{selected_series,quote_basis}'
-                                    AS selected_quote_basis,
-                                chart.payload_json::jsonb
-                                    #>> '{selected_series,return_kind}'
-                                    AS published_return_kind,
-                                chart.payload_json::jsonb
-                                    #>> '{selected_series,basis_type}'
-                                    AS published_basis_type
-                            FROM active_indices active
-                            LEFT JOIN watchlist.instrument_chart_read_model chart
-                              ON chart.instrument_id = active.instrument_id
-                        ), expected AS (
-                            SELECT
-                                observed.*,
-                                CASE
-                                    WHEN selected_quote_basis IN (
-                                        'adjusted_close', 'total_return_nav'
-                                    ) THEN 'total_return'
-                                    WHEN selected_quote_basis IN ('close', 'last')
-                                      AND configured_return_kind IN (
-                                          'price_return', 'total_return'
-                                      ) THEN configured_return_kind
-                                    ELSE NULL
-                                END AS expected_return_kind
-                            FROM observed
-                        )
-                        SELECT count(*)
-                        FROM expected
-                        WHERE selected_quote_basis IS NULL
-                           OR published_return_kind
-                              IS DISTINCT FROM expected_return_kind
-                           OR (
-                                expected_return_kind = 'total_return'
-                                AND published_basis_type
-                                    IS DISTINCT FROM 'nav_with_dividend'
-                              )
-                           OR (
-                                expected_return_kind = 'price_return'
-                                AND published_basis_type IS DISTINCT FROM 'nav'
-                              )
-                    """,
+                    query=_watchlist_index_return_semantics_contract_query(),
                     detail=(
                         "Every active index Watchlist chart must preserve the Registry "
                         "return semantics independently from its close/last field; confirmed "
                         "total return maps to nav_with_dividend, confirmed price return maps "
-                        "to nav, and unknown semantics must remain unpublished so relative "
-                        "metrics fail closed."
+                        "to nav. Unknown semantics require an explicitly unavailable chart "
+                        "with empty analytical and return series; raw observed prices may remain visible."
                     ),
                 )
             )

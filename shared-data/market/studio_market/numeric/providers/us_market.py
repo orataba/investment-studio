@@ -28,6 +28,7 @@ class PriceHistoryUnavailable(ValueError):
             "adjusted_price_nonpositive": "Adjusted close is zero or negative",
             "adjusted_price_nonfinite": "Adjusted close is not a finite number",
             "retained_price_dates_missing": "Full price revision response omits retained observation dates",
+            "expected_session_dates_missing": "Provider calendar history omits closed exchange sessions",
             "price_history_empty": "Full price revision capture contained no history",
         }
         field = "invalid" if reason in {"adjusted_price_nonpositive", "adjusted_price_nonfinite"} else "missing"

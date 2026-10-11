@@ -14,6 +14,7 @@ const pages = {
   portfolios: () => import('./pages/PortfoliosPage'),
   performance: () => import('./pages/PerformancePage'),
   research: () => import('./pages/ResearchPage'),
+  'investment-views': () => import('./pages/InvestmentViewsPage'),
   risk: () => import('./pages/RiskPage'),
   taxonomies: () => import('./pages/TaxonomiesPage'),
   transactions: () => import('./pages/TransactionsPage'),
@@ -25,6 +26,7 @@ const PortfolioHoldingDetailPage = lazy(pages.holdingDetail)
 const PortfoliosPage = lazy(pages.portfolios)
 const PerformancePage = lazy(pages.performance)
 const ResearchPage = lazy(pages.research)
+const InvestmentViewsPage = lazy(pages['investment-views'])
 const RiskPage = lazy(pages.risk)
 const TaxonomiesPage = lazy(pages.taxonomies)
 const TransactionsPage = lazy(pages.transactions)
@@ -77,6 +79,7 @@ export default function App() {
               <Route path="/portfolios/:portfolioId/accounts" element={<PortfolioAccessProvider><AccountsPage /></PortfolioAccessProvider>} />
               <Route path="/portfolios/:portfolioId/taxonomies" element={<PortfolioAccessProvider><TaxonomiesPage /></PortfolioAccessProvider>} />
               <Route path="/portfolios/:portfolioId/research" element={<PortfolioAccessProvider><ResearchRoute /></PortfolioAccessProvider>} />
+              <Route path="/portfolios/:portfolioId/investment-views" element={<PortfolioAccessProvider><InvestmentViewsPage /></PortfolioAccessProvider>} />
               <Route path="/snapshot" element={<Navigate replace to="/portfolios" />} />
               <Route path="/overview" element={<Navigate replace to="/portfolios" />} />
               <Route path="/holdings" element={<Navigate replace to="/portfolios" />} />

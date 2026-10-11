@@ -75,7 +75,7 @@ export function ComputedEvidence({ source }: { source: SavedResearchSource }) {
       <p className="sector-research-note">实际观察数 {series.observations}</p>
     </div>)}
     {!data?.rows && Boolean(data?.limitations?.length) && <ul className="research-dossier-list">{data!.limitations!.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul>}
-    <details onToggle={event => setShowOriginal(event.currentTarget.open)}><summary>完整计算记录与输入依据</summary>
+    <details onToggle={event => setShowOriginal(event.currentTarget.open)}><summary>{source.display_projection === 'figure' ? '图表留存数据与口径' : '完整计算记录与输入依据'}</summary>
       {showOriginal && <pre className="research-dossier-text" translate="no">{JSON.stringify(source, null, 2)}</pre>}
     </details>
   </div>

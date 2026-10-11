@@ -749,7 +749,7 @@ def _research_run_reliability(
     request_payload = row.request_payload_json if isinstance(row.request_payload_json, dict) else {}
     if request_payload.get("solver_version") != RESEARCH_TARGET_SOLVER_VERSION:
         reasons.append(
-            "Run uses an earlier target solver; rerun Research with the global leaf-covariance solver before treating it as current."
+            "Run uses an earlier target solver or return-coverage contract; rerun Research with strict complete returns before treating it as current."
         )
     elif request_payload.get("planning_state_fingerprint_version") != RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION:
         reasons.append("Run uses an earlier Research input identity version; rerun Research before treating it as current.")

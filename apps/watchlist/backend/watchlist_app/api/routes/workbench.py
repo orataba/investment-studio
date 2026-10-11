@@ -2,7 +2,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import uuid4
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
@@ -13,7 +13,7 @@ from watchlist_app.db.models.workbench import ResearchTopic, ResearchEntry, Risk
 from watchlist_app.services.read_models import serialize_payload
 from watchlist_app.services.research_workbench import catalogue, portfolio_options, external_json, conversation_context, instrument_evidence, compare_series
 from watchlist_app.services.risk_workbench import refresh_risk_cases, event, now
-from watchlist_app.services.price_risk import period_loss_readings, period_rule_sources, price_rule_summary, series_limitation
+from watchlist_app.services.price_risk import period_loss_readings, period_rule_sources, price_rule_summary, series_limitation, recent_price_risk_points
 
 from studio_identity import current_principal
 from watchlist_app.services.research_access import require_topic_access, require_entry_access, visible_topics, require_portfolio
@@ -173,8 +173,14 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
         fields.discard("research_dossiers")
     elif request.resource == "portfolio":
         fields = common | {"portfolio_id", "tool_evidence"}
-    record = load_run_fields(session, run_id, fields)
+    light_fields = fields & {"risk_inputs", "prior_inputs", "computed_metrics", "tool_evidence"} if request.resource == "context" else set()
+    record = load_run_fields(session, run_id, fields - light_fields)
     context = record.context_json
+    if light_fields:
+        context.update(load_run_fields(session, run_id, light_fields, summary_only=True).context_json)
+    if fields & {"computed_metrics", "tool_evidence"}:
+        from watchlist_app.services.research_run_evidence import attach_computed_sources
+        context = attach_computed_sources(session, run_id, context, metadata_only=True)
 
     def local_read(suffix, payload=None):
         nonlocal context
@@ -183,7 +189,7 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
         if suffix == "tools":
             # Bind a newly selected peer once; reads of an already bound object
             # never append another copy of its original to tool_evidence.
-            bound = session.get(ResearchEntry, run_id, with_for_update=True)
+            bound = session.get(ResearchEntry, run_id, with_for_update=True, populate_existing=True)
             require_entry_access(session, bound, tool_write=True)
             if bound.status not in {"queued", "running"}:
                 raise HTTPException(409, "本轮研究已结束，不能增加研究范围")
@@ -324,7 +330,88 @@ def update_topic(topic_id: str, request: TopicInput, session: Session = Depends(
 @router.get("/research/topics/{topic_id}")
 def topic_detail(topic_id: str, session: Session = Depends(get_db_session)):
     record = require(session, ResearchTopic, topic_id)
-    return {"topic": dump(record), "entries": [dump(x) for x in session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id).order_by(ResearchEntry.created_at.desc()))]}
+    from sqlalchemy import JSON, case, true
+    from watchlist_app.services.research_access import research_context_projection, research_projection_rows
+    from watchlist_app.services.research_run_evidence import attach_computed_sources
+    fields = {name: JSON for name in ("research_publication", "user_records", "execution", "runtime_error",
+        "portfolio_id", "instrument_ids", "cutoff", "page_context")}
+    relation, values = research_context_projection(session, fields)
+    columns = [column for column in ResearchEntry.__table__.columns if column.name not in {"context_json", "read_context_json"}]
+    query = select(*columns, *(value.label(key) for key, value in values.items()),
+        case((ResearchEntry.kind != "analysis", ResearchEntry.context_json)).label("material_context")).select_from(ResearchEntry)
+    if relation is not None:
+        query = query.join(relation, true())
+    rows = research_projection_rows(session, query.where(ResearchEntry.topic_id == topic_id).order_by(ResearchEntry.created_at.desc()),
+        {name: (name,) for name in fields})
+    # Receipts are a directory. Never decode all retained calculations, asset
+    # inputs and dossier originals just to poll the conversation's status.
+    relation, values = research_context_projection(session, {"tool_evidence": JSON}, json_column=ResearchEntry.read_context_json)
+    query = select(ResearchEntry.entry_id, values["tool_evidence"].label("tool_evidence")).select_from(ResearchEntry)
+    if relation is not None:
+        query = query.join(relation, true())
+    receipts = {row.entry_id: row.tool_evidence or [] for row in research_projection_rows(session,
+        query.where(ResearchEntry.topic_id == topic_id, ResearchEntry.kind == "analysis"),
+        {"tool_evidence": ("tool_evidence",)}, json_column=ResearchEntry.read_context_json)}
+    entries = []
+    for row in rows:
+        context = (row.material_context or {}) if row.kind != "analysis" else {
+            name: getattr(row, name) for name in fields if getattr(row, name) is not None}
+        if row.kind == "analysis":
+            context["tool_evidence"] = attach_computed_sources(session, row.entry_id,
+                {"tool_evidence": receipts.get(row.entry_id, [])}, metadata_only=True).get("tool_evidence", [])
+        entries.append({**{column.name: getattr(row, column.name) for column in columns}, "context_json": context})
+    return serialize_payload({"topic": dump(record), "entries": entries})
+
+
+@router.get("/research/runs/{run_id}/evidence")
+def run_evidence(run_id: str, source_id: str, session: Session = Depends(get_db_session)):
+    """Return one exact, authorized receipt and its retained result on demand."""
+    from watchlist_app.services.research_run_context import load_run_fields, load_run_list_item
+    from watchlist_app.services.research_run_evidence import computed_evidence_receipt, read_computed_source
+    load_run_fields(session, run_id, set())  # Original topic/portfolio and run-identity checks.
+    receipt = load_run_list_item(session, run_id, "tool_evidence", source_id)
+    if receipt is None:
+        source = read_computed_source(session, run_id, source_id)
+        receipt = computed_evidence_receipt(source) if source is not None else None
+        if receipt is None:
+            raise HTTPException(404, "本轮没有这条已留存的查阅记录")
+        return {**receipt, "result": {"retained_snapshot": [source]}}
+    if receipt.get("result") is not None:
+        return receipt
+    storage = receipt.get("result_storage")
+    result = {"available": False, "limitation": "此历史记录未保留可展示的证据明细。"}
+    if storage == "computed_metrics":
+        source = read_computed_source(session, run_id, source_id)
+        if source is not None:
+            result = {"retained_snapshot": [source], "source_ids": receipt.get("source_ids", [])}
+    elif storage in {"instrument_inputs", "research_dossiers"}:
+        context = load_run_fields(session, run_id, {storage, "cutoff"}).context_json
+        retained = context.get(storage) or []
+        request = receipt.get("request") or {}
+        ids = [*request.get("instrument_ids", []), *([request["benchmark_id"]] if request.get("benchmark_id") else [])]
+        selected = [value for value in retained if not ids or value.get("instrument_id") in ids]
+        if storage == "research_dossiers":
+            if selected:
+                dossier = selected[0]
+                sources = [*dossier.get("materials", []), *dossier.get("historical_cases", []),
+                    *dossier.get("prior_sources", []), *(dossier.get("notebook") or {}).get("sources", []),
+                    *(source for field in ("themes", "pm_views") for item in dossier.get(field, []) for source in item.get("sources", []))]
+                source = next((value for value in sources if value.get("source_id") == request.get("source_id")), None)
+                if source is not None:
+                    from watchlist_app.services.market_evidence import hydrate_source
+                    try:
+                        source = hydrate_source(source, cutoff=datetime.fromisoformat(context["cutoff"]) if context.get("cutoff") else None,
+                                                bound_source=True)
+                    except ValueError as error:
+                        raise HTTPException(404, str(error)) from error
+                result = {"source_ids": receipt.get("source_ids", []), "retained_source": source,
+                    "limitation": "此处展示当时绑定的来源记录；未展开的原文不能视为已核实。" if request.get("source_id")
+                        else "本条查阅的是研究档案概览；资料目录不代表已阅读每份原文。"}
+                if request.get("source_id") and source is None:
+                    result["available"] = False
+        elif selected:
+            result = {"retained_snapshot": selected, "source_ids": receipt.get("source_ids", [])}
+    return {**receipt, "result": result}
 
 
 @router.post("/research/topics/{topic_id}/entries", status_code=201)
@@ -406,8 +493,8 @@ def download_material(entry_id: str, session: Session = Depends(get_db_session))
 
 
 @router.post("/research/topics/{topic_id}/analysis", status_code=202)
-def start_analysis(topic_id: str, request: MessageInput, background: BackgroundTasks, session: Session = Depends(get_db_session)):
-    from watchlist_app.services.research_runner import harness_available, run_analysis
+def start_analysis(topic_id: str, request: MessageInput, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.research_runner import harness_available
     if not harness_available():
         raise HTTPException(503, "研究助手尚未配置 DeepSeek 运行环境")
     topic = session.scalar(select(ResearchTopic).where(ResearchTopic.topic_id == topic_id).with_for_update())
@@ -462,9 +549,10 @@ def start_analysis(topic_id: str, request: MessageInput, background: BackgroundT
     session.add(record)
     topic.updated_at = now()
     session.commit()
-    from watchlist_app.services.research_runner import authorize_run
-    token = authorize_run(current_principal(), record.entry_id)
-    background.add_task(run_analysis, record.entry_id, token, current_principal())
+    from watchlist_app.services.research_execution import enqueue_run
+    from watchlist_app.services.research_access import run_attempt
+    attempt = run_attempt(record)
+    enqueue_run(current_principal(), record.entry_id, attempt=attempt)
     return dump(record)
 
 
@@ -474,8 +562,8 @@ def _run_source_context(session, run_id):
     from watchlist_app.services.research_access import research_context_projection, research_projection_rows
     from watchlist_app.services.research_read_projection import run_source_index
     relation, values = research_context_projection(session, {
-        "research_actor": JSON, "web_evidence": JSON, "market_text_sources": JSON}, json_column=ResearchEntry.read_context_json)
-    query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.team_id, ResearchEntry.kind,
+        "research_actor": JSON, "execution": JSON, "web_evidence": JSON, "market_text_sources": JSON}, json_column=ResearchEntry.read_context_json)
+    query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.team_id, ResearchEntry.kind, ResearchEntry.status,
         *(value.label(key) for key, value in values.items())).select_from(ResearchEntry)
     if relation is not None:
         query = query.join(relation, true())
@@ -484,8 +572,8 @@ def _run_source_context(session, run_id):
     row = rows[0] if rows else None
     if row is None:
         raise HTTPException(404, "Record not found")
-    record = SimpleNamespace(entry_id=row.entry_id, topic_id=row.topic_id, team_id=row.team_id,
-        context_json={"research_actor": row.research_actor})
+    record = SimpleNamespace(entry_id=row.entry_id, topic_id=row.topic_id, team_id=row.team_id, status=row.status,
+        context_json={"research_actor": row.research_actor, "execution": row.execution})
     require_entry_access(session, record)
     if row.kind != "analysis":
         raise HTTPException(404, "Analysis not found")
@@ -503,23 +591,37 @@ def run_context(run_id: str, originals: bool = False, session: Session = Depends
     if record.kind != "analysis":
         raise HTTPException(404, "Analysis not found")
     from watchlist_app.services.research_notebook import dossier_outline
-    context = {key: value for key, value in record.context_json.items() if key != "sector_company_data"}
+    from watchlist_app.services.research_run_evidence import attach_computed_sources
+    context = attach_computed_sources(session, run_id,
+        {key: value for key, value in record.context_json.items() if key != "sector_company_data"}, metadata_only=True)
+    context["retained_run_id"] = run_id
     if originals:
+        from watchlist_app.services.research_run_evidence import computed_reference
+        context["computed_metrics"] = [computed_reference(source, run_id=run_id)
+            for source in context.get("computed_metrics", [])]
         from datetime import datetime
         from watchlist_app.services.market_evidence import hydrate_source
         cutoff = datetime.fromisoformat(context["cutoff"])
-        context["market_text_sources"] = [hydrate_source(source, cutoff=cutoff)
+        def original(source):
+            if source.get("source_type") == "computed_metric":
+                from watchlist_app.services.research_read_projection import source_index
+                # The reviewer resolves cited IDs through this authorized
+                # dossier endpoint; directory entries cannot initiate DB reads.
+                return {**source_index(source), **{key: source[key] for key in
+                    ("scope", "observation_domain") if key in source}}
+            return hydrate_source(source, cutoff=cutoff, bound_source=True)
+        context["market_text_sources"] = [original(source)
             for source in context.get("market_text_sources", [])]
-        context["web_evidence"] = [{**capture, "sources": [hydrate_source(source, cutoff=cutoff)
+        context["web_evidence"] = [{**capture, "sources": [original(source)
             for source in capture.get("sources", [])]} for capture in context.get("web_evidence", [])]
         dossiers = []
         for dossier in context.get("research_dossiers", []):
             notebook = dossier.get("notebook")
-            dossiers.append({**dossier, "prior_sources": [hydrate_source(source, cutoff=cutoff)
+            dossiers.append({**dossier, "prior_sources": [original(source)
                 for source in dossier.get("prior_sources", [])],
-                "notebook": {**notebook, "sources": [hydrate_source(source, cutoff=cutoff)
+                "notebook": {**notebook, "sources": [original(source)
                     for source in notebook.get("sources", [])]} if notebook else None,
-                **{field: [{**item, "sources": [hydrate_source(source, cutoff=cutoff)
+                **{field: [{**item, "sources": [original(source)
                     for source in item["sources"]]} if "sources" in item else item for item in dossier[field]]
                    for field in ("themes", "pm_views") if field in dossier}})
         context["research_dossiers"] = dossiers
@@ -531,22 +633,63 @@ def run_context(run_id: str, originals: bool = False, session: Session = Depends
 @router.get("/research/runs/{run_id}/computed-source")
 def run_computed_source(run_id: str, source_id: str, session: Session = Depends(get_db_session)):
     """Read one already retained calculation; never calculate or refresh its inputs."""
-    from watchlist_app.services.research_run_context import load_run_fields
-    record = load_run_fields(session, run_id, {"risk_run", "computed_metrics", "tool_evidence"})
+    from watchlist_app.services.research_run_context import load_run_fields, load_run_list_item
+    record = load_run_fields(session, run_id, {"risk_run"})
     if record.kind != "analysis" or record.context_json.get("risk_run"):
         raise HTTPException(404, "本轮没有可读取的普通研究计算来源")
-    source = next((item for item in record.context_json.get("computed_metrics", [])
-                   if item.get("source_id") == source_id and item.get("source_type") == "computed_metric"), None)
+    from watchlist_app.services.research_run_evidence import read_computed_source
+    source = read_computed_source(session, run_id, source_id)
+    if source is not None and source.get("source_type") != "computed_metric":
+        source = None
     if source is None:
         raise HTTPException(404, "该计算来源未在本轮取得并留存")
     # Earlier comparison metrics kept target/benchmark selection only in the
     # matching tool receipt. Preserve that exact request when reading its source.
     if "input_series" in source and "request" not in source:
-        receipt = next((item for item in record.context_json.get("tool_evidence", [])
-                        if item.get("source_id") == source_id and item.get("tool") == "comparison"), None)
+        receipt = load_run_list_item(session, run_id, "tool_evidence", source_id)
         if receipt:
             return {**source, "request": receipt["request"], "retrieved_at": receipt["retrieved_at"]}
     return source
+
+
+class ComputedReadInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    source_id: str = Field(min_length=1)
+    instrument_id: str | None = None
+    version_id: str | None = None
+    tool: Literal["numbers", "comparison", "quant"]
+    section: str = "overview"
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+    path: list[str | int] | None = None
+
+
+@router.post("/research/runs/{run_id}/computed-read")
+def read_computed_page(run_id: str, request: ComputedReadInput, session: Session = Depends(get_db_session)):
+    from watchlist_app.services import research_numeric_projection as projection
+    sections = {"numbers": {"overview", "data", "sources", "evidence"},
+        "comparison": {"overview", "result", "dates", "input_series", "evidence"},
+        "quant": {"data", "methodology", "inputs"}}
+    if request.section not in sections[request.tool]:
+        raise HTTPException(422, "该计算工具不支持所选分区。")
+    if request.instrument_id or request.version_id:
+        if request.tool != "quant" or request.section != "inputs" or not request.instrument_id:
+            raise HTTPException(422, "档案来源选择仅用于明确标的或版本的量化输入读取")
+        if request.version_id:
+            version = run_dossier(run_id, request.instrument_id, version_id=request.version_id, session=session)
+            source = next((value for value in version.get("sources", []) if value.get("source_id") == request.source_id), None)
+            if source is None:
+                raise HTTPException(404, "该量化来源未在指定研究版本中留存")
+        else:
+            source = run_dossier(run_id, request.instrument_id, source_id=request.source_id, session=session)
+    else:
+        source = run_computed_source(run_id, request.source_id, session)
+    project = {"numbers": projection.project_numbers, "comparison": projection.project_comparison,
+        "quant": projection.project_quant}[request.tool]
+    try:
+        return project(source, section=request.section, offset=request.offset, limit=request.limit, path=request.path)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
 
 
 @router.get("/research/runs/{run_id}/dossier/{instrument_id}")
@@ -598,9 +741,43 @@ def run_dossier(run_id: str, instrument_id: str, source_id: str | None = None, v
         raise HTTPException(404, str(error)) from error
 
 
+def _comparison_tool(session, run_id, request):
+    from watchlist_app.services.research_run_evidence import locked_computation_run, retain_computed_source
+    from watchlist_app.services.research_run_context import load_run_fields
+    run = locked_computation_run(session, run_id)
+    catalogue = load_run_fields(session, run_id, {"catalogue"}).context_json.get("catalogue", [])
+    ids = list(dict.fromkeys([*request.instrument_ids, *([request.benchmark_id] if request.benchmark_id else [])]))
+    if not set(ids).issubset({row["instrument_id"] for row in catalogue}) or (request.target_id and request.target_id not in ids):
+        raise HTTPException(422, "请使用目录中的标的编码；目标须在本次比较内")
+    if not ids:
+        raise HTTPException(422, "请选择需要读取的标的")
+    start, end = request.start_date, request.end_date
+    cutoff = datetime.fromisoformat(run.context_json["cutoff"])
+    if not start or not end or start >= end or end > cutoff.date():
+        raise HTTPException(422, "比较需要已发生的有效起止日期")
+    series = {}
+    for iid in ids:
+        chart = session.get(InstrumentChartReadModel, iid)
+        known = chart.last_recalculated_at if chart else None
+        known = known.replace(tzinfo=known.tzinfo or UTC) if known else None
+        series[iid] = (chart.payload_json.get("research_returns") or {}) if known and known <= cutoff else {}
+    result = compare_series(series, start, end, request.target_id, request.benchmark_id, cutoff=cutoff)
+    receipt = serialize_payload({"source_id": f"comparison:{uuid4().hex[:12]}", "tool": "comparison",
+        "request": request.model_dump(), "retrieved_at": now(), "result": result})
+    metric = {"source_id": receipt["source_id"], "source_type": "computed_metric", "scope": "public_market",
+        "title": "已登记标的共同观察区间比较", "as_of": run.context_json["cutoff"], "data": result,
+        "methodology": result["method"], "input_series": series,
+        "request": receipt["request"], "retrieved_at": receipt["retrieved_at"]}
+    retain_computed_source(session, run, metric)
+    session.commit()
+    return receipt
+
+
 @router.post("/research/runs/{run_id}/tools")
 def research_tool(run_id: str, request: ResearchToolInput, session: Session = Depends(get_db_session)):
-    record = session.scalar(select(ResearchEntry).where(ResearchEntry.entry_id == run_id).with_for_update())
+    if request.tool == "comparison":
+        return _comparison_tool(session, run_id, request)
+    record = session.scalar(select(ResearchEntry).where(ResearchEntry.entry_id == run_id).with_for_update().execution_options(populate_existing=True))
     if not record or record.kind != "analysis":
         raise HTTPException(404, "对话回复不存在")
     require_entry_access(session, record, tool_write=True)
@@ -653,19 +830,6 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
         else:
             raise HTTPException(422, "当前对话尚未指定列表、组合或单个标的")
         result = review_workspace(session, **scope)
-    elif request.tool == "comparison":
-        start, end = request.start_date, request.end_date
-        cutoff_date = datetime.fromisoformat(context["cutoff"]).date()
-        if not start or not end or start >= end or end > cutoff_date:
-            raise HTTPException(422, "比较需要已发生的有效起止日期")
-        series = {}
-        cutoff = datetime.fromisoformat(context["cutoff"])
-        for iid in ids:
-            chart = session.get(InstrumentChartReadModel, iid)
-            known = chart.last_recalculated_at if chart else None
-            known = known.replace(tzinfo=known.tzinfo or UTC) if known else None
-            series[iid] = (chart.payload_json.get("research_returns") or {}) if known and known <= cutoff else {}
-        result = compare_series(series, start, end, request.target_id, request.benchmark_id)
     elif request.tool == "portfolio":
         from watchlist_app.services.research_portfolio_projection import read_portfolio_evidence
         retained_portfolio = next((item for item in context.get("tool_evidence", [])
@@ -693,19 +857,12 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
     # which source was delivered, without recursively copying complete dossiers
     # or asset snapshots into every subsequent run/context/reviewer request.
     retained = evidence
-    if request.tool in {"instruments", "dossier", "comparison"}:
+    if request.tool in {"instruments", "dossier"}:
         refs = ([f"instrument:{run_id}:{iid}" for iid in ids] if request.tool == "instruments" else
-                [source_id] if request.tool == "comparison" else [request.source_id] if request.source_id else [])
+                [request.source_id] if request.source_id else [])
         retained = {key: value for key, value in evidence.items() if key != "result"} | {
-            "source_ids": refs, "result_storage": "computed_metrics" if request.tool == "comparison" else
-            "instrument_inputs" if request.tool == "instruments" else "research_dossiers"}
+            "source_ids": refs, "result_storage": "instrument_inputs" if request.tool == "instruments" else "research_dossiers"}
     context = {**context, "tool_evidence": [*context.get("tool_evidence", []), retained]}
-    if request.tool == "comparison":
-        metric = {"source_id": source_id, "source_type": "computed_metric", "scope": "public_market",
-            "title": "已登记标的共同观察区间比较", "as_of": context["cutoff"], "data": result,
-            "methodology": result["method"], "input_series": series,
-            "request": evidence["request"], "retrieved_at": evidence["retrieved_at"]}
-        context["computed_metrics"] = [*context.get("computed_metrics", []), metric]
     record.context_json = context
     session.commit()
     if request.tool == "portfolio":
@@ -774,7 +931,7 @@ def risk_workspace(instrument_id: str | None = None, instrument_ids: str | None 
         item["price_rule_summary"] = price_rule_summary(item, rule.updated_at if rule else None)
         minimum_returns = 90 if (series.get("frequency") or {}).get("gap_detection_basis") == "market_calendar:24/7" else 63
         item["price_risk_note"] = series_limitation(series) or (f"不足 {minimum_returns} 个日收益，尚未生成波动初值"
-            if not item["period_limits"] and len(points) <= minimum_returns else None)
+            if not item["period_limits"] and len(recent_price_risk_points(series)) <= minimum_returns else None)
         item["return_kind"] = (series.get("metadata") or {}).get("return_kind")
         current = (payload.get("current_drawdown") if payload else None)
         if current is not None and len(points) >= 3 and (payload.get("data_quality") or {}).get("status") == "ready":

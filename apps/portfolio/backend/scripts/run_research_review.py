@@ -119,7 +119,7 @@ def configure_test(receipt):
             {"target_member_type": "cash_bucket", "target_member_id": "__cash__", "target_value": 0.1},
         ]})
     settings = api(prefix + "/research/settings", {"planning_taxonomy_id": tid, "as_of_mode": "pinned", "as_of_date": "2026-09-03",
-        "lookback_days": 30, "calculation_frequency": "daily", "missing_return_policy": "complete_case_drop",
+        "lookback_days": 30, "calculation_frequency": "daily", "missing_return_policy": "strict",
         "covariance_model_id": "ewma_vol_shrinkage_corr_covariance", "contribution_mode": "signed",
         "capital_mode": "volatility_cap", "target_volatility": 0.15, "backtest_rebalance_frequency": "1w",
         "backtest_cash_yield_annual": 0.02, "backtest_commission_bps": 2, "backtest_tax_bps": 0, "backtest_slippage_bps": 5,

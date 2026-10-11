@@ -1,3 +1,4 @@
+import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 import WorkspaceSwitcher from '../../../../../packages/ui/src/WorkspaceSwitcher'
 import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
 import FreshnessNote from '../components/FreshnessNote'
@@ -8,13 +9,14 @@ import { Link, useSearchParams } from 'react-router'
 
 import NoticeToast, { LoadingNotice } from '../../../../../packages/ui/src/NoticeToast'
 import InfoHint from '../../../../../packages/ui/src/InfoHint'
-import InvestmentOpinionTimeline, { currentInvestmentOpinion } from '../components/InvestmentOpinionTimeline'
+import InvestmentOpinionTimeline from '../components/InvestmentOpinionTimeline'
 import SectorResearchPanel from '../components/SectorResearchPanel'
 import EstimateHistoryPanel from '../components/EstimateHistoryPanel'
 import InstrumentAssistantDrawer from '../components/InstrumentAssistantDrawer'
 import type { ResearchReference } from '../lib/researchDossierApi'
 import { RESEARCH_UPDATED } from '../lib/researchUpdates'
 import InstrumentRiskDrawer from '../components/InstrumentRiskDrawer'
+import InstrumentRiskMonitoringPanel from '../components/InstrumentRiskMonitoringPanel'
 import WorkspaceTools from '../../../../../packages/ui/src/WorkspaceTools'
 import EtfProfilePanel from '../components/EtfProfilePanel'
 import './listed-workspace.css'
@@ -27,6 +29,7 @@ import {
   getInstrumentPriceBars,
   getInstrumentRisk,
   getInstrumentResearch,
+  getInstrumentReferenceData,
   getInstrumentSummary,
   getInstrumentChart,
   getInstrumentTaxonomyTree,
@@ -39,13 +42,11 @@ import {
   type InstrumentAttributeValuesResponse,
   type InstrumentResolveResponse,
   type InstrumentResearchResponse,
+  type InstrumentReferenceData,
 } from '../lib/api'
 import { formatDate, formatLabel, formatNumber, formatPercent, signedValueClass } from '../lib/format'
 import {
   adjustPriceBars,
-  hasCompleteAdjustmentFactors,
-  priceReturnStats,
-  priceRiskStats,
   slicePriceBars,
   type DisplayPriceBar,
   type PriceAdjustmentMode,
@@ -54,6 +55,7 @@ import {
 import { buildWatchlistPath, HOME_URL } from '../lib/navigation'
 import {
   listedDetailTabs,
+  resolveListedDetailTab,
   type ListedDetailTab,
 } from '../lib/instrumentDetailArchitecture'
 import { buildMonthlyReturnMatrix } from '../lib/calendarReturns'
@@ -329,6 +331,7 @@ function CandlestickChart({ bars }: { bars: DisplayPriceBar[] }) {
 }
 
 function GrowthChart({ bars, kind = 'return' }: { bars: DisplayPriceBar[]; kind?: 'return' | 'drawdown' }) {
+  if (!sameReturnSegment(bars) && bars.length) return <div className="listed-empty-chart">收益序列在此区间存在断点，无法连接计算。 / Return history has a segment break in this range.</div>
   if (bars.length < 2) {
     return <div className="listed-empty-chart">Not enough price history for a performance chart.</div>
   }
@@ -512,6 +515,71 @@ const TRAILING_RETURN_COLUMNS = [
   { key: 'end_date', label: 'End', format: 'date' },
 ] as const
 
+function ListedReferencePanel({ instrument, language, currency, classification }: {
+  instrument: InstrumentResolveResponse
+  language: 'en' | 'zh-Hans'
+  currency: string
+  classification: string
+}) {
+  const instrumentId = instrument.detail_subject_id || instrument.canonical_instrument_id || instrument.requested_instrument_id
+  const zh = language === 'zh-Hans'
+  const [reference, setReference] = useState<InstrumentReferenceData | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [retry, setRetry] = useState(0)
+  useEffect(() => {
+    let active = true
+    setReference(null)
+    setError(null)
+    void getInstrumentReferenceData(instrumentId)
+      .then(value => { if (active) setReference(value) })
+      .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : 'Reference data unavailable.') })
+    return () => { active = false }
+  }, [instrumentId, retry])
+  const scalar = (value: unknown): string => typeof value === 'string' ? value.trim()
+    : typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
+  const section = reference?.sections[instrument.instrument_type === 'index' ? 'index_info' : 'profile']
+  const profile = section && typeof section === 'object' && !Array.isArray(section) ? section as Record<string, unknown> : {}
+  const identity = [
+    [zh ? '名称' : 'Name', instrument.instrument_name],
+    [zh ? '代码' : 'Identifier', instrument.primary_identifier || ''],
+    [zh ? '资产类别' : 'Asset type', instrumentTypeLabel(instrument.instrument_type)],
+    [zh ? '报价币种' : 'Quote currency', currency],
+    [zh ? '分类' : 'Classification', classification],
+  ].filter(([, value]) => value)
+  const fieldLabels = instrument.instrument_type === 'index' ? [
+    ['fullname', zh ? '指数全称' : 'Full index name'], ['publisher', zh ? '发布机构' : 'Publisher'],
+    ['market', zh ? '市场' : 'Market'], ['index_type', zh ? '指数类型' : 'Index type'],
+    ['category', zh ? '指数类别' : 'Index category'], ['base_date', zh ? '基期' : 'Base date'],
+    ['base_point', zh ? '基点' : 'Base value'], ['list_date', zh ? '发布日期' : 'Launch date'],
+    ['weight_rule', zh ? '加权方式' : 'Weighting method'],
+  ] : instrument.instrument_type === 'equity' ? [
+    ['companyName', zh ? '公司名称' : 'Company name'], ['exchangeFullName', zh ? '上市市场' : 'Listing exchange'],
+    ['country', zh ? '国家 / 地区' : 'Country / region'], ['sector', zh ? '板块' : 'Sector'],
+    ['industry', zh ? '行业' : 'Industry'], ['ceo', zh ? '首席执行官' : 'CEO'],
+    ['ipoDate', zh ? '上市日期' : 'IPO date'], ['isin', 'ISIN'],
+  ] : []
+  const facts = fieldLabels.map(([key, label]) => [label, scalar(profile[key])]).filter(([, value]) => value)
+  const description = scalar(profile[instrument.instrument_type === 'index' ? 'desc' : 'description'])
+  let website: string | null = null
+  try {
+    const parsed = new URL(scalar(profile.website))
+    if (['https:', 'http:'].includes(parsed.protocol)) website = parsed.href
+  } catch { /* No published website. */ }
+  return <section className="panel listed-reference-profile" aria-label={zh ? '标的资料' : 'Instrument information'}>
+    <h2>{instrument.instrument_type === 'equity' ? zh ? '公司资料' : 'Company information'
+      : instrument.instrument_type === 'index' ? zh ? '指数资料' : 'Index information' : zh ? '资产资料' : 'Asset information'}</h2>
+    <dl className="listed-reference-facts">{identity.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+    {error ? <RequestRecovery error={error} onRetry={() => setRetry(value => value + 1)} />
+      : !reference ? <LoadingNotice active message={zh ? '正在读取资料…' : 'Loading reference data…'} /> : <>
+        {facts.length > 0 && <dl className="listed-reference-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
+        {description && <p className="listed-reference-description">{description}</p>}
+        {website && <a href={website} target="_blank" rel="noopener noreferrer">{zh ? '公司官网' : 'Company website'} ↗</a>}
+        {!facts.length && !description && <p className="muted">{zh ? '尚未保存更多资料。' : 'No additional reference data has been saved.'}</p>}
+        {reference.fetched_at && <p className="listed-etf-source">{reference.provider.toUpperCase()} · {zh ? '资料采集' : 'Collected'} {formatDate(reference.fetched_at)}</p>}
+      </>}
+  </section>
+}
+
 export default function ListedInstrumentDetailPage({ instrument, watchlistContext }: Props) {
   const canWriteTeam = useCanWriteTeam()
   const { language } = useLanguage()
@@ -526,7 +594,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       const next = new URLSearchParams(current)
       if (id) { next.set('risk', '1'); next.set('risk_instrument', id) }
       else { next.delete('risk'); next.delete('risk_instrument') }
-      if (next.get('tab') === 'risk') next.set('tab', 'performance')
       return next
     }, { replace: true })
   }
@@ -542,10 +609,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const usesCanonicalPriceSeries = isIndex || isCrypto
   const tabs = listedDetailTabs(listedInstrumentType)
   const requestedTab = searchParams.get('tab')
-  const tab: ListedDetailTab = requestedTab === 'risk' ? 'performance'
-    : requestedTab === 'analyst' || requestedTab === 'events' ? 'investment-research'
-    : requestedTab === 'research' ? 'views'
-    : tabs.includes(requestedTab as ListedDetailTab) ? requestedTab as ListedDetailTab : 'overview'
+  const tab = resolveListedDetailTab(requestedTab)
   function setTab(nextTab: ListedDetailTab) {
     const next = new URLSearchParams(searchParams)
     next.set('tab', nextTab)
@@ -623,9 +687,9 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         if (!cancelled && request === researchRequest) setPending(previous => ({ ...previous, research: false }))
       })
     }
-    load('bars', getInstrumentPriceBars(instrumentId, { limit: 1250 }), value => {
+    load('bars', getInstrumentPriceBars(instrumentId), value => {
       setBarsResponse(value)
-      setMode(!usesCanonicalPriceSeries && hasCompleteAdjustmentFactors(value.bars) ? 'qfq' : 'raw')
+      setMode('raw')
     }, reason => {
       if (!usesCanonicalPriceSeries) setError(reason instanceof Error ? reason.message : 'Failed to load OHLCV history.')
     })
@@ -646,7 +710,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   // Start it once when a reading surface actually needs it; tab changes then
   // keep the same in-flight result without repeatedly refreshing the statistics.
   useEffect(() => {
-    if (tab === 'overview' || tab === 'performance') setStatisticsInstrumentId(instrumentId)
+    if (tab === 'overview') setStatisticsInstrumentId(instrumentId)
   }, [instrumentId, tab])
 
   useEffect(() => {
@@ -732,22 +796,23 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     }
   }
 
-  const qfqAvailable =
-    !usesCanonicalPriceSeries &&
-    hasCompleteAdjustmentFactors(barsResponse?.bars ?? [])
+  const qfqAvailable = !usesCanonicalPriceSeries && Boolean(barsResponse?.available_price_modes?.includes('front'))
+  const hfqAvailable = !usesCanonicalPriceSeries && Boolean(barsResponse?.available_price_modes?.includes('back'))
   const calculationSeries = useMemo(
     () => chart?.series[0]?.points ?? [],
     [chart],
   )
   const allBars = useMemo(
-    () => adjustPriceBars(barsResponse?.bars ?? [], mode),
+    () => adjustPriceBars(barsResponse?.bars ?? [], mode, barsResponse?.adjustment_anchors),
     [barsResponse, mode],
   )
-  const canonicalCloseAnalysisBars = useMemo<DisplayPriceBar[]>(() => {
-    return calculationSeries.flatMap((point) => {
+  const rawBars = useMemo(() => adjustPriceBars(barsResponse?.bars ?? [], 'raw'), [barsResponse])
+  const levelsToBars = (points: Array<{ date: string; value: number; segment_id?: string | null }>): DisplayPriceBar[] => {
+    return points.flatMap((point) => {
       if (!Number.isFinite(point.value) || point.value <= 0) return []
       return [{
         date: point.date,
+        segment_id: point.segment_id,
         open: point.value,
         high: point.value,
         low: point.value,
@@ -763,11 +828,12 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         status: 'complete' as const,
       }]
     })
-  }, [barsResponse?.currency, calculationSeries, chart?.currency])
-  const analysisBars = usesCanonicalPriceSeries || canonicalCloseAnalysisBars.length
-    ? canonicalCloseAnalysisBars
-    : allBars
+  }
+  const canonicalCloseAnalysisBars = levelsToBars(calculationSeries)
+  const rawLevelBars = levelsToBars(chart?.price_series?.points ?? [])
+  const analysisBars = canonicalCloseAnalysisBars
   const visibleBars = useMemo(() => slicePriceBars(allBars, range), [allBars, range])
+  const visibleRawLevelBars = slicePriceBars(rawLevelBars, range)
   const visibleAnalysisBars = useMemo(
     () => slicePriceBars(analysisBars, range),
     [analysisBars, range],
@@ -803,8 +869,11 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     }, 0),
     [monthlyReturnMatrixRows],
   )
-  const returns = useMemo(() => priceReturnStats(analysisBars), [analysisBars])
-  const quoteReturns = useMemo(() => priceReturnStats(allBars), [allBars])
+  const quoteBars = usesCanonicalPriceSeries ? rawLevelBars : rawLevelBars.length ? rawLevelBars : rawBars
+  const quotePrevious = quoteBars[quoteBars.length - 2]
+  const quoteLatest = quoteBars[quoteBars.length - 1]
+  const previousQuoteChange = quotePrevious && quoteLatest && sameReturnSegment([quotePrevious, quoteLatest])
+    ? (quoteLatest.close / quotePrevious.close - 1) * 100 : null
   const standardizedReturns = useMemo(
     () => ({
       oneMonth: standardizedReturn(performance, '1M'),
@@ -816,8 +885,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     [performance],
   )
   const displayReturns = useMemo(() => ({
-    ...returns,
-    dailyChange: usesCanonicalPriceSeries ? returns.dailyChange : quoteReturns.dailyChange,
+    previousQuoteChange,
     oneMonth: standardizedReturns.oneMonth.present
       ? standardizedReturns.oneMonth.value
       : null,
@@ -833,8 +901,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     oneYear: standardizedReturns.oneYear.present
       ? standardizedReturns.oneYear.value
       : null,
-  }), [usesCanonicalPriceSeries, quoteReturns.dailyChange, returns, standardizedReturns])
-  const riskStats = useMemo(() => priceRiskStats(analysisBars), [analysisBars])
+  }), [previousQuoteChange, standardizedReturns])
   const standardizedRisk = useMemo(
     () => ({
       annualizedVolatility: standardizedRiskMetric(risk, 'volatility'),
@@ -843,7 +910,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     [risk],
   )
   const displayRiskStats = useMemo(() => ({
-    ...riskStats,
     annualizedVolatility: standardizedRisk.annualizedVolatility.present
       ? standardizedRisk.annualizedVolatility.value
       : null,
@@ -855,16 +921,14 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         ? null
         : risk.current_drawdown,
     observationCount:
-      risk?.calculation_frequency_profile?.observation_count ?? riskStats.observationCount,
-  }), [risk, riskStats, standardizedRisk])
-  const latest = usesCanonicalPriceSeries
-    ? analysisBars[analysisBars.length - 1]
-    : allBars[allBars.length - 1]
-  const latestPriceBar = allBars[allBars.length - 1]
+      risk?.calculation_frequency_profile?.observation_count ?? null,
+  }), [risk, standardizedRisk])
+  const latest = quoteBars[quoteBars.length - 1]
+  const latestPriceBar = rawBars[rawBars.length - 1]
   const sourceRefreshFailed = ['failed', 'blocked'].includes(barsResponse?.source_refresh_status || '')
   const analysisBasisLabel = usesCanonicalPriceSeries || canonicalCloseAnalysisBars.length
     ? chart?.selected_series?.label || chart?.base_series_type || 'canonical return series'
-    : mode === 'qfq' ? 'QFQ price' : 'raw price'
+    : (language === 'zh-Hans' ? '收益序列不可用' : 'Return series unavailable')
   const indexReturnKind = chart?.selected_series?.return_kind || summary?.series_snapshot?.return_kind || null
   const indexSemanticsLabel = isCrypto ? 'Spot Price' : indexReturnKind === 'total_return'
     ? 'Total Return Index'
@@ -955,7 +1019,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     },
   ]
 
-  const latestOpinion = currentInvestmentOpinion(research)
   const zh = language === 'zh-Hans'
   const noTradeConfirmation = summary?.freshness.data_freshness_status === 'fresh'
     ? [...(summary.freshness.no_trade_evidence || [])].sort((a, b) => b.date.localeCompare(a.date))[0]
@@ -964,7 +1027,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const loadingLabel = zh ? '加载中…' : 'Loading…'
   const sectionLoading = (label: string) => <LoadingNotice active message={`${label} · ${loadingLabel}`} />
   const quotePending = usesCanonicalPriceSeries ? pending.chart : pending.bars
-  const analysisPending = pending.chart || (!usesCanonicalPriceSeries && !canonicalCloseAnalysisBars.length && pending.bars)
+  const analysisPending = pending.chart
   const returnsPending = usesCanonicalPriceSeries ? pending.chart : pending.performance
   const overviewYtd = usesCanonicalPriceSeries ? indexYtdSnapshot?.periodReturn ?? null : displayReturns.ytd
   const overviewOneYear = usesCanonicalPriceSeries ? indexOneYearSnapshot?.periodReturn ?? null : displayReturns.oneYear
@@ -972,8 +1035,8 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const standardizedError = failedStandardized.length
     ? `Standardized ${failedStandardized.join(' and ')} data is unavailable; affected metrics are withheld.` : null
 
-  const loadErrorMessage = [summaryError, standardizedError, researchError].filter(Boolean).join(' ')
-  const visibleDataLoading = pending.summary || pending.attributes || pending.research || ((tab === 'overview' || tab === 'performance') && (pending.chart || pending.performance || pending.risk || (!usesCanonicalPriceSeries && pending.bars)))
+  const loadErrorMessage = [summaryError, tab === 'overview' ? standardizedError : null, tab === 'views' ? researchError : null].filter(Boolean).join(' ')
+  const visibleDataLoading = pending.summary || pending.attributes || (tab === 'views' && pending.research) || (tab === 'overview' && (pending.chart || pending.performance || pending.risk || (!usesCanonicalPriceSeries && pending.bars)))
 
   const chartPanel = (
     <section className="panel listed-chart-panel">
@@ -981,7 +1044,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         <div>
           <div className="panel-title">{chartView === 'return' ? (zh ? '累计收益' : 'Cumulative Return') : (zh ? '价格与成交量' : 'Price & Volume')}</div>
           <div className="listed-chart-caption">
-            {chartView === 'return' ? analysisBasisLabel : mode === 'qfq' ? (zh ? '前复权价格' : 'Forward-adjusted (QFQ)') : (zh ? '交易所原始价格' : 'Raw exchange price')} · {(chartView === 'return' ? analysisPending : pending.bars) ? loadingLabel : `${chartView === 'return' ? visibleAnalysisBars.length : visibleBars.length} ${zh ? '个观测值' : 'observations'}`}
+            {chartView === 'return' ? analysisBasisLabel : mode === 'front' ? (zh ? '前复权价格 · 分红再投资' : 'Forward adjusted · dividend reinvestment') : mode === 'back' ? (zh ? '后复权价格 · 分红再投资' : 'Backward adjusted · dividend reinvestment') : (zh ? '交易所原始价格' : 'Raw exchange price')} · {(chartView === 'return' ? analysisPending : pending.bars) ? loadingLabel : `${chartView === 'return' ? visibleAnalysisBars.length : visibleBars.length} ${zh ? '个观测值' : 'observations'}`}
           </div>
         </div>
         <div className="listed-chart-controls">
@@ -991,8 +1054,9 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             <button type="button" className={chartView === 'return' ? 'active' : ''} disabled={!canonicalCloseAnalysisBars.length} onClick={() => setChartView('return')}>{zh ? '累计收益' : 'Cumulative Return'}</button>
           </div>
           {chartView === 'price' && <div className="listed-segmented-control" aria-label="Price adjustment">
-            <button type="button" className={mode === 'qfq' ? 'active' : ''} disabled={!qfqAvailable} onClick={() => setMode('qfq')}>{zh ? '前复权' : 'QFQ'}</button>
-            <button type="button" className={mode === 'raw' ? 'active' : ''} onClick={() => setMode('raw')}>{zh ? '不复权' : 'Raw'}</button>
+            <button type="button" className={mode === 'raw' ? 'active' : ''} onClick={() => setMode('raw')}>{zh ? '未复权' : 'Raw'}</button>
+            <button type="button" className={mode === 'front' ? 'active' : ''} disabled={!qfqAvailable} title={barsResponse?.unavailable_price_mode_reasons?.front} onClick={() => setMode('front')}>{zh ? '前复权' : 'QFQ'}</button>
+            <button type="button" className={mode === 'back' ? 'active' : ''} disabled={!hfqAvailable} title={barsResponse?.unavailable_price_mode_reasons?.back} onClick={() => setMode('back')}>{zh ? '后复权' : 'HFQ'}</button>
           </div>}
           <div className="listed-segmented-control" aria-label="Date range">
             {RANGE_OPTIONS.map((option) => (
@@ -1002,7 +1066,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         </div>
       </div>
       {(chartView === 'return' ? analysisPending : pending.bars) ? sectionLoading(zh ? '行情' : 'Price history') : chartView === 'return' ? <GrowthChart bars={visibleAnalysisBars} /> : error ? <RequestRecovery error={error} onRetry={() => setRetryToken(value => value + 1)} /> : <CandlestickChart bars={visibleBars} />}
-      {chartView === 'price' && !qfqAvailable && Boolean(barsResponse?.count) ? <div className="listed-source-alert">{zh ? '复权因子不完整，当前仅提供原始价格。' : 'Adjustment factors are incomplete; raw price only.'}</div> : null}
+      {chartView === 'price' && (!qfqAvailable || !hfqAvailable) && Boolean(barsResponse?.count) ? <div className="listed-source-alert">{zh ? '部分复权方式缺少连续、已确认的因子，暂不可用；原始价格仍可查看。' : 'Some adjustment modes lack continuous, confirmed factors; raw prices remain available.'}</div> : null}
       {sourceRefreshFailed ? (
         <div className="listed-source-alert">
           Source update failed; existing canonical history was preserved. {barsResponse?.source_refresh_message}
@@ -1034,7 +1098,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         </div>
       </div>
       <div className="listed-chart-shell">
-        {pending.chart ? sectionLoading(zh ? '行情' : 'Price history') : error ? <RequestRecovery error={error} onRetry={() => setRetryToken(value => value + 1)} /> : chartView === 'return' ? <GrowthChart bars={visibleAnalysisBars} /> : <IndexLevelChart bars={visibleAnalysisBars} crypto={isCrypto} />}
+        {pending.chart ? sectionLoading(zh ? '行情' : 'Price history') : error ? <RequestRecovery error={error} onRetry={() => setRetryToken(value => value + 1)} /> : chartView === 'return' ? <GrowthChart bars={visibleAnalysisBars} /> : <IndexLevelChart bars={visibleRawLevelBars} crypto={isCrypto} />}
       </div>
     </section>
   )
@@ -1091,7 +1155,10 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           <div className="listed-hero-quote">
           <span>{quotePending ? loadingLabel : formatDate(latest?.date)}</span>
           <strong>{latest ? formatNumber(latest.close, latest.close < 10 ? 4 : 2) : quotePending ? loadingLabel : '—'}</strong>
-          <em className={signedValueClass(displayReturns.dailyChange)}>{quotePending ? loadingLabel : percentValue(displayReturns.dailyChange)}</em>
+          <em className={signedValueClass(displayReturns.previousQuoteChange)}
+            title={quotePrevious && quoteLatest ? `${quotePrevious.date} → ${quoteLatest.date}` : undefined}
+          >{quotePending ? loadingLabel : percentValue(displayReturns.previousQuoteChange)}</em>
+          <span>{zh ? '自上次报价变化' : 'Since Previous Quote'}</span>
           </div>
         </div>
       </section>
@@ -1194,7 +1261,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             <button type="button" key={item}
               className={`instrument-detail-tab ${tab === item ? 'instrument-detail-tab-active' : ''}`}
               onClick={() => setTab(item)}>
-              {{ overview: zh ? '总览' : 'Overview', 'investment-research': zh ? '投资研究' : 'Investment Research', views: zh ? '投资观点' : 'Investment Views', performance: zh ? '绩效指标' : 'Performance Metrics' }[item]}
+              {{ overview: zh ? '总览' : 'Overview', risk: zh ? '风险监测' : 'Risk Monitoring', 'investment-research': zh ? '投资研究' : 'Investment Research', views: zh ? '投资观点' : 'Investment Views', info: zh ? '资料' : 'Information' }[item]}
             </button>
           ))}
         </div>
@@ -1202,55 +1269,26 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
 
       {tab === 'overview' ? (
         <section className="listed-overview" aria-label={zh ? '标的总览' : 'Instrument overview'}>
-          <div className="listed-overview-main">
-            <div className="listed-overview-market">
-              <header className="listed-overview-section-heading"><h2>{zh ? '行情与绩效' : 'Market & performance'}</h2><button type="button" onClick={() => setTab('performance')}>{zh ? '全部绩效指标' : 'All performance metrics'} →</button></header>
-              <section className="listed-metric-grid listed-overview-quote" aria-label={zh ? '绩效速览' : 'Performance snapshot'}>
-                <MetricCard label="YTD" value={returnsPending ? loadingLabel : percentValue(overviewYtd)} tone={signedValueClass(overviewYtd)} />
-                <MetricCard label="1 Year" value={returnsPending ? loadingLabel : percentValue(overviewOneYear)} tone={signedValueClass(overviewOneYear)} />
-                <MetricCard label={zh ? '当前回撤' : 'Current Drawdown'} value={pending.risk ? loadingLabel : percentValue(displayRiskStats.currentDrawdown)} tone={signedValueClass(displayRiskStats.currentDrawdown)} note={pending.risk ? undefined : riskAsOfNote} />
-                <MetricCard label={usesCanonicalPriceSeries ? '1 Month' : zh ? '成交量' : 'Volume'} value={(usesCanonicalPriceSeries ? pending.performance : pending.bars) ? loadingLabel : usesCanonicalPriceSeries ? percentValue(displayReturns.oneMonth) : compactValue(latestPriceBar?.volume ?? null, 2)} />
-              </section>
-              {standardizedError && <p className="listed-overview-quality" role="status">{zh ? '部分绩效或风险数据无法读取，相应指标暂不展示。' : standardizedError}</p>}
-              {summary?.freshness.staleness_reason && <p className="listed-overview-quality" role="status"><FreshnessNote reason={summary.freshness.staleness_reason} observationDate={chart?.date_range?.end || latest?.date} /></p>}
-              {noTradeConfirmation && <p className="listed-overview-quality" role="status">
-                <a href={noTradeConfirmation.source_url} target="_blank" rel="noreferrer">{zh ? '港交所确认' : 'HKEX confirms'}</a>
-                {zh
-                  ? `：截至 ${formatDate(noTradeConfirmation.date)}，新增交易日均无成交、收市价未变。最近行情日期仍为 ${formatDate(summary?.freshness.latest_observation_date)}。`
-                  : ` no trades and an unchanged close through ${formatDate(noTradeConfirmation.date)}. The latest price observation remains ${formatDate(summary?.freshness.latest_observation_date)}.`}
-              </p>}
-              {usesCanonicalPriceSeries ? indexChartPanel : chartPanel}
-            </div>
-            <aside className="listed-overview-judgments" aria-label={zh ? '研究与投资判断' : 'Research & investment judgment'}>
-              <SectorResearchPanel instrumentId={instrumentId} variant="summary" onOpenEvents={() => setTab('investment-research')} />
-              <section className="listed-overview-opinion" aria-label={zh ? '当前总体观点' : 'Current Overall View'}>
-                <header className="listed-overview-section-heading"><h2>{zh ? '当前总体观点' : 'Current Overall View'}</h2><button type="button" onClick={() => setTab('views')}>{zh ? '查看观点' : 'View opinions'} →</button></header>
-                {pending.research ? sectionLoading(zh ? '投资观点' : 'Investment views') : researchError ? <p>{zh ? '投资观点暂时无法读取。' : 'Investment views unavailable.'}</p> : latestOpinion ? <><time>{formatDate(latestOpinion.noteDate)}</time>{latestOpinion.title && <h3>{latestOpinion.title}</h3>}<p className="overview-opinion-excerpt">{latestOpinion.body || latestOpinion.title}</p></> : <p className="muted">{zh ? '尚未选定总体观点。' : 'No overall view selected.'}</p>}
-              </section>
-            </aside>
-          </div>
-          {listedInstrumentType === 'etf' && <div className="listed-overview-reference" aria-label={zh ? '基金结构与盈利预期' : 'Fund structure and earnings estimates'}>
-            <EtfProfilePanel key={instrumentId} instrumentId={instrumentId} language={language} />
-            <EstimateHistoryPanel key={instrumentId} instrumentId={instrumentId} language={language} />
-          </div>}
-        </section>
-      ) : null}
-
-      {tab === 'views' ? (
-        <div className="listed-tab-stack listed-research-tab">
-          {researchError ? <p className="instrument-placeholder">{zh ? '投资观点暂时无法读取。' : 'Investment views unavailable.'}</p> : null}
-          {pending.research ? sectionLoading(zh ? '投资观点' : 'Investment views') : !researchError && <InvestmentOpinionTimeline onAskAssistant={openAssistant} instrumentId={instrumentId} research={research} language={language} onChange={setResearch} />}
-        </div>
-      ) : null}
-
-      {tab === 'performance' ? (
-        <div className="listed-tab-stack">
+          <section className="listed-metric-grid listed-overview-quote" aria-label={zh ? '绩效速览' : 'Performance snapshot'}>
+            <MetricCard label="YTD" value={returnsPending ? loadingLabel : percentValue(overviewYtd)} tone={signedValueClass(overviewYtd)} />
+            <MetricCard label="1 Year" value={returnsPending ? loadingLabel : percentValue(overviewOneYear)} tone={signedValueClass(overviewOneYear)} />
+            <MetricCard label={zh ? '当前回撤' : 'Current Drawdown'} value={pending.risk ? loadingLabel : percentValue(displayRiskStats.currentDrawdown)} tone={signedValueClass(displayRiskStats.currentDrawdown)} note={pending.risk ? undefined : riskAsOfNote} />
+            <MetricCard label={usesCanonicalPriceSeries ? '1 Month' : zh ? '成交量' : 'Volume'} value={(usesCanonicalPriceSeries ? pending.performance : pending.bars) ? loadingLabel : usesCanonicalPriceSeries ? percentValue(displayReturns.oneMonth) : compactValue(latestPriceBar?.volume ?? null, 2)} />
+          </section>
+          {standardizedError && <p className="listed-overview-quality" role="status">{zh ? '部分绩效或风险数据无法读取，相应指标暂不展示。' : standardizedError}</p>}
+          {summary?.freshness.staleness_reason && <p className="listed-overview-quality" role="status"><FreshnessNote reason={summary.freshness.staleness_reason} observationDate={chart?.date_range?.end || latest?.date} /></p>}
+          {noTradeConfirmation && <p className="listed-overview-quality" role="status">
+            <a href={noTradeConfirmation.source_url} target="_blank" rel="noreferrer">{zh ? '港交所确认' : 'HKEX confirms'}</a>
+            {zh
+              ? `：截至 ${formatDate(noTradeConfirmation.date)}，新增交易日均无成交、收市价未变。最近行情日期仍为 ${formatDate(summary?.freshness.latest_observation_date)}。`
+              : ` no trades and an unchanged close through ${formatDate(noTradeConfirmation.date)}. The latest price observation remains ${formatDate(summary?.freshness.latest_observation_date)}.`}
+          </p>}
+          {usesCanonicalPriceSeries ? indexChartPanel : chartPanel}
           {pending.risk ? sectionLoading(zh ? '风险统计' : 'Risk statistics') : <><div className="listed-chart-caption">{zh ? '历史统计区间' : 'Historical statistics'} · {formatDate(risk?.calculation_frequency_profile?.start_date)} — {formatDate(risk?.calculation_frequency_profile?.end_date)}</div>
           <section className="listed-metric-grid listed-risk-metrics">
             <MetricCard label={zh ? '年化收益' : 'Annualized Return'} value={percentValue(standardizedRiskMetric(risk, 'annualized_return').value)} />
             <MetricCard label="Annualized Volatility" value={percentValue(displayRiskStats.annualizedVolatility)} note={riskAsOfNote} />
             <MetricCard label="Maximum Drawdown" value={percentValue(displayRiskStats.maximumDrawdown)} tone={signedValueClass(displayRiskStats.maximumDrawdown)} note={riskAsOfNote} />
-            <MetricCard label="Current Drawdown" value={percentValue(displayRiskStats.currentDrawdown)} tone={signedValueClass(displayRiskStats.currentDrawdown)} note={riskAsOfNote} />
             <MetricCard label="Sharpe Ratio" value={formatNumber(standardizedRiskMetric(risk, 'sharpe_ratio').value, 2)} />
             <MetricCard label="Calmar Ratio" value={formatNumber(standardizedRiskMetric(risk, 'calmar_ratio').value, 2)} />
           </section>
@@ -1291,7 +1329,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
                   </table>
                 </HorizontalTableScroll>
               </div>
-            </section> : <DataTable title={zh ? '区间收益' : 'Period Returns'} rows={(performance?.trailing_returns ?? []).map(row => ({ ...row, window: ['3Y', '5Y'].includes(String(row.window)) ? `${row.window} ${zh ? '（年化）' : '(annualized)'}` : row.window }))} columns={TRAILING_RETURN_COLUMNS} />}
+            </section> : <DataTable title={zh ? '区间收益' : 'Period Returns'} rows={(performance?.trailing_returns ?? []).map(row => ({ ...row, window: ['3Y', '5Y'].includes(String(row.window)) ? `${row.window} ${zh ? '（年化）' : '(annualized)'}` : row.window }))} columns={TRAILING_RETURN_COLUMNS} emptyMessage={zh ? '区间收益暂不可用。' : 'Period returns are unavailable.'} />}
 
             <section className="instrument-performance-section instrument-performance-section-monthly">
               <div className="instrument-performance-section-header">
@@ -1350,11 +1388,35 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             {risk?.data_quality?.gap_count ? <div className="listed-source-alert">{zh ? '历史行情存在缺口，曲线仅反映已取得的观测值。' : 'History has gaps; the curve reflects available observations only.'}</div> : null}
             {pending.chart ? sectionLoading(zh ? '历史回撤' : 'Historical drawdown') : <GrowthChart bars={canonicalCloseAnalysisBars} kind="drawdown" />}
           </section>
+        </section>
+      ) : null}
+
+      {tab === 'risk' ? <InstrumentRiskMonitoringPanel
+        key={instrumentId}
+        instrumentId={instrumentId}
+        onAskAssistant={(id, question, reference) => {
+          if (id === instrumentId) openAssistant(question, reference)
+        }}
+      /> : null}
+
+      {tab === 'info' ? <div className="listed-tab-stack listed-info">
+        {listedInstrumentType === 'etf'
+          ? <EtfProfilePanel key={instrumentId} instrumentId={instrumentId} language={language} />
+          : <ListedReferencePanel key={instrumentId} instrument={instrument} language={language}
+              currency={chart?.currency || barsResponse?.currency || ''}
+              classification={summary?.taxonomy.path_labels.join(' / ') || ''} />}
+      </div> : null}
+
+      {tab === 'views' ? (
+        <div className="listed-tab-stack listed-research-tab">
+          {researchError ? <p className="instrument-placeholder">{zh ? '投资观点暂时无法读取。' : 'Investment views unavailable.'}</p> : null}
+          {pending.research ? sectionLoading(zh ? '投资观点' : 'Investment views') : !researchError && <InvestmentOpinionTimeline onAskAssistant={openAssistant} instrumentId={instrumentId} research={research} language={language} onChange={setResearch} />}
         </div>
       ) : null}
 
       {tab === 'investment-research' ? <div className="listed-tab-stack">
         <SectorResearchPanel instrumentId={instrumentId} onAskAssistant={openAssistant} />
+        {listedInstrumentType === 'etf' && <EstimateHistoryPanel key={instrumentId} instrumentId={instrumentId} language={language} />}
       </div> : null}
     </div>
   )

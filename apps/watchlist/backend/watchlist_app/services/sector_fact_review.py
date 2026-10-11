@@ -90,6 +90,11 @@ discovered by this system. There is NO publication-age admission window. Seven d
 display range. Do not reject a useful old or undated original solely for its date. An AI
 compilation, digest, repost or syndication is not a new underlying event; a compilation alone
 cannot verify the underlying claim. Follow the retained original evidence, not its new wrapper.
+full_text/body_available describe only text completeness/availability for the retained document. Check its publisher
+and document type: media reporting of an issuer announcement or brokerage research is not the underlying
+announcement or original report. The article's publication date does not establish the underlying report date;
+an AI-translated article does not prove the original-language text was read. Correct attribution, dates and
+coverage claims that promote the retained carrier into an original source or an unread language version.
 Compare prior_events: a paraphrase of the same fact from the same publication is not important
 progress. Remove repeated proposals. Preserve stable event_key for actual material developments.
 Keep published_at (cited original's publication), occurred_at (actual underlying occurrence,
@@ -206,10 +211,13 @@ from a rejected report remains usable text, but neither its fetch nor its former
 If research.mandate_update is supplied, check its factual background against the same originals;
 separate working hypotheses from facts and preserve specific unresolved questions. It updates
 only this instrument's research assignment, never shared methods or the PM's investment views.
+The user-owned mandate.guidance must be preserved; it is an instruction, never original factual evidence.
 Reject an unsupported assignment-update proposal rather than inventing instrument background.
 Historical cases can inform mechanisms, not prove current exposures or supply trading probabilities.
 Preserve historical information/public-disclosure/trading clocks and the atlas's selection limits.
 Correct research.modules, key_drivers and questions to match the evidence;
+analysis keys and titles may be chosen for the question and need not match the optional method library.
+Do not demand a fixed chapter checklist or reject a useful section merely because it is outside that library.
 each module's coverage describes its actual cited evidence, not confidence in an investment.
 Check scope, evidence_as_of, uncertainty and the module's current analysis, not only new events.
 figure_source_ids must bind retained numerical sources; the application renders their actual data.
@@ -320,13 +328,19 @@ market_views require attribution, dates and actual originals; issuer statements 
 market_reaction only references retained computed results; never invent returns or causation from prices.
 Follow-up dates are research arrangements, never risk resolution. Extensions/endings require reasons; missing
 sources or a failed closing check preserve watch. PM pins, future nodes and unresolved major risk are protected.
-Review changes against their cited baseline and evidence; preserve sparse corrections.
+Review changes against their cited baseline and evidence; preserve sparse corrections. When correcting
+a factual premise or unsupported inference, reconcile every occurrence in the submitted draft, including
+its summary, current view, coverage/gaps, facts, modules and changes. Correcting one paragraph does not
+make contradictory accepted clauses elsewhere valid. Keep corrections within the proposed fields and
+preserve historical versions; a zero-change result with confirmed comparable coverage differs from
+an empty result with missing or incomparable coverage.
 Event impact_level, urgency and risk_channels describe investment consequence, never confidence.
 Review conditional recommendations separately from evidence certainty and from PM-authored instructions.
 Every instrument needs summary, change_kind, coverage, decisions, research, themes and reflection inside
 its reviews item. Each scalar uses {"decision":"accept"} or {"decision":"correct","reason":"specific
-reason","value":corrected_value}. Accept means you checked the entire bound original, including sources;
-it does not mean skip checking. Never accept unsupported clauses to save output.
+reason","value":corrected_value}. Accept means you checked the entire proposed object and verified its
+claims against the relevant original evidence; it does not mean skip checking. Never accept unsupported
+clauses to save output.
 Every draft event_key appears exactly once as accept, remove or correct; every draft theme_key likewise
 appears exactly once as accept, reject or correct. Do not return decisions for historical events/themes.
 Object accept has only decision and its binding key (if any). Remove/reject also has reason, never patch.
@@ -415,7 +429,7 @@ def _api_request(run_id: str, suffix: str, payload: dict | None = None) -> dict:
     request = Request(url, data=json.dumps(payload).encode() if payload is not None else None,
                       headers={"Content-Type": "application/json", "Authorization": "Bearer " + os.environ["INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN"]},
                       method="POST" if payload is not None else "GET")
-    with urlopen(request, timeout=30) as response:
+    with urlopen(request, timeout=150) as response:
         return json.load(response)
 
 
@@ -506,30 +520,7 @@ def _tool_receipts(context):
     return receipts
 
 
-def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
-    ids = {review["instrument_id"] for review in reviewed}
-    available = research_sources(context, run_id)
-    from watchlist_app.services.sector_research import event_evidence_sources
-    event_sources = event_evidence_sources(context, run_id, notebook_evidence=available)
-    from watchlist_app.services.market_evidence import retained_sources
-    # Actual reads in this run are evidence for receipt claims too. Historical
-    # hydrated archives and all-company estimates are not automatically in scope.
-    sources = {s["source_id"]: s for capture in context.get("web_evidence", [])
-               if capture.get("operation") == "fetch"
-               for s in capture.get("sources", []) if s.get("text")}
-    sources.update(retained_sources(context))
-    # Financial pages are complete original rows actually read in this run; the
-    # page-level snapshot carries its statement identities and information clocks.
-    for source in context.get("financial_sources", []):
-        if source.get("instrument_id") in ids and source["source_id"] in available:
-            sources[source["source_id"]] = available[source["source_id"]]
-    # These results exist only after a numeric tool call in this run. Keep their
-    # actual inputs and clocks, without pulling metrics from historical dossiers.
-    for metric in context.get("computed_metrics", []):
-        source_id = metric["source_id"]
-        if source_id in available and (metric.get("instrument_id") in ids or (
-                metric.get("instrument_id") is None and metric.get("scope") == "public_market")):
-            sources[source_id] = available[source_id]
+def _review_references(context, reviewed):
     references_by_instrument = {}
     for review in reviewed:
         references = notebook_source_ids(review.get("research") or {})
@@ -569,6 +560,35 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
                 for key in item.get("theme_ids", []):
                     references.update(notebook_source_ids(by_id.get(key) or themes.get(key, {})))
         references_by_instrument[review["instrument_id"]] = references
+    return references_by_instrument
+
+
+def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
+    ids = {review["instrument_id"] for review in reviewed}
+    computed_input_reads = {}
+    available = research_sources(context, run_id)
+    from watchlist_app.services.sector_research import event_evidence_sources
+    event_sources = event_evidence_sources(context, run_id, notebook_evidence=available)
+    from watchlist_app.services.market_evidence import retained_sources
+    # Actual reads in this run are evidence for receipt claims too. Historical
+    # hydrated archives and all-company estimates are not automatically in scope.
+    sources = {s["source_id"]: s for capture in context.get("web_evidence", [])
+               if capture.get("operation") == "fetch"
+               for s in capture.get("sources", []) if s.get("text")}
+    sources.update(retained_sources(context))
+    # Financial pages are complete original rows actually read in this run; the
+    # page-level snapshot carries its statement identities and information clocks.
+    for source in context.get("financial_sources", []):
+        if source.get("instrument_id") in ids and source["source_id"] in available:
+            sources[source["source_id"]] = available[source["source_id"]]
+    # These results exist only after a numeric tool call in this run. Keep their
+    # actual inputs and clocks, without pulling metrics from historical dossiers.
+    for metric in context.get("computed_metrics", []):
+        source_id = metric["source_id"]
+        if source_id in available and (metric.get("instrument_id") in ids or (
+                metric.get("instrument_id") is None and metric.get("scope") == "public_market")):
+            sources[source_id] = available[source_id]
+    references_by_instrument = _review_references(context, reviewed)
     prior_updates, prior_judgment_versions = [], []
     from urllib.parse import urlencode
     for review in reviewed:
@@ -609,7 +629,9 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
         dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == iid), {})
         dossier_ids = {s["source_id"] for s in [*dossier.get("materials", []), *dossier.get("historical_cases", []),
                                               *dossier.get("prior_sources", []),
-                                              *(dossier.get("notebook") or {}).get("sources", [])]}
+                                              *(dossier.get("notebook") or {}).get("sources", []),
+                         *(source for field in ("themes", "pm_views") for value in dossier.get(field, [])
+                           for source in value.get("sources", []))]}
         for source_id in sorted(references):
             if source_id in sources:
                 continue
@@ -617,6 +639,8 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
                 original = _api_request(run_id, f"dossier/{quote(iid, safe='')}?" + urlencode({"source_id": source_id}))
                 kind = "historical_case" if source_id.startswith("historical:") else "research_material" if source_id.startswith("material:") else original.get("source_type")
                 sources[source_id] = {**original, "source_type": kind, "instrument_id": iid}
+                if kind == "computed_metric":
+                    computed_input_reads[source_id] = {"instrument_id": iid}
             elif source_id in available:
                 sources[source_id] = available[source_id]
             elif source_id.startswith("fmp:"):
@@ -665,6 +689,7 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
             "This is the recorded research request and review scope, not factual evidence or an investment conclusion. Verify the proposed response against the retained originals; do not cite the request as a source."}
            if context.get("question") else {}),
         "draft_reviews": reviewed,
+        "computed_input_reads": computed_input_reads,
         "event_source_ids": sorted(sources.keys() & event_sources.keys()),
         "event_source_note": "Only these retained originals, comparable estimates and computed evidence may be cited in event source_ids. Other packet sources remain available for notebook context; reading them does not make them event evidence.",
         **snapshot_indexes,
@@ -832,6 +857,25 @@ def _needs_review(row):
                 or row.get("summary"))
 
 
+def _review_computed_context(context, draft, run_id):
+    """Resolve only draft dependencies through the run API, never a reviewer DB.
+
+    Directory entries are not originals. Sparse revisions can retain the cited
+    sources of the exact prior module/theme they update; unrelated calculations
+    are not recursively materialized for every independent review.
+    """
+    from urllib.parse import urlencode
+    references = set().union(*_review_references(context, draft["reviews"]).values())
+    originals = []
+    for source in context.get("computed_metrics", []):
+        if source.get("retained_reference"):
+            if source["source_id"] not in references:
+                continue
+            source = _api_request(run_id, "computed-source?" + urlencode({"source_id": source["source_id"]}))
+        originals.append(source)
+    return {**context, "computed_metrics": originals}
+
+
 def review_output(output: str, *, context: dict | None = None) -> dict:
     document = json.loads(output)
     draft = draft_payload(ReviewResult.model_validate(document))
@@ -856,6 +900,7 @@ def review_output(output: str, *, context: dict | None = None) -> dict:
     if context.get("sector_run") and set(ids) != set(context["instrument_ids"]):
         raise ValueError("Draft must cover this automatic run's selected instruments")
     _api_request(run_id, "sector-evidence", {"operation": "review", "review": {"draft": draft}})
+    context = _review_computed_context(context, draft, run_id)
     cutoff = datetime.fromisoformat(context["cutoff"])
     sources = {source["source_id"]: source for capture in context.get("web_evidence", [])
                if capture.get("operation") == "fetch" for source in capture.get("sources", [])}
@@ -867,7 +912,9 @@ def review_output(output: str, *, context: dict | None = None) -> dict:
     for row in draft["reviews"]:
         dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == row["instrument_id"]), {})
         archived_ids = {s["source_id"] for s in [*dossier.get("prior_sources", []),
-                         *(dossier.get("notebook") or {}).get("sources", [])]}
+                         *(dossier.get("notebook") or {}).get("sources", []),
+                         *(source for field in ("themes", "pm_views") for value in dossier.get(field, [])
+                           for source in value.get("sources", []))]}
         # The API context contains an index, not archived body text. Resolve event references
         # before the original-source check, just as working-paper references are resolved below.
         for sid in {sid for event in row["events"] for sid in event["source_ids"]} & archived_ids:
@@ -955,6 +1002,9 @@ def main():
     try:
         context = _api_request(os.environ["INVESTMENT_STUDIO_RESEARCH_RUN_ID"], "context?originals=true")
         conversation = not context.get("sector_run")
+        if conversation and os.environ.get("INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW") == "1":
+            from watchlist_app.services.research_runner import conversation_answer
+            answer = conversation_answer(context)
         submitted = context.get("submitted_draft")
         if conversation and not submitted:
             print(json.dumps({"answer": answer, "research_result": None,
@@ -969,7 +1019,8 @@ def main():
         failure = _safe_failure(error)
         if conversation:
             print(json.dumps({"answer": answer, "research_result": None,
-                "research_publication": {"status": "failed", "message": failure["summary"]}}, ensure_ascii=False))
+                "research_publication": {"status": "failed", "message": failure["summary"],
+                    "stage": "review", "error": failure, "automatic_retry": False}}, ensure_ascii=False))
             return
         print("SECTOR_REVIEW_ERROR " + json.dumps(failure, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(1) from None

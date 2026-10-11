@@ -8,13 +8,17 @@ from math import ceil, sqrt
 
 import numpy as np
 import pandas as pd
+from investment_studio_instrument_core.return_series import (
+    build_return_intervals,
+    return_interval_unavailable_reason,
+)
 from scipy.optimize import brentq, linprog, minimize
 
 from portfolio_app.services.annualization import annualization_eligibility
 from portfolio_app.services.risk_alignment import align_risk_navs
 from portfolio_app.services.risk_currency import align_base_currency_navs
 from portfolio_app.services.risk_fx_sources import risk_fx_histories_from_details, risk_fx_instrument_ids
-from portfolio_app.services.risk_basis import observation_coverage_from_dates, observation_source_settings
+from portfolio_app.services.risk_basis import observation_coverage_from_dates, observation_source_settings, observation_schedule_verified
 from portfolio_app.services.research_inputs import capture_current_target_configuration
 from portfolio_app.services.taxonomy_targets import resolve_taxonomy_targets
 from portfolio_app.services.calculation_frequency import (
@@ -30,6 +34,7 @@ from portfolio_app.services.instrument_registry import (
 )
 from portfolio_app.services.market_data import (
     analytical_return_quote_bases,
+    analytical_return_metadata,
     benchmark_total_return_quote_bases,
     market_calendar_sessions,
     quote_is_stale,
@@ -88,14 +93,12 @@ RESEARCH_OBSERVATIONS_PER_MONTH_BY_FREQUENCY: dict[CalculationFrequency, float] 
     "daily": 20.0,
 }
 RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
-RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v9_valuation_evidence"
+RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v12_strict_coverage_exact_annualization"
 RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 1e-4
 RESEARCH_COVARIANCE_PSD_TOLERANCE = 1e-10
 MISSING_RETURN_POLICY_STRICT = "strict"
-MISSING_RETURN_POLICY_COMPLETE_CASE_DROP = "complete_case_drop"
 RESEARCH_DEFAULT_MISSING_RETURN_POLICY = MISSING_RETURN_POLICY_STRICT
-RESEARCH_COMPLETE_CASE_DROP_MAX_MISSING_ROW_FRACTION = 0.10
-RESEARCH_COMPLETE_CASE_DROP_MAX_TRAILING_STALENESS_DAYS: dict[CalculationFrequency, int] = {
+RESEARCH_MAX_TRAILING_STALENESS_DAYS: dict[CalculationFrequency, int] = {
     "daily": 5,
 }
 SUPPORTED_RESEARCH_LOOKBACK_DAYS = frozenset(RESEARCH_WINDOW_MONTHS_BY_LOOKBACK_DAYS)
@@ -127,9 +130,7 @@ class ScopeMemberRecord:
 @dataclass(frozen=True)
 class MemberSeries:
     member: ScopeMemberRecord
-    nav: pd.Series
     returns: pd.Series
-    cumulative_return: float
     warnings: tuple[str, ...] = ()
 
 
@@ -296,12 +297,13 @@ def _selected_price_points(
     end_date: date,
     candidate_bases: list[str] | None = None,
 ) -> list[tuple[date, float, str]]:
+    eligible = _candidate_quote_bases(detail)
     resolution = resolve_quote_series(
         detail,
         candidate_bases=(
-            candidate_bases
+            [basis for basis in candidate_bases if basis in eligible]
             if candidate_bases is not None
-            else _candidate_quote_bases(detail)
+            else eligible
         ),
         end_date=end_date,
     )
@@ -359,14 +361,15 @@ def _build_instrument_nav_series(
     if not isinstance(detail, dict):
         raise ValueError(f"Instrument detail for {instrument_id} is unavailable.")
 
-    selected_points = _selected_price_points(
-        detail,
-        end_date=end_date,
-        candidate_bases=candidate_bases,
-    )
+    eligible = _candidate_quote_bases(detail)
+    resolution = resolve_quote_series(detail, end_date=end_date,
+        candidate_bases=[basis for basis in candidate_bases if basis in eligible] if candidate_bases is not None else eligible)
+    selected_points = [(point["as_of_date"], float(point["value"]), str(point["currency"]))
+                       for point in resolution.points] if resolution.available else []
     warnings: list[str] = []
     if not selected_points:
-        raise ValueError(f"{instrument_id} does not have usable market history for the requested period.")
+        raise ValueError(f"{instrument_id} does not have a confirmed analytical return source for the requested period.")
+    contract = analytical_return_metadata(detail, quote_basis=resolution.quote_basis, currency=resolution.currency)
 
     # Match quote freshness and historical replay: a declared exchange remains
     # a known observation calendar when no source-specific override is stored.
@@ -376,6 +379,11 @@ def _build_instrument_nav_series(
         [point_date for point_date, _, _ in selected_points],
         source_settings=observation_source_settings(detail), end_date=end_date,
     )
+    if not observation_schedule_verified(coverage):
+        raise ValueError(
+            f"{instrument_id} daily risk unavailable: observation schedule unverified; "
+            "requires a verified market calendar or explicit event_driven source contract."
+        )
     source_currency = valuation_fx.required_currency(selected_points[0][2], field_name="market-data currency")
     if source_currency != state.base_currency:
         fx_ids = risk_fx_instrument_ids({source_currency}, state.base_currency)
@@ -387,9 +395,12 @@ def _build_instrument_nav_series(
             {instrument_id: native}, currency_by_key={instrument_id: source_currency},
             coverage_by_key={instrument_id: coverage}, base_currency=state.base_currency,
             fx_histories=fx_histories, end_date=end_date,
+            return_contracts_by_key={instrument_id: contract},
         )
         series = navs[instrument_id]
         coverage = metadata[instrument_id]["observation_coverage"]
+        contract = {**contract, "currency": state.base_currency, "source_currency": source_currency,
+                    "source_instrument_ids": metadata[instrument_id]["source_instrument_ids"]}
     else:
         rows: list[tuple[date, float]] = []
         for point_date, point_value, point_currency in selected_points:
@@ -412,6 +423,8 @@ def _build_instrument_nav_series(
             f"{instrument_id} history starts on {visible.index[0].isoformat()}, so the research window is clipped for this member."
         )
     visible.attrs["observation_coverage"] = coverage
+    visible.attrs["return_contract"] = {**contract, "start_date": visible.index[0].isoformat(),
+                                        "end_date": visible.index[-1].isoformat()}
     return visible, warnings
 
 
@@ -576,7 +589,7 @@ def _risk_model_covariance_parameters(
 
 def _normalize_missing_return_policy(value: object) -> str:
     normalized = str(value or RESEARCH_DEFAULT_MISSING_RETURN_POLICY).strip().lower()
-    if normalized in {MISSING_RETURN_POLICY_STRICT, MISSING_RETURN_POLICY_COMPLETE_CASE_DROP}:
+    if normalized == MISSING_RETURN_POLICY_STRICT:
         return normalized
     raise ValueError(f"Unsupported missing-return policy: {value}.")
 
@@ -585,30 +598,35 @@ def normalize_missing_return_policy(value: object) -> str:
     return _normalize_missing_return_policy(value)
 
 
-def _max_complete_case_drop_staleness_days(calculation_frequency: CalculationFrequency) -> int:
+def _max_return_staleness_days(calculation_frequency: CalculationFrequency) -> int:
     try:
-        return RESEARCH_COMPLETE_CASE_DROP_MAX_TRAILING_STALENESS_DAYS[calculation_frequency]
+        return RESEARCH_MAX_TRAILING_STALENESS_DAYS[calculation_frequency]
     except KeyError as error:
         raise ValueError(f"Unsupported calculation frequency: {calculation_frequency}.") from error
 
 
-def _infer_periods_per_year(dates: list[date]) -> float:
-    if len(dates) < 2:
-        return 1.0
-    timestamps = pd.to_datetime(pd.Series(list(dates))).drop_duplicates().sort_values()
-    elapsed_days = int((timestamps.iloc[-1] - timestamps.iloc[0]).days)
-    if elapsed_days <= 0:
-        return 1.0
-    gaps = [
-        int((timestamps.iloc[index] - timestamps.iloc[index - 1]).days)
-        for index in range(1, len(timestamps))
-        if int((timestamps.iloc[index] - timestamps.iloc[index - 1]).days) > 0
-    ]
-    median_gap = sorted(gaps)[len(gaps) // 2] if gaps else 1
-    observation_span_days = elapsed_days + median_gap
-    if observation_span_days <= 0:
-        return 1.0
-    return float(len(timestamps)) / float(observation_span_days) * 365.25
+def _annualization_periods_per_year(returns: pd.DataFrame) -> float:
+    """Use each selected return's real interval, never an inferred first gap."""
+    dates = _index_dates(returns.index)
+    starts = returns.attrs.get("return_period_starts")
+    if not dates or len(set(dates)) != len(returns) or dates != sorted(dates):
+        raise ValueError("Risk annualization requires non-empty, unique, ordered return dates.")
+    if not isinstance(starts, dict):
+        raise ValueError("Risk annualization requires actual return period starts.")
+    first_start = None
+    previous_end = None
+    for end in dates:
+        raw_start = starts.get(end.isoformat())
+        try:
+            start = date.fromisoformat(str(raw_start))
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Risk annualization requires an actual period start for return ending {end}.") from error
+        if start >= end or (previous_end is not None and start != previous_end):
+            raise ValueError(f"Risk annualization requires contiguous actual return intervals; invalid start {start} for {end}.")
+        if first_start is None:
+            first_start = start
+        previous_end = end
+    return len(dates) / (dates[-1] - first_start).days * 365.25
 
 
 def _index_dates(index: pd.Index) -> list[date]:
@@ -627,8 +645,8 @@ def _annualize_covariance(covariance: pd.DataFrame, returns: pd.DataFrame) -> pd
     if covariance.empty:
         return covariance
     cleaned = _clean_return_frame(returns).reindex(columns=covariance.columns)
-    complete = cleaned.dropna(how="any")
-    return covariance.copy().astype("float64") * _infer_periods_per_year(_index_dates(complete.index))
+    _validate_complete_return_coverage(cleaned, min_observations=2, label="Risk annualization")
+    return covariance.copy().astype("float64") * _annualization_periods_per_year(cleaned)
 
 
 def _clean_return_frame(returns: pd.DataFrame) -> pd.DataFrame:
@@ -750,53 +768,23 @@ def _apply_missing_return_policy(
         post_warmup_missing_count / max(len(post_warmup_mask), 1)
     )
 
-    if policy == MISSING_RETURN_POLICY_STRICT:
-        _validate_complete_return_coverage(
-            returns,
-            min_observations=min_observations,
-            label=label,
-        )
-        complete = returns.copy()
-    else:
-        complete = returns.loc[~missing_mask].copy()
-        # A contiguous incomplete prefix is the causal common-history boundary,
-        # not an intermittent data-quality gap. Complete-case mode may begin at
-        # the first aligned return when the remaining common sample is large
-        # enough. Missing rows after that boundary still face the quality limit,
-        # and trailing freshness is checked below.
-        if (
-            post_warmup_missing_count
-            and post_warmup_missing_fraction > RESEARCH_COMPLETE_CASE_DROP_MAX_MISSING_ROW_FRACTION + 1e-12
-        ):
-            raise ValueError(
-                f"{label} complete-case drop would remove {post_warmup_missing_count} of "
-                f"{len(post_warmup_mask)} post-warmup return rows "
-                f"({post_warmup_missing_fraction:.2%}), exceeding the "
-                f"{RESEARCH_COMPLETE_CASE_DROP_MAX_MISSING_ROW_FRACTION:.2%} limit. "
-                f"Missing return period ends: "
-                f"{_format_index_sample(post_warmup_mask.loc[post_warmup_mask].index)}. "
-                "A NAV or price on a period end alone is insufficient without "
-                "an aligned period start."
-            )
-        if len(complete) < required:
-            raise ValueError(
-                f"{label} complete-case drop requires at least {required} complete aligned return observations; "
-                f"got {len(complete)} after dropping {missing_count} rows."
-            )
+    _validate_complete_return_coverage(
+        returns, min_observations=min_observations, label=label,
+    )
+    complete = returns.copy()
     if as_of_date is not None and len(complete):
         latest_date = pd.Timestamp(max(complete.index)).date()
         staleness_days = int(((freshness_as_of_date or as_of_date) - latest_date).days)
         max_staleness_days = (
-            _max_complete_case_drop_staleness_days(calculation_frequency)
+            _max_return_staleness_days(calculation_frequency)
             if max_trailing_staleness_days is None
             else int(max_trailing_staleness_days)
         )
         if max_staleness_days < 0:
             raise ValueError("Maximum trailing return staleness cannot be negative.")
         if staleness_days > max_staleness_days:
-            policy_label = "complete-case drop" if policy == MISSING_RETURN_POLICY_COMPLETE_CASE_DROP else "strict"
             raise ValueError(
-                f"{label} {policy_label} latest complete return observation is "
+                f"{label} strict latest complete return observation is "
                 f"{latest_date.isoformat()} ({staleness_days} days before {as_of_date.isoformat()}); "
                 f"maximum allowed for {calculation_frequency} is {max_staleness_days} days."
             )
@@ -1012,7 +1000,7 @@ def _estimate_ewma_vol_shrinkage_corr_covariance(
         max_trailing_staleness_days=int(
             parameters.get(
                 "max_period_staleness_days",
-                _max_complete_case_drop_staleness_days(calculation_frequency),
+                _max_return_staleness_days(calculation_frequency),
             )
         ),
     )
@@ -1039,7 +1027,7 @@ def _estimate_ewma_vol_shrinkage_corr_covariance(
         max_trailing_staleness_days=int(
             parameters.get(
                 "max_period_staleness_days",
-                _max_complete_case_drop_staleness_days(calculation_frequency),
+                _max_return_staleness_days(calculation_frequency),
             )
         ),
     )
@@ -1090,7 +1078,7 @@ def _estimate_covariance(
             max_trailing_staleness_days=int(
                 parameters.get(
                     "max_period_staleness_days",
-                    _max_complete_case_drop_staleness_days(calculation_frequency),
+                    _max_return_staleness_days(calculation_frequency),
                 )
             ),
         )
@@ -1100,7 +1088,7 @@ def _estimate_covariance(
         covariance = _annualize_covariance(covariance, window)
     elif model_id in {"lw_covariance", "lw"}:
         covariance = _estimate_ledoit_wolf_covariance(window)
-        covariance = covariance * _infer_periods_per_year(_index_dates(window.dropna(how="any").index))
+        covariance = _annualize_covariance(covariance, window)
     elif model_id == "ewma_covariance":
         covariance = _estimate_ewma_covariance(
             window,
@@ -1316,7 +1304,6 @@ def _periodic_series_by_member(
 def _aligned_calendar(
     series_list: list[pd.Series],
     *,
-    start_date: date,
     end_date: date,
 ) -> tuple[list[date], date]:
     if not series_list:
@@ -1329,7 +1316,9 @@ def _aligned_calendar(
             raise ValueError("Selected scope contains a member without usable history in the requested window.")
         first_dates.append(visible.index[0])
         calendar_points.update(visible.index.tolist())
-    effective_start = max([start_date, *first_dates])
+    # Each input retains its actual observation at/before the requested start.
+    # Do not synthesize a weekend/holiday anchor: that shortens the first return.
+    effective_start = max(first_dates)
     calendar = sorted({effective_start, *(item for item in calendar_points if effective_start < item <= end_date)})
     if len(calendar) < 2:
         raise ValueError("Research solve requires at least two aligned observations.")
@@ -1356,13 +1345,14 @@ def _align_member_series(
     )
     calendar, effective_start = _aligned_calendar(
         list(periodic_nav_series_by_member.values()),
-        start_date=start_date,
         end_date=end_date,
     )
     aligned_navs, aligned_returns = align_risk_navs(
         periodic_nav_series_by_member, calendar=calendar, end_date=end_date,
         coverage_by_key={key: series.attrs.get("observation_coverage") or {}
                          for key, series in selected_nav_series_by_member.items()},
+        return_contracts_by_key={key: series.attrs.get("return_contract") or {}
+                                 for key, series in selected_nav_series_by_member.items()},
     )
     calendar = list(aligned_navs.index)
     rendered: list[MemberSeries] = []
@@ -1379,14 +1369,12 @@ def _align_member_series(
         base_value = float(aligned.loc[first_valid_index])
         if abs(base_value) <= 1e-12:
             raise ValueError(f"{member.label} starts with a non-positive base value.")
-        normalized_nav = aligned / base_value
         actual_returns = (aligned_returns[member_key].copy() if member.member_type == TARGET_MEMBER_INSTRUMENT
-                          else normalized_nav.pct_change(fill_method=None))
+                          else aligned.pct_change(fill_method=None))
         if len(calendar) > 0:
             actual_returns.loc[calendar[0]] = np.nan
         returns = actual_returns.astype("float64")
-        last_valid_value = normalized_nav.dropna().iloc[-1]
-        cumulative_return = float(last_valid_value - 1.0)
+        returns.attrs["return_period_starts"] = dict(aligned_returns.attrs["return_period_starts"])
         if raw_series.index[0] > start_date:
             warnings.append(
                 f"{member.label} history begins on {raw_series.index[0].isoformat()}, clipping selected research start to {effective_start.isoformat()}."
@@ -1394,9 +1382,7 @@ def _align_member_series(
         rendered.append(
             MemberSeries(
                 member=member,
-                nav=normalized_nav,
                 returns=returns,
-                cumulative_return=cumulative_return,
             )
         )
     return rendered, calendar, warnings
@@ -1625,6 +1611,7 @@ def _solver_return_window(
     # Preserve the chart's initial NAV anchor, but identify it explicitly so
     # covariance removes only this structural row, never all-member outages.
     frame.attrs["nav_anchor_date"] = _calendar[0]
+    frame.attrs["return_period_starts"] = dict(aligned_members[0].returns.attrs["return_period_starts"])
     return frame.astype("float64")
 
 
@@ -2021,7 +2008,7 @@ def _solve_current_scope(
                 label="Global leaf covariance", missing_return_policy=missing_return_policy,
                 calculation_frequency=calculation_frequency, as_of_date=as_of_date,
                 freshness_as_of_date=freshness_date,
-                max_trailing_staleness_days=int(parameters.get("max_period_staleness_days", _max_complete_case_drop_staleness_days(calculation_frequency))),
+                max_trailing_staleness_days=int(parameters.get("max_period_staleness_days", _max_return_staleness_days(calculation_frequency))),
             )
             covariance_model = _risk_model_covariance_model_id(risk_model_config)
             estimated = _estimate_covariance(coverage.returns, model_id=covariance_model, lookback_days=lookback_days, parameters=parameters, missing_return_policy=MISSING_RETURN_POLICY_STRICT, calculation_frequency=calculation_frequency, as_of_date=as_of_date, freshness_as_of_date=freshness_date)
@@ -2289,6 +2276,9 @@ def _solve_current_scope(
             root_rows = plan_rows
         event = {
             "solver_version": RESEARCH_TARGET_SOLVER_VERSION, "risk_attribution_scope": attribution_scope,
+            "return_measure": "simple",
+            "input_return_series": {key[1]: series.attrs.get("return_contract")
+                                     for key, series in nav_by_member.items()},
             "global_leaf_count": len(active_indices), "global_leaf_ids": [leaf_members[index].member_id for index in active_indices],
             "as_of_date": as_of_date.isoformat(), "scope_node_id": plan.node_id, "scope_label": plan.label,
             "scope_path": plan.path, "scope_depth": plan.depth,
@@ -3190,8 +3180,13 @@ def _build_backtest_metrics(points: list[dict[str, object]], returns: dict[str, 
     start_value = parsed_points[0][1]
     end_value = parsed_points[-1][1]
     dates = [item[0] for item in parsed_points]
-    return_dates = [_parse_iso_date(date_key) for date_key in returns.keys()]
-    periods_per_year = _infer_periods_per_year([item for item in return_dates if item is not None])
+    return_frame = pd.DataFrame({"return": returns})
+    return_frame.index = pd.to_datetime(return_frame.index).date
+    return_frame = return_frame.sort_index()
+    return_frame.attrs["return_period_starts"] = {
+        end.isoformat(): start.isoformat() for (start, _), (end, _) in zip(parsed_points, parsed_points[1:])
+    }
+    periods_per_year = _annualization_periods_per_year(return_frame)
     period_return = end_value / start_value - 1.0 if abs(start_value) > 1e-12 else None
     end_date = dates[-1] if dates else None
     year_start = date(end_date.year, 1, 1) if end_date is not None else None
@@ -3300,10 +3295,9 @@ def _is_rebalance_data_gap_error(error: ValueError) -> bool:
         "requires at least" in message
         or "return observations" in message
         or "complete aligned return observations" in message
-        or "complete-case drop would remove" in message
         or "latest complete return observation" in message
         or "has no active complete" in message
-        or "does not have usable market history" in message
+        or "does not have a confirmed analytical return source" in message
     )
 
 
@@ -3407,6 +3401,20 @@ def _build_sampled_benchmark_points(
 
     benchmark_nav_value = 1.0
     previous_benchmark_value: float | None = None
+    previous_source_date: date | None = None
+    previous_point_date: date | None = None
+    contract = benchmark_nav.attrs.get("return_contract") or {}
+    coverage = benchmark_nav.attrs.get("observation_coverage") or {}
+    native_quote_basis = (contract.get("quote_basis")
+                          if coverage.get("gap_detection_basis") != "base_currency_components" else None)
+    missing_dates = {
+        day for item in coverage.get("gap_dates", [])
+        if (day := _parse_iso_date(item)) is not None
+    }
+    invalid_dates = missing_dates | {
+        day for item in coverage.get("invalid_return_dates", [])
+        if (day := _parse_iso_date(item)) is not None
+    }
     for point in normalized_points:
         date_key = str(point.get("date") or "")
         point_date = _parse_iso_date(date_key)
@@ -3415,15 +3423,31 @@ def _build_sampled_benchmark_points(
         benchmark_value = _latest_series_value_on_or_before(benchmark_nav, point_date)
         if benchmark_value is None:
             continue
+        source_date = benchmark_nav.loc[benchmark_nav.index <= point_date].index[-1]
         if previous_benchmark_value is None:
+            # A holiday can carry the previous close, but a known missing
+            # observation cannot establish the opening benchmark mark.
+            if any(source_date < day <= point_date for day in missing_dates):
+                continue
             benchmark_points.append({"date": date_key, "value": benchmark_nav_value})
             previous_benchmark_value = benchmark_value
+            previous_source_date = source_date
+            previous_point_date = point_date
             continue
+        if ((previous_source_date < source_date and return_interval_unavailable_reason(
+                previous_source_date, source_date,
+                source_settings=contract, quote_basis=native_quote_basis,
+            ) is not None) or any(previous_point_date < day <= point_date for day in invalid_dates)):
+            # A benchmark wealth path needs continuous comparable levels. Keep
+            # its proved prefix; independently anchored TR segments cannot join.
+            break
         benchmark_return = benchmark_value / previous_benchmark_value - 1.0
         benchmark_return_map[date_key] = benchmark_return
         benchmark_nav_value *= 1.0 + benchmark_return
         benchmark_points.append({"date": date_key, "value": benchmark_nav_value})
         previous_benchmark_value = benchmark_value
+        previous_source_date = source_date
+        previous_point_date = point_date
 
     return benchmark_points, benchmark_return_map
 
@@ -3477,7 +3501,7 @@ def _build_backtest_benchmark_comparison_from_state(
                 )
     if not benchmark_candidate_bases:
         benchmark_warnings.append(
-            f"{normalized_benchmark_id} does not have a confirmed total-return series; "
+            f"{normalized_benchmark_id} does not have a confirmed analytical return source; "
             "portfolio-relative research metrics are unavailable."
         )
         benchmark_nav = pd.Series(dtype="float64")
@@ -3499,6 +3523,17 @@ def _build_backtest_benchmark_comparison_from_state(
             benchmark_nav = pd.Series(dtype="float64")
 
     benchmark_points, benchmark_return_map = _build_sampled_benchmark_points(benchmark_nav, normalized_points)
+    if benchmark_points and normalized_points and benchmark_points[0]["date"] != normalized_points[0]["date"]:
+        benchmark_warnings.append(
+            "Benchmark comparison begins at the first confirmed observation in the requested period."
+        )
+    if not benchmark_points and normalized_points and not benchmark_nav.empty:
+        benchmark_warnings.append("No confirmed benchmark observation is available in the requested period.")
+    if (benchmark_points and normalized_points
+            and benchmark_points[-1]["date"] != normalized_points[-1]["date"]):
+        benchmark_warnings.append(
+            "Benchmark comparison stops at the last continuously confirmed return interval."
+        )
 
     benchmark_payload = {
         "instrument_id": normalized_benchmark_id,
@@ -3506,36 +3541,36 @@ def _build_backtest_benchmark_comparison_from_state(
         "points": benchmark_points,
         "metrics": _build_backtest_metrics(benchmark_points, benchmark_return_map),
         "warnings": benchmark_warnings,
+        "return_contract": benchmark_nav.attrs.get("return_contract"),
     }
 
     relative_metrics = None
     common_return_dates = sorted(set(portfolio_return_map).intersection(benchmark_return_map))
     if common_return_dates:
-        active_points: list[dict[str, object]] = []
-        active_return_map: dict[str, float] = {}
-        active_nav_value = 1.0
-        if normalized_points:
-            active_points.append({"date": normalized_points[0]["date"], "value": active_nav_value})
-        for date_key in common_return_dates:
-            active_return = float(portfolio_return_map[date_key]) - float(benchmark_return_map[date_key])
-            active_return_map[date_key] = active_return
-            active_nav_value *= 1.0 + active_return
-            active_points.append({"date": date_key, "value": active_nav_value})
-        active_metrics = _build_backtest_metrics(active_points, active_return_map)
         portfolio_common = [float(portfolio_return_map[date_key]) for date_key in common_return_dates]
         benchmark_common = [float(benchmark_return_map[date_key]) for date_key in common_return_dates]
+        active_returns = np.asarray(portfolio_common) - np.asarray(benchmark_common)
         portfolio_period_return = _compound_return(portfolio_common)
         benchmark_period_return = _compound_return(benchmark_common)
-        tracking_error = _safe_float(active_metrics.get("annualized_volatility"))
-        parsed_dates = [_parse_iso_date(item) for item in common_return_dates]
-        periods_per_year = _infer_periods_per_year([item for item in parsed_dates if item is not None])
+        starts = {right["date"]: left["date"] for left, right in zip(benchmark_points, benchmark_points[1:])}
+        start_date, end_date = starts[common_return_dates[0]], common_return_dates[-1]
+        elapsed_days = (date.fromisoformat(end_date) - date.fromisoformat(start_date)).days
+        periods_per_year = len(common_return_dates) / elapsed_days * 365.25
+        tracking_error = (float(np.std(active_returns, ddof=1) * sqrt(periods_per_year))
+                          if len(active_returns) > 1 else None)
         information_ratio = (
-            float((np.mean(list(active_return_map.values())) * periods_per_year) / tracking_error)
+            float(np.mean(active_returns) * periods_per_year / tracking_error)
             if tracking_error is not None and tracking_error > 1e-12
             else None
         )
+        # Arithmetic active returns are differences, not investable wealth
+        # growth factors. Compounding them invents a path (possibly negative)
+        # and meaningless drawdown/Sharpe statistics.
         relative_metrics = {
-            **active_metrics,
+            "start_date": start_date,
+            "end_date": end_date,
+            "observation_count": len(common_return_dates),
+            "return_measure": "simple",
             "excess_return": (
                 portfolio_period_return - benchmark_period_return
                 if portfolio_period_return is not None and benchmark_period_return is not None
@@ -4707,6 +4742,7 @@ def build_current_target_backtest(
     warnings: list[str] = list(RESEARCH_BACKTEST_METHODOLOGY_WARNINGS)
     methodology = {
         "solver_version": RESEARCH_TARGET_SOLVER_VERSION,
+        "return_measure": "simple",
         "risk_attribution_scope": "portfolio" if comparator_taxonomy_node_id is None else "selected_research_scope",
         "name": "Current-target historical simulation",
         "point_in_time_universe": False,
@@ -4835,13 +4871,15 @@ def build_current_target_backtest(
                 retain_missing_valuations=True,
             )
         except ValueError as error:
-            warnings.append(f"{instrument_id} excluded from backtest: {error}")
-            continue
+            raise ValueError(f"Historical return path unavailable for {instrument_id}: {error}") from error
         if nav_series.empty:
             continue
         nav_by_instrument[instrument_id] = nav_series
         first_observation_by_instrument[instrument_id] = nav_series.index[0].isoformat()
         warnings.extend(instrument_warnings)
+
+    methodology["input_return_series"] = {iid: series.attrs.get("return_contract")
+                                           for iid, series in nav_by_instrument.items()}
 
     sampled_nav_by_instrument = _build_backtest_sampled_nav_by_instrument(
         nav_by_instrument,
@@ -4906,11 +4944,21 @@ def build_current_target_backtest(
         else {"events": [], "nav_points": [], "warnings": []}
     )
     warnings.extend(list(derivative_context.get("warnings") or []))
-    returns_by_instrument = {
-        instrument_id: nav.sort_index().pct_change(fill_method=None).iloc[1:].replace([np.inf, -np.inf], np.nan)
-        for instrument_id, nav in sampled_nav_by_instrument.items()
-        if instrument_id not in missing_initial_anchors
-    }
+    returns_by_instrument = {}
+    for instrument_id, nav in sampled_nav_by_instrument.items():
+        if instrument_id in missing_initial_anchors:
+            continue
+        contract = nav_by_instrument[instrument_id].attrs.get("return_contract") or {}
+        coverage = nav_by_instrument[instrument_id].attrs.get("observation_coverage") or {}
+        intervals = build_return_intervals(
+            [{"date": day, "value": value} for day, value in nav.sort_index().items()],
+            source_settings=contract,
+            quote_basis=(contract.get("quote_basis")
+                         if coverage.get("gap_detection_basis") != "base_currency_components" else None),
+            break_dates=[*coverage.get("gap_dates", []), *coverage.get("invalid_return_dates", [])],
+        )
+        returns_by_instrument[instrument_id] = pd.Series(
+            {date.fromisoformat(point["date"]): point["value"] for point in intervals}, dtype="float64")
     scheduled_rebal_dates = _backtest_rebalance_dates(
         start_date=earliest_start_date,
         end_date=as_of_date,

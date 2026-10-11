@@ -1784,11 +1784,13 @@ describe('Transactions rendered page contract', () => {
     expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
   })
 
-  it('retries price preparation for an already registered security without usable prices', async () => {
+  it.each(['fmp', 'futu'] as const)('retries price preparation using the configured %s source for a registered security', async (provider) => {
     const registered = { ...etfInstrument, instrument_id: 'shv', instrument_name: 'Treasury ETF',
+      source_settings: { source_api_profile: provider },
       identifiers: [
         { identifier_type: 'exchange_ticker', identifier_value: 'SHV', is_primary: true },
         { identifier_type: 'provider_symbol', identifier_value: 'fmp:SHV', is_primary: false },
+        { identifier_type: 'provider_symbol', identifier_value: 'futu:US.SHV', is_primary: false },
       ], latest_market_data: [], coverage_state: 'unavailable' }
     apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [registered] })
     apiMocks.materializePortfolioSecurity.mockResolvedValue({ ...registered, latest_market_data: etfInstrument.latest_market_data, coverage_state: 'complete' })
@@ -1801,7 +1803,7 @@ describe('Transactions rendered page contract', () => {
     await user.click(await within(dialog).findByRole('button', { name: /SHV.*Treasury ETF/ }))
     await waitFor(() => expect(search).toHaveValue('SHV · Treasury ETF'))
     expect(apiMocks.materializePortfolioSecurity).toHaveBeenCalledWith('3', {
-      instrument_type: 'etf', catalog_provider: 'fmp', catalog_symbol: 'SHV',
+      instrument_type: 'etf', catalog_provider: provider, catalog_symbol: provider === 'futu' ? 'US.SHV' : 'SHV',
     })
     expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
   })

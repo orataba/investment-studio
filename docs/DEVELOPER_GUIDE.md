@@ -180,7 +180,7 @@ npm --prefix apps/briefing/frontend ci
 运行时 secret 只从仓库外目录或显式进程环境加载；各 backend 目录只保留 `.env.example` 键名模板，
 不创建 `.env` 或 symlink。密码使用权限为 `0600` 的 `.pgpass`，不要写进 URL、文档、聊天或 Git。
 
-需要八个 API/前端服务和每日刷新长期运行时，使用受控安装器：
+需要八个 API/前端服务、独立研究执行服务和每日刷新长期运行时，使用受控安装器：
 
 ```bash
 INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio' \
@@ -228,7 +228,7 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 - 相关回归测试和 `all-local` 通过；
 - 涉及 PostgreSQL 行为时专用库 integration tests 通过且没有 skip；
 - 当前 migration heads 与 live audit 通过；
-- 本机或服务器目标的八个 API/前端服务及 Regime 独立服务与健康检查通过；
+- 本机或服务器目标的八个 API/前端服务、研究执行服务及 Regime 独立服务与健康检查通过；
 - 文档描述当前合同；一次性 Review、发布数字和排查证据留在任务或版本历史，不进入长期文档；
 - 没有具体高严重度缺陷；暂不支持的产品能力明确写成边界，不用 fallback 假装支持。
 

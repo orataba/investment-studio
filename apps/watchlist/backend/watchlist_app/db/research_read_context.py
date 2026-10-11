@@ -30,6 +30,25 @@ def derive_read_context(context):
         # Malformed retained scopes must keep failing closed in their readers.
         return context
     result = {key: value for key, value in context.items() if key in EXACT_FIELDS}
+    # A risk decision consumes the complete case/metric/limitation surface, not
+    # recursively embedded raw calculations. Exact originals remain addressable.
+    if context.get("risk_run"):
+        from watchlist_app.services.risk_evidence_projection import risk_snapshot_projection
+        for key, side in (("risk_inputs", "current"), ("prior_inputs", "previous")):
+            if key in context:
+                result[key] = risk_snapshot_projection(context[key], side)
+        for key in ("risk_input_version", "prepared_at", "catalogue"):
+            if key in context:
+                result[key] = context[key]
+    if "computed_metrics" in context:
+        result["computed_metrics"] = [{**{key: row.get(key) for key in
+            ("source_id", "source_type", "instrument_id", "title", "as_of")},
+            "data": {"analysis_kind": (row.get("data") or {}).get("analysis_kind")},
+            **({"input_series": []} if "input_series" in row else {})}
+            for row in context["computed_metrics"] or []]
+    if "tool_evidence" in context:
+        result["tool_evidence"] = [{key: row.get(key) for key in
+            ("source_id", "tool", "request", "retrieved_at")} for row in context["tool_evidence"] or []]
     if "sources" in context:
         result["sources"] = sources(context["sources"])
     if "reviews" in context:

@@ -28,6 +28,7 @@ source "$RUNTIME_ENV_HELPER"
 MANAGED_UNITS=(
   "$UNIT_PREFIX-home-api.service"
   "$UNIT_PREFIX-watchlist-api.service"
+  "$UNIT_PREFIX-research-worker.service"
   "$UNIT_PREFIX-portfolio-api.service"
   "$UNIT_PREFIX-briefing-api.service"
   "$UNIT_PREFIX-home-web.service"
@@ -274,7 +275,7 @@ WRITER_UNITS=(
   "${MANAGED_UNITS[@]}"
   "${RETIRED_UNITS[@]}"
 )
-# Application-only failure cleanup owns eight apps, not independent collectors.
+# Application-only failure cleanup owns application services, not independent collectors.
 if [[ "$RUN_MIGRATIONS" != "true" ]]; then
   UNIT_STATE_UNITS=("${MANAGED_UNITS[@]}")
   ACTIVE_RESTORE_UNITS=("${MANAGED_UNITS[@]}")
@@ -336,6 +337,41 @@ $schema_environment_lines
 ExecStart=$exec_start_prefix$PYTHON_BIN -m uvicorn $module --host $API_HOST --port $port
 Restart=always
 RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+  chmod 600 "$service_file"
+}
+
+write_research_worker_service() {
+  local backend_root="$PROJECT_ROOT/apps/watchlist/backend"
+  local service_file="$UNIT_OUTPUT_DIR/$UNIT_PREFIX-research-worker.service"
+  cat > "$service_file" <<EOF
+[Unit]
+Description=Investment Studio research execution worker
+After=network-online.target $UNIT_PREFIX-home-api.service $UNIT_PREFIX-watchlist-api.service
+Wants=network-online.target $UNIT_PREFIX-home-api.service $UNIT_PREFIX-watchlist-api.service
+
+[Service]
+Type=simple
+WorkingDirectory=$backend_root
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONNOUSERSITE=1
+Environment=PYTHONPATH=$PROJECT_ROOT/packages/identity:$backend_root:$PROJECT_ROOT/shared-data/instruments/python:$PROJECT_ROOT/shared-data/market
+EnvironmentFile=$(printf '%q' "$WATCHLIST_ENV_FILE")
+EnvironmentFile=$(printf '%q' "$MARKET_ENV_FILE")
+Environment=INVESTMENT_STUDIO_SECRET_ROOT=$(printf '%q' "$ENV_ROOT")
+ExecStart=$PYTHON_BIN -m watchlist_app.research_worker
+Restart=always
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=45
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
 StandardOutput=journal
 StandardError=journal
 
@@ -575,6 +611,7 @@ write_api_service "home" "home/backend" "home_api.main:app" "$HOME_API_PORT"
 write_api_service "watchlist" "apps/watchlist/backend" "watchlist_app.main:app" "$WATCHLIST_API_PORT"
 write_api_service "portfolio" "apps/portfolio/backend" "portfolio_app.main:app" "$PORTFOLIO_API_PORT"
 write_api_service "briefing" "apps/briefing/backend" "briefing_app.main:app" "$BRIEFING_API_PORT"
+write_research_worker_service
 write_web_service "home" "home/frontend" "$HOME_WEB_PORT" "$HOME_API_PORT"
 write_web_service "watchlist" "apps/watchlist/frontend" "$WATCHLIST_WEB_PORT" "$WATCHLIST_API_PORT"
 write_web_service "portfolio" "apps/portfolio/frontend" "$PORTFOLIO_WEB_PORT" "$PORTFOLIO_API_PORT"
@@ -656,6 +693,7 @@ if [[ "$START_SERVICES" == "true" ]]; then
     echo "Managed systemd service failed its readiness gate: $url" >&2
     exit 1
   fi
+  systemctl --user is-active --quiet "$UNIT_PREFIX-research-worker.service"
 fi
 
 if [[ "$RUN_MIGRATIONS" == "true" ]]; then

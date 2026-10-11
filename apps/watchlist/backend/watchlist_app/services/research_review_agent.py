@@ -56,11 +56,15 @@ def run_review_agent(packet, schema, instructions, record):
             "--patch", str(outcome_patch),
             "Start with read_review_context overview for the compact receipt contract and bound object index. "
             "Read the complete draft, acquisition limits, "
-            "applicable previous judgments and relevant complete originals through paged tools. Check all proposed "
+            "applicable previous judgments and relevant original evidence through paged tools. Read the passages "
+            "needed to assess each text citation, including qualifying context; passage delivery is not full-document "
+            "coverage or proof that a claim is supported. Empty comparison results require their coverage, clocks "
+            "and limitations, not nonexistent rows. Check all proposed "
             "objects, numerical units and information clocks, plus contradictions across objects. Work iteratively "
             "with tools; read a listed response_schema path only for a specific correction or validation error, "
             "not every optional correction branch. After automatic compaction reread exact original source_id/path when needed. Submit one "
             "complete receipt object through submit_review_receipts, repair any validation errors, then briefly acknowledge acceptance."]
+        output = None
         try:
             # The outer research process owns the wall-clock deadline and kills
             # this entire process group on timeout. Harness retains its native
@@ -68,6 +72,24 @@ def run_review_agent(packet, schema, instructions, record):
             process = subprocess.run(command, cwd=root / "apps/watchlist/backend", env=env,
                                      capture_output=True, text=True, check=False)
             metadata.update(exit_code=process.returncode, stage="agent_finished")
+            if output_path.exists():
+                import jsonschema
+                from watchlist_app.services.sector_fact_review import _Checks
+                try:
+                    accepted = json.loads(output_path.read_text())
+                    if not isinstance(accepted, dict) or set(accepted) != {"receipts", "result"}:
+                        raise ValueError("Invalid accepted review envelope")
+                    jsonschema.validate(accepted["receipts"], schema)
+                    _Checks.model_validate(accepted["result"])
+                except (OSError, ValueError, TypeError, jsonschema.ValidationError):
+                    metadata["error_type"] = "InvalidReviewReceipt"
+                    raise ReviewAgentError("独立核证收据损坏或不完整，未发布研究。", metadata) from None
+                # submit_review_receipts exposes this file by atomic rename only
+                # after validating the bound receipt and its evidence reads. A
+                # later CLI/acknowledgement failure cannot revoke that acceptance;
+                # application checks and publication still run after this return.
+                output = accepted
+                return output["result"]
             if process.returncode:
                 from watchlist_app.services.research_runner import _provider_failure
                 metadata.update(_failure_signals(process.stderr))
@@ -75,16 +97,13 @@ def run_review_agent(packet, schema, instructions, record):
                 metadata["error_type"] = classified["type"] if classified else "HarnessProcessExit"
                 raise ReviewAgentError(classified["summary"] if classified else "独立核证代理未完成，原草稿及证据已保留。", metadata,
                                        retryable=bool(classified and classified.get("retryable")))
-            if not output_path.exists():
-                metadata["error_type"] = "MissingReviewReceipt"
-                raise ReviewAgentError("独立核证代理没有提交有效收据，未发布研究。", metadata)
-            output = json.loads(output_path.read_text())
-            return output["result"]
+            metadata["error_type"] = "MissingReviewReceipt"
+            raise ReviewAgentError("独立核证代理没有提交有效收据，未发布研究。", metadata)
         finally:
             reads = [json.loads(line) for line in reads_path.read_text().splitlines()] if reads_path.exists() else []
             metadata.update(elapsed_seconds=round(time.monotonic() - started, 3), read_pages=len(reads),
                 source_ids=sorted({row["source_id"] for row in reads if row.get("source_id")}))
             receipt = {"protocol": "bound_draft_v1", "agent_metadata": metadata, "evidence_reads": reads}
-            if output_path.exists():
-                receipt["compact_result"] = json.loads(output_path.read_text())["receipts"]
+            if output is not None:
+                receipt["compact_result"] = output["receipts"]
             record(receipt)

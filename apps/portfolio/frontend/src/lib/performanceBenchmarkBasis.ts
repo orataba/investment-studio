@@ -49,9 +49,9 @@ export function assessPerformanceBenchmarkBasis(
   }
 
   return {
-    basis,
+    basis: null,
     returnSemantics: 'unknown',
-    label: `${displayBasis(basis)} · price / valuation basis`,
-    warning: 'Comparison uses the selected price or NAV series. Distribution treatment is unconfirmed and may affect relative results.',
+    label: `${displayBasis(basis)} · unconfirmed return basis`,
+    warning: 'Benchmark comparison is unavailable: distribution and corporate-action treatment is unconfirmed.',
   }
 }

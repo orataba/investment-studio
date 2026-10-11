@@ -89,6 +89,12 @@ repair; it does not replay the old dump. Health checks establish readiness after
 startup, not the absence of startup writes. The installer manages Studio writers;
 stop or wait for Regime source writers separately before shared-schema maintenance.
 PostgreSQL rollback does not restore external Parquet or original-text files.
+Local installation preserves explicitly disabled scheduled jobs, including cloud
+snapshot sync, on success and rollback. It refreshes their definitions without
+bootstrapping or enabling them; ordinary application services still start. The
+installer reads launchd's disabled state before stopping services or taking a
+backup and stops early if that state cannot be established. This keeps a local
+observation period from accidentally resuming a cloud-to-local restore.
 Clean-cut derivative migrations may reject Alembic downgrade because restoring
 schema shape cannot reconstruct the original business facts. Recovery for such
 migrations uses the retained pre-migration project-schema backup, not a forced

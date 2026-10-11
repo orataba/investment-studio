@@ -380,6 +380,8 @@ def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=No
 def prepare_run(run_id):
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id, with_for_update=True)
+        from watchlist_app.services.research_access import require_entry_access
+        require_entry_access(session, run)
         if not run or not run.context_json.get("risk_run"):
             raise ValueError("风险研判记录不存在。")
         if run.status not in {"queued", "running"}:
@@ -409,6 +411,10 @@ def prepare_run(run_id):
             "risk_delivered_pages": [],
             "catalogue": [{"instrument_id": item["instrument_id"], "name": item["name"]} for item in snapshot["instruments"]]}
         run.context_json.pop("submitted_risk_review", None)
+        from watchlist_app.services.research_access import run_attempt
+        from watchlist_app.services.research_risk_state import risk_read_state
+        state = risk_read_state(session, run_id, run_attempt(run))
+        state.delivered_pages, state.submitted_review = [], None
         session.commit()
         if not snapshot["scope_available"]:
             if snapshot.get("input_retryable"):

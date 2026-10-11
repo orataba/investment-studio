@@ -153,7 +153,7 @@ def test_fund_analytical_consumers_do_not_fallback_to_unit_nav() -> None:
         deepcopy(detail),
         end_date=date(2026, 1, 2),
     ) == []
-    chart_selection = instrument_charts._select_chart_series(
+    chart_selection = instrument_charts._select_analytical_return_series(
         deepcopy(detail),
         as_of_date=date(2026, 1, 2),
     )
@@ -237,7 +237,7 @@ def test_direct_fx_lookup_rejects_mixed_currency_spot_identity():
         instrument_detail_cache={"test-instrument": detail},
         instrument_detail_loader=lambda _instrument_id: None,
     ) is None
-    chart_selection = instrument_charts._select_chart_series(
+    chart_selection = instrument_charts._select_analytical_return_series(
         deepcopy(detail),
         as_of_date=date(2026, 1, 2),
     )

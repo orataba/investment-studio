@@ -4,7 +4,7 @@ from datetime import timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -81,6 +81,15 @@ class IntrospectRequest(Input):
 class ResourceScope(Input):
     kind: Literal["run", "portfolio", "capture", "report"]
     id: str = Field(min_length=1, max_length=200)
+    attempt: str | None = Field(default=None, pattern=r"^[1-9][0-9]*$")
+
+    @model_validator(mode="after")
+    def task_attempt(self):
+        if self.kind == "capture" and self.attempt is None:
+            raise ValueError("截图任务凭证必须绑定本次执行序号")
+        if self.kind not in {"capture", "run"} and self.attempt is not None:
+            raise ValueError("仅截图或研究任务使用执行序号")
+        return self
 
 
 class DelegationRequest(IntrospectRequest):
@@ -459,7 +468,7 @@ def delegate(payload: DelegationRequest, request: Request, db: Db) -> dict:
     if parent_kind != "local":
         expires_at = min(expires_at, utc(parent.expires_at))
     record = Delegation(token_hash=token_hash(token), parent_kind=parent_kind, parent_id=parent.id,
-                        audience=payload.audience, resource_scope=payload.resource_scope.model_dump(), expires_at=expires_at)
+                        audience=payload.audience, resource_scope=payload.resource_scope.model_dump(exclude_none=True), expires_at=expires_at)
     db.add(record)
     db.flush()
     audit(db, "delegation_created", principal["user_id"], record.id, audience=payload.audience, resource_scope=record.resource_scope)

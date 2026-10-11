@@ -3,8 +3,10 @@
 Watchlist's `run_quant_analysis` MCP tool executes Python against explicitly selected,
 already retained sources. It does not enable the Harness's generic `code-runtime`,
 shell or filesystem tools. It stores code, parameters, full input source versions,
-information cutoff, runtime, tables and declarative charts in the run's existing
-`computed_metrics`; normal research review still controls publication.
+information cutoff, runtime, tables and declarative charts in the run's
+`research_run_evidence` records. Selected inputs retain exact source/version
+references instead of copying earlier input trees; historical `computed_metrics`
+remain readable in place. Normal research review still controls publication.
 
 macOS uses `/usr/bin/sandbox-exec` with a deny-default Seatbelt profile. Python's
 runtime, installed site-packages and the disposable input directory are readable.

@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 import logging
 import json
 import re
-from threading import Event, Thread
+from threading import Event
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -271,6 +271,8 @@ def sector_snapshot(iid, session, *, as_of=None):
     gap_labels = {"no_forward_quarter_estimates": "缺少未来季度预期", "no_forward_annual_estimates": "缺少未来年度预期",
                   "missing_price": "缺少行情", "missing_holdings": "缺少持仓", "missing_etf_info": "缺少ETF资料",
                   "unclassified_holding": "持仓类型待核对"}
+    weights = [row.get("weight_percent") for row in stocks]
+    missing_weights = scope["instrument_type"] != "equity" and any(value is None for value in weights)
     sector = SECTORS.get(iid.upper())
     view = {"instrument_id": iid, "ticker": scope["symbol"], "instrument_type": scope["instrument_type"],
         "sector_name": sector or scope["name"], "company_symbols": [h["holding_symbol"] for h in stocks],
@@ -278,11 +280,12 @@ def sector_snapshot(iid, session, *, as_of=None):
         "holdings_as_of": max((str(h.get("as_of_date") or "") for h in raw["holdings"]), default="") or None,
         "holdings_observed_on": max((str(h.get("snapshot_date") or "") for h in raw["holdings"]), default="") or None,
         "holdings_date_note": "holdings_as_of仅表示原始资料明确披露的持仓日期；holdings_observed_on是本项目采集观察日，不是持仓报告期或首次披露日期。",
-        "stock_count": len(stocks), "stock_weight_pct": None if scope["instrument_type"] == "equity" else sum(h.get("weight_percent") or 0 for h in stocks),
+        "stock_count": len(stocks), "stock_weight_pct": None if scope["instrument_type"] == "equity" or missing_weights else sum(weights),
         "annual_estimate_count": sum(bool(_future(h["annual_estimates"], today)) for h in stocks),
         "quarterly_estimate_count": sum(bool(_future(h["quarterly_estimates"], today)) for h in stocks),
         "top_holdings": [] if scope["instrument_type"] == "equity" else [{"symbol": h["holding_symbol"], "name": h["holding_name"], "weight_percent": h["weight_percent"]} for h in stocks[:10]],
-        "data_gaps": [f"{g.get('symbol', '')}：{gap_labels.get(g['kind'], g['kind'])}" for g in raw["gaps"]]}
+        "data_gaps": [f"{g.get('symbol', '')}：{gap_labels.get(g['kind'], g['kind'])}" for g in raw["gaps"]]
+                     + (["部分已确认股票公司的披露权重缺失，不能计算股票权重覆盖。"] if missing_weights else [])}
     companies = {}
     for h in stocks:
         p = h["company_profile"] or {}
@@ -521,8 +524,10 @@ def bind_research_instruments(session, run, ids):
 def prepare_run(run_id):
     from watchlist_app.services.research_workbench import catalogue
     from watchlist_app.services.market_evidence import text_store
+    from watchlist_app.services.research_access import require_entry_access
     with get_session_factory()() as session:
-        run = session.get(ResearchEntry, run_id)
+        run = session.get(ResearchEntry, run_id, with_for_update=True, populate_existing=True)
+        require_entry_access(session, run)
         context = dict(run.context_json)
         cutoff = datetime.now(UTC).isoformat()
         context.update(research_run=True, run_id=run_id, cutoff=cutoff, input_snapshot_cutoff=cutoff,
@@ -788,7 +793,8 @@ def _snapshot_view(snapshot, *, case_id=None, revision=None, recorded_at=None):
             "theme_ids": snapshot.get("theme_ids") or [],
             "event_version_id": snapshot.get("event_version_id") or (event_version_id(case_id, revision) if case_id and revision else None),
             "recorded_at": snapshot.get("recorded_at") or recorded_at or snapshot.get("discovered_at"),
-            "sources": _source_views(snapshot.get("sources") or []), "coverage": snapshot.get("coverage") or []}
+            "sources": snapshot["source_views"] if "source_views" in snapshot else _source_views(snapshot.get("sources") or []),
+            "coverage": snapshot.get("coverage") or []}
 
 
 def event_record(case):
@@ -816,7 +822,8 @@ def event_record(case):
         "discovered_at": evidence.get("discovered_at") or (case.created_at.isoformat() if case.created_at else None),
         "updated_at": evidence.get("progress_at") or (case.updated_at.isoformat() if case.updated_at else None),
         "recording_type": evidence.get("recording_type"),
-        "sources": _source_views(evidence.get("sources") or []), "coverage": evidence.get("coverage") or [],
+        "sources": evidence["source_views"] if "source_views" in evidence else _source_views(evidence.get("sources") or []),
+        "coverage": evidence.get("coverage") or [],
         "history": history}
 
 
@@ -828,7 +835,16 @@ def events_for_instruments(session, ids, *, event_key=None):
     return [event_record(case) for case in cases]
 
 
-def _same_progress(case, item, sources, *, material_only=False):
+def _event_computed_original(source, *, session=None):
+    # Event evidence is an authorized retained-source container. Compare the
+    # exact original observations, not a locator, run ID or compact summary.
+    if source.get("source_type") == "computed_metric" and source.get("retained_reference") and "data" not in source:
+        from watchlist_app.services.research_run_evidence import resolve_reference
+        return resolve_reference(source, session=session, bound_source=True)
+    return source
+
+
+def _same_progress(case, item, sources, *, material_only=False, session=None):
     evidence = case.evidence_json or {}
     fields = ("direction", "information_type", "confidence", "occurred_at",
               "impact_level", "urgency", "impact_analysis", "action_condition")
@@ -849,9 +865,12 @@ def _same_progress(case, item, sources, *, material_only=False):
                 return {key: observations(item) for key, item in value.items() if key not in {
                     "source_id", "batch_id", "observed_at", "available_at", "availability_precision", "input_points", "limitations"}}
             return value
-        computed = {("computed", row.get("instrument_id"),
-                     json.dumps(observations(row.get("data", {})), sort_keys=True, ensure_ascii=False))
-                    for row in rows if row.get("source_type") == "computed_metric"}
+        computed = set()
+        for row in rows:
+            if row.get("source_type") == "computed_metric":
+                original = _event_computed_original(row, session=session)
+                computed.add(("computed", original.get("instrument_id"),
+                    json.dumps(observations(original.get("data", {})), sort_keys=True, ensure_ascii=False)))
         return publications | estimate_points | computed
     # Compare the current assessment. Returning to a prior view is a new revision,
     # even when its wording and admissible sources match a historical snapshot.
@@ -944,13 +963,13 @@ def _event_check_time(session, instrument_id, cutoff):
     return cutoff.astimezone(ZoneInfo(RESEARCH_TIMEZONES[market]) if market else UTC)
 
 
-def _previously_recorded_progress(case, item, sources):
+def _previously_recorded_progress(case, item, sources, *, session=None):
     from types import SimpleNamespace
     for entry in case.history_json or []:
         snapshot = entry.get("snapshot")
         if snapshot and _same_progress(SimpleNamespace(evidence_json=snapshot, body=snapshot.get("body", ""),
                 status=snapshot.get("status", "recorded"), trigger_active=snapshot.get("trigger_active", False)),
-                item, sources, material_only=True):
+                item, sources, material_only=True, session=session):
             return True
     return False
 
@@ -1211,7 +1230,7 @@ def validate_result(session, run, parsed: ReviewResult):
         raise ValueError("研究更新重复或超出本轮绑定的标的范围")
     if context.get("sector_run") and set(requested) != scope:
         raise ValueError("事件检查结果未覆盖本轮全部标的")
-    notebook_evidence = research_sources(context, run.entry_id)
+    notebook_evidence = research_sources(context, run.entry_id, session=session)
     sources = event_evidence_sources(context, run.entry_id, notebook_evidence=notebook_evidence)
     cutoff = datetime.fromisoformat(context["cutoff"])
     seen = set()
@@ -1266,7 +1285,7 @@ def validate_result(session, run, parsed: ReviewResult):
                 for sid in reaction.figure_source_ids:
                     previous_sources = {source["source_id"]: source for source in (existing.evidence_json or {}).get("sources", [])
                                         if source.get("source_id")} if existing else {}
-                    source = notebook_evidence.get(sid) or previous_sources.get(sid) or {}
+                    source = _event_computed_original(notebook_evidence.get(sid) or previous_sources.get(sid) or {}, session=session)
                     data = source.get("data") or {}
                     if (source.get("source_type") != "computed_metric" or source.get("instrument_id") != review.instrument_id
                             or data.get("analysis_kind") != "event_market_reaction"):
@@ -1278,7 +1297,7 @@ def validate_result(session, run, parsed: ReviewResult):
                     factual_time = effective.occurred_at or effective.published_at
                     if existing:
                         previous = existing.evidence_json or {}
-                        if _same_progress(existing, effective, item_sources, material_only=True):
+                        if _same_progress(existing, effective, item_sources, material_only=True, session=session):
                             factual_time = previous.get("development_at") or previous.get("occurred_at") or previous.get("published_at")
                         elif (effective.recording_type == "update" and effective.occurred_at == previous.get("occurred_at")
                                 and effective.published_at != previous.get("published_at")):
@@ -1288,12 +1307,12 @@ def validate_result(session, run, parsed: ReviewResult):
                     if data.get("event_date") and fact_date and str(data["event_date"]) != fact_date:
                         raise ValueError("市场反应窗口与事件日期不一致")
             if existing is not None and _event_follow_up(existing.evidence_json or {}) != "watch" and effective.follow_up == "watch":
-                if _same_progress(existing, effective, item_sources, material_only=True) or _previously_recorded_progress(existing, effective, item_sources):
+                if _same_progress(existing, effective, item_sources, material_only=True, session=session) or _previously_recorded_progress(existing, effective, item_sources, session=session):
                     raise ValueError("重新开始主动跟进需要新实质进展，重复旧材料不能重新激活")
             if existing is None:
                 for other in session.scalars(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id,
                         RiskCase.signal.like("sector:%"))):
-                    if _same_progress(other, effective, item_sources, material_only=True):
+                    if _same_progress(other, effective, item_sources, material_only=True, session=session):
                         raise ValueError(f"同一事项已留存，请沿用事件标识 {other.signal.removeprefix('sector:')}")
             if item.action != "new" and session.scalar(select(RiskCase).where(
                 RiskCase.instrument_id == review.instrument_id, RiskCase.signal == f"sector:{item.event_key}"
@@ -1417,9 +1436,9 @@ def apply_result(session, run, reply):
             if case is not None:
                 retained = {**{source["source_id"]: source for source in (case.evidence_json or {}).get("sources", [])
                                if source.get("source_id")}, **retained}
-            item_sources = [retained[s] for s in source_ids]
-            material_change = case is None or not _same_progress(case, item, item_sources, material_only=True)
-            if case is not None and _same_progress(case, item, item_sources):
+            item_sources = [_event_computed_original(retained[s], session=session) for s in source_ids]
+            material_change = case is None or not _same_progress(case, item, item_sources, material_only=True, session=session)
+            if case is not None and _same_progress(case, item, item_sources, session=session):
                 case.evidence_json = {**case.evidence_json, "checked_at": context["cutoff"]}
                 continue
             if case is not None and _event_follow_up(case.evidence_json or {}) != "watch" and item.follow_up == "watch" and not material_change:
@@ -1675,7 +1694,8 @@ def _pending_research_risk_ids(session):
 def _run_daily_reviews(stop):
     from studio_identity import current_principal
     from watchlist_app.services.research_access import research_context_projection, research_projection_rows
-    from watchlist_app.services.research_runner import run_analysis, same_research_initiator
+    from watchlist_app.services.research_runner import same_research_initiator
+    from watchlist_app.services.research_execution import enqueue_run
     from watchlist_app.services.research_workbench import portfolio_options
     from watchlist_app.services.risk_officer import begin_run as begin_risk_run
     from watchlist_app.services.risk_review_state import current_scope as read_risk_scope
@@ -1684,6 +1704,18 @@ def _run_daily_reviews(stop):
         from studio_identity import principal_context, service_principal
         with principal_context(service_principal("watchlist")):
             return review_group_authenticated(ids, recovery_id)
+
+    def wait_for_execution(run_id):
+        # Dispatch persistence is not job completion. Keep this scheduler slot
+        # occupied while the independent worker owns/awaits execution, so the
+        # next free slot rechecks current clocks instead of freezing a backlog.
+        while True:
+            with get_session_factory()() as session:
+                status = session.scalar(select(ResearchEntry.status).where(ResearchEntry.entry_id == run_id))
+            if status not in {"queued", "running"}:
+                return "ready" if status is not None else "blocked"
+            if stop.wait(1):
+                return "busy"
 
     def review_group_authenticated(ids, recovery_id):
         if stop.is_set():
@@ -1697,13 +1729,11 @@ def _run_daily_reviews(stop):
                     # Do not dispatch it or declare its dependent risk scope ready.
                     return "blocked"
                 run_id, status = run.entry_id, run.status
-                if not created and status == "queued" and not same_research_initiator(run.context_json, current_principal()):
+                if not created and status in {"queued", "running"} and not same_research_initiator(run.context_json, current_principal()):
                     return "busy"
             if created or (status == "queued" and not recovery_id):
-                run_analysis(run_id)
-                with get_session_factory()() as session:
-                    status = session.get(ResearchEntry, run_id).status
-            return "busy" if status in {"queued", "running"} else "ready"
+                enqueue_run(current_principal(), run_id)
+            return wait_for_execution(run_id) if status in {"queued", "running"} else "ready"
         except Exception:
             logging.getLogger(__name__).exception("Daily research failed for %s", ids)
             return "blocked"
@@ -1713,10 +1743,12 @@ def _run_daily_reviews(stop):
             with get_session_factory()() as session:
                 run, created = begin_risk_run(session, **scope, scheduled_dates=dates)
                 run_id, status = run.entry_id, run.status
-                if not created and status == "queued" and not same_research_initiator(run.context_json, current_principal()):
+                if not created and status in {"queued", "running"} and not same_research_initiator(run.context_json, current_principal()):
                     return
             if created or status == "queued":
-                run_analysis(run_id)
+                enqueue_run(current_principal(), run_id)
+            if status in {"queued", "running"}:
+                wait_for_execution(run_id)
         except Exception:
             logging.getLogger(__name__).exception("Daily risk assessment failed for %s", scope)
 
@@ -1835,18 +1867,3 @@ def _run_daily_reviews(stop):
                 return
             if not stop.is_set():
                 assess_risk(*next_risk)
-
-
-def start_sector_worker():
-    """Review active instruments with configured concurrency and retained deduplication."""
-    stop = Event()
-    def work():
-        while not stop.is_set():
-            try:
-                run_daily_reviews(stop)
-            except Exception:
-                logging.getLogger(__name__).exception("Daily research scope could not be read")
-            stop.wait(60)
-    thread = Thread(target=work, name="daily-research", daemon=True)
-    thread.start()
-    return thread, stop

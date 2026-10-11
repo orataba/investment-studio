@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from studio_identity import current_principal, issue_delegation, revoke_delegation
+from studio_identity import current_principal, issue_delegation
 
 from fastapi import (
     APIRouter,
@@ -46,6 +46,7 @@ from portfolio_app.services.transaction_captures import (
     create_transaction_capture,
     create_transaction_capture_analysis_revision,
     create_transaction_capture_batch,
+    finish_transaction_capture_analysis_run,
     get_transaction_capture,
     get_transaction_capture_batch,
     list_transaction_capture_batches,
@@ -236,23 +237,28 @@ def start_portfolio_transaction_capture_analysis(
     """Queue the restricted DeepSeek harness without waiting for model completion."""
 
     _capture_batch_or_404(portfolio_id, batch_id)
-    run_token = issue_delegation(current_principal(), "portfolio", {"kind": "capture", "id": batch_id})
     try:
         batch = queue_transaction_capture_analysis_run(
             portfolio_id=portfolio_id,
             batch_id=batch_id,
         )
     except TransactionCaptureBatchNotFoundError as error:
-        revoke_delegation(run_token)
         raise HTTPException(status_code=404, detail=str(error)) from error
     except TransactionCaptureAnalysisRunConflictError as error:
-        revoke_delegation(run_token)
         raise HTTPException(status_code=409, detail=str(error)) from error
+    attempt = int(batch["analysis_run_attempt"])
+    try:
+        run_token = issue_delegation(current_principal(), "portfolio",
+                                     {"kind": "capture", "id": batch_id, "attempt": str(attempt)})
+    except Exception:
+        finish_transaction_capture_analysis_run(portfolio_id=portfolio_id, batch_id=batch_id,
+            attempt=attempt, succeeded=False, error="无法取得本次截图分析凭证，分析尚未启动。请重新分析。")
+        raise
     background_tasks.add_task(
         run_transaction_capture_analysis,
         portfolio_id=portfolio_id,
         batch_id=batch_id,
-        attempt=int(batch["analysis_run_attempt"]),
+        attempt=attempt,
         run_token=run_token,
     )
     return TransactionCaptureBatchRecord.model_validate(batch)
@@ -476,9 +482,13 @@ def create_portfolio_transaction_capture_analysis_revision(
             transaction_import=transaction_import,
             preview=preview.model_dump(mode="json") if preview is not None else None,
             referenced_capture_ids=_analysis_referenced_capture_ids(payload),
+            analysis_run_attempt=(int(current_principal().resource_scope["attempt"])
+                                  if payload.source == "assistant" else None),
         )
     except TransactionCaptureBatchNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except TransactionCaptureAnalysisRunConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 

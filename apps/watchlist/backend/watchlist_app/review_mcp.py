@@ -1,6 +1,7 @@
-"""A separate Harness reviewer can read only its immutable local evidence packet.
+"""A separate Harness reviewer reads its fixed packet and retained quant inputs.
 
-No database, network, research mutation, shell or generation tools are exposed.
+Only the bound run API resolves an exact retained input; no arbitrary network,
+database, research mutation, shell or generation tools are exposed.
 The output is a draft-bound receipt; the application owns validation/publication.
 """
 import json
@@ -9,7 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from functools import wraps
 from mcp.server import MCPServer
-from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from mcp.types import ToolAnnotations
+from watchlist_app.mcp_json import compact_json_result
 from watchlist_app.services.research_read_projection import checked_overview, read_page, shape, source_index
 from watchlist_app.services.sector_review_protocol import review_receipt_contract
 
@@ -42,7 +44,7 @@ def _record_read(selector, result):
     path = Path(os.environ["INVESTMENT_STUDIO_REVIEW_READS"])
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps({**selector, **{key: result[key] for key in
-            ("path", "offset", "next_offset", "total", "deferred") if key in result}}, ensure_ascii=False) + "\n")
+            ("path", "offset", "next_offset", "total", "deferred", "text_delivery") if key in result}}, ensure_ascii=False) + "\n")
 
 
 def _value_at(value, path):
@@ -84,18 +86,42 @@ def _delivered(value, path, reads):
 
 
 def _evidence_read(source, reads):
+    # These pages describe a resolved input, not the locator in the local packet.
+    # Keep their audit receipts without walking nonexistent local original paths
+    # or counting a locator as delivery of its original.
+    reads = [row for row in reads if not row.get("retained_input")]
     fields = {"text", "content_text", "body", "snapshot", "data", "input_series", "company", "financials", "changes", "observations", "unmatched",
               "background", "event", "timeline", "analysis", "lesson", "outcome"}
-    # A selected complete subpath is sufficient; an unselected years-long table
-    # elsewhere in the same retained source does not have to enter model context.
+    # This checks delivery, not whether a passage proves the proposed claim.
+    # The reviewer still owns that judgment. Complete draft/acquisition coverage
+    # uses _complete separately; citing a passage does not assert a whole article
+    # was read, nor require unrelated portions to enter model context.
     def substantive(value, path):
         return isinstance(value, (dict, list)) and bool(value) or (
-            path[-1] in {"text", "content_text", "body", "description"} and isinstance(value, str) and bool(value))
+            path[-1] in {"text", "content_text", "body", "description"} and isinstance(value, str)
+            and bool(value.strip()))
+
+    # A frozen estimate comparison can explicitly report no changes. Its empty
+    # result arrays alone say nothing about comparability or missing coverage.
+    # Count that result only with its complete coverage, clocks and limitations;
+    # neither a directory nor an isolated [] qualifies.
+    empty_estimates = (source.get("source_type") == "analyst_estimate_changes"
+        and all(source.get(key) == [] for key in ("changes", "observations", "unmatched"))
+        and isinstance(source.get("coverage"), dict) and bool(source["coverage"])
+        and all(key in source for key in ("status", "current_snapshot", "previous_snapshot", "gaps", "semantics")))
+    estimate_context = ("status", "current_snapshot", "previous_snapshot", "coverage", "changes", "observations",
+                        "unmatched", "gaps", "semantics", "gap_codes", "comparison_basis")
+    if empty_estimates and all(_delivered(source, [key], reads) for key in estimate_context if key in source):
+        return True
 
     for row in reads:
         path = row.get("path", [])
         if path and path[0] in fields:
             value = _value_at(source, path)
+            if isinstance(value, str):
+                end = row["next_offset"] if row.get("next_offset") is not None else row["total"]
+                if substantive(value[row["offset"]:end], path):
+                    return True
             if substantive(value, path) and _complete(value, path, reads):
                 return True
             if isinstance(value, dict):
@@ -107,13 +133,13 @@ def _evidence_read(source, reads):
                 if any(tuple([*path, key]) not in deferred and substantive(value[key], [*path, key])
                        for key in keys[row["offset"]:end]):
                     return True
-        if not path and _complete(source, [], reads) and any(source.get(key) for key in fields):
+        if not path and _complete(source, [], reads) and any(substantive(source.get(key), [key]) for key in fields):
             return True
         if not path:
             keys = list(source)
             end = row["next_offset"] if row.get("next_offset") is not None else row["total"]
             deferred = {tuple(item["path"]) for item in row.get("deferred", [])}
-            if any(key in fields and source.get(key) and (key,) not in deferred for key in keys[row["offset"]:end]):
+            if any(key in fields and substantive(source.get(key), [key]) and (key,) not in deferred for key in keys[row["offset"]:end]):
                 return True
     return False
 
@@ -122,24 +148,77 @@ def _tool(function):
     @wraps(function)
     def call(*args, **kwargs):
         payload = function(*args, **kwargs)
-        return CallToolResult(content=[TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, separators=(",", ":")))], structured_content=payload)
-    mcp.tool(annotations=ToolAnnotations(read_only_hint=function.__name__ != "submit_review_receipts",
+        return compact_json_result(payload)
+    mcp.tool(structured_output=False, annotations=ToolAnnotations(read_only_hint=function.__name__ != "submit_review_receipts",
         destructive_hint=False, idempotent_hint=True, open_world_hint=False))(call)
     return function
+
+
+def _retained_quant_input(source, path):
+    data = source.get("data")
+    if (source.get("source_type") != "computed_metric"
+            or not isinstance(data, dict) or data.get("analysis_kind") != "python_quant"):
+        return False
+    # Follow only the declared input-source chain. A locator inside arbitrary
+    # output data is inert, even when it happens to resemble a retained source.
+    selected = list(path)
+    while (len(selected) >= 3 and selected[:2] == ["methodology", "input_sources"]
+            and type(selected[2]) is int and isinstance(source, dict)):
+        method = source.get("methodology")
+        inputs = method.get("input_sources", []) if isinstance(method, dict) else []
+        if not 0 <= selected[2] < len(inputs):
+            return False
+        source = inputs[selected[2]]
+        if isinstance(source, dict) and source.get("source_type") == "computed_metric" and source.get("retained_reference"):
+            return True
+        selected = selected[3:]
+    return False
+
+
+def _read_quant_input(packet, source_id, input_path, prefix, selector, audit, *, offset, limit):
+    from watchlist_app.services.sector_fact_review import _api_request
+    if not packet.get("run_id"):
+        raise ValueError("The review packet has no bound run for this retained input")
+    result = _api_request(packet["run_id"], "computed-read", {
+        "source_id": source_id, "tool": "quant", "section": "inputs",
+        **{key: selector[key] for key in ("instrument_id", "version_id") if key in selector},
+        "path": input_path, "offset": offset, "limit": limit})
+    result = {**result, "source_id": source_id,
+        "path": [*prefix, *result["path"]],
+        "deferred": [{**item, "path": [*prefix, *item["path"]]} for item in result.get("deferred", [])],
+        "read_note": "按next_offset和deferred.path用同一工具及section/source_id继续读取原始输入；未读分支不能视为已核证。"}
+    result.pop("section", None)
+    if audit.get("section"):
+        result["section"] = audit["section"]
+    result = checked_overview(result)
+    _record_read({**audit, "retained_input": True}, result)
+    return result
 
 
 @_tool
 def read_review_context(section: str = "overview", offset: int = 0, limit: int = 20,
                         path: list[str | int] | None = None) -> dict:
-    """Start at overview for the compact receipt contract and bound object/schema-path index. Read the complete draft/acquisition and relevant previous judgments. response_schema is optional: select the listed path for a correction or validation error instead of traversing all possible corrections. Follow next_offset and deferred.path for selected material. sources is only a directory; read_review_source supplies evidence."""
+    """Start at overview for the compact receipt contract and bound object/schema-path index. Read the complete draft/acquisition and relevant previous judgments. In prior_judgment_versions, a quant input locator resolves at path=[version_index,'sources',source_index,'methodology','input_sources',input_index,...] using that exact historical version, never the current same-ID source. response_schema is optional: select the listed path for a correction or validation error instead of traversing all possible corrections. Follow next_offset and deferred.path for selected material. sources is only a directory; read_review_source supplies current evidence."""
     state = _state()
     packet = state["packet"]
+    selected = list(path or [])
+    versions = packet.get("prior_judgment_versions", [])
+    if (section == "prior_judgment_versions" and len(selected) >= 6
+            and type(selected[0]) is int and 0 <= selected[0] < len(versions)
+            and selected[1] == "sources" and type(selected[2]) is int):
+        version = versions[selected[0]]
+        sources = version.get("sources", [])
+        if 0 <= selected[2] < len(sources) and _retained_quant_input(sources[selected[2]], selected[3:]):
+            source_id = sources[selected[2]]["source_id"]
+            selector = {key: version[key] for key in ("instrument_id", "version_id")}
+            return _read_quant_input(packet, source_id, selected[5:], selected[:5], selector,
+                {"section": section, "version_id": version["version_id"], "source_id": source_id}, offset=offset, limit=limit)
     if section == "overview":
         return checked_overview({"run_id": packet.get("run_id"), "cutoff": packet.get("cutoff"),
                 "sections": {key: shape(value) for key, value in packet.items() if key != "sources"},
                 "sources": shape(packet.get("sources", [])), "response_schema": shape(state["response_schema"]),
                 "receipt_contract": review_receipt_contract(packet["draft_reviews"], state["response_schema"]),
-                "next_read": "Read complete draft_reviews and acquisition, then relevant prior judgments and substantive originals. acquisition contains the market coverage summary; full market_coverage is available separately when its details matter. research_dossiers preserves current themes; agenda focus_themes.current_read resolves those same themes. Follow each theme.history_read only for the specific historical claim/version/timeline being checked. All details are in this immutable packet; an index or unread history is not verified evidence. Use the compact receipt_contract above; response_schema paths are for specific corrections, not a required full traversal. Reopen exact source_id and path after compaction. Submit every instrument receipt together."},
+                "next_read": "Read complete draft_reviews and acquisition, then relevant prior judgments and substantive originals. acquisition contains the market coverage summary; full market_coverage is available separately when its details matter. research_dossiers preserves current themes; agenda focus_themes.current_read resolves those same themes. Follow each theme.history_read only for the specific historical claim/version/timeline being checked. Quant methodology.input_sources entries with retained_reference are locators: read_review_source at that exact input path resolves the bound original through this run. An index or unread history is not verified evidence. Use the compact receipt_contract above; response_schema paths are for specific corrections, not a required full traversal. Reopen exact source_id and path after compaction. Submit every instrument receipt together."},
                 pageable_fields=[(["receipt_contract"], {"tool": "read_review_context", "section": "receipt_contract"})])
     value = ([source_index(source) for source in packet["sources"]] if section == "sources"
              else state["response_schema"] if section == "response_schema"
@@ -155,12 +234,25 @@ def read_review_context(section: str = "overview", offset: int = 0, limit: int =
 @_tool
 def read_review_source(source_id: str, offset: int = 0, limit: int = 20,
                        path: list[str | int] | None = None) -> dict:
-    """Read the COMPLETE retained original at a stable source_id, with its clocks, units, methodology and nested input originals. Choose relevant paths; follow next_offset/deferred.path for selected evidence. Indexes and compacted summaries are not proof. Large tables or source text remain available in full without date/sample truncation."""
-    source = next((source for source in _state()["packet"]["sources"] if source["source_id"] == source_id), None)
+    """Read the retained original at a stable source_id. For text, read the relevant passages and enough context to assess each cited claim; a delivered range is not a whole-document read or proof of support. Explicit empty estimate comparisons require their coverage, clocks and limitations as well as result arrays. For a quant methodology.input_sources[index] with retained_reference, its locator is not the original: select path=['methodology','input_sources',index] and continue relevant returned paths with this SAME source_id. Only bound input-source positions resolve references; arbitrary data fields do not. Follow next_offset/deferred.path when the full selected value is needed. Indexes and compacted summaries are not proof; no dates or samples are truncated."""
+    packet = _state()["packet"]
+    source = next((source for source in packet["sources"] if source["source_id"] == source_id), None)
     if source is None:
         raise ValueError("Source is not in this immutable review packet")
-    result = read_page(source, {"source_id": source_id}, offset=offset, limit=limit, path=path)
-    _record_read({"source_id": source_id}, result)
+    path = list(path or [])
+    if _retained_quant_input(source, path):
+        selector = packet.get("computed_input_reads", {}).get(source_id, {})
+        return _read_quant_input(packet, source_id, path[2:], path[:2], selector,
+            {"source_id": source_id}, offset=offset, limit=limit)
+    result = read_page(source, {"source_id": source_id,
+        "input_read_note": "methodology.input_sources中的retained_reference仅是原件入口；按需用同一source_id和path=['methodology','input_sources',索引]读取原件，再续读所选路径。"},
+        offset=offset, limit=limit, path=path)
+    result["read_note"] = "正文仅证明该范围已交付，不代表全文已读或结论有支持。按论点补读所需上下文；未读部分仍未知。"
+    if result["data_type"] == "text":
+        result["text_delivery"] = {"characters": len(result["data"]),
+            "complete_value": result["offset"] == 0 and result["next_offset"] is None}
+    _record_read({"source_id": source_id,
+        **({"version_id": source["version_id"]} if source.get("version_id") is not None else {})}, result)
     return result
 
 
@@ -172,17 +264,39 @@ def submit_review_receipts(receipts: dict) -> dict:
     from watchlist_app.services.sector_fact_review import _Checks
     from watchlist_app.services.sector_research import validate_event_source_consistency
     state = _state()
-    try:
-        jsonschema.validate(receipts, state["response_schema"])
-        result = expand_review_receipts(state["packet"]["draft_reviews"], receipts)
-        checked = _Checks.model_validate(result)
-    except jsonschema.ValidationError as error:
-        # The rejected value may contain private original text; expose only the
-        # schema location/rule and missing schema field names, never its values.
-        detail = error.validator
-        if error.validator == "required" and isinstance(error.instance, dict):
-            detail += "; missing fields: " + ", ".join(key for key in error.validator_value if key not in error.instance)
-        raise ValueError(f"Invalid receipt at {list(error.absolute_path)}: {detail}") from error
+    schema = state["response_schema"]
+    validator_class = jsonschema.validators.validator_for(schema)
+    validator_class.check_schema(schema)
+    errors = list(validator_class(schema).iter_errors(receipts))
+    if errors:
+        # Field names come only from the frozen schema. Never echo a rejected
+        # instance, an unknown/free-form object key, or ValidationError.message.
+        fields, pending = set(), [schema]
+        while pending:
+            node = pending.pop()
+            if isinstance(node, dict):
+                fields.update(node.get("properties", {}))
+                pending.extend(node.values())
+            elif isinstance(node, list):
+                pending.extend(node)
+        details = []
+        for error in errors:
+            path = [part if type(part) is int or part in fields else "<field>" for part in error.absolute_path]
+            detail = f"at {path}: {error.validator}"
+            if error.validator == "required" and isinstance(error.instance, dict):
+                detail += "; missing fields: " + ", ".join(key for key in error.validator_value if key not in error.instance)
+            if isinstance(error.schema, dict) and "properties" in error.schema:
+                detail += "; allowed fields: " + ", ".join(error.schema["properties"])
+                detail += "; required fields: " + ", ".join(error.schema.get("required", []))
+            if error.validator in {"oneOf", "anyOf"}:
+                # Branches are alternatives, not simultaneous repair demands.
+                detail += f"; inspect response_schema path {list(error.absolute_schema_path)} for this object's alternatives"
+            if detail not in details:
+                details.append(detail)
+        raise ValueError("Invalid receipt:\n" + "\n".join(details)
+            + "\nPreserve valid content and resubmit the COMPLETE receipt object; do not send only a partial patch.")
+    result = expand_review_receipts(state["packet"]["draft_reviews"], receipts)
+    checked = _Checks.model_validate(result)
     reads_path = Path(os.environ["INVESTMENT_STUDIO_REVIEW_READS"])
     reads = [json.loads(line) for line in reads_path.read_text().splitlines()] if reads_path.exists() else []
     # The full wire schema is deterministically validated above. Reading every
@@ -194,7 +308,7 @@ def submit_review_receipts(receipts: dict) -> dict:
     if acquisition and not _complete(acquisition, [], [row for row in reads if row.get("section") == "acquisition"]):
         raise ValueError("Read the complete acquisition coverage and information clocks before approving coverage claims")
     versions = state["packet"].get("prior_judgment_versions", [])
-    version_reads = [row for row in reads if row.get("section") == "prior_judgment_versions"]
+    version_reads = [row for row in reads if row.get("section") == "prior_judgment_versions" and not row.get("retained_input")]
     for index, version in enumerate(versions):
         for key in version:
             if key != "sources" and not _delivered(versions, [index, key], version_reads):

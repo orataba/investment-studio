@@ -149,3 +149,13 @@ it('does not invent a missing-session count when the source calendar is unverifi
   await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('full-window coverage cannot be established'))
   expect(screen.queryByText(/uncovered before the sample/)).not.toBeInTheDocument()
 })
+
+it('withholds numbers for missing scenarios and exposes their actual interval dates', async () => {
+  mocks.getPortfolioTailRisk.mockResolvedValue(result({ status: 'unavailable', var_amount: null,
+    var_nav_fraction: null, expected_shortfall_amount: null, expected_shortfall_nav_fraction: null,
+    limitations: ['missing_daily_return_intervals'], missing_intervals: [{ start_date: '2026-09-07', end_date: '2026-09-08' }] }))
+  render(<PortfolioTailRiskPanel portfolioId="p" />)
+  expect(await screen.findByText(/Missing or unavailable intervals within or after/)).toBeTruthy()
+  expect(screen.getByText('2026-09-07 → 2026-09-08')).toBeTruthy()
+  expect(screen.queryByText('2.00%')).toBeNull()
+})

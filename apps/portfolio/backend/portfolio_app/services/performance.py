@@ -16,6 +16,7 @@ from time import monotonic
 from typing import cast
 
 from investment_studio_instrument_core import VALUATION_PROHIBITED_TOTAL_RETURN_BASES
+from investment_studio_instrument_core.return_series import return_interval_unavailable_reason
 from investment_studio_instrument_core.db_models import Instrument
 from sqlalchemy import select
 from studio_runtime import operation
@@ -61,6 +62,7 @@ from portfolio_app.services.portfolio_store import list_option_delivery_links
 from portfolio_app.services.market_data import (
     QuoteSeriesLookup as _MarketPointLookup,
     bind_initial_purchase_valuations,
+    benchmark_total_return_quote_bases,
     initial_purchase_valuation_point,
     previous_quote_point,
     quote_policy_bases,
@@ -407,7 +409,8 @@ def _select_market_point_as_of(
     as_of_date: date,
     lookup: _MarketPointLookup | None = None,
 ) -> dict[str, object] | None:
-    candidate_bases = quote_policy_bases(detail, role)
+    candidate_bases = (benchmark_total_return_quote_bases(detail) if role == "total_return"
+                       else quote_policy_bases(detail, role))
     if role == "valuation" and any(
         quote_basis.strip().lower() in VALUATION_PROHIBITED_TOTAL_RETURN_BASES
         for quote_basis in candidate_bases
@@ -434,8 +437,15 @@ def _previous_market_point_for_selected_point(
     lookup: _MarketPointLookup | None = None,
 ) -> dict[str, object] | None:
     if lookup is not None:
-        return lookup.previous(detail, selected_point=selected_point)
-    return previous_quote_point(detail, selected_point=selected_point).point
+        previous = lookup.previous(detail, selected_point=selected_point)
+    else:
+        previous = previous_quote_point(detail, selected_point=selected_point).point
+    if previous is not None and selected_point is not None and return_interval_unavailable_reason(
+        previous["as_of_date"], selected_point["as_of_date"], source_settings=detail.get("source_settings"),
+        quote_basis=selected_point.get("quote_basis"),
+    ):
+        return None
+    return previous
 
 
 def _resolve_snapshot_window(

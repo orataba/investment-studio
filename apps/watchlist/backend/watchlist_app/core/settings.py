@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     recalc_worker_enabled: bool = True
     research_worker_enabled: bool = True
     research_worker_concurrency: int = Field(default=1, ge=1, le=4)
+    research_worker_lease_seconds: float = Field(default=300, gt=0)
+    research_worker_heartbeat_seconds: float = Field(default=30, gt=0)
     recalc_worker_poll_interval_seconds: float = 1.0
     recalc_worker_shutdown_timeout_seconds: float = 5.0
     recalc_worker_running_job_timeout_seconds: float = 300.0
@@ -29,6 +31,12 @@ class Settings(BaseSettings):
     recalc_worker_reconcile_batch_size: int = 500
     document_storage_root: Path = Path.home() / ".local/share/investment-studio/watchlist-documents"
     document_upload_max_bytes: int = 25 * 1024 * 1024
+
+    @model_validator(mode="after")
+    def _research_lease_contract(self):
+        if self.research_worker_heartbeat_seconds >= self.research_worker_lease_seconds:
+            raise ValueError("research heartbeat must be shorter than its ownership lease")
+        return self
 
     model_config = SettingsConfigDict(
         env_prefix="INVESTMENT_STUDIO_WATCHLIST_",

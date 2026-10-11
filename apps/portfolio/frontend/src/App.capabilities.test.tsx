@@ -10,6 +10,7 @@ vi.mock('./lib/api', () => ({ clearPortfolioApiCache: vi.fn() }))
 const bootstrap = (enabled: boolean) => ({ user_id: 'alice', session_id: 'a', capabilities: { research_enabled: enabled }, access: { user_id: 'alice', portfolio_id: 'private', can_read: true } })
 vi.mock('./pages/ResearchPage', () => ({ default: () => <p>Private research</p> }))
 vi.mock('./pages/OverviewPage', () => ({ default: () => <p>Portfolio overview</p> }))
+vi.mock('./pages/InvestmentViewsPage', () => ({ default: () => <p>Portfolio investment judgments</p> }))
 
 function CurrentPath() {
   return <span data-testid="current-path">{useLocation().pathname}</span>
@@ -26,6 +27,12 @@ function renderResearchLink() {
 
 describe('Portfolio deployment capabilities', () => {
   beforeEach(() => vi.clearAllMocks())
+
+  it('keeps PM judgments available when quantitative research is disabled', async () => {
+    apiMocks.getPortfolioBootstrap.mockResolvedValue(bootstrap(false))
+    render(<LanguageProvider><MemoryRouter initialEntries={['/portfolios/private/investment-views']}><App /></MemoryRouter></LanguageProvider>)
+    expect(await screen.findByText('Portfolio investment judgments')).toBeInTheDocument()
+  })
 
   it.each([false, true])('uses runtime research enablement: %s', async (enabled) => {
     apiMocks.getPortfolioBootstrap.mockResolvedValue(bootstrap(enabled))

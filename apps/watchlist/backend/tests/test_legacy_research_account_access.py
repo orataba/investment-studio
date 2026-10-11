@@ -89,8 +89,9 @@ def test_legacy_portfolio_history_cannot_be_republished_as_team_research(account
         with principal_context(principals["alice"]), pytest.raises(ValueError, match="组合"):
             validate_result(session, source, ReviewResult(reviews=[]))
         source.status = "running"
+        source.context_json = {**source.context_json, "execution": {"attempt": 1}}
         session.commit()
-    principals["bound-old"] = replace(principals["alice"], resource_scope={"kind": "run", "id": "old-unbound"}, credential="bound-old")
+    principals["bound-old"] = replace(principals["alice"], resource_scope={"kind": "run", "id": "old-unbound", "attempt": "1"}, credential="bound-old")
     as_user(client, "bound-old")
     for command in ({"action": "publish_research"}, {"action": "record_view", "note": note}):
         response = client.post("/api/research/runs/old-unbound/user-command", json={
@@ -105,10 +106,11 @@ def test_bound_run_cannot_switch_author_or_use_the_normal_pm_write_api(accounts)
     topic_id = create_topic(client, instrument_ids=["fund-us-agg"])
     with get_session_factory()() as session:
         session.add(ResearchEntry(entry_id="alice-run", topic_id=topic_id, kind="analysis", title="保存为我的观点", status="running",
-            context_json={"research_run": True, "instrument_ids": ["fund-us-agg"], "research_actor": principals["alice"].to_dict()}))
+            context_json={"research_run": True, "instrument_ids": ["fund-us-agg"], "research_actor": principals["alice"].to_dict(),
+                          "execution": {"attempt": 1}}))
         session.commit()
-    principals["alice-task"] = replace(principals["alice"], credential="alice-task", resource_scope={"kind": "run", "id": "alice-run"})
-    principals["bob-forged-task"] = replace(principals["bob"], credential="bob-forged-task", resource_scope={"kind": "run", "id": "alice-run"})
+    principals["alice-task"] = replace(principals["alice"], credential="alice-task", resource_scope={"kind": "run", "id": "alice-run", "attempt": "1"})
+    principals["bob-forged-task"] = replace(principals["bob"], credential="bob-forged-task", resource_scope={"kind": "run", "id": "alice-run", "attempt": "1"})
     assert as_user(client, "bob-forged-task").get("/api/research/runs/alice-run/context").status_code == 403
     as_user(client, "alice-task")
     assert client.get("/api/research/runs/alice-run/context").status_code == 200

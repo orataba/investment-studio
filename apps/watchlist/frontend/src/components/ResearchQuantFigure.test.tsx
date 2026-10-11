@@ -7,6 +7,17 @@ import type { SavedResearchSource } from '../lib/researchDossierApi'
 afterEach(cleanup)
 const source = (): SavedResearchSource => ({ source_id: 'computed:quant', source_type: 'computed_metric', data: { analysis_kind: 'python_quant', summary: '使用留存共同样本。', tables: [{ key: 'observed', title: '实际观测', columns: [{ key: 'date', label: '日期' }, { key: 'return', label: '累计收益', unit: '%' }], rows: [{ date: '2026-01-01', return: 10 }, { date: '2026-01-02', return: 11 }, { date: '2026-01-11', return: 12 }] }], charts: [{ key: 'returns', title: '留存收益路径', kind: 'line', table_key: 'observed', x_key: 'date', series: [{ key: 'return', label: '累计收益' }], y_label: '%' }] } })
 
+it('keeps the volume comparison dates distinct from the figure as-of date', () => {
+  render(<ResearchQuantFigure source={{ source_id: 'computed:observations', source_type: 'computed_metric',
+    as_of: '2026-10-08', display_projection: 'figure', data: { analysis_kind: 'watchlist_observations',
+      metrics: { '成交量较前一交易日（%）': 1 },
+      observation_clocks: { volume: { previous_date: '2026-10-02', current_date: '2026-10-05' } } } }} />)
+  const metric = screen.getByText('成交量较前一交易日（%）').parentElement!
+  expect(metric.textContent).toContain('1.00%')
+  expect(metric.textContent).toContain('2026-10-02 → 2026-10-05')
+  expect(metric.textContent).not.toContain('2026-10-08')
+})
+
 it('plots retained values on proportional dates rather than compressing missing days', () => {
   const { container } = render(<ResearchQuantFigure source={source()} />)
   expect(screen.getByRole('img', { name: '留存收益路径' })).toBeTruthy()

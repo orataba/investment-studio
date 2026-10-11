@@ -65,6 +65,19 @@ def test_accept_keeps_sparse_modules_and_independently_bound_figure_sources():
     assert rows == original
 
 
+def test_review_accepts_question_specific_keys_and_titles_without_a_library_entry():
+    rows = proposed([module(key="capacity-versus-demand", title="新增产能能否获得足够需求")])
+    delta = checked(rows, accepted())
+    saved = retain_notebook(ResearchNotebook.model_validate(delta), None, SOURCES, "custom", CUTOFF,
+                            research_plan=PLAN)
+    assert saved["modules"][0]["title"] == "新增产能能否获得足够需求"
+    assert "method_version" not in saved["modules"][0]
+    unchanged = retain_notebook(ResearchNotebook(modules=[{"key": "capacity-versus-demand"}]), saved,
+                                SOURCES, "check", "2026-09-21T00:00:00+00:00", research_plan=PLAN)
+    assert unchanged["modules"][0]["title"] == saved["modules"][0]["title"]
+    assert unchanged["modules"][0]["version_id"] == saved["modules"][0]["version_id"]
+
+
 def test_module_rejection_preserves_old_analysis_and_does_not_advance_its_check_clock():
     old = retain_notebook(ResearchNotebook(modules=[module()]), None, SOURCES, "old", CUTOFF,
                           research_plan=PLAN)
@@ -217,7 +230,7 @@ def test_research_refinement_cannot_forge_user_authority_or_change_existing_user
     plan = plan_for_mandate({"instrument_type": "etf", "name": "XLK"}, proposed,
                             origin="research", previous_mandate=previous)
     applicable = {item["id"]: item["applicability"] for item in plan["modules"]}
-    assert applicable["equity-aggregation"] == "applicable"
-    assert applicable["rates-credit"] == "unconfirmed"
+    assert applicable["equity-aggregation"] == "optional"
+    assert applicable["rates-credit"] == "optional"
     assert "只研究实际成份" in plan["scope"] and "扩大行业范围" not in plan["scope"]
     assert previous == before

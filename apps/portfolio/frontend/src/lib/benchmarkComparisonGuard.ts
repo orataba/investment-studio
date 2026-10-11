@@ -1,3 +1,4 @@
+import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 import {
   assessPerformanceBenchmarkBasis,
   type PerformanceBenchmarkBasisAssessment,
@@ -8,13 +9,13 @@ export type BenchmarkComparisonMode = 'canonical' | 'exploratory' | 'unavailable
 export type BenchmarkComparisonGuardReason =
   | 'benchmark_total_return_comparable'
   | 'benchmark_price_return_comparable'
-  | 'benchmark_basis_unconfirmed_comparable'
   | 'benchmark_basis_unavailable'
   | 'benchmark_currency_unavailable'
   | 'benchmark_currency_mismatch'
   | 'benchmark_start_anchor_missing'
   | 'benchmark_date_coverage_unavailable'
   | 'benchmark_date_coverage_incomplete'
+  | 'benchmark_return_segment_break'
 
 export type BenchmarkComparisonGuard = {
   mode: BenchmarkComparisonMode
@@ -29,6 +30,7 @@ export type BenchmarkComparisonGuard = {
 }
 
 type BenchmarkPoint = {
+  segment_id?: string | null
   date: string
   value: number
 }
@@ -123,6 +125,14 @@ export function assessBenchmarkComparisonGuard({
       `Benchmark comparison is unavailable because no benchmark observation exists on or before ${startBoundaryDate}.`,
     )
   }
+  const ordered = finitePoints.slice().sort((a, b) => a.date.localeCompare(b.date))
+  const anchor = ordered.filter(point => point.date <= startBoundaryDate).slice(-1)[0]
+  const comparisonPoints = ordered.filter(point => point.date >= (anchor?.date ?? startBoundaryDate) &&
+    (!endBoundaryDate || point.date <= endBoundaryDate))
+  if (!sameReturnSegment(comparisonPoints)) {
+    return unavailableAssessment(basisAssessment, 'benchmark_return_segment_break',
+      benchmarkCurrency, portfolioCurrency, 'Benchmark return history has an unconfirmed corporate-action boundary in this period.')
+  }
 
   let requiredDates = [...new Set(eligiblePortfolioDates)].sort()
   if (endBoundaryDate) {
@@ -171,9 +181,7 @@ export function assessBenchmarkComparisonGuard({
     mode: totalReturn ? 'canonical' : 'exploratory',
     reason: totalReturn
       ? 'benchmark_total_return_comparable'
-      : basisAssessment.returnSemantics === 'price_return'
-        ? 'benchmark_price_return_comparable'
-        : 'benchmark_basis_unconfirmed_comparable',
+      : 'benchmark_price_return_comparable',
     canonicalComparisonEligible: totalReturn,
     relativeComparisonEligible: true,
     basisAssessment,

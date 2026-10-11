@@ -37,6 +37,7 @@ BACKUP_HELPER="$PROJECT_ROOT/infra/postgres/project_schema_backup.sh"
 services=(
   home-api
   watchlist-api
+  research-worker
   portfolio-api
   briefing-api
   home-web
@@ -167,6 +168,8 @@ mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR" \
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-launchd-install.XXXXXX")"
 chmod 700 "$WORK_DIR"
 SERVICE_STATE_FILE="$WORK_DIR/service-state"
+RESTORE_SERVICE_STATE_FILE="$WORK_DIR/restore-service-state"
+DISABLED_SERVICES_FILE="$WORK_DIR/disabled-services"
 PLIST_BACKUP_DIR="$WORK_DIR/plists"
 PLIST_MANIFEST="$WORK_DIR/existing-plists"
 mkdir -p "$PLIST_BACKUP_DIR"
@@ -178,6 +181,55 @@ database_mutated="false"
 backup_ready="false"
 definitions_touched="false"
 writers_may_have_resumed="false"
+
+snapshot_disabled_services() {
+  # A disabled schedule is an explicit operator decision. In particular, loading
+  # cloud-sync can immediately restore cloud data because its plist has RunAtLoad.
+  launchctl print-disabled "gui/$UID" > "$WORK_DIR/launchd-disabled-state"
+  "$PYTHON_BIN" - "$WORK_DIR/launchd-disabled-state" "$DISABLED_SERVICES_FILE" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+lines = Path(sys.argv[1]).read_text().strip().splitlines()
+if not lines or lines[0].strip() != "disabled services = {" or lines[-1].strip() != "}":
+    raise SystemExit("Cannot safely read launchd disabled-service state.")
+disabled = []
+for line in lines[1:-1]:
+    if not line.strip():
+        continue
+    match = re.fullmatch(r'\s*"([^"]+)"\s*=>\s*(true|false|disabled|enabled)\s*', line)
+    if not match:
+        raise SystemExit("Cannot safely read launchd disabled-service state.")
+    if match[2] in {"true", "disabled"}:
+        disabled.append(match[1])
+Path(sys.argv[2]).write_text("".join(label + "\n" for label in disabled))
+PY
+}
+
+is_disabled_schedule() {
+  case "$1" in
+    *-data-refresh|market-sync|cloud-sync)
+      grep -Fxq "$LABEL_PREFIX.$1" "$DISABLED_SERVICES_FILE"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+restore_previous_services() {
+  local service
+  : > "$RESTORE_SERVICE_STATE_FILE"
+  if [[ -f "$SERVICE_STATE_FILE" ]]; then
+    while IFS= read -r service || [[ -n "$service" ]]; do
+      [[ -n "$service" ]] || continue
+      if ! is_disabled_schedule "$service"; then
+        printf '%s\n' "$service" >> "$RESTORE_SERVICE_STATE_FILE"
+      fi
+    done < "$SERVICE_STATE_FILE"
+  fi
+  LABEL_PREFIX="$LABEL_PREFIX" LAUNCH_AGENTS_DIR="$LAUNCH_AGENTS_DIR" \
+    "$SERVICE_CONTROL" start "$RESTORE_SERVICE_STATE_FILE"
+}
 
 snapshot_existing_plists() {
   local service label plist
@@ -267,8 +319,7 @@ cleanup_on_exit() {
     fi
 
     if [[ "$recovery_failed" != "true" ]]; then
-      if ! LABEL_PREFIX="$LABEL_PREFIX" LAUNCH_AGENTS_DIR="$LAUNCH_AGENTS_DIR" \
-        "$SERVICE_CONTROL" start "$SERVICE_STATE_FILE"; then
+      if ! restore_previous_services; then
         restart_failed="true"
         stop_all_managed_services
         echo "Previously loaded services could not be restored consistently and remain stopped." >&2
@@ -292,6 +343,7 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+snapshot_disabled_services
 snapshot_existing_plists
 if ! LABEL_PREFIX="$LABEL_PREFIX" LAUNCH_AGENTS_DIR="$LAUNCH_AGENTS_DIR" \
   "$SERVICE_CONTROL" stop "$SERVICE_STATE_FILE"; then
@@ -397,12 +449,16 @@ printf '%s\n' "${INVESTMENT_STUDIO_PROJECT_SCHEMA_MANIFEST_PATH:-}" > "$WORK_DIR
 for service in "${services[@]}"; do
   label="$LABEL_PREFIX.$service"
   plist="$LAUNCH_AGENTS_DIR/$label.plist"
+  if is_disabled_schedule "$service"; then
+    echo "Preserving disabled schedule: $label"
+    continue
+  fi
   launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
   launchctl bootstrap "$domain" "$plist"
   launchctl enable "$domain/$label"
 done
 
-for service in home-api watchlist-api portfolio-api briefing-api home-web watchlist-web portfolio-web briefing-web; do
+for service in home-api watchlist-api portfolio-api briefing-api home-web watchlist-web portfolio-web briefing-web research-worker; do
   launchctl kickstart -k "$domain/$LABEL_PREFIX.$service"
 done
 
@@ -424,6 +480,13 @@ for ((attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++)); do
       break
     fi
   done
+  if [[ "$healthy" == "true" ]]; then
+    worker_state="$(launchctl print "$domain/$LABEL_PREFIX.research-worker" 2>/dev/null || true)"
+    if ! grep -Eq '^[[:space:]]*state = running$' <<< "$worker_state"; then
+      healthy="false"
+      url="research-worker (running state)"
+    fi
+  fi
   if [[ "$healthy" == "true" ]]; then
     database_mutated="false"
     restart_required="false"

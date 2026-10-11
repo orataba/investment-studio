@@ -630,6 +630,10 @@ function renderCell(
   }
 
   if (isChartFieldKey(fieldKey)) {
+    if (sparkline?.status === 'unavailable') {
+      const reason = sparkline.reason || (zh ? '收益区间不可用' : 'Return window unavailable')
+      return <span title={reason} aria-label={reason}>—</span>
+    }
     const anchorLabel = sparkline?.anchor_date
       ? `${sparkline.anchor_date} to ${sparkline.end_date || 'latest'}`
       : 'unavailable window'
@@ -755,6 +759,11 @@ function primarySharedIdentifier(instrument: SharedInstrumentRecord) {
     instrument.identifiers[0]?.identifier_value ??
     instrument.instrument_id
   )
+}
+
+function sharedInstrumentSourceLabel(instrument: SharedInstrumentRecord, chinese: boolean) {
+  const source = instrument.source_settings?.source_api_profile
+  return source === 'futu' ? (chinese ? '富途' : 'Futu') : source === 'fmp' ? 'FMP' : ''
 }
 
 function rowValueMatchesSearch(value: unknown, query: string): boolean {
@@ -4160,7 +4169,7 @@ export default function WatchlistsPage() {
                           <span className="watchlists-registry-secondary" translate="no">{instrument.instrument_name}</span>
                         </div>
                         <div className="watchlists-registry-meta">
-                          <span>{instrumentTypeLabel(instrument.instrument_type)}</span>
+                          <span>{[instrumentTypeLabel(instrument.instrument_type), sharedInstrumentSourceLabel(instrument, zh)].filter(Boolean).join(' · ')}</span>
                           <span>{currentMemberIds.has(instrument.instrument_id) ? (zh ? '已在此自选表' : 'Already in this watchlist') : (zh ? '已登记' : 'Registered')}</span>
                         </div>
                       </button>
@@ -4169,7 +4178,7 @@ export default function WatchlistsPage() {
                 {!isSearchingInstruments && catalogResults.map((security) => (
                   <button
                     type="button"
-                    key={`${security.instrument_type}:${security.catalog_symbol}`}
+                    key={`${security.instrument_type}:${security.catalog_provider}:${security.catalog_symbol}`}
                     disabled={isAdding || isBatchAdding || currentMemberIds.has(security.existing_instrument_id || '')}
                     className={`watchlists-registry-row ${selectedCatalogSecurity === security ? 'watchlists-registry-row-active' : ''}`}
                     onClick={() => { setSelectedInstrumentId(''); setSelectedCatalogSecurity(security) }}
@@ -4179,7 +4188,7 @@ export default function WatchlistsPage() {
                       <span className="watchlists-registry-secondary" translate="no">{security.name}</span>
                     </div>
                     <div className="watchlists-registry-meta">
-                      <span>{instrumentTypeLabel(security.instrument_type)} · {security.currency_verified && security.currency ? security.currency : (zh ? '币种待核实' : 'Currency to be verified')}</span>
+                      <span>{instrumentTypeLabel(security.instrument_type)} · {security.currency_verified && security.currency ? security.currency : (zh ? '币种待核实' : 'Currency to be verified')} · {security.catalog_provider === 'futu' ? (zh ? '富途' : 'Futu') : 'FMP'}</span>
                       <span>{currentMemberIds.has(security.existing_instrument_id || '') ? (zh ? '已在此自选表' : 'Already in this watchlist') : security.existing_instrument_id ? (zh ? '已登记' : 'Registered') : (zh ? '市场目录 · 添加时登记' : 'Directory · Register on add')}</span>
                     </div>
                   </button>
@@ -4255,10 +4264,7 @@ export default function WatchlistsPage() {
                   }
                 }}
               >
-                <span role={isAdding ? 'status' : undefined}>{isAdding
-                  ? (selectedCatalogSecurity ? (zh ? '正在登记并添加…' : 'Registering and adding…') : 'Adding...')
-                  : (selectedCatalogSecurity && !selectedCatalogSecurity.existing_instrument_id
-                    ? (zh ? '登记并添加' : 'Register and add') : 'Add To Watchlist')}</span>
+                <span role={isAdding ? 'status' : undefined}>{isAdding ? 'Adding...' : 'Add To Watchlist'}</span>
               </button>
             </div>
           </div>

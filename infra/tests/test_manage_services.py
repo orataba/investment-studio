@@ -127,8 +127,8 @@ def test_mac_restart_keeps_loaded_services_registered_and_preserves_data_schedul
     module.manage('investments', 'restart')
 
     commands = [call.args[0] for call in execute.call_args_list]
-    assert len(commands) == 4
+    assert len(commands) == 5
     assert all(command[:3] == ['launchctl', 'kickstart', '-k'] for command in commands)
     assert {command[-1].rsplit('.', 1)[-1] for command in commands} == {
-        'watchlist-api', 'watchlist-web', 'portfolio-api', 'portfolio-web',
+        'watchlist-api', 'watchlist-web', 'research-worker', 'portfolio-api', 'portfolio-web',
     }

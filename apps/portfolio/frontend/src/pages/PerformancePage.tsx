@@ -1,3 +1,4 @@
+import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 import { matchesSystemLabel } from '../../../../../packages/ui/src/i18n'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -986,6 +987,7 @@ export function buildBenchmarkPeriodMetrics(
     return null
   }
   const periodPoints = sortedPoints.filter((point) => point.date >= startAnchorPoint.date && point.date <= endDate)
+  if (!sameReturnSegment(periodPoints)) return null
 
   const dailyReturns = benchmarkAlignedDailyReturns(
     periodPoints,

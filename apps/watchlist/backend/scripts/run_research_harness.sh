@@ -43,7 +43,7 @@ copilot_task="Start with read_research_context overview and read its nonempty pa
 if [[ "${2:-}" == "sector" ]]; then
   copilot_task="Start with read_research_context overview and read_research_instrument overview for every requested instrument_id. Read nonempty incremental_trigger and data_gaps/limitations context sections before investigating or claiming no changes. Read each dossier research_plan/mandate/review_agenda/modules and relevant research sections with read_research_dossier; read shared frameworks and available_modules when refining the method. Read coverage details or catalogue on demand. Follow next_offset and every deferred.path for selected data, preserving the same section/source/version selector; indexes do not count as reading originals. Distinguish an initial instrument investigation from a follow-up review. If no instrument-specific research baseline has ever been established, investigate the retained fundamental, quantitative, pricing and exposure evidence even when no new headline or incremental_trigger exists; generic shared methods, generated mandate metadata and earlier quiet receipts without an instrument-specific judgment or research question do not constitute a completed baseline. Establish an evidence-based initial mandate, a concrete consequential question or a conditional judgment as warranted. If evidence is insufficient, identify the specific decision it limits and the evidence needed; do not wait for the PM to supply your research direction or infer an investment stance from PM workflow status. For the first baseline, establish the concise identity/exposure and return mechanism needed to understand this instrument, using actual retained evidence. Investigate missing modules only when they help the current decision; the method library is not a checklist to fill. Record a specific missing-evidence limit without manufacturing a chapter. For an established baseline, examine the reasoning and evidence of the exact prior judgments under review as well as new information; a changed method requires reassessing affected modules, not rewriting every module on every run. A discovered factual error or unsupported pricing/causal inference is a knowledge correction even without new headlines or changed inputs: revise only the affected assertions, keeping historical versions, and state unknowns or conditional hypotheses where needed. Follow the current agenda with suitable tools. Form or revise forward judgments only when warranted. Submit one review per requested instrument through submit_research_review, using change_kind none, knowledge or investment. A quiet check may have empty summary/events and research=null. Research fields are sparse deltas, not mandatory chapters. Correct real validation errors and briefly acknowledge draft acceptance."
 elif [[ "${2:-}" == "risk" ]]; then
-  copilot_task="Read read_research_context for the scope index, then execute every instrument_overview_pages entry using its tool: read_risk_instruments(offset) for batches or read_risk_instrument(instrument_id) for explicit single entries, reading independent entries in parallel when possible; do not repeat individual overviews. Execute every instrument_detail_reads entry from the scope index using read_risk_instrument. A missing_reads submission error lists exact tools and arguments: read all listed pages, then resubmit the COMPLETE result. Use the overview counts: skip a section if its current and previous counts are both zero. Read all nonempty cases and research_context pages from offset=0 through next_offset=null, including prior-only rows. Read comparisons when needed for performance assessment and follow all pages in that section; unread comparisons cannot support relative-performance conclusions. The research_context contains the complete current PM profile with thesis/counterevidence/monitoring and attribution limits, attributed PM original notes, actively tracked questions/counterevidence and forecasts due for review; distinguish these retained judgments from facts and do not assume a due forecast is fulfilled or wrong. Use sample_dates with comparison_source_id when exact pair-specific alignment is needed. Analyze only these bound retained snapshots. For portfolio scope, also read every portfolio risk module and each derivative holding with read_portfolio_risk. Aggregate researcher risk reports, actual performance and comparisons, quantitative triggers, portfolio allocation/risk/correlation changes and FCN/Option settlement obligations; distinguish unavailable monitoring from safety. Submit the complete concise Chinese risk assessment with submit_risk_review, using shared case IDs and evidence references. Every submission requires summary, priorities and limitations. Correct all tool validation errors by resubmitting the complete result, never only the missing field, then acknowledge acceptance without reprinting JSON. Do not search or trade."
+  copilot_task="Read read_research_context for the scope index, then execute every instrument_overview_pages entry using its tool: read_risk_instruments(offset) for batches or read_risk_instrument(instrument_id) for explicit single entries, reading independent entries in parallel when possible; do not repeat individual overviews. Execute every instrument_detail_reads entry from the scope index using read_risk_instrument. A missing_reads submission error lists exact tools and arguments: read all listed pages, then resubmit the COMPLETE result. Use the overview counts: skip a section if its current and previous counts are both zero. Read all nonempty cases and research_context pages from offset=0 through next_offset=null, including prior-only rows. Read comparisons when needed for performance assessment and follow all pages in that section; unread comparisons cannot support relative-performance conclusions. The research_context contains the complete current PM profile with thesis/counterevidence/monitoring and attribution limits, attributed PM original notes, actively tracked questions/counterevidence and forecasts due for review; distinguish these retained judgments from facts and do not assume a due forecast is fulfilled or wrong. Use sample_dates with comparison_source_id when exact pair-specific alignment is needed. Decision pages preserve computed results, methodology, sample coverage and limitations. read_risk_evidence pointers lead to original text or computation inputs for claim-specific inspection: read originals when the claim depends on them, but do not traverse every nested source or price point merely to satisfy submission. Do not claim an original was verified from its pointer. Analyze only these bound retained snapshots. For portfolio scope, also read every portfolio risk module and each derivative holding with read_portfolio_risk. Aggregate researcher risk reports, actual performance and comparisons, quantitative triggers, portfolio allocation/risk/correlation changes and FCN/Option settlement obligations; distinguish unavailable monitoring from safety. Submit the complete concise Chinese risk assessment with submit_risk_review, using shared case IDs and evidence references. Every submission requires summary, priorities and limitations. Correct all tool validation errors by resubmitting the complete result, never only the missing field, then acknowledge acceptance without reprinting JSON. Do not search or trade."
 fi
 
 if [[ "${2:-}" != "risk" ]]; then
@@ -87,29 +87,26 @@ do
   fi
 done
 
-if [[ "${2:-}" == "sector" ]]; then
-  # Plugin names are literal loader paths, unlike evaluated plugin config.
-  # Keep this task-only observer beside its runner; never edit the pinned runtime.
-  copilot_outcome_patch="$(mktemp "${TMPDIR:-/tmp}/research-outcome.XXXXXX")"
-  trap 'rm -f "$copilot_outcome_patch"' EXIT
-  "$copilot_project_root/.venv/bin/python" -c \
-    'import json,sys; print(json.dumps([{"insert":[{"id":"research-harness-outcome","name":sys.argv[-1]}]}]))' \
-    "$copilot_script_dir/research_harness_outcome.mjs" > "$copilot_outcome_patch"
-fi
+# All entrances retain native stop reasons, including risk and private chat.
+# Plugin names are literal loader paths, unlike evaluated plugin config.
+copilot_outcome_patch="$(mktemp "${TMPDIR:-/tmp}/research-outcome.XXXXXX")"
+trap 'rm -f "$copilot_outcome_patch"' EXIT
+"$copilot_project_root/.venv/bin/python" -c \
+  'import json,sys; print(json.dumps([{"insert":[{"id":"research-harness-outcome","name":sys.argv[-1]}]}]))' \
+  "$copilot_script_dir/research_harness_outcome.mjs" > "$copilot_outcome_patch"
 copilot_command=(/usr/bin/env -i "${copilot_exec_env[@]}" \
   "$copilot_project_root/infra/harness/run.sh" \
   --profile headless \
   --patch "$copilot_project_root/infra/config/deepseek_harness.patch.yml" \
   --patch "$copilot_patch")
-if [[ "${2:-}" == "sector" ]]; then
-  copilot_command+=(--patch "$copilot_outcome_patch")
-fi
+copilot_command+=(--patch "$copilot_outcome_patch")
 copilot_command+=("$copilot_task")
 if [[ "${2:-}" != "risk" ]]; then
   # macOS /bin/bash 3.2 treats an empty array as unset under set -u.
   # Keep the complete command nonempty for automatic research too.
   copilot_review_command=(/usr/bin/env -i "${copilot_exec_env[@]}"
     "INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE=review"
+    "INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW=${INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW:-0}"
     "$copilot_project_root/.venv/bin/python" -m watchlist_app.services.sector_fact_review)
   if [[ "${2:-}" != "sector" ]]; then
     copilot_review_command+=(--conversation)
@@ -127,12 +124,12 @@ if [[ "${2:-}" != "risk" ]]; then
   # A failed generation has no reviewable result. Preserve its exit and reply;
   # starting the reviewer would charge again and replace the actual failure with
   # a misleading missing-draft error.
-  if [[ "${INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW:-0}" == "1" && "${2:-}" == "sector" ]]; then
+  if [[ "${INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW:-0}" == "1" ]]; then
     # The application retained the original bound draft and evidence. Recovery
     # resumes its independent review, without generating another draft or charge.
     printf '\n' | copilot_review_output
   elif copilot_reply="$("${copilot_command[@]}")"; then
-    if [[ "${2:-}" == "sector" && "${INVESTMENT_STUDIO_RESEARCH_GENERATION_ONLY:-0}" == "1" ]]; then
+    if [[ "${INVESTMENT_STUDIO_RESEARCH_GENERATION_ONLY:-0}" == "1" ]]; then
       # The backend gives generation and independent review separate deadlines.
       # The accepted draft is already durable; this reply is only an acknowledgement.
       printf '%s\n' "$copilot_reply"
@@ -145,5 +142,5 @@ if [[ "${2:-}" != "risk" ]]; then
     exit "$copilot_generation_status"
   fi
 else
-  exec "${copilot_command[@]}"
+  "${copilot_command[@]}"
 fi

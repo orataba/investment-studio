@@ -15,6 +15,7 @@ def projection(request, monkeypatch):
     instrument = {
         "instrument_type": "equity" if module is eod else "crypto",
         "currency": "USD",
+        "exchange_code": "XNAS" if module is eod else None,
         "identifiers": [{"identifier_type": "provider_symbol", "identifier_value": f"fmp:{symbol}"}],
     }
     publish = Mock(return_value=(1, 1))
@@ -85,3 +86,62 @@ def test_incomplete_history_never_publishes_a_partial_result(projection, total):
     publish.assert_not_called()
     status.assert_not_called()
     source.query.assert_called_once()
+
+
+@pytest.mark.parametrize("clock, expected", [
+    (datetime(2026, 10, 8, 19, 59, tzinfo=UTC), "2026-10-07"),
+    (datetime(2026, 10, 8, 20, 30, tzinfo=UTC), "2026-10-08"),
+])
+def test_listed_projection_excludes_unclosed_rows_and_shares_capture_clock(monkeypatch, tmp_path, clock, expected):
+    source = eod.NumericStore(eod.MarketSettings(f"sqlite:///{tmp_path / 'numeric.db'}", tmp_path / "numeric"))
+    source.create_schema_for_testing()
+    source.ingest("raw_eod_daily", [[dict(symbol="CLOCK.L", date=day,
+        open=100, high=110, low=90, close=100, adjusted_close=100)
+        for day in ("2026-10-07", "2026-10-08", "2026-10-09")]], source="fixture", observed_at=clock)
+    instrument = {"instrument_type": "equity", "currency": "USD", "exchange_code": "XNAS",
+        "identifiers": [{"identifier_type": "provider_symbol", "identifier_value": "fmp:CLOCK.L"}]}
+    monkeypatch.setattr(eod, "get_instrument", lambda _: instrument)
+    monkeypatch.setattr(eod, "NumericStore", lambda _: source)
+    monkeypatch.setattr(eod.MarketSettings, "from_environment", lambda: object())
+    capture, publish = Mock(return_value=[]), Mock(return_value=(1, 1))
+    monkeypatch.setattr(eod, "ensure_fmp_security_history", capture)
+    monkeypatch.setattr(eod, "upsert_price_history", publish)
+    monkeypatch.setattr(eod, "update_refresh_status", lambda **kwargs: kwargs)
+    try:
+        result = eod.refresh_fmp_eod("fixture", instrument_type="equity", acquire_history=True, now=clock)
+        assert result["status"] == "refreshed"
+        capture.assert_called_once_with("fixture", symbol="CLOCK.L", exchange_code="XNAS", currency="USD", now=clock)
+        dates = {row["as_of_date"] for row in publish.call_args.kwargs["price_bar_rows"]}
+        assert max(dates) == expected
+        assert "2026-10-09" not in dates
+    finally:
+        source.close()
+
+
+@pytest.mark.parametrize("market_calendar, expected", [("XNYS", "2026-10-08"), (None, None), ("UNKNOWN", None)])
+def test_index_projection_uses_source_calendar_without_listing_mic(monkeypatch, market_calendar, expected):
+    from studio_data.services.fmp.client import FmpApiError
+    from studio_data.services.securities import service
+
+    instrument = {"instrument_type": "index", "currency": "USD", "exchange_code": None,
+        "source_settings": {"source_api_profile": "fmp", "market_calendar": market_calendar},
+        "identifiers": [{"identifier_type": "provider_symbol", "identifier_value": "fmp:^INDEX"}]}
+    source, publish, status = Mock(), Mock(return_value=(1, 1)), Mock(side_effect=lambda **kwargs: kwargs)
+    source.query.return_value = {"rows": [dict(date="2026-10-08", symbol="^INDEX",
+        open=100, high=110, low=90, close=100, adjusted_close=100)], "total": 1}
+    monkeypatch.setattr(eod, "get_instrument", lambda _: instrument)
+    monkeypatch.setattr(service, "get_instrument", lambda _: instrument)
+    monkeypatch.setattr(eod, "upsert_price_history", publish)
+    monkeypatch.setattr(eod, "update_refresh_status", status)
+    clock = datetime(2026, 10, 8, 20, 30, tzinfo=UTC)
+    monkeypatch.setattr(eod, "datetime", Mock(now=Mock(return_value=clock)))
+    if expected is None:
+        with pytest.raises(FmpApiError, match="verified source"):
+            service.refresh_security_eod("index", store=source)
+        source.query.assert_not_called()
+        publish.assert_not_called()
+    else:
+        result = service.refresh_security_eod("index", store=source)
+        assert result["status"] == "refreshed"
+        assert source.query.call_args.kwargs["end"] == expected
+        assert len(publish.call_args.kwargs["price_bar_rows"]) == 1

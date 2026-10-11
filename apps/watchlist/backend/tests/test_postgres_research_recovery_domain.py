@@ -123,7 +123,7 @@ def test_worker_attempt_projection_handles_nul_in_unrelated_retained_source(post
             assert run.context_json['execution']['resume'] is True
             run.status = 'completed'
             session.commit()
-    monkeypatch.setattr(research_runner, 'run_analysis', analyze)
+    monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     sector_research.run_daily_reviews(Event())
     assert calls == ['nul-recovery']
     with get_session_factory()() as session:

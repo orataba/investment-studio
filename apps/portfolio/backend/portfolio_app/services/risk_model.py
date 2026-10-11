@@ -10,6 +10,7 @@ import pandas as pd
 from portfolio_app.db.models import PortfolioRecordModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.calculation_frequency import CalculationFrequency
+from portfolio_app.services.market_data import validate_analytical_return_payload
 from portfolio_app.services.holdings_market_profile import (
     is_cash_holding_instrument_id,
     is_pending_monetary_holding,
@@ -141,6 +142,7 @@ def portfolio_risk_model_snapshot(
     return {
         **deepcopy(normalized_policy),
         "model_role": "production",
+        "return_measure": "simple",
         "resolved_calculation_frequency": resolved_frequency,
         "parameters": parameters,
         "parameters_by_frequency": {
@@ -223,6 +225,7 @@ def _return_series_points(row: dict[str, object]) -> list[dict[str, object]]:
 
 
 def _return_series_with_periods(row: dict[str, object]) -> tuple[pd.Series, dict[date, date]]:
+    validate_analytical_return_payload(row.get("instrument_return_series_all") or {}, row.get("instrument_core") or {})
     values: dict[date, float] = {}
     starts: dict[date, date] = {}
     for point in _return_series_points(row):
@@ -230,7 +233,8 @@ def _return_series_with_periods(row: dict[str, object]) -> tuple[pd.Series, dict
             raise ValueError("return series contains a non-object observation")
         raw_date = point.get("date")
         raw_value = _safe_float(point.get("value"))
-        if raw_date is None or raw_value is None:
+        unavailable = point.get("status") == "unavailable" and point.get("value") is None
+        if raw_date is None or raw_value is None and not unavailable:
             raise ValueError("return series contains an observation without a period end or finite value")
         try:
             point_date = date.fromisoformat(str(raw_date)[:10])
@@ -249,9 +253,9 @@ def _return_series_with_periods(row: dict[str, object]) -> tuple[pd.Series, dict
             )
         if point_date in values:
             raise ValueError(f"return series contains duplicate period end {point_date.isoformat()}")
-        if not np.isfinite(raw_value):
+        if not unavailable and (not np.isfinite(raw_value) or raw_value <= -1):
             raise ValueError(f"return ending {point_date.isoformat()} is non-finite")
-        values[point_date] = raw_value
+        values[point_date] = float("nan") if unavailable else raw_value
         starts[point_date] = start_date
     ordered_period_ends = sorted(values)
     for index in range(1, len(ordered_period_ends)):
@@ -356,6 +360,8 @@ def _daily_mark_to_last_return_matrix(
     include_return_series: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, dict[date, date]]]:
     nav_by_key: dict[str, pd.Series] = {}
+    invalid_dates_by_key = {}
+    contracts = {}
     for key, _row, series, period_starts in active:
         if series.empty:  # Foreign monetary exposure has constant native wealth.
             continue
@@ -363,8 +369,15 @@ def _daily_mark_to_last_return_matrix(
         first_end_date = pd.Timestamp(ordered.index[0]).date()
         growth = 1.0
         nav_points: dict[date, float] = {period_starts[first_end_date]: growth}
+        invalid_dates_by_key[key] = []
         for raw_end_date, raw_return in ordered.items():
-            growth *= 1.0 + float(raw_return)
+            if pd.isna(raw_return):
+                # Restart the auxiliary wealth level, retaining an unavailable
+                # interval. A later valid segment must not inherit NaN forever.
+                growth = 1.0
+                invalid_dates_by_key[key].append(pd.Timestamp(raw_end_date).date().isoformat())
+            else:
+                growth *= 1.0 + float(raw_return)
             nav_points[pd.Timestamp(raw_end_date).date()] = growth
         nav_by_key[key] = pd.Series(nav_points, dtype="float64").sort_index()
 
@@ -377,13 +390,23 @@ def _daily_mark_to_last_return_matrix(
             nav_by_key[key] = pd.Series({monetary_start: 1.0}, dtype="float64")
             source_coverage[key] = {"gap_dates": [], "gap_detection_basis": "event_driven"}
         else:
-            source_coverage[key] = (row.get("instrument_return_series_all") or {}).get("observation_coverage") or {}
+            payload = row.get("instrument_return_series_all") or {}
+            source_coverage[key] = dict(payload.get("observation_coverage") or {})
+            source_coverage[key]["invalid_return_dates"] = sorted(set(
+                source_coverage[key].get("invalid_return_dates", []) + invalid_dates_by_key.get(key, [])))
+            contracts[key] = {field: value for field, value in payload.items()
+                              if field in {"instrument_type", "quote_basis", "return_kind", "return_measure", "currency",
+                                           "total_return_segments", "total_return_unavailable_intervals"}}
+        if series.empty:
+            contracts[key] = {"instrument_type": "fx", "quote_basis": "spot", "return_kind": "price_return",
+                              "return_measure": "simple"}
     nav_by_key = {key: nav_by_key[key] for key, _row, _series, _starts in active}
     navs, returns, metadata = align_base_currency_navs(
         nav_by_key, end_date=as_of_date, base_currency=base_currency,
         currency_by_key={key: str((row.get("instrument_core") or {}).get("currency") or "")
                          for key, row, _series, _starts in active},
         coverage_by_key=source_coverage, fx_histories=fx_histories,
+        return_contracts_by_key=contracts,
     )
     if include_return_series:
         for key, row, _series, _starts in active:
@@ -391,10 +414,11 @@ def _daily_mark_to_last_return_matrix(
     aligned_period_starts: dict[str, dict[date, date]] = {
         key: {} for key in nav_by_key
     }
-    ordered_dates = [pd.Timestamp(raw_date).date() for raw_date in returns.index]
-    for index in range(1, len(ordered_dates)):
-        start_date = ordered_dates[index - 1]
-        end_date = ordered_dates[index]
+    # Use the alignment boundary's exact intervals for both identity validation
+    # and covariance annualization, including newly observed FX-only dates.
+    for raw_end, raw_start in returns.attrs["return_period_starts"].items():
+        start_date = date.fromisoformat(raw_start)
+        end_date = date.fromisoformat(raw_end)
         for key in returns.columns:
             if pd.notna(returns.at[end_date, key]):
                 aligned_period_starts[str(key)][end_date] = start_date
@@ -526,7 +550,7 @@ def enrich_holdings_forward_risk(
                     "pending_settlement" if is_pending else "cash_unallocated"
                 )
                 errors.append(
-                    "Forward RC requires an FX total-return series for non-base "
+                    "Forward RC requires an observed FX-return series for non-base "
                     f"monetary exposure {_row_label(raw_row)} "
                     f"({instrument_currency or 'unknown'} versus {base_currency})."
                 )
@@ -560,7 +584,7 @@ def enrich_holdings_forward_risk(
             else:
                 _clear_forward_risk_fields(raw_row)
                 errors.append(
-                    f"Forward RC requires an FX total-return series for non-base cash {_row_label(raw_row)} "
+                    f"Forward RC requires an observed FX-return series for non-base cash {_row_label(raw_row)} "
                     f"({instrument_currency or 'unknown'} versus {base_currency or 'unknown'})."
                 )
             continue
@@ -575,7 +599,7 @@ def enrich_holdings_forward_risk(
         if instrument_currency != base_currency and not fx_histories:
             _clear_forward_risk_fields(raw_row)
             errors.append(
-                f"Forward RC requires base-currency total returns; {_row_label(raw_row)} is "
+                f"Forward RC requires confirmed base-currency returns; {_row_label(raw_row)} is "
                 f"{instrument_currency} while the portfolio base currency is {base_currency}."
             )
             continue

@@ -60,7 +60,7 @@ def physical_delivery(client, monkeypatch):
             instrument_type="equity",
             currency="USD",
             exchange_code="XNYS",
-            quote_selection_policy_json={},
+            quote_selection_policy_json={"total_return": ["adjusted_close"]},
             market_data_updated_at=SOURCE_WATERMARK,
             calculation_inputs_updated_at=SOURCE_WATERMARK,
         ))

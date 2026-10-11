@@ -15,8 +15,7 @@ from tests.test_risk_model import AS_OF_DATE, _return_points, _holding, _workspa
 
 
 @pytest.mark.parametrize("missing_all", [False, True])
-@pytest.mark.parametrize("policy", ["strict", "complete_case_drop"])
-def test_forward_risk_preserves_real_missing_session_and_next_return(missing_all, policy):
+def test_forward_risk_preserves_real_missing_session_and_next_return(missing_all):
     holdings = []
     for key, scale in (("alpha", 1), ("beta", -.7)):
         points = _return_points(scale)
@@ -33,14 +32,12 @@ def test_forward_risk_preserves_real_missing_session_and_next_return(missing_all
         }
         holdings.append(row)
     result = enrich_holdings_forward_risk(_workspace(holdings), as_of_date=AS_OF_DATE,
-        calculation_frequency="daily", risk_policy=_risk_policy(missing_return_policy=policy))["forward_risk"]
-    assert result["status"] == ("unavailable" if policy == "strict" else "ok")
+        calculation_frequency="daily", risk_policy=_risk_policy())["forward_risk"]
+    assert result["status"] == "unavailable"
     coverage = result["coverage"]
     assert coverage["rows_before"] == 22
     assert coverage["missing_row_count"] == 2
     assert {row["date"] for row in coverage["missing_rows"]} == {missing, following}
-    if policy == "complete_case_drop":
-        assert result["observation_count"] == 20
 
 
 def research_state(*, missing_all=False, outside=False):
@@ -65,9 +62,8 @@ def research_state(*, missing_all=False, outside=False):
 def test_research_real_sources_agree_with_forward_risk_policy(missing_all):
     with pytest.raises(ValueError, match="missing|incomplete"):
         solve(research_state(missing_all=missing_all))
-    result = solve(research_state(missing_all=missing_all), missing_return_policy="complete_case_drop")
-    assert result.solve_event["execution_ready"] is True
-    assert result.solve_event["missing_return_row_count"] == 2
+    with pytest.raises(ValueError, match="Unsupported missing-return policy"):
+        solve(research_state(missing_all=missing_all), missing_return_policy="complete_case_drop")
 
 
 def test_gap_before_requested_window_is_diagnostic_not_a_global_veto():
@@ -86,7 +82,8 @@ def test_holidays_and_event_driven_marks_remain_valid_but_missing_fx_does_not(mo
     slow = pd.Series([100, 103], index=[days[0], days[-1]])
     for basis in ("event_driven", "market_calendar:HOLIDAY_EXAMPLE"):
         navs, returns = align_risk_navs({"daily": daily, "slow": slow},
-            coverage_by_key={"slow": {"gap_dates": [], "gap_detection_basis": basis}})
+            coverage_by_key={"daily": {"gap_dates": [], "gap_detection_basis": "market_calendar:WEEKDAYS"},
+                             "slow": {"gap_dates": [], "gap_detection_basis": basis}})
         assert returns["slow"].iloc[1:].tolist() == pytest.approx([0, 0, .03])
     state = research_state(outside=True)
     original = solver._convert_price_to_base
@@ -122,3 +119,33 @@ def test_missing_quote_before_window_cannot_supply_its_opening_mark():
     assert pd.isna(navs.loc[date(2026, 6, 3), "x"])
     assert pd.isna(returns.loc[date(2026, 6, 4), "x"])
     assert returns.loc[date(2026, 6, 5), "x"] == pytest.approx(105 / 104 - 1)
+
+
+@pytest.mark.parametrize("unknown", [{}, {"gap_detection_basis": "schedule_unverified"},
+                                  {"gap_detection_basis": "calendar_day_threshold", "gap_dates": []}])
+def test_unknown_schedule_never_fills_one_missing_day_or_claims_daily_risk(unknown):
+    days = [date(2026, 7, day) for day in (6, 7, 8)]
+    observed = pd.Series([100., 103.], index=[days[0], days[2]])
+    daily = pd.Series([100., 101., 102.], index=days)
+    with pytest.raises(ValueError, match="observation schedule unverified.*unknown"):
+        align_risk_navs({"unknown": observed, "daily": daily}, coverage_by_key={
+            "unknown": unknown, "daily": {"gap_detection_basis": "market_calendar:WEEKDAYS"},
+        })
+
+
+def test_forward_risk_reports_unknown_schedule_without_a_fake_zero_or_solved_matrix():
+    row = _holding("unknown-calendar", 1)
+    row["instrument_return_series_all"]["observation_coverage"] = {"gap_detection_basis": "schedule_unverified", "gap_dates": []}
+    result = enrich_holdings_forward_risk(_workspace([row]), as_of_date=AS_OF_DATE,
+        calculation_frequency="daily", risk_policy=_risk_policy())
+    assert result["forward_risk"]["status"] == "unavailable"
+    assert "observation schedule unverified" in result["forward_risk"]["errors"][0]
+    assert "unknown-calendar" in result["forward_risk"]["errors"][0]
+    assert row["forward_risk_share"] is None
+
+
+def test_research_requires_actual_source_schedule_instead_of_guessing_from_instrument_type():
+    state = research_state(outside=True)
+    state.instrument_detail_cache["y"]["source_settings"] = {"expected_frequency": "daily"}
+    with pytest.raises(ValueError, match="observation schedule unverified"):
+        solve(state)

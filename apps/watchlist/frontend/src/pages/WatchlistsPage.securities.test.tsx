@@ -70,7 +70,7 @@ async function chooseDirectorySecurity() {
 
 it('registers only the explicitly chosen directory security, then adds its canonical ID', async () => {
   await chooseDirectorySecurity()
-  fireEvent.click(screen.getByRole('button', { name: 'Register and add' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Add To Watchlist' }))
   await waitFor(() => expect(mocks.addWatchlistItems).toHaveBeenCalledWith('focus', ['shv'], undefined))
   expect(mocks.materializeSecurity).toHaveBeenCalledExactlyOnceWith(catalog)
   await waitFor(() => expect(screen.getByLabelText('Search Instruments')).toHaveProperty('value', ''))
@@ -79,10 +79,30 @@ it('registers only the explicitly chosen directory security, then adds its canon
   expect(mocks.getWatchlists).toHaveBeenCalledTimes(2)
 })
 
+it('adds a Futu catalog security through the same selection flow and displays its source', async () => {
+  const futu = { ...catalog, symbol: '2822.HK', name: 'CSOP FTSE China A50 ETF',
+    catalog_provider: 'futu' as const, catalog_symbol: 'HK.02822', exchange_code: 'XHKG', exchange_label: 'HKEX',
+    market: 'HK', currency: 'HKD', currency_verified: true }
+  mocks.searchSecurities.mockResolvedValue({ results: [futu], catalog_errors: {} })
+  mocks.materializeSecurity.mockResolvedValue({ ...registered, instrument_id: 'futu-2822', currency: 'HKD' })
+  showPage()
+  const add = await screen.findByRole('button', { name: 'Add' })
+  await waitFor(() => expect(add.hasAttribute('disabled')).toBe(false))
+  fireEvent.click(add)
+  fireEvent.change(screen.getByLabelText('Search Instruments'), { target: { value: '2822' } })
+  const result = await screen.findByRole('button', { name: /2822.HK.*Futu/ })
+  expect(result.textContent).toContain('Futu')
+  expect(mocks.materializeSecurity).not.toHaveBeenCalled()
+  fireEvent.click(result)
+  fireEvent.click(screen.getByRole('button', { name: 'Add To Watchlist' }))
+  await waitFor(() => expect(mocks.addWatchlistItems).toHaveBeenCalledWith('focus', ['futu-2822'], undefined))
+  expect(mocks.materializeSecurity).toHaveBeenCalledExactlyOnceWith(futu)
+})
+
 it('retains the registered asset when adding list membership fails, so retry does not register twice', async () => {
   mocks.addWatchlistItems.mockRejectedValueOnce(new Error('List update failed')).mockResolvedValueOnce({ accepted_count: 1 })
   await chooseDirectorySecurity()
-  fireEvent.click(screen.getByRole('button', { name: 'Register and add' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Add To Watchlist' }))
   expect((await screen.findByRole('alert')).textContent).toContain('List update failed')
   fireEvent.click(screen.getByRole('button', { name: 'Add To Watchlist' }))
   await waitFor(() => expect(mocks.addWatchlistItems).toHaveBeenCalledTimes(2))
@@ -106,7 +126,7 @@ it('shows the creator in settings and prevents a reader from adding or creating 
 it('saves the chosen investment status with every addition while keeping it for the next search', async () => {
   await chooseDirectorySecurity()
   fireEvent.change(screen.getByLabelText('Investment status'), { target: { value: 'Proposed' } })
-  fireEvent.click(screen.getByRole('button', { name: 'Register and add' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Add To Watchlist' }))
   await waitFor(() => expect(mocks.addWatchlistItems).toHaveBeenCalledWith('focus', ['shv'], 'Proposed'))
   await waitFor(() => expect(screen.getByLabelText('Search Instruments')).toHaveProperty('value', ''))
   expect(screen.getByLabelText('Investment status')).toHaveProperty('value', 'Proposed')

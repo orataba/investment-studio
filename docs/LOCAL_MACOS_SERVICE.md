@@ -1,6 +1,6 @@
 # macOS 本地后台服务
 
-项目提供八个用户级 `launchd` 常驻服务，在登录后自动启动四个 API 与四个前端；另有五个一次性数据任务，分别处理各市场盘后行情、Tushare 盘前资料和晚间净值结算。公共数据同步另行安装。所有端口只绑定到 `127.0.0.1`，不会暴露给局域网。
+项目提供九个用户级 `launchd` 常驻服务，在登录后自动启动四个 API、四个前端和独立研究执行服务 `research-worker`；另有五个一次性数据任务，分别处理各市场盘后行情、Tushare 盘前资料和晚间净值结算。公共数据同步另行安装。所有端口只绑定到 `127.0.0.1`，不会暴露给局域网。
 
 ## 依赖
 
@@ -74,7 +74,7 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 | 任务后缀 | 通道 / 市场 | 运行时间 |
 | --- | --- | --- |
 | `cn-market-data-refresh` | `market / cn` | 上海 15:30 |
-| `hk-market-data-refresh` | `market / hk` | 港股实际收盘后 30 分钟 |
+| `hk-market-data-refresh` | `market / hk` | 港股实际收盘后 30 分钟；交易日 23:30 核对晚到行情及无成交日报 |
 | `us-market-data-refresh` | `market / us` | 美股实际收盘后 30 分钟 |
 | `cn-hk-reference-data-refresh` | `reference / cn-hk` | 上海 08:00 |
 | `market-data-refresh` | `settlement` | 上海 21:00；失败时 23:00 补跑 |
@@ -82,7 +82,7 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 市场任务按标的配置的交易日历选择资产并跳过休市市场。盘后行情使用标的已配置的数据来源；
 盘前资料任务仅采集 Tushare 参考资料；FMP 登记资产投影由公共数据到达流水线统一更新并保存失败状态；同市场 08:30 的研究优先读取共享原文及事件包，并按需要补充检索。
 Watchlist 不依赖外部 DuckDB。港股和美股盘后任务在每小时 `:30` 检查实际交易日历，
-仅在当天真实收盘后 30 分钟起的半小时内执行，覆盖半日市及休市日；两端共用
+在当天真实收盘后 30 分钟起的半小时内执行，港股另在同一交易日 23:30–24:00 核对晚到数据，覆盖半日市及休市日；两端共用
 `infra/scripts/market_close_schedule.py`，不维护另一份冬夏令时或提前收盘日期表。
 
 Mac 在日历时间睡眠时，`launchd` 会在唤醒后合并触发；盘后港股/美股任务若已错过目标半小时窗口，则等待下一个交易日，必要时显式补采。
@@ -112,7 +112,7 @@ canonical 单位净值/复权累计净值才写入 `instrument_data`；安装或
 当前用户拥有且权限为 `0600`。安全加载器只接受
 对应模块和统一身份配置前缀的赋值，把值作为纯文本导入，不会执行 `$()`、反引号
 等 shell 语法。安装器不会把 DataHub API key、邮件密码等秘密复制进 plist；数据库
-连接供 Home、Watchlist、Portfolio、Briefing API 与需要数据访问的定时任务使用；四个纯 web job 不携带数据库
+连接供 Home、Watchlist、Portfolio、Briefing API、研究执行服务与需要数据访问的定时任务使用；四个纯 web job 不携带数据库
 配置。数据库 URL 不含密码，认证使用私密 `.pgpass`。为了避免 Pydantic 再从第二来源补入配置，安装器、四个 API runner 和定时
 runner 都会拒绝任一 backend 目录中存在
 `.env` 文件或软链接；先把其中的值迁移到外部秘密目录并删除该文件后再安装。
@@ -141,6 +141,10 @@ PostgreSQL 备份还需要配套公开数据目录，详见 [Market Data Pipelin
 ## 状态、日志与卸载
 
 本地 Watchlist 研究工具默认回调 `8000`，并读取 Portfolio `8001` 与 Regime `3011` 的只读证据；Portfolio 标的风险默认连接 Watchlist `8000`。覆盖地址时使用各应用 `.env.example` 列出的命名空间配置。Watchlist 的本地 `watchlist.env` 可选，但开发命令直接启动 API 时仍需显式提供数据库 URL；常驻服务由安装器提供。Portfolio Research 在本地与云端默认启用并沿用逐组合权限；外部 `portfolio.env` 的 `INVESTMENT_STUDIO_PORTFOLIO_RESEARCH_ENABLED=false` 可显式关闭。升级时需清理此前为禁用入口而设置的旧值。
+
+`research-worker` 使用 Watchlist 的数据库与外部配置，负责研究助手、标的研究和风险研判的执行，以及既有每日研究的排队调度。API 只保存队列请求；重启 API 不再将全部任务标为失败。数据库统一限制所有执行进程的并发，默认 1；增加本机 worker 实例不会增加此额度。`INVESTMENT_STUDIO_WATCHLIST_RESEARCH_WORKER_ENABLED=false` 只暂停每日调度，手动和受控批次仍由独立 worker 执行。直接启动开发 API 时，需要另外在相同环境运行 `python -m watchlist_app.research_worker` 才会消费队列。
+
+服务退出会终止所属 Harness 进程组；租约到期后最多恢复至第三次总尝试，沿用原输入与已受理草稿，并重新验证原发起人权限。完整执行合同见[投资研究系统](INVESTMENT_RESEARCH_SYSTEM.md#每轮检查与长期连续性)。研究执行日志单独位于 `research-worker.log` 和 `research-worker.error.log`；服务已启动不等于模型调用或研究质量已经验收。
 
 行情/结算任务摘要的 `status=succeeded` 只表示数据刷新阶段成功；最终结果还包括只读审计。应同时查看对应 `*-run-state.json` 的 `status`、`refresh_exit_code` 和 `audit_exit_code`，以及 launchd 最近退出码。升级迁移后必须同步当前源码再执行审计，不能手工把失败记录改成成功。
 
@@ -175,7 +179,7 @@ launchctl kickstart "gui/$UID/com.orataba.investment-studio.market-data-refresh"
 执行。单资产 CLI 修正属于另一条显式数据写入操作；运行全量定时批次时不要同时修改同一资产。
 
 执行 `infra/postgres/restore_project_dump.sh` 时，恢复脚本会临时卸载当前已
-加载的八个 API/前端 job、五个行情/结算定时 job（以及尚未退役的旧资料任务）及公共数据同步 job，完成安全备份和数据库恢复/迁移后再加载。
+加载的九个 API/前端/研究执行 job、五个行情/结算定时 job（以及尚未退役的旧资料任务）及公共数据同步 job，完成安全备份和数据库恢复/迁移后再加载。
 晚间任务按 `RunAtLoad` 判断补跑，市场行情/资料任务重新注册日历计划。恢复失败会先自动回滚
 数据库，再恢复这些服务；回滚本身失败时服务保持停止，避免在半恢复数据库上
 继续写入。incoming dump 必须具有通过校验的 SHA-256 文件，不能跳过；停服后若
@@ -219,10 +223,11 @@ launchctl kickstart "gui/$UID/com.orataba.investment-studio.market-data-refresh"
    保留新数据库和文件，记录 `forward-repair-required`，不能自动回滚而丢弃新写入。成功后记录同步时间，
    保留最近两次成功同步前的本机数据供恢复；更旧的已成功批次在新快照验收后清理。
 
-人员 ID、历史署名和组合归属随云端数据同步；云端浏览器会话、一次性链接、服务令牌和 AI
-委托不复制。本机保留自己的后台服务凭据和数据读取角色，继续使用显式 `local` 免登录模式。
+人员 ID、历史署名和组合归属随云端数据同步；云端浏览器会话、一次性链接、服务令牌、AI
+委托及研究执行队列的授权和租约不复制。本机保留自己的后台服务凭据和数据读取角色，继续使用显式 `local` 免登录模式。
 云端仍使用真实账号及逐组合权限。复制时正在运行的任务不能继承云端进程；本机将它们明确
-恢复为待重算或中断状态，不冒充已经完成。
+恢复为待重算或中断状态，不冒充已经完成。未完成的云端研究保留输入、草稿及证据并标为失败，
+须由用户在本机重新发起，不能继承云端原请求的执行权限。
 
 配置为仓库外的 `0600` JSON 文件。数据库密码仍来自 `.pgpass`，`admin_url` 指向同一台本机
 PostgreSQL 的维护账户，用于建立临时库与切换库名，不能指向云端。SSH 使用已配置的主机别名。

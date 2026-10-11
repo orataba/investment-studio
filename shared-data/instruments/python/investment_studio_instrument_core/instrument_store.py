@@ -366,7 +366,7 @@ QUOTE_SELECTION_POLICY_DEFAULTS: dict[str, dict[str, list[str]]] = {
     "etf": {
         "trading": ["last", "close"],
         "valuation": ["close", "last"],
-        "total_return": ["adjusted_close", "close", "last"],
+        "total_return": ["adjusted_close"],
         "chart": ["adjusted_close", "close", "last"],
         "reference": ["close", "last"],
     },
@@ -376,7 +376,7 @@ QUOTE_SELECTION_POLICY_DEFAULTS: dict[str, dict[str, list[str]]] = {
         # price. Adjusted close is a synthetic total-return series and must
         # never silently substitute for a missing market price.
         "valuation": ["close", "last"],
-        "total_return": ["adjusted_close", "close", "last"],
+        "total_return": ["adjusted_close"],
         "chart": ["adjusted_close", "close", "last"],
         "reference": ["close", "last"],
     },
@@ -1671,6 +1671,7 @@ def search_instrument_identities(
             "currency": item.currency,
             "exchange_code": item.exchange_code,
             "identifiers": _serialize_identifier_rows(item),
+            "source_settings": {"source_api_profile": (item.source_settings_json or {}).get("source_api_profile")},
         } for item in records]
 
 
@@ -3296,6 +3297,7 @@ def create_instrument(
     exchange_code: str | None = None,
     quote_selection_policy: dict[str, object] | None = None,
     broker_identifiers: list[dict[str, object]] | None = None,
+    source_settings: dict[str, object] | None = None,
 ) -> dict[str, object]:
     normalized_name = instrument_name.strip()
     normalized_instrument_type = normalize_instrument_type(instrument_type)
@@ -3420,6 +3422,9 @@ def create_instrument(
             "refresh_status": _default_refresh_status(),
             "lifecycle_state": _default_lifecycle_state(),
         }
+        if source_settings is not None:
+            record["source_settings"] = _normalized_source_settings({**record, "source_settings": source_settings})
+            record["refresh_status"]["mode"] = record["source_settings"]["source_mode"]
 
         session.add(
             Instrument(
@@ -4245,7 +4250,9 @@ def upsert_source_settings(
     release_lag_days: int | None = None,
     return_semantics: str | None = None,
     source_provider_currency: str | None = None,
+    source_provider_security_id: str | None = None,
     source_price_multiplier: object = _SOURCE_SETTING_UNSET,
+    history_start_date: date | None = None,
 ) -> dict[str, object] | None:
     with session_factory() as session:
         target = session.scalar(select(Instrument).where(
@@ -4260,12 +4267,15 @@ def upsert_source_settings(
             key: source_settings.get(key)
             for key in (
                 "source_mode",
+                "source_api_profile",
                 "expected_frequency",
                 "market_calendar",
                 "release_lag_days",
                 "return_semantics",
                 "source_provider_currency",
+                "source_provider_security_id",
                 "source_price_multiplier",
+                "history_start_date",
             )
         }
         source_settings["source_mode"] = source_mode
@@ -4303,6 +4313,14 @@ def upsert_source_settings(
             if not normalized_provider_currency:
                 raise ValueError("source_provider_currency must not be blank.")
             source_settings["source_provider_currency"] = normalized_provider_currency
+        if source_provider_security_id is not None:
+            provider_security_id = source_provider_security_id.strip()
+            if not provider_security_id:
+                raise ValueError("source_provider_security_id must not be blank.")
+            existing_security_id = source_settings.get("source_provider_security_id")
+            if existing_security_id is not None and str(existing_security_id) != provider_security_id:
+                raise ValueError("The provider security identity is already bound; changing it requires a separate reviewed migration.")
+            source_settings["source_provider_security_id"] = provider_security_id
         if source_price_multiplier is not _SOURCE_SETTING_UNSET:
             try:
                 normalized_multiplier = Decimal(str(source_price_multiplier).strip())
@@ -4318,6 +4336,8 @@ def upsert_source_settings(
                 normalized_multiplier,
                 "f",
             )
+        if history_start_date is not None:
+            source_settings["history_start_date"] = date.fromisoformat(str(history_start_date)).isoformat()
         source_settings = _normalized_source_settings(
             {
                 **store_item,

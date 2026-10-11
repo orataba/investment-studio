@@ -1,4 +1,5 @@
-import type { InstrumentChartPoint } from './api'
+import type { InstrumentChartPoint, FundNavSeriesResponse } from './api'
+import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 
 export const RETURN_WINDOW_POLICY_VERSION = 'return-window/v2'
 
@@ -77,7 +78,7 @@ function normalizedReturnPoints(points: InstrumentChartPoint[]) {
     const value = Number(point.value)
     const pointDate = point.date.slice(0, 10)
     if (pointDate && Number.isFinite(value) && value > 0) {
-      byDate.set(pointDate, { date: pointDate, value })
+      byDate.set(pointDate, { ...point, date: pointDate, value })
     }
   })
   return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date))
@@ -118,6 +119,7 @@ export function resolveReturnWindow(
     return null
   }
   const windowPoints = ordered.slice(anchorIndex, endIndex + 1)
+  if (!sameReturnSegment(windowPoints)) return null
   return {
     requestedStartDate,
     requestedEndDate,
@@ -178,6 +180,9 @@ export function resolveAlignedReturnWindows(
   if (alignedDates.length < 2) {
     return null
   }
+  const fullPath = (pointsByDate: Map<string, InstrumentChartPoint>) => [...pointsByDate.values()]
+    .filter(point => point.date >= anchorDate! && point.date <= endDate)
+  if (!sameReturnSegment(fullPath(leftByDate)) || !sameReturnSegment(fullPath(rightByDate))) return null
   const resolvedRequestedStartDate = requestedStartDate ?? anchorDate
   const buildWindow = (
     pointsByDate: Map<string, InstrumentChartPoint>,
@@ -187,7 +192,9 @@ export function resolveAlignedReturnWindows(
     anchorMode,
     anchorDate,
     endDate,
-    points: alignedDates.map((pointDate) => pointsByDate.get(pointDate)!),
+    // Common endpoints align the economic period; each path retains every
+    // observation so a comparator's missing date cannot erase a peak/trough.
+    points: fullPath(pointsByDate),
   })
   return {
     left: buildWindow(leftByDate),
@@ -195,7 +202,39 @@ export function resolveAlignedReturnWindows(
   }
 }
 
+export function returnWindowObservationLimitation(
+  points: InstrumentChartPoint[],
+  source?: Pick<FundNavSeriesResponse, 'calculation_frequency_profile' | 'return_series'> | null,
+): string | null {
+  if (points.length < 2) return 'insufficient_observations'
+  if (!sameReturnSegment(points)) return 'unconfirmed_return_segment'
+  const frequency = source?.calculation_frequency_profile
+  const resolved = frequency?.resolved_frequency
+  if (!resolved || resolved === 'unknown') return 'unconfirmed_frequency'
+  if (resolved === 'daily' && !frequency?.gap_detection_basis?.startsWith('market_calendar:')) return 'unconfirmed_calendar'
+  if (resolved === 'weekly' || resolved === 'monthly') {
+    const periods = points.map(point => {
+      const day = new Date(`${point.date}T00:00:00Z`)
+      return resolved === 'monthly' ? day.getUTCFullYear() * 12 + day.getUTCMonth()
+        : Math.floor((day.getTime() / 86400000 - (day.getUTCDay() + 6) % 7) / 7)
+    })
+    if (periods.some((value, index) => index > 0 && value - periods[index - 1] > 1)) return 'missing_disclosure_period'
+  }
+  const evidence = new Map<string, string[]>()
+  for (const interval of source?.return_series?.intervals || []) {
+    const key = `${interval.start_date}/${interval.date}`
+    evidence.set(key, [...(evidence.get(key) || []), interval.status])
+  }
+  for (let index = 1; index < points.length; index += 1) {
+    const statuses = evidence.get(`${points[index - 1].date}/${points[index].date}`)
+    if (!statuses?.length) return 'missing_interval_evidence'
+    if (statuses.length !== 1 || statuses[0] !== 'complete') return 'missing_observations'
+  }
+  return null
+}
+
 export function normalizeCumulativeReturn(window: ReturnWindow) {
+  if (!sameReturnSegment(window.points)) return []
   const anchorValue = window.points[0]?.value
   if (!(anchorValue > 0)) {
     return []
@@ -229,6 +268,7 @@ export function commonObservationDateWindow(
 }
 
 export function periodReturnPercent(window: ReturnWindow) {
+  if (!sameReturnSegment(window.points)) return null
   const first = window.points[0]
   const last = window.points[window.points.length - 1]
   return first && last && first.value > 0 ? ((last.value / first.value) - 1) * 100 : null
@@ -258,6 +298,7 @@ export function actualYearFraction(startDate: string, endDate: string): number {
 }
 
 export function annualizedReturnPercent(window: ReturnWindow) {
+  if (!sameReturnSegment(window.points)) return null
   const first = window.points[0]
   const last = window.points[window.points.length - 1]
   const start = new Date(`${window.anchorDate}T00:00:00Z`).getTime()

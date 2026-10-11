@@ -120,3 +120,21 @@ describe('instrument settings API contract', () => {
     )
   })
 })
+
+it('preserves canonical return segment identity through both NAV point adapters', async () => {
+  const intervals = [{ start_date: '2026-08-31', date: '2026-09-01', status: 'unavailable', value: null, log_return: null, reason: 'unconfirmed event' }]
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({
+    return_series: { intervals },
+    instrument_id: 'rebased', count: 2, rows: [
+      { date: '2026-08-31', nav: 10, nav_with_dividend: 102, selected_value: 102, segment_id: 'old', calculation_included: true },
+      { date: '2026-09-01', nav: 11, nav_with_dividend: 1, selected_value: 1, segment_id: 'new', calculation_included: true },
+    ],
+  }) }))
+  try {
+    const result = await getInstrumentNavSeries('rebased')
+    expect(result.return_series?.intervals).toEqual(intervals)
+    for (const rows of [result.rows, result.series, result.calculation_series]) {
+      expect(rows.map(row => row.segment_id)).toEqual(['old', 'new'])
+    }
+  } finally { vi.unstubAllGlobals() }
+})

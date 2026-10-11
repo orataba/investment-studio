@@ -11,7 +11,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
 
 from watchlist_app.services import quant_sandbox
-from watchlist_app.services.research_notebook import ResearchNotebook, _original_source, research_sources, validate_notebook
+from watchlist_app.services.market_evidence import source_reference
 
 
 Key = Annotated[str, Field(min_length=1, max_length=80, pattern=r"^[a-zA-Z][a-zA-Z0-9_]*$")]
@@ -121,59 +121,17 @@ class QuantOutput(BaseModel):
         return self
 
 
-def _source_namespace(context, run_id, instrument_id, version_id=None):
-    """An explicit historical version is a separate namespace, never an overlay."""
-    if context.get("risk_run"):
-        raise ValueError("风控研判只使用已绑定快照，不执行 Python 量化研究")
-    if instrument_id not in context.get("instrument_ids", []):
-        raise ValueError("量化标的不在本轮已绑定的研究范围")
-    cutoff = context["cutoff"]
-    if version_id is None:
-        sources = research_sources(context, run_id)
-    else:
-        matches = [version for version in context.get("referenced_research_versions", [])
-                   if version.get("version_id") == version_id and version.get("instrument_id") == instrument_id]
-        if len(matches) != 1:
-            raise ValueError("该历史版本未在本轮上下文中明确绑定，请从原研究版本发起追问")
-        version = matches[0]
-        # Unknown historical cutoff stays unknown; do not relabel it as today's
-        # knowledge horizon. The selected source versions remain frozen.
-        cutoff = version.get("information_cutoff")
-        originals = version.get("sources") or []
-        sources = {item["source_id"]: deepcopy(item) for item in originals}
-        if len(sources) != len(originals):
-            raise ValueError("历史版本包含重复的来源标识，不能确定本次量化的原始输入")
-    allowed = {}
-    for source in sources.values():
-        if not _original_source(source, instrument_id, datetime.fromisoformat(cutoff) if cutoff else None):
-            continue
-        try:
-            validate_notebook(ResearchNotebook(source_ids=[source["source_id"]]), instrument_id, sources)
-        except ValueError:
-            continue
-        allowed[source["source_id"]] = source
-    return allowed, cutoff
-
-
-def input_catalogue(context, run_id, instrument_id, version_id=None):
-    """List only the sources this run has actually retained and may use here."""
-    sources, _ = _source_namespace(context, run_id, instrument_id, version_id)
-    return [{**{key: source.get(key) for key in (
-        "source_id", "source_type", "title", "instrument_id", "scope", "as_of", "run_cutoff", "published_at")},
-        "version_id": version_id} for source in sources.values()]
-
-
-def execute_analysis(run, request: QuantAnalysisInput):
-    """No fetch/live query occurs here; only selected retained source IDs enter."""
+def execute_analysis(run, request: QuantAnalysisInput, *, selected_sources, input_cutoff):
+    """Execute the exact sources selected by the caller's authorized transaction."""
     context = run.context_json
-    sources, input_cutoff = _source_namespace(context, run.entry_id, request.instrument_id, request.version_id)
+    sources = selected_sources
     if len(set(request.source_ids)) != len(request.source_ids) or not set(request.source_ids).issubset(sources):
         raise ValueError("量化输入重复、未在本轮留存或不属于本轮授权标的；请先读取量化输入目录")
     inputs = {sid: deepcopy(sources[sid]) for sid in request.source_ids}
     # A JSON round trip fixes the exact snapshot that entered the sandbox. It
     # rejects nonfinite source values rather than silently changing them.
     inputs = json.loads(json.dumps(inputs, ensure_ascii=False, allow_nan=False))
-    output, capability = quant_sandbox.execute(request.code, inputs, request.params)
+    output, capability = quant_sandbox.execute(request.code, deepcopy(inputs), request.params)
     output = QuantOutput.model_validate(output)
     now = datetime.now(UTC).isoformat()
     evidence = {
@@ -183,15 +141,14 @@ def execute_analysis(run, request: QuantAnalysisInput):
         "observation_domain": request.observation_domain,
         "source_ids": list(request.source_ids),
         "methodology": {"analysis_kind": "python_quant", "description": request.methodology,
-            "code": request.code, "params": deepcopy(request.params), "input_sources": list(inputs.values()),
+            "code": request.code, "params": deepcopy(request.params), "input_sources": [source_reference(source) for source in inputs.values()],
             "input_version_id": request.version_id, "input_information_cutoff": input_cutoff,
             "runtime": capability, "executed_at": now,
             "result_status": "Executed and schema-validated; analytical validity requires factual review."},
         "data": {"analysis_kind": "python_quant", "status": "available", **output.model_dump(mode="json")},
     }
-    # Kept with the same run/evidence path as other numeric tools. Publication
-    # still passes the existing independent review and ownership boundaries.
-    run.context_json = {**context, "computed_metrics": [*context.get("computed_metrics", []), evidence]}
+    # Persistence belongs to the caller's attempt-fenced transaction; no run
+    # context is hydrated or rewritten as a side effect of executing code.
     return evidence
 
 

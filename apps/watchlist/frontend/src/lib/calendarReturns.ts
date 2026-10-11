@@ -1,4 +1,5 @@
 import type { InstrumentChartPoint } from './api'
+import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 
 /**
  * Calendar-period return helpers used by the Watchlist detail risk/performance
@@ -19,7 +20,7 @@ function normalizePoints(points: InstrumentChartPoint[]) {
     if (!date || !Number.isFinite(value) || value <= 0) {
       return
     }
-    byDate.set(date, { date, value })
+    byDate.set(date, { ...point, date, value })
   })
   return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date))
 }
@@ -88,6 +89,7 @@ export function buildMonthlyReturnWindows(
   for (let index = 1; index < closes.length; index += 1) {
     const previous = closes[index - 1]
     const current = closes[index]
+    if (!sameReturnSegment([previous, current])) continue
     if (!areAdjacentCalendarMonths(previous.date, current.date) || previous.value <= 0) {
       continue
     }
@@ -116,6 +118,7 @@ export function buildAnnualReturnSeries(points: InstrumentChartPoint[]) {
   for (let index = 1; index < closes.length; index += 1) {
     const previous = closes[index - 1]
     const current = closes[index]
+    if (!sameReturnSegment([previous, current])) continue
     if (!areAdjacentCalendarYears(previous.date, current.date) || previous.value <= 0) {
       continue
     }

@@ -568,7 +568,7 @@ describe('Performance rendered page contract', () => {
     expect(await screen.findByRole('button', { name: /Benchmark comparison:/ })).not.toHaveAttribute('aria-label', expect.stringContaining('USD'))
   })
 
-  it.each(['price_return', 'unknown'] as const)('shows benchmark differences and relative statistics for a %s price series', async (returnSemantics) => {
+  it.each(['price_return', 'unknown'] as const)('uses confirmed return semantics to determine benchmark comparison availability (%s)', async (returnSemantics) => {
     const user = userEvent.setup()
     apiMocks.getPortfolioInstruments.mockResolvedValue({
       portfolio_id: '3',
@@ -625,17 +625,24 @@ describe('Performance rendered page contract', () => {
     const benchmarkHint = await screen.findByRole('button', {
       name: /Benchmark comparison:/,
     })
-    expect(benchmarkHint).toHaveAttribute(
-      'aria-label',
-      expect.stringContaining('Comparison uses the selected price'),
-    )
     const periodReturnCells = within(screen.getByRole('row', { name: /Total Portfolio Return/ })).getAllByRole('cell')
-    expect(periodReturnCells).toHaveLength(3)
-    expect(periodReturnCells[1]).not.toHaveTextContent('—')
-    expect(periodReturnCells[2]).not.toHaveTextContent('—')
     const trackingErrorCells = within(screen.getByRole('row', { name: /Tracking Error/ })).getAllByRole('cell')
     expect(trackingErrorCells).toHaveLength(1)
-    expect(trackingErrorCells[0]).not.toHaveTextContent('—')
+    expect(periodReturnCells[0]).not.toHaveTextContent('—')
+    if (returnSemantics === 'price_return') {
+      expect(benchmarkHint).toHaveAttribute('aria-label', expect.stringContaining('Comparison uses the selected price'))
+      expect(periodReturnCells).toHaveLength(3)
+      expect(periodReturnCells[1]).not.toHaveTextContent('—')
+      expect(periodReturnCells[2]).not.toHaveTextContent('—')
+      expect(trackingErrorCells[0]).not.toHaveTextContent('—')
+    } else {
+      expect(benchmarkHint).toHaveAttribute('aria-label', expect.stringContaining('Comparator unavailable'))
+      expect(benchmarkHint).toHaveAttribute('aria-label', expect.stringContaining('distribution and corporate-action treatment is unconfirmed'))
+      expect(periodReturnCells).toHaveLength(1)
+      expect(screen.queryByRole('columnheader', { name: 'BM' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('columnheader', { name: 'Diff' })).not.toBeInTheDocument()
+      expect(trackingErrorCells[0]).toHaveTextContent(/^—$/)
+    }
   })
 
   it.each([

@@ -132,6 +132,7 @@ def refresh_instrument_market_data_batch(
         item["instrument_id"]
         for item in response["results"]
         if item.get("status") in {"imported", "refreshed"}
+        or item.get("canonical_changed") is True
     ]
     if refreshed_ids:
         notify_market_data_downstream_refresh(
@@ -145,7 +146,7 @@ def create_instrument_record(
 ) -> StudioInstrumentRecord:
     if payload.instrument_type in {"equity", "etf"}:
         raise ValueError(
-            "Use investment-studio data securities search/add to register stocks and ETFs from FMP."
+            "Use investment-studio data securities search/add to register stocks and ETFs from the security catalog."
         )
     record = create_instrument(
         instrument_name=payload.instrument_name,
@@ -432,6 +433,23 @@ def update_instrument_source_settings(
         optional_semantics["release_lag_days"] = payload.release_lag_days
     if payload.return_semantics is not None:
         optional_semantics["return_semantics"] = payload.return_semantics
+    for key in ("history_start_date", "source_provider_currency", "source_price_multiplier"):
+        if getattr(payload, key) is not None:
+            optional_semantics[key] = getattr(payload, key)
+    if str(payload.source_api_profile or "").strip().lower() == "futu":
+        from studio_data.services.futu.eod import validate_futu_configuration
+
+        current = get_instrument(instrument_id)
+        if current is None:
+            raise ValueError("Instrument not found")
+        configured = {
+            **current,
+            "source_settings": {
+                **dict(current.get("source_settings") or {}),
+                **payload.model_dump(exclude_none=True, mode="json"),
+            },
+        }
+        validate_futu_configuration(configured)
     record = upsert_source_settings(
         instrument_id=instrument_id,
         source_mode=payload.source_mode,

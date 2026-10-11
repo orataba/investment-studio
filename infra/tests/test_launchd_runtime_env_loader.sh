@@ -71,6 +71,15 @@ grep -q 'INVESTMENT_STUDIO_LOCAL_DATABASE_URL is required' "$TEST_ROOT/missing-d
 [[ -z "$(sed -n '1p' "$WEB_CAPTURE_PATH")" ]]
 [[ "$(sed -n '2p' "$WEB_CAPTURE_PATH")" == *"--port 5172"* ]]
 
+# The background consumer uses the same safe Watchlist loader and no HTTP server.
+printf '%s\n' 'INVESTMENT_STUDIO_WATCHLIST_RESEARCH_WORKER_ENABLED=false' > "$ENV_ROOT/watchlist.env"
+: > "$ENV_ROOT/market.env"
+chmod 600 "$ENV_ROOT/watchlist.env" "$ENV_ROOT/market.env"
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL="postgresql://explicit/local" \
+  "$REPOSITORY_ROOT/infra/launchd/run_local_service.sh" \
+  research-worker "$REPOSITORY_ROOT" "$MOCK_BIN/python" "$MOCK_BIN/node" "$ENV_ROOT"
+[[ "$(sed -n '7p' "$CAPTURE_PATH")" == "-m watchlist_app.research_worker" ]]
+
 chmod 644 "$ENV_ROOT/home.env"
 set +e
 INVESTMENT_STUDIO_LOCAL_DATABASE_URL="postgresql+psycopg://explicit/local" \

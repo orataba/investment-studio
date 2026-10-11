@@ -63,7 +63,7 @@ it.each(['notebook', 'theme'] as const)('uses precise source and %s references f
   const versionReference = kind === 'theme' ? { theme_version_id: versionId } : { notebook_version_id: versionId }
   render(<SavedFigure instrumentId="fund" {...props} source={{ source_id: 'computed:1', title: '已留存回报比较' }} onAskAssistant={ask} />)
   fireEvent.click(await screen.findByRole('button', { name: '讨论这张图表' }))
-  expect(api.source).toHaveBeenCalledWith('fund', 'computed:1', expect.any(AbortSignal), versionId)
+  expect(api.source).toHaveBeenCalledWith('fund', 'computed:1', expect.any(AbortSignal), versionId, 'figure')
   expect(ask).toHaveBeenCalledWith(expect.stringContaining('已留存回报比较'), expect.objectContaining({ instrument_id: 'fund', ...versionReference, source_ids: ['computed:1'] }))
   fireEvent.click(screen.getByRole('button', { name: '基于图表记录观点' }))
   const background = (screen.getByLabelText('当时背景与依据') as HTMLTextAreaElement).value

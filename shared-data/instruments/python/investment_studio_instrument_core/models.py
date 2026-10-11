@@ -393,7 +393,7 @@ def validate_quote_selection_policy_for_instrument_type(
     instrument_type: str,
     quote_selection_policy: object,
 ) -> QuoteSelectionPolicy:
-    """Validate generic quote semantics plus the strict private-fund return basis.
+    """Validate generic quote semantics and each asset's economic return basis.
 
     A fund return series is available only when a canonical dividend-reinvested
     NAV exists.  Falling back to unit NAV would silently turn a total-return
@@ -402,6 +402,11 @@ def validate_quote_selection_policy_for_instrument_type(
 
     policy = QuoteSelectionPolicy.model_validate(quote_selection_policy)
     normalized_type = normalize_instrument_type(instrument_type)
+    if normalized_type in {"equity", "etf"} and policy.total_return != ["adjusted_close"]:
+        raise ValueError(
+            f"{normalized_type} total_return must use only adjusted_close; missing total-return "
+            "history must remain unavailable"
+        )
     if normalized_type not in FUND_INSTRUMENT_TYPES:
         return policy
     for role in ("total_return", "chart"):

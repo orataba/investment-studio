@@ -284,7 +284,7 @@ def _retained_theme_sources(session, instrument_id, source_ids, *, actor, refere
         if snapshot is None:
             raise ValueError("找不到主题所引用事件的原始证据版本")
         sources.update({row["source_id"]: row for row in snapshot.get("sources", [])})
-    sources = {sid: hydrate_source(source) for sid, source in sources.items()}
+    sources = {sid: hydrate_source(source, bound_source=True) for sid, source in sources.items()}
     validate_notebook(ResearchNotebook(source_ids=source_ids), instrument_id, sources)
     return [source_reference(sources[sid]) for sid in dict.fromkeys(source_ids)]
 

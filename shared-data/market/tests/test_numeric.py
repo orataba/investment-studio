@@ -29,6 +29,39 @@ def estimate(value,day,target=2027,period="annual"):
     return dict(symbol="AAPL",estimate_period=period,target_period_end=date(target,12,31),eps_avg=value,collected_at=stamp(day))
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_ingest_freezes_iterator_metadata_only_with_successful_publication(store, fail):
+    details = {"markets": ["us"]}
+
+    def chunks():
+        with store.engine.connect() as connection:
+            pending = connection.execute(select(batches)).mappings().one()
+        assert pending["status"] == "writing" and pending["details"] == details
+        details["source_parts"] = [{"endpoint": "fixture", "observed_at": stamp(1)}]
+        details["captured_count"] = 1
+        yield [{"symbol": "US.AAPL", "active": True, "observed_at": stamp(1)}]
+        if fail:
+            raise RuntimeError("fixture failure after capture")
+
+    if fail:
+        with pytest.raises(RuntimeError, match="after capture"):
+            store.ingest("futu_security_catalog", chunks(), source="fixture", details=details)
+    else:
+        store.ingest("futu_security_catalog", chunks(), source="fixture", details=details)
+    details["captured_count"] = 999
+    with store.engine.connect() as connection:
+        batch = connection.execute(select(batches)).mappings().one()
+    if fail:
+        assert batch["status"] == "failed" and batch["published_at"] is None
+        assert batch["details"] == {"markets": ["us"]}
+        assert store.latest("futu_security_catalog")["rows"] == []
+    else:
+        assert batch["status"] == "ready" and batch["published_at"]
+        assert batch["details"]["captured_count"] == 1
+        assert batch["details"]["source_parts"][0]["observed_at"] == stamp(1).isoformat()
+        assert len(store.latest("futu_security_catalog")["rows"]) == 1
+
+
 def test_a_b_a_and_complete_frequency_snapshot(store):
     for day,value in [(1,10),(2,20),(3,10)]:
         rows=[estimate(value,day)]
@@ -395,10 +428,11 @@ def test_report_uses_owned_cn_hk_and_special_source_closes_with_capture_cutoff(s
     rows={row["symbol"]:row for row in result["market_rows"]}
     assert rows["000985.CSI"]["end_date"]=="2026-09-07"
     assert rows["000985.CSI"]["return_pct"]==pytest.approx(2)
-    assert rows["HSCI.HI"]["end_date"]=="2026-09-04"
-    assert rows["HSCI.HI"]["return_pct"]==pytest.approx(-1)
+    assert "HSCI.HI" not in rows
+    assert next(row for row in result["coverage"] if row["symbol"] == "HSCI.HI")["missing_dates"] == ["2026-09-07"]
     assert rows["BTCUSD"]["end_date"]=="2026-09-06"
-    assert rows["DX-Y.NYB"]["end_close"]==99
+    assert "DX-Y.NYB" not in rows and "XAUUSD" not in rows
+    assert next(row for row in result["coverage"] if row["symbol"] == "DX-Y.NYB")["status"] == "observation_schedule_unverified"
     for row in rows.values():
         assert row["return_basis"]=="unadjusted_price"
         assert row["price_field"]=="close" and len(row["source_ids"])==2

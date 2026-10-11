@@ -79,3 +79,14 @@ it('does not present missing estimate coverage as zero companies', async () => {
   expect(await screen.findByText('Constituent coverage count is unconfirmed.')).toBeTruthy()
   expect(screen.queryByText('0 constituent company records retained.')).toBeNull()
 })
+
+it.each([
+  ['unsupported', 'Not covered', 'No registered company estimate source.'],
+  ['not_applicable', 'Not applicable', 'The disclosed holdings have no company equity exposure.'],
+])('shows the actual %s reason without a fixed ETF coverage claim', async (status, label, reason) => {
+  mocks.evidence.mockResolvedValue({ ...emptyEvidence, status, gaps: [reason] })
+  render(<EstimateHistoryPanel instrumentId="registered-fund" language="en" />)
+  expect(await screen.findByText(`Constituent estimate history · ${label}`)).toBeTruthy()
+  expect(screen.getByText(reason)).toBeTruthy()
+  expect(screen.queryByText(/11 US sector ETFs/)).toBeNull()
+})

@@ -77,6 +77,32 @@ describe('SecurityInstrumentPicker', () => {
     await waitFor(() => expect(search).toHaveValue('PDD · PDD Holdings'))
   })
 
+  it('selects a Futu catalog security through the normal picker and discloses its source', async () => {
+    const futu = { ...candidate, catalog_provider: 'futu' as const, catalog_symbol: 'US.PDD' }
+    vi.mocked(searchPortfolioSecurities).mockResolvedValue({ results: [futu], catalog_errors: {} })
+    render(<Picker />)
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Underlying 1' }), { target: { value: 'PDD' } })
+    const result = await screen.findByRole('button', { name: /PDD.*Futu/ })
+    expect(result).toHaveTextContent('NASDAQ · USD · Futu')
+    fireEvent.click(result)
+    await waitFor(() => expect(materializePortfolioSecurity).toHaveBeenCalledExactlyOnceWith('portfolio-1', futu))
+  })
+
+  it('retries missing prices using the configured Futu identity even when an FMP alias is present', async () => {
+    vi.mocked(searchPortfolioSecurities).mockResolvedValue({ results: [], catalog_errors: {} })
+    render(<Picker instruments={[{ ...instrument, source_settings: { source_api_profile: 'futu' },
+      identifiers: [...instrument.identifiers,
+        { identifier_type: 'provider_symbol', identifier_value: 'fmp:PDD', is_primary: false },
+        { identifier_type: 'provider_symbol', identifier_value: 'futu:US.PDD', is_primary: false },
+      ],
+    }]} />)
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Underlying 1' }), { target: { value: 'PDD' } })
+    fireEvent.click(await screen.findByRole('button', { name: /PDD.*Futu/ }))
+    await waitFor(() => expect(materializePortfolioSecurity).toHaveBeenCalledExactlyOnceWith('portfolio-1', {
+      instrument_type: 'equity', catalog_provider: 'futu', catalog_symbol: 'US.PDD',
+    }))
+  })
+
   it.each(['search changed', 'picker removed'])('ignores registration after the %s', async (change) => {
     let finish!: (record: SharedInstrumentRecord) => void
     vi.mocked(materializePortfolioSecurity).mockReturnValue(new Promise(resolve => { finish = resolve }))

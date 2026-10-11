@@ -38,7 +38,7 @@ def test_missing_installed_runtime_stops_without_resolving_packages(tmp_path):
     ('briefing', None, False, None, False), ('briefing', 'review', False, 'test-configured-model', False),
     ('watchlist', None, False, None, True), ('watchlist', 'sector', False, None, True),
 ])
-def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path, app, task_mode, reviewer_fails, configured_model, harness_fails):
+def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path, app, task_mode, reviewer_fails, configured_model, harness_fails, stage=None):
     if app == 'portfolio':
         runner = Path('apps/portfolio/backend/scripts/run_portfolio_copilot_harness.sh')
         patch_path = Path('apps/portfolio/backend/config/portfolio_copilot_deepseek_harness.patch.yml')
@@ -78,7 +78,9 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
             'if sys.argv[1] == "-c":\n    exec(sys.argv[2]); raise SystemExit(0)\n'
             'assert os.environ["INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE"] == "review"\n'
             'print("FACT_REVIEW_ARGS " + json.dumps(sys.argv[1:]), file=sys.stderr)\n'
-            + ('raise SystemExit(78)\n' if reviewer_fails else 'sys.stdout.write(sys.stdin.read())\n')
+            + ('raise SystemExit(78)\n' if reviewer_fails else
+               'print(json.dumps({"resume":os.environ.get("INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW"),"input":sys.stdin.read()}))\n'
+               if stage == 'resume' else 'sys.stdout.write(sys.stdin.read())\n')
         )
         python.chmod(0o700)
     secret = tmp_path / 'portfolio-copilot.env'
@@ -112,6 +114,9 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         'FMP_API_KEY': 'private-market-key',
     }
     env.pop('INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME', None)
+    if stage:
+        env['INVESTMENT_STUDIO_RESEARCH_GENERATION_ONLY'] = '1' if stage == 'generation' else '0'
+        env['INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW'] = '1' if stage == 'resume' else '0'
     result = subprocess.run(
         ['/bin/bash', str(project / runner), *args],
         env=env, cwd=tmp_path, check=False, capture_output=True, text=True,
@@ -132,6 +137,12 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         assert markers == [{'type': 'FactReviewProcessExit', 'summary': '本地事实核证进程退出，未生成核证结果；请检查研究运行环境。'}]
         return
     assert result.returncode == 0, result.stderr
+    if stage == 'resume':
+        # The real env-i wrapper bypasses generation and explicitly preserves
+        # the recovery flag; blank stdin must not replace the saved answer.
+        assert json.loads(result.stdout) == {'resume': '1', 'input': '\n'}
+        assert 'FACT_REVIEW_ARGS' in result.stderr and '--conversation' in result.stderr
+        return
     captured = json.loads(result.stdout)
     runtime_env = captured['env']
     assert runtime_env[prefix + 'PROJECT_ROOT'] == str(project)
@@ -149,7 +160,7 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         assert runtime_env['INVESTMENT_STUDIO_RESEARCH_PERSONA'] == (ROOT / core).read_text().rstrip('\n')
         reviewer_args = [json.loads(line.removeprefix('FACT_REVIEW_ARGS ')) for line in result.stderr.splitlines()
                          if line.startswith('FACT_REVIEW_ARGS ')]
-        assert reviewer_args == ([] if task_mode == 'risk' else [
+        assert reviewer_args == ([] if task_mode == 'risk' or stage == 'generation' else [
             ['-m', 'watchlist_app.services.sector_fact_review', *([] if task_mode == 'sector' else ['--conversation'])]])
     else:
         assert runtime_env[prefix + 'REPORT_ID'] == 'report-test'
@@ -169,3 +180,9 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
     patch = (project / patch_path).read_text(encoding='utf-8')
     assert f"command: !!js process.env.{prefix}PROJECT_ROOT + '/.venv/bin/python'" in patch
     assert f"cwd: !!js process.env.{prefix}PROJECT_ROOT + '/apps/{app}/backend'" in patch
+
+
+@pytest.mark.parametrize('stage', ['generation', 'resume'])
+def test_conversation_wrapper_separates_generation_and_preserves_review_resume_flag(tmp_path, stage):
+    test_relocated_harness_uses_its_project_and_filters_backend_secrets(
+        tmp_path, 'watchlist', None, False, None, False, stage=stage)

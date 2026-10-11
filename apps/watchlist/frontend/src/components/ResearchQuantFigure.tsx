@@ -104,6 +104,7 @@ export default function ResearchQuantFigure({ source, captioned = false, hideSum
   const dates = metrics.filter(item => /(?:sample_start|sample_end|start_date|end_date)$/.test(item.key))
   const retainedSample = tables.flatMap(table => table.rows).find(row => ['样本区间', '共同样本区间', 'Sample period', 'Common sample'].includes(String(row.metric)))?.value
   const keyMetrics = metrics.filter(item => item.label && !dates.includes(item)).slice(0, 6)
+  const volumeClock = data?.observation_clocks?.volume
   const displayValue = ({ key, value, unit }: typeof metrics[number]) => data?.analysis_kind === 'watchlist_observations'
     && ['股票Top 10平均相关性（63交易日）', 'Top 10平均相关性（63交易日）'].includes(key) && numeric(value) ? value.toFixed(3) : metricValue(key, value, unit)
   return <div className="research-quant-result">
@@ -117,11 +118,11 @@ export default function ResearchQuantFigure({ source, captioned = false, hideSum
       { label: '较前次变化', value: data?.change_pp, unit: '个百分点' },
       { label: '近5次交易观察变化', value: data?.five_session_change_pp, unit: '个百分点' },
     ].map(item => <div key={item.label}><dt>{item.label}</dt><dd>{numeric(item.value) ? `${item.unit === '个百分点' && item.value > 0 ? '+' : ''}${item.value.toFixed(2)}` : '未取得'}{numeric(item.value) && <span>{item.unit}</span>}{item.date && <small><time dateTime={item.date}>{item.date}</time></small>}</dd></div>)}</dl>}
-    {keyMetrics.length > 0 && <dl className="research-quant-metrics">{keyMetrics.map(item => <div key={item.key}><dt>{item.label}</dt><dd translate="no">{displayValue(item)}</dd></div>)}</dl>}
+    {keyMetrics.length > 0 && <dl className="research-quant-metrics">{keyMetrics.map(item => <div key={item.key}><dt>{item.label}</dt><dd translate="no">{displayValue(item)}{item.key === '成交量较前一交易日（%）' && volumeClock?.current_date && <small>{volumeClock.previous_date && <><time dateTime={volumeClock.previous_date}>{volumeClock.previous_date}</time> → </>}<time dateTime={volumeClock.current_date}>{volumeClock.current_date}</time></small>}</dd></div>)}</dl>}
     {metrics.length > 0 && <ResearchReadingAside label="查看全部指标和计算依据">
       {hideSummary && data?.summary && <p translate="no">{data.summary}</p>}
       <div className="research-table-scroll"><table><thead><tr><th>指标</th><th>留存值</th><th>单位</th><th>原始字段</th></tr></thead><tbody>{metrics.map(item => <tr key={item.key}><th>{item.label || '其他计算指标'}</th><td translate="no">{item.value == null ? '—' : typeof item.value === 'object' ? JSON.stringify(item.value) : String(item.value)}</td><td>{item.unit || '以原始记录为准'}</td><td><code translate="no">{item.key}</code></td></tr>)}</tbody></table></div>
-      <details><summary>完整计算记录与输入依据</summary><pre className="research-dossier-text" translate="no">{JSON.stringify(source, null, 2)}</pre></details>
+      <details><summary>{source.display_projection === 'figure' ? '图表留存数据与口径' : '完整计算记录与输入依据'}</summary><pre className="research-dossier-text" translate="no">{JSON.stringify(source, null, 2)}</pre></details>
     </ResearchReadingAside>}
     {charts.map(chart => { const table = tables.find(item => item.key === chart.table_key); return table ? <Chart key={chart.key} chart={chart} table={table} showTitle={!captioned || chart.title !== source.title} /> : <p key={chart.key} className="sector-research-note">图表所引用的留存表格不可用。</p> })}
     {tables.map(table => <div className="research-quant-table" key={table.key}><ResearchReadingAside label={`${table.title} · ${table.rows.length} 条观测`} title={`${table.title} · 留存数据`}><div className="research-table-scroll"><table><thead><tr>{table.columns.map(column => <th key={column.key}>{column.label}{column.unit && `（${column.unit}）`}</th>)}</tr></thead><tbody>{table.rows.map((row, index) => <tr key={index}>{table.columns.map(column => <td key={column.key}>{row[column.key] === null || row[column.key] === undefined ? '—' : numeric(row[column.key]) ? number(row[column.key] as number) : String(row[column.key])}</td>)}</tr>)}</tbody></table></div></ResearchReadingAside></div>)}

@@ -481,7 +481,7 @@ def _freshness_needs_refresh(
     """
 
     if (
-        str(local_data_freshness_status or "").strip().lower() not in {"fresh", "stale"}
+        str(local_data_freshness_status or "").strip().lower() not in {"fresh", "stale", "unavailable"}
         or local_latest_date is None
     ):
         return False
@@ -493,6 +493,7 @@ def _freshness_needs_refresh(
     assessment = assess_latest_observation_freshness(
         latest_observation_date=local_latest_date,
         current_date=_source_today(source_settings.get("market_calendar")),
+        now=datetime.now(UTC),
         resolved_frequency="daily",
         expected_frequency=source_settings.get("expected_frequency"),
         market_calendar=source_settings.get("market_calendar"),

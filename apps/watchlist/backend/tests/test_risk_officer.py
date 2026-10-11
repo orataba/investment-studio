@@ -2,9 +2,11 @@ from datetime import UTC, date, datetime
 
 import pytest
 from watchlist_app.db.models import InstrumentDetail, InstrumentChartReadModel, InstrumentManualProfile, InstrumentRiskReadModel, Watchlist, WatchlistItem
-from watchlist_app.db.models.workbench import ResearchEntry, RiskCase
+from watchlist_app.db.models.workbench import ResearchEntry, ResearchRiskReadState, RiskCase
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services import risk_officer as service
+from watchlist_app.services.research_access import run_attempt
+from watchlist_app.services.research_risk_state import get_risk_submission, risk_read_state
 
 
 @pytest.fixture(autouse=True)
@@ -16,7 +18,8 @@ def portfolio_access_fixture(monkeypatch):
 
 def risk_request(context):
     from watchlist_app.services.risk_read_projection import project_risk_read
-    return lambda suffix, payload=None: project_risk_read(context, **payload) if suffix == "risk-read" else context
+    from .research_projection_fixture import server_projection
+    return server_projection(lambda suffix, payload=None: project_risk_read(context, **payload) if suffix == "risk-read" else context)
 
 
 def seed(client):
@@ -477,10 +480,15 @@ def test_new_portfolio_modules_and_sources_survive_risk_snapshot_and_validation(
 
 def test_post_only_accepts_scope_and_queues_existing_runner(client, monkeypatch):
     from watchlist_app.api.routes import risk_officer as route
+    from watchlist_app.services import research_execution
     seed(client)
-    calls = []
+    calls, inserted = [], []
+    enqueue = research_execution.enqueue_run
+    def dispatch(principal, run_id, **kwargs):
+        calls.append(run_id)
+        inserted.append(enqueue(principal, run_id, **kwargs))
     monkeypatch.setattr(route, "harness_available", lambda: True)
-    monkeypatch.setattr(route, "run_analysis", lambda run_id, token, issuer: calls.append(run_id))
+    monkeypatch.setattr(research_execution, "enqueue_run", dispatch)
     assert client.post("/api/risk/review/runs", json={"portfolio_id": "p1", "weights": {"risk-a": 1}}).status_code == 422
     assert client.post("/api/risk/review/runs", json={"watchlist_id": "risk-list", "instrument_id": "risk-a"}).status_code == 422
     response = client.post("/api/risk/review/runs", json={"instrument_id": "risk-a"})
@@ -488,13 +496,20 @@ def test_post_only_accepts_scope_and_queues_existing_runner(client, monkeypatch)
     assert calls == [response.json()["run_id"]]
     assert response.json()["status"] == "queued"
     again = client.post("/api/risk/review/runs", json={"instrument_id": "risk-a"})
-    assert again.json() == response.json() and len(calls) == 1
+    assert again.json() == response.json() and calls == [response.json()["run_id"]] * 2
+    assert inserted == [True, False]  # Repeated requests ensure dispatch without duplicating a queue item.
+
+
+def delivered_context(session, run):
+    state = session.get(ResearchRiskReadState, run.entry_id)
+    delivered = state.delivered_pages if state and state.attempt == run_attempt(run) else []
+    return {**run.read_context_json, "risk_delivered_pages": delivered}
 
 
 def read_required_pages(client, run_id):
     from watchlist_app.services.risk_read_projection import missing_required_reads
     with get_session_factory()() as session:
-        reads = missing_required_reads(session.get(ResearchEntry, run_id).context_json)
+        reads = missing_required_reads(delivered_context(session, session.get(ResearchEntry, run_id)))
     for read in reads:
         response = client.post(f"/api/research/runs/{run_id}/risk-read", json={key: value for key, value in read.items() if key != "tool"})
         assert response.status_code == 200, response.text
@@ -515,6 +530,7 @@ def test_large_risk_page_requires_actual_continuations_before_submission(client)
         case["evidence_json"]["source_views"] = [{"source_id": "retained-source", "view": "原始完整来源及反证。" * 7000}]
         context["prior_inputs"] = copy.deepcopy(context["risk_inputs"])
         context["prior_inputs"]["research"][0]["body"] = "上次完整风险判断。" * 7000
+        context["execution"] = {"attempt": 1}
         run.context_json, run.status = context, "running"
         immutable = {key: copy.deepcopy(context.get(key)) for key in ("risk_inputs", "prior_inputs", "cutoff")}
         prior_case = copy.deepcopy(session.get(RiskCase, "research").evidence_json)
@@ -526,7 +542,7 @@ def test_large_risk_page_requires_actual_continuations_before_submission(client)
     remaining = response.json()["detail"]["missing_reads"]
     assert remaining and all(read.get("page_offset") is not None for read in remaining)
     with get_session_factory()() as session:
-        delivered_before = copy.deepcopy(session.get(ResearchEntry, rid).context_json["risk_delivered_pages"])
+        delivered_before = copy.deepcopy(delivered_context(session, session.get(ResearchEntry, rid))["risk_delivered_pages"])
     for invalid in (
         {"instrument_id": "risk-a", "section": "cases", "page_offset": 0, "path": ["outside"]},
         {"instrument_id": "outside", "section": "cases", "page_offset": 0, "path": []},
@@ -535,7 +551,7 @@ def test_large_risk_page_requires_actual_continuations_before_submission(client)
     ):
         assert client.post(f"/api/research/runs/{rid}/risk-read", json=invalid).status_code == 422
     with get_session_factory()() as session:
-        assert session.get(ResearchEntry, rid).context_json["risk_delivered_pages"] == delivered_before
+        assert delivered_context(session, session.get(ResearchEntry, rid))["risk_delivered_pages"] == delivered_before
     calls = 0
     while remaining:
         for read in remaining:
@@ -546,9 +562,11 @@ def test_large_risk_page_requires_actual_continuations_before_submission(client)
             calls += 1
         assert calls < 100
         with get_session_factory()() as session:
-            context = session.get(ResearchEntry, rid).context_json
-            remaining = missing_required_reads(context)
+            run = session.get(ResearchEntry, rid)
+            context = run.context_json
+            remaining = missing_required_reads(delivered_context(session, run))
             assert "submitted_risk_review" not in context
+            assert get_risk_submission(session, rid, attempt=run_attempt(run)) is None
             assert {key: context.get(key) for key in immutable} == immutable
         if remaining:
             assert client.post(f"/api/research/runs/{rid}/risk-draft", json=reply()).status_code == 422
@@ -557,7 +575,8 @@ def test_large_risk_page_requires_actual_continuations_before_submission(client)
     with get_session_factory()() as session:
         saved = session.get(ResearchEntry, rid)
         assert saved.status == "running" and "result" not in saved.context_json
-        assert saved.context_json["submitted_risk_review"] == service.RiskReview.model_validate(reply()).model_dump(mode="json")
+        assert "submitted_risk_review" not in saved.context_json
+        assert get_risk_submission(session, rid, attempt=run_attempt(saved)) == service.RiskReview.model_validate(reply()).model_dump(mode="json")
         assert session.get(RiskCase, "research").evidence_json == prior_case
 
 
@@ -580,7 +599,8 @@ def test_structured_submission_preserves_quotes_and_runner_uses_it_without_conso
             with get_session_factory()() as session:
                 pending = session.get(ResearchEntry, rid)
                 assert pending.status == "running" and "result" not in pending.context_json
-                assert pending.context_json["submitted_risk_review"]["priorities"][0]["analysis"] == payload["priorities"][0]["analysis"]
+                assert "submitted_risk_review" not in pending.context_json
+                assert get_risk_submission(session, rid, attempt=run_attempt(pending))["priorities"][0]["analysis"] == payload["priorities"][0]["analysis"]
             return "", ""  # No second JSON serialization or prose reply is needed.
     monkeypatch.setattr(research_runner.subprocess, "Popen", lambda *a, **k: Process())
     research_runner.run_analysis(rid)
@@ -596,19 +616,23 @@ def test_structured_submission_rejects_scope_then_accepts_correction(client):
     with get_session_factory()() as session:
         run, _ = service.begin_run(session, instrument_id="risk-a")
         run.status = "running"
-        run.context_json = {**run.context_json, "risk_inputs": service.read_snapshot(session, instrument_id="risk-a")}
+        run.context_json = {**run.context_json, "execution": {"attempt": 1}, "risk_inputs": service.read_snapshot(session, instrument_id="risk-a")}
         session.commit()
         rid = run.entry_id
     assert client.post(f"/api/research/runs/{rid}/risk-draft", json=reply(instrument_ids=["outside"])).status_code == 422
     with get_session_factory()() as session:
-        assert "submitted_risk_review" not in session.get(ResearchEntry, rid).context_json
+        run = session.get(ResearchEntry, rid)
+        assert "submitted_risk_review" not in run.context_json
+        assert get_risk_submission(session, rid, attempt=run_attempt(run)) is None
     read_required_pages(client, rid)
     assert client.post(f"/api/research/runs/{rid}/risk-draft", json=reply()).status_code == 200
 
 
-def chart_series(points, currency="CNY", frequency="daily"):
+def chart_series(points, currency="CNY", frequency="monthly"):
+    from investment_studio_instrument_core import build_return_intervals
+    observations = [{"date": day, "value": value} for day, value in points]
     return {"research_returns": {"currency": currency, "metadata": {"return_kind": "total_return", "return_series_status": "complete", "quote_basis": "total_return_nav"},
-        "frequency": {"resolved_frequency": frequency}, "points": [{"date": day, "value": value} for day, value in points]}}
+        "frequency": {"resolved_frequency": frequency}, "points": observations, "intervals": build_return_intervals(observations)}}
 
 
 def add_loss_series(session):
@@ -617,7 +641,14 @@ def add_loss_series(session):
     session.commit()
 
 
-def test_performance_without_trigger_or_peers_still_supports_independent_priority(client):
+@pytest.fixture
+def performance_clock(monkeypatch):
+    from types import SimpleNamespace
+    import watchlist_app.services.risk_performance as performance
+    monkeypatch.setattr(performance, "datetime", SimpleNamespace(now=lambda _: datetime(2026, 9, 3, 12, tzinfo=UTC)))
+
+
+def test_performance_without_trigger_or_peers_still_supports_independent_priority(client, performance_clock):
     seed(client)
     with get_session_factory()() as session:
         for cid in ("research", "price"):
@@ -644,7 +675,7 @@ def test_performance_without_trigger_or_peers_still_supports_independent_priorit
         assert saved["evidence_sources"][performance["source_id"]]["start_date"] == "2026-06-26"
 
 
-def test_explicit_comparison_uses_common_dates_and_rejects_frequency_or_currency_mismatch(client):
+def test_explicit_comparison_uses_common_dates_and_rejects_frequency_or_currency_mismatch(client, performance_clock):
     seed(client)
     with get_session_factory()() as session:
         add_loss_series(session)
@@ -796,7 +827,7 @@ def test_risk_binds_attributed_pm_views_active_questions_and_due_forecasts(clien
         from investment_studio_instrument_core.db_models import Instrument
         from watchlist_app.db.models.workbench import ResearchTopic
         session.add(Instrument(instrument_id="risk-a", instrument_name="Risk A", instrument_type="etf", currency="CNY",
-            exchange_code="XSHG", quote_selection_policy_json={}, source_settings_json={}))
+            exchange_code="XSHG", quote_selection_policy_json={"total_return": ["adjusted_close"]}, source_settings_json={}))
         session.add(ResearchTopic(topic_id="dossier:risk-a", title="Research", instrument_ids=["risk-a"], visibility="team"))
         session.flush()
         session.add(ResearchEntry(entry_id="closed-theme", topic_id="dossier:risk-a", kind="note", title="Closed theme",
@@ -988,7 +1019,7 @@ def test_live_role_or_service_scope_revocation_prevents_risk_publication(client,
         session.commit()
         run, _ = service.begin_run(session, instrument_id='risk-a')
         run_id = run.entry_id
-    delegated = replace(original, resource_scope={'kind': 'run', 'id': run_id})
+    delegated = replace(original, resource_scope={'kind': 'run', 'id': run_id, 'attempt': '1'})
     revoked = replace(delegated, team_role='reader') if subject == 'user' else replace(delegated, scopes=[])
     finished = []
     monkeypatch.setattr(runner, 'resolve_token', lambda *args: revoked if finished else delegated)
@@ -996,13 +1027,13 @@ def test_live_role_or_service_scope_revocation_prevents_risk_publication(client,
     def launch(*args, **kwargs):
         with get_session_factory()() as session:
             run = session.get(ResearchEntry, run_id)
-            run.context_json = {**run.context_json, 'submitted_risk_review': {**reply(), 'case_assessments': [{
-                'case_id': 'research', 'event_version_id': 'research:1', 'status': 'resolved', 'reason': '草稿拟结束风险'}]}}
+            risk_read_state(session, run_id, run_attempt(run)).submitted_review = {**reply(), 'case_assessments': [{
+                'case_id': 'research', 'event_version_id': 'research:1', 'status': 'resolved', 'reason': '草稿拟结束风险'}]}
             session.commit()
         finished.append(True)
         return SimpleNamespace(communicate=lambda **kwargs: ('', ''), returncode=0)
     monkeypatch.setattr(runner.subprocess, 'Popen', launch)
-    runner.run_analysis(run_id, token='task-token')
+    runner.run_analysis(run_id, token='task-token', attempt=1)
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id)
         case = session.get(RiskCase, 'research')
@@ -1101,6 +1132,7 @@ def test_pending_research_referrals_require_individual_assessment_before_complet
         session.commit()
         run, _ = service.begin_run(session, watchlist_id='risk-list')
         run.status = 'running'
+        run.context_json = {**run.context_json, 'execution': {'attempt': 1}}
         session.commit()
         run_id = run.entry_id
     service.prepare_run(run_id)
@@ -1111,6 +1143,7 @@ def test_pending_research_referrals_require_individual_assessment_before_complet
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id)
         assert run.status == 'running' and 'submitted_risk_review' not in run.context_json
+        assert get_risk_submission(session, run_id, attempt=run_attempt(run)) is None
         snapshot = run.context_json['risk_inputs']
         pending = [case for case in snapshot['research'] if case['case_id'] in {'research', 'uncertain'}]
         assessments = [{'case_id': case['case_id'], 'event_version_id': case['evidence_json']['event_version_id'],
@@ -1128,7 +1161,7 @@ def test_pending_research_referrals_require_individual_assessment_before_complet
     assert response.status_code == 200, response.text
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id)
-        service.apply_result(session, run, run.context_json['submitted_risk_review'])
+        service.apply_result(session, run, get_risk_submission(session, run_id, attempt=run_attempt(run)))
         session.commit()
         assert run.status == 'completed'
         for case_id in ('research', 'uncertain'):

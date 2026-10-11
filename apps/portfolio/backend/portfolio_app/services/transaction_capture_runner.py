@@ -38,7 +38,7 @@ def _harness_failure(stderr: str, return_code: int) -> str:
     if return_code == 78:
         return "截图分析运行环境尚未安装完整，请修复研究运行环境后重试。"
     if 'InvalidParameter' in text or re.search(r"^dsh: (?:INVALID_REQUEST|BAD_REQUEST):", text, re.M):
-        return "模型服务拒绝了分析请求参数，本次未生成结果；请检查模型与工具接口配置。"
+        return "模型服务拒绝了分析请求参数，本次执行未完成；请检查模型与工具接口配置。"
     if "insufficient_quota" in text or "insufficient_user_quota" in text or "Insufficient Balance" in text:
         return "DeepSeek账户余额不足，截图分析未完成。充值后可重新分析。"
     if "model_not_found" in text or "no available channel for model" in text.lower():
@@ -47,7 +47,7 @@ def _harness_failure(stderr: str, return_code: int) -> str:
         return "模型服务暂时限流，截图已保留，请稍后重新分析。"
     if re.search(r"^dsh: (?:NETWORK|SERVER):", text, re.M):
         return "模型服务或网络暂时不可用，截图已保留，请稍后重新分析。"
-    return "截图分析进程退出，尚未生成可供复核的结果。请重新分析。"
+    return "截图分析进程退出，本次执行未完成。请重新分析。"
 
 
 def _run_harness_process(*, portfolio_id: str, batch_id: str, run_token: str) -> tuple[int, bool, str | None]:
@@ -89,6 +89,8 @@ def run_transaction_capture_analysis(
 
     try:
         principal = resolve_token(run_token, "portfolio")
+        if principal.resource_scope != {"kind": "capture", "id": batch_id, "attempt": str(attempt)}:
+            raise ValueError("Screenshot credential does not match the active analysis attempt")
         require_access(portfolio_id, "editor", principal)
         return_code, timed_out, failure = _run_harness_process(
             portfolio_id=portfolio_id,
@@ -100,7 +102,7 @@ def run_transaction_capture_analysis(
             batch_id=batch_id,
             after_revision=starting_revision,
         )
-        if revision_created:
+        if revision_created and return_code == 0 and not timed_out:
             finish_transaction_capture_analysis_run(
                 portfolio_id=portfolio_id,
                 batch_id=batch_id,
@@ -109,11 +111,13 @@ def run_transaction_capture_analysis(
             )
             return
         if timed_out:
-            error = "截图分析超时，尚未生成可供复核的结果。截图已保留，可重新分析。"
+            error = "截图分析超时，本次执行未完成。截图已保留，可重新分析。"
         elif return_code != 0:
             error = failure or _harness_failure("", return_code)
         else:
             error = "分析已结束，但没有提交可供复核的结果。请重新分析。"
+        if revision_created:
+            error += " 已提交的草稿仍保留，须人工复核；草稿不代表本次分析成功。"
         finish_transaction_capture_analysis_run(
             portfolio_id=portfolio_id,
             batch_id=batch_id,

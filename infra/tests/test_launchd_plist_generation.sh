@@ -39,6 +39,7 @@ env_root = str(Path(os.environ["ENV_ROOT"]).resolve())
 expected_services = {
     "home-api",
     "watchlist-api",
+    "research-worker",
     "portfolio-api",
     "briefing-api",
     "home-web",
@@ -72,6 +73,13 @@ with (plist_root / "test.investment-studio.watchlist-api.plist").open("rb") as s
 assert watchlist_api["EnvironmentVariables"] == {
     "INVESTMENT_STUDIO_LOCAL_DATABASE_URL": "postgresql+psycopg://local@127.0.0.1:5432/test"
 }
+with (plist_root / "test.investment-studio.research-worker.plist").open("rb") as source:
+    research_worker = plistlib.load(source)
+assert research_worker["ProcessType"] == "Background"
+assert research_worker["LowPriorityIO"] is True
+assert research_worker["AbandonProcessGroup"] is False
+assert research_worker["ExitTimeOut"] == 45
+assert research_worker["EnvironmentVariables"] == watchlist_api["EnvironmentVariables"]
 
 with (plist_root / "test.investment-studio.home-web.plist").open("rb") as source:
     web = plistlib.load(source)

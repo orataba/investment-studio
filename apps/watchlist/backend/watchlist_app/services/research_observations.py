@@ -11,51 +11,54 @@ from decimal import Decimal
 from itertools import combinations
 from statistics import correlation, mean, StatisticsError
 
-import exchange_calendars
-from exchange_calendars.errors import CalendarError
+from studio_market.calendars import closed_market_sessions
 from sqlalchemy.exc import SQLAlchemyError
+from investment_studio_instrument_core import build_return_intervals
 from studio_market.numeric.store import cutoff_instant
 
-from watchlist_app.services.calculation_frequency import _market_calendar_sessions, source_calendar_date
+from watchlist_app.services.calculation_frequency import _market_calendar_sessions, source_calendar_date, build_calculation_frequency_context
 from watchlist_app.services.research_metrics import _evidence, _number, ewma_price_evidence
 from watchlist_app.services.read_model_freshness import calculation_input_read
 from watchlist_app.services.research_errors import ResearchInputUnavailable
 from watchlist_app.services.return_windows import (
     named_return_window_spec, period_return_percent, resolve_return_window, return_window_metadata,
+    confirmed_return_points, same_return_segment,
 )
 from watchlist_app.services.sector_market_data import all_rows, holding_type, numeric_store
 
 
-OBSERVATION_METHOD_VERSION = "watchlist-observations/v3"
-REACTION_METHOD_VERSION = "event-daily-reaction/v1"
+OBSERVATION_METHOD_VERSION = "watchlist-observations/v5"
+REACTION_METHOD_VERSION = "event-daily-reaction/v3"
 
 
 def _completed(day, calendar, cutoff):
-    if calendar == "24/7":
-        return day < cutoff.astimezone(UTC).date()
-    try:
-        exchange = exchange_calendars.get_calendar("XSHG" if calendar == "XSHE" else calendar)
-        # Old canonical history may precede the calendar package's default
-        # rolling coverage; it is still completed. Path/session validation below
-        # requests the complete historical calendar when it is actually needed.
-        if day < cutoff.astimezone(exchange.tz).date():
-            return True
-        return exchange.is_session(day.isoformat()) and exchange.session_close(day.isoformat()).to_pydatetime() <= cutoff
-    except (CalendarError, ValueError, TypeError):
-        return False
+    return day in (closed_market_sessions(calendar, day, day, cutoff) or ())
 
 
-def _points(series):
-    metadata = series.get("metadata") or {}
-    if metadata.get("return_series_status") not in {"ready", "complete", "partial"} or metadata.get("return_segment_breaks"):
-        return []
-    points = series.get("points") or []
-    if len({p.get("date") for p in points}) != len(points):
-        return []
-    if any(_number(p.get("value")) is None or float(p["value"]) <= 0 for p in points):
-        return []
-    return sorted(({**p, "value": float(p["value"]), "as_of_date": date.fromisoformat(p["date"])} for p in points), key=lambda p: p["date"])
+def _completed_rows(rows, calendar, cutoff):
+    """Filter the whole retained sample against one actual-close calendar.
 
+    Per-day requests outside the calendar's default years rebuilt the full
+    exchange schedule for every observation. A shared range preserves the
+    same actual close, exceptional closure and timezone rules without changing
+    the requested sample or computing a calendar thousands of times.
+    """
+    rows = list(rows)
+    days = [date.fromisoformat(row["date"]) for row in rows]
+    if not days:
+        return []
+    completed = closed_market_sessions(calendar, min(days), max(days), cutoff)
+    if completed is None:
+        # A range can be unsupported even when part of its history is known.
+        # Retain the old per-day verification in that case; neither fabricate
+        # closes nor silently discard independently verifiable observations.
+        completed = {day for day in set(days) if _completed(day, calendar, cutoff)}
+    else:
+        completed = set(completed)
+    return [row for row, day in zip(rows, days) if day in completed]
+
+
+_points = confirmed_return_points
 
 def _comparable(left, right):
     if not left.get("currency") or left.get("currency") != right.get("currency"):
@@ -83,6 +86,8 @@ def relative_performance(series, benchmark=None, *, as_of_date, windows=("1W", "
             "requested_end_date": as_of_date.isoformat(), "anchor_date": None, "end_date": None,
             "currency": series.get("currency"), "return_kind": (series.get("metadata") or {}).get("return_kind"),
             "limitation": reason}
+        if window and reason is None and not same_return_segment([other[p["date"]] for p in window.points]):
+            window = None
         if window:
             row.update(return_window_metadata(window), target_return_pct=period_return_percent(window),
                 status="partial" if reason else "available")
@@ -98,7 +103,7 @@ def relative_performance(series, benchmark=None, *, as_of_date, windows=("1W", "
 def volume_observation(rows, *, calendar, as_of):
     """Latest volume against previous volume, preserving units and session gaps."""
     cutoff = cutoff_instant(as_of)
-    rows = sorted((r for r in rows if _completed(date.fromisoformat(r["date"]), calendar, cutoff)), key=lambda r: r["date"])
+    rows = sorted(_completed_rows(rows, calendar, cutoff), key=lambda r: r["date"])
     result = {"status": "unavailable", "current": None, "previous": None, "change_pct": None,
         "unit": "shares", "method": "最近两个相邻完整交易日成交股数的百分比变化；不设异常阈值。"}
     if len(rows) < 2:
@@ -151,8 +156,9 @@ def top10_correlation(holdings, member_series, *, as_of_date, calendar):
         series = member_series.get(symbol) or {}
         if _comparable(reference, series) is not None:
             return result
-        prices = {point["date"]: point["value"] for point in _points(series)}
-        if any(day not in prices for day in dates):
+        points = {point["date"]: point for point in _points(series)}
+        prices = {day: point["value"] for day, point in points.items()}
+        if any(day not in prices for day in dates) or not same_return_segment([points[day] for day in dates if day in points]):
             return result
         values[symbol] = [prices[after] / prices[before] - 1 for before, after in zip(dates, dates[1:])]
     try:
@@ -236,16 +242,17 @@ def basket_observations(positions, member_series, *, as_of_date, information_as_
     valid, both = [], []
     for row in holdings:
         series = member_series.get(row.get("holding_symbol")) or {}
-        points = {p["date"]: p["value"] for p in _points(series)}
+        retained = {p["date"]: p for p in _points(series)}
+        points = {day: p["value"] for day, p in retained.items()}
         # Each member uses a confirmed, consistent currency/basis internally.
         if not series.get("currency") or (series.get("metadata") or {}).get("return_kind") not in {"total_return", "price_return"}:
             continue
         observed_dates = sorted(day for day in points if day <= as_of_date.isoformat())
-        if observed_dates[-50:] != current_dates:
+        if observed_dates[-50:] != current_dates or not same_return_segment([retained[day] for day in current_dates]):
             continue
         current = points[current_dates[-1]] > sum(points[d] for d in current_dates) / 50
         observed_previous = [day for day in observed_dates if day <= previous_dates[-1]]
-        previous = points[previous_dates[-1]] > sum(points[d] for d in previous_dates) / 50 if observed_previous[-50:] == previous_dates else None
+        previous = points[previous_dates[-1]] > sum(points[d] for d in previous_dates) / 50 if observed_previous[-50:] == previous_dates and same_return_segment([retained[day] for day in previous_dates]) else None
         item = {"holding_key": row["holding_key"], "symbol": row.get("holding_symbol"), "above": current,
             "previous_above": previous, "weight_percent": _number(row.get("weight_percent"))}
         valid.append(item)
@@ -301,7 +308,10 @@ def _read_snapshot(session, instrument_id, cutoff):
     # Keep only completed sessions for listed daily observations. Fund NAV keeps
     # its existing clock and is not coerced to a trading-session template.
     if instrument.instrument_type in {"equity", "etf", "index", "crypto"}:
-        series["points"] = [p for p in series.get("points", []) if _completed(date.fromisoformat(p["date"]), calendar, cutoff)]
+        series["points"] = _completed_rows(series.get("points", []), calendar, cutoff)
+        completed_dates = {point["date"] for point in series["points"]}
+        series["intervals"] = [item for item in series.get("intervals", []) if item["date"] in completed_dates]
+        series["wealth_points"] = list(series["points"])
     return instrument, series, calendar, {"source_type": "instrument_chart_snapshot", "instrument_id": instrument_id,
         "known_at": known.isoformat(), "source_cutoff_at": source.isoformat() if source else None,
         "materialization_version": chart.materialization_version, "freshness": chart.data_freshness_status,
@@ -343,7 +353,7 @@ def _raw_market(instrument, cutoff, store, as_of_date):
     prices = all_rows(store, "us_eod_daily", symbols=symbols, as_of=cutoff, page_size=100000,
         start=(as_of_date - timedelta(days=200)).isoformat(), end=as_of_date.isoformat())
     calendar = (instrument.source_settings_json or {}).get("market_calendar") or instrument.exchange_code
-    prices = [r for r in prices if _completed(date.fromisoformat(r["date"]), calendar, cutoff)]
+    prices = _completed_rows(prices, calendar, cutoff)
     grouped = {}
     for row in prices:
         grouped.setdefault(row["symbol"], []).append(row)
@@ -356,9 +366,19 @@ def _raw_market(instrument, cutoff, store, as_of_date):
     for member, rows in grouped.items():
         profile = profiles_by_symbol.get(member) or {}
         currencies = {r.get("currency") or profile.get("currency") for r in rows}
+        source_points = [{"date": r["date"], "value": r.get("adjusted_close"), "source_id": r["source_id"]} for r in rows]
+        context = build_calculation_frequency_context(
+            [{**point, "as_of_date": date.fromisoformat(point["date"])} for point in source_points],
+            expected_frequency="daily", market_calendar=calendar)
+        intervals = build_return_intervals(source_points, break_dates=context["missing_observation_dates"])
+        anchor = _number(source_points[0]["value"]) if source_points else None
+        wealth = [{**point, "value": float(point["value"]) / anchor * 100
+            if _number(point["value"]) is not None and anchor is not None and anchor > 0 else None}
+            for point in source_points]
         series[member] = {"currency": next(iter(currencies)) if len(currencies) == 1 else None,
-            "metadata": {"quote_basis": "adjusted_close", "return_kind": "total_return", "return_series_status": "ready"},
-            "points": [{"date": r["date"], "value": r.get("adjusted_close"), "source_id": r["source_id"]} for r in rows]}
+            "metadata": {"quote_basis": "adjusted_close", "return_kind": "total_return", "return_series_status": "ready",
+                "return_measure": "simple", "level_kind": "derived_wealth", "wealth_base": 100},
+            "frequency": context["profile"], "intervals": intervals, "points": wealth}
     normalized = []
     for row in holdings:
         profile = profiles_by_symbol.get(row.get("holding_symbol")) or {}
@@ -389,7 +409,7 @@ def instrument_observations(session, instrument_id, *, as_of, benchmark_id=None,
     # Canonical path definition; validate the actual path before calling its helper.
     days = [p["as_of_date"] for p in points]
     sessions = _market_calendar_sessions(calendar, days[0], days[-1]) if calendar and days else None
-    complete_path = sessions is not None and tuple(days) == tuple(sessions)
+    complete_path = sessions is not None and tuple(days) == tuple(sessions) and same_return_segment(points)
     drawdown = {"status": "available" if complete_path and len(points) >= 2 else "unavailable",
         "current_pct": _current_drawdown(points) if complete_path else None,
         "start_date": points[0]["date"] if points else None, "end_date": points[-1]["date"] if points else None}
@@ -496,14 +516,18 @@ def event_reaction(series, *, event_date, calendar, as_of, benchmark=None, timin
         result["status"] = "pending"
         result["limitations"].append("观察窗口尚未结束，尚待观察。")
         return result
-    points = {p["date"]: p["value"] for p in _points(series)}
-    if anchor.isoformat() not in points or end.isoformat() not in points:
+    retained = {p["date"]: p for p in _points(series)}
+    points = {day: p["value"] for day, p in retained.items()}
+    if (anchor.isoformat() not in points or end.isoformat() not in points
+            or not same_return_segment([p for day, p in retained.items() if anchor.isoformat() <= day <= end.isoformat()])):
         result["limitations"].append("事件窗口已结束，但缺少精确起止日价格；未跨缺失日替代。")
         return result
     result.update(status="partial", target_return_pct=(points[end.isoformat()] / points[anchor.isoformat()] - 1) * 100)
     reason = _comparable(series, benchmark) if benchmark is not None else "未配置可比较基准。"
-    other = {p["date"]: p["value"] for p in _points(benchmark or {})}
-    if reason is None and anchor.isoformat() in other and end.isoformat() in other:
+    other_retained = {p["date"]: p for p in _points(benchmark or {})}
+    other = {day: p["value"] for day, p in other_retained.items()}
+    if (reason is None and anchor.isoformat() in other and end.isoformat() in other
+            and same_return_segment([p for day, p in other_retained.items() if anchor.isoformat() <= day <= end.isoformat()])):
         value = (other[end.isoformat()] / other[anchor.isoformat()] - 1) * 100
         result.update(status="available", benchmark_return_pct=value, difference_pp=result["target_return_pct"] - value)
     else:

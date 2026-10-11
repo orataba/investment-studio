@@ -12,7 +12,7 @@ def register_fund(client):
 def start_analysis(client, monkeypatch, instrument_id="sxv264", page_context=None):
     import watchlist_app.services.research_runner as runner
     monkeypatch.setattr(runner, "harness_available", lambda: True)
-    monkeypatch.setattr(runner, "run_analysis", lambda run_id, token=None, issuer=None: None)
+    monkeypatch.setattr(runner, "run_analysis", lambda run_id, token=None, issuer=None, *, attempt=None: None)
     topic_response = client.post("/api/research/topics", json={"title": "标的分析", "instrument_ids": [instrument_id]})
     assert topic_response.status_code == 201, topic_response.text
     topic = topic_response.json()
@@ -47,7 +47,7 @@ def test_assistant_rejects_page_scope_that_disagrees_with_linked_topic(client, m
     import watchlist_app.services.research_runner as runner
     from watchlist_app.services import research_workbench
     monkeypatch.setattr(runner, "harness_available", lambda: True)
-    monkeypatch.setattr(runner, "run_analysis", lambda run_id, token=None, issuer=None: None)
+    monkeypatch.setattr(runner, "run_analysis", lambda run_id, token=None, issuer=None, *, attempt=None: None)
     monkeypatch.setattr(research_workbench, "external_json", lambda service, path:
                         {"research_enabled": True} if path == "/capabilities" else [{"portfolio_id": "linked"}])
     topic = client.post("/api/research/topics", json={"title": "组合对话", "portfolio_id": "linked"}).json()
@@ -94,7 +94,9 @@ def test_private_fund_analyst_reads_product_evidence_with_source_clocks(client, 
     assert evidence["holdings"]["freshness"] == "stale"
     plan = evidence["research_plan"]
     assert plan["scope"] in context["analyst_focus"][0]["guidance"]
-    methods = {item["id"]: item for item in plan["modules"]}
+    assert plan["modules"] == []
+    dossier = client.get("/api/research/instruments/sxv264/dossier").json()
+    methods = {item["id"]: item for item in dossier["frameworks"]}
     assert "未披露" in methods["fund-strategy"]["body"]
     assert "前填" in methods["market-quantitative"]["body"]
 
@@ -153,6 +155,7 @@ def test_daily_notebook_material_and_assistant_share_the_same_instrument_evidenc
 
 
 def test_fund_research_and_assistant_bind_nav_benchmark_common_sample_and_missing_exposure(client, monkeypatch):
+    from investment_studio_instrument_core import build_return_intervals
     from watchlist_app.db.models import InstrumentChartReadModel, InstrumentDetail, InstrumentManualProfile
     from watchlist_app.db.models.workbench import ResearchEntry
     from watchlist_app.db.session import get_session_factory
@@ -163,14 +166,15 @@ def test_fund_research_and_assistant_bind_nav_benchmark_common_sample_and_missin
         session.add(InstrumentDetail(instrument_id="fund-benchmark", instrument_name="登记基准", instrument_type="index", detail_view_type="index", is_active=True))
         session.flush()
         for iid, values in [("sxv264", [("2026-08-07", 1), ("2026-08-14", 1.04), ("2026-08-21", 1.1)]),
-                            ("fund-benchmark", [("2026-08-07", 2), ("2026-08-21", 2.1)])]:
+                            ("fund-benchmark", [("2026-08-07", 2), ("2026-08-14", 2.02), ("2026-08-21", 2.1)])]:
             row = session.get(InstrumentChartReadModel, iid)
             if row is None:
                 row = InstrumentChartReadModel(instrument_id=iid)
                 session.add(row)
+            points = [{"date": day, "value": value} for day, value in values]
             row.payload_json = {"research_returns": {"currency": "CNY", "metadata": {
-                "return_kind": "total_return", "return_series_status": "complete", "quote_basis": "total_return_nav"},
-                "frequency": {"resolved_frequency": "weekly"}, "points": [{"date": day, "value": value} for day, value in values]}}
+                "return_kind": "total_return", "return_series_status": "complete", "quote_basis": "total_return_nav" if iid == 'sxv264' else 'close'},
+                "frequency": {"resolved_frequency": "weekly"}, "points": points, "intervals": build_return_intervals(points)}}
             row.data_freshness_status = "fresh"
             row.source_cutoff_at = row.last_recalculated_at = datetime(2026, 8, 22, tzinfo=UTC)
         profile = session.get(InstrumentManualProfile, "sxv264")
@@ -186,6 +190,7 @@ def test_fund_research_and_assistant_bind_nav_benchmark_common_sample_and_missin
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id)
         automatic_evidence = run.context_json["instrument_inputs"][0]["performance_evidence"]
+        automatic_snapshot_cutoff = run.context_json["instrument_inputs"][0]["snapshot_cutoff"]
         computed = run.context_json["computed_metrics"][0]
         assert computed["source_id"] == automatic_evidence["source_id"]
         assert computed["scope"] == "instrument"
@@ -208,7 +213,8 @@ def test_fund_research_and_assistant_bind_nav_benchmark_common_sample_and_missin
         sector_research.validate_result(session, run, draft)
     assert automatic_evidence["frequency"] == "weekly"
     comparison = automatic_evidence["comparisons"][0]["comparison"]
-    assert comparison["dates"] == ["2026-08-07", "2026-08-21"]
+    assert comparison["cutoff"] == automatic_snapshot_cutoff
+    assert comparison["dates"] == ["2026-08-07", "2026-08-14", "2026-08-21"]
     fund = next(item for item in comparison["rows"] if item["instrument_id"] == "sxv264")
     assert fund["excess_return_pp"] == pytest.approx(5)
     assert automatic_evidence["observations"] == 3
@@ -219,7 +225,10 @@ def test_fund_research_and_assistant_bind_nav_benchmark_common_sample_and_missin
     assert response.status_code == 200, response.text
     evidence = response.json()["result"]["assets"][0]
     assert evidence["performance_evidence"]["sample_return_pct"] == automatic_evidence["sample_return_pct"]
-    assert evidence["performance_evidence"]["comparisons"][0]["comparison"] == comparison
+    assistant_comparison = evidence["performance_evidence"]["comparisons"][0]["comparison"]
+    assert assistant_comparison["cutoff"] == evidence["snapshot_cutoff"]
+    assert {key: value for key, value in assistant_comparison.items() if key != "cutoff"} == {
+        key: value for key, value in comparison.items() if key != "cutoff"}
     assert evidence["performance_evidence"]["source_id"] != automatic_evidence["source_id"]
     assert "未知持仓、杠杆与对冲保持未知" in evidence["analyst_focus"]
 

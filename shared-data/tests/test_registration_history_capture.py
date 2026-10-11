@@ -82,6 +82,64 @@ def test_existing_history_fetches_only_latest_overlap_and_missing_closes(capture
     assert statuses == []
 
 
+def test_latest_returned_close_cannot_hide_a_missing_session_in_this_refresh(capture_env):
+    settings, store, statuses = capture_env
+    store.ingest("raw_eod_daily", [[{
+        "symbol": "SHV", "date": "2026-09-02", "open": 100, "high": 101,
+        "low": 99, "close": 100, "adjusted_close": 99, "volume": 1000,
+    }]], source="fixture", observed_at=NOW)
+    client = FakeFmp(dates=("2026-09-02", "2026-09-08"))
+    with pytest.raises(eod_capture.FmpHistoryIncomplete) as caught:
+        ensure(store, Collector(settings, store=store, client=client))
+    assert "latest 2026-09-08, expected closed session 2026-09-08" in str(caught.value)
+    assert "Missing 2 required session(s)" in str(caught.value)
+    assert "2026-09-03, 2026-09-04" in str(caught.value)
+    assert "2026-09-07" not in str(caught.value)  # Labor Day is not an absent quote.
+    assert statuses[-1]["status"] == "failed"
+    # The collector keeps actual source observations. No gap is filled.
+    assert {row["date"] for row in store.query("raw_eod_daily")["rows"]} == {"2026-09-02", "2026-09-08"}
+
+
+def test_missing_due_sessions_publish_real_prices_but_remain_failed(capture_env, monkeypatch):
+    from studio_data.services.fmp import eod
+
+    settings, store, statuses = capture_env
+    store.ingest("raw_eod_daily", [[{
+        "symbol": "SHV", "date": "2026-09-02", "open": 100, "high": 101,
+        "low": 99, "close": 100, "adjusted_close": 99, "volume": 1000,
+    }]], source="fixture", observed_at=NOW)
+    instrument = {"instrument_type": "etf", "currency": "USD", "exchange_code": "XNAS",
+        "identifiers": [{"identifier_type": "provider_symbol", "identifier_value": "fmp:SHV"}]}
+    collector = Collector(settings, store=store, client=FakeFmp(dates=("2026-09-02", "2026-09-08")))
+    def capture(instrument_id, **kwargs):
+        assert kwargs["now"] is NOW
+        return eod_capture.ensure_fmp_security_history(instrument_id, **kwargs, store=store, collector=collector)
+    monkeypatch.setattr(eod, "get_instrument", lambda _: instrument)
+    monkeypatch.setattr(eod, "ensure_fmp_security_history", capture)
+    monkeypatch.setattr(eod, "NumericStore", lambda _: store)
+    publish = Mock(return_value=(1, 1))
+    monkeypatch.setattr(eod, "upsert_price_history", publish)
+    monkeypatch.setattr(eod, "update_refresh_status", lambda **kwargs: kwargs)
+    result = eod.refresh_fmp_eod("shv", instrument_type="etf", acquire_history=True, now=NOW)
+    assert result["status"] == "failed"
+    assert "Missing 2 required session(s)" in result["message"]
+    assert "Projected 2" in result["message"]
+    assert statuses[-1]["status"] == "failed"
+    assert {row["as_of_date"] for row in publish.call_args.kwargs["price_bar_rows"]} == {"2026-09-02", "2026-09-08"}
+
+
+def test_historical_gaps_outside_this_refresh_do_not_block_current_quotes(capture_env):
+    settings, store, statuses = capture_env
+    store.ingest("raw_eod_daily", [[{
+        "symbol": "SHV", "date": day, "open": 100, "high": 101,
+        "low": 99, "close": 100, "adjusted_close": 99, "volume": 1000,
+    } for day in ("2001-01-03", "2026-09-08")]], source="fixture", observed_at=NOW)
+    client = FakeFmp()
+    ensure(store, Collector(settings, store=store, client=client))
+    assert client.calls == []
+    assert statuses == []
+
+
 @pytest.mark.parametrize("dates", [(), ("2026-09-04",)])
 def test_empty_or_stale_history_does_not_report_ready(capture_env, dates):
     settings, store, statuses = capture_env
@@ -158,7 +216,7 @@ def test_uncompleted_revision_is_not_ready_even_with_current_quote(capture_env, 
         "price_revision_requests": [{"symbol": "SHV", "effective_date": "2026-09-08"}],
     })
     collector = Collector(settings, store=store, client=FakeFmp())
-    monkeypatch.setattr(collector, "raw_eod", lambda *_args: {"status": "ready"})
+    monkeypatch.setattr(collector, "raw_eod", lambda *_args, **_kwargs: {"status": "ready"})
     with pytest.raises(FmpApiError, match="pending adjustment revisions"):
         ensure(store, collector)
     assert statuses[-1]["status"] == "failed"
@@ -204,6 +262,7 @@ def test_instrument_refresh_acquires_prices_unless_store_is_explicitly_injected(
         "identifiers": [{"identifier_type": "provider_symbol", "identifier_value": "fmp:SHV"}],
     }
     monkeypatch.setattr(eod, "get_instrument", lambda _id: instrument)
+    monkeypatch.setattr(equities, "get_instrument", lambda _id: instrument)
     monkeypatch.setattr(etfs, "get_instrument", lambda _id: instrument)
     client = FakeFmp()
     collector = Collector(settings, store=store, client=client)

@@ -3,19 +3,20 @@ from datetime import date, timedelta
 import pytest
 
 from watchlist_app.services.price_risk import initial_price_limits, period_loss_readings
+from watchlist_app.services.calculation_frequency import _market_calendar_sessions
+from investment_studio_instrument_core import build_return_intervals
 
 
 def series(values, **frequency):
-    dates = []
-    day = date(2026, 1, 2)
-    while len(dates) < len(values):
-        if day.weekday() < 5:
-            dates.append(day.isoformat())
-        day += timedelta(days=1)
+    start = date(2026, 1, 2)
+    dates = _market_calendar_sessions('XNYS', start, start + timedelta(days=len(values) * 2 + 20))
+    assert dates is not None and len(dates) >= len(values)
+    points = [{'date': d.isoformat(), 'value': v} for d, v in zip(dates, values)]
     return {
         'metadata': {'return_kind': 'total_return', 'return_series_status': 'ready'},
-        'frequency': {'resolved_frequency': 'daily', 'gap_count': 0, **frequency},
-        'points': [{'date': d, 'value': v} for d, v in zip(dates, values)],
+        'frequency': {'resolved_frequency': 'daily', 'gap_count': 0, 'gap_detection_basis': 'market_calendar:XNYS', **frequency},
+        'points': points,
+        'intervals': build_return_intervals(points),
     }
 
 
@@ -53,6 +54,8 @@ def test_later_anchor_is_usable_but_unconfirmed_return_break_is_not():
 @pytest.mark.parametrize('frequency', [{'gap_count': 1}, {'resolved_frequency': 'weekly'}])
 def test_missing_or_low_frequency_prices_are_not_treated_as_daily(frequency):
     source = series([100] * 79 + [50], **frequency)
+    if frequency.get('gap_count'):
+        source['intervals'][-1].update(status='unavailable', value=None, log_return=None, reason='missing_market_session')
     assert initial_price_limits(source) == ({}, {})
     readings = period_loss_readings(source, {'day': 1, 'week': 1, 'month': 1, 'quarter': 1})
     assert all(row['return_pct'] is None and row['limitation'] and not row['breached'] for row in readings)
@@ -72,6 +75,7 @@ def observe(source, *, fresh=True):
     with get_session_factory()() as session:
         chart = session.get(InstrumentChartReadModel, 'sxv264')
         chart.payload_json = {'research_returns': source}
+        chart.data_freshness_status = 'fresh' if fresh else 'stale'
         risk = session.get(InstrumentRiskReadModel, 'sxv264')
         risk.payload_json = {'current_drawdown': -1, 'data_quality': {'status': 'ready'}}
         risk.data_freshness_status = 'fresh' if fresh else 'stale'
@@ -120,7 +124,9 @@ def test_period_breaches_share_one_case_escalate_and_do_not_resolve_on_missing_d
     history_size = len(escalated[0]['history_json'])
     observe(series([100] * 79 + [87]))
     assert len(active()[0]['history_json']) == history_size
-    observe(series([100] * 80, gap_count=1))
+    missing = series([100] * 80, gap_count=1)
+    missing['intervals'][-1].update(status='unavailable', value=None, log_return=None, reason='missing_market_session')
+    observe(missing)
     assert len(active()) == 1
     observe(series([100] * 80), fresh=False)
     assert len(active()) == 1
@@ -158,3 +164,98 @@ def test_period_settings_migration_preserves_existing_drawdown_lines(tmp_path, m
     with engine.connect() as connection:
         assert connection.scalar(text('SELECT drawdown_limit FROM risk_review_rule')) == 12.5
     get_settings.cache_clear()
+
+
+def test_old_return_reset_does_not_disable_confirmed_recent_loss_windows():
+    source = series([100] * 70 + [1] * 79 + [.95])
+    source['metadata'].update(return_series_status='partial', return_segment_breaks=[{}])
+    for i, point in enumerate(source['points']):
+        point['segment_id'] = 'old' if i < 70 else 'new'
+    limits, calibration = initial_price_limits(source)
+    assert limits
+    assert calibration['observations'] == 79
+    assert calibration['sample_start'] == source['points'][70]['date']
+    assert period_loss_readings(source, {'day': 3})[0]['return_pct'] == pytest.approx(-5)
+    # A fresh reset has only a one-day window, not an invented quarter loss.
+    for point in source['points'][-2:]:
+        point['segment_id'] = 'newest'
+    assert initial_price_limits(source) == ({}, {})
+    readings = period_loss_readings(source, {'day': 3, 'quarter': 3})
+    assert readings[0]['breached']
+    assert readings[-1]['return_pct'] is None
+
+
+def test_confirmed_recent_loss_is_monitored_even_when_full_history_drawdown_is_unavailable(client):
+    seed(client)
+    source = series([100] * 70 + [1] * 79 + [.95])
+    source['metadata'].update(return_series_status='partial', return_segment_breaks=[{}])
+    for i, point in enumerate(source['points']):
+        point['segment_id'] = 'old' if i < 70 else 'new'
+    observe(source)
+    from watchlist_app.db.models import InstrumentRiskReadModel
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services.risk_workbench import refresh_risk_cases
+    with get_session_factory()() as session:
+        risk = session.get(InstrumentRiskReadModel, 'sxv264')
+        risk.payload_json = {'current_drawdown': None, 'data_quality': {'status': 'unavailable'}}
+        refresh_risk_cases(session, ['sxv264'])
+        session.commit()
+    body = workspace(client)
+    asset = body['instruments'][0]
+    assert asset['price_rule_summary']['counts']['triggered'] > 0
+    assert any(row['signal'] == 'period_loss' for row in body['cases'])
+
+
+def test_pending_chart_recalculation_cannot_trigger_new_recent_loss(client):
+    seed(client)
+    source = series([100] * 79 + [95])
+    from watchlist_app.db.models import InstrumentChartReadModel, InstrumentRiskReadModel, InstrumentSummaryReadModel
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services.risk_workbench import refresh_risk_cases
+    with get_session_factory()() as session:
+        chart = session.get(InstrumentChartReadModel, 'sxv264')
+        chart.payload_json = {'research_returns': source}
+        chart.data_freshness_status = 'pending_recalc'
+        risk = session.get(InstrumentRiskReadModel, 'sxv264')
+        risk.payload_json = {'current_drawdown': None, 'data_quality': {'status': 'unavailable'}}
+        summary = session.get(InstrumentSummaryReadModel, 'sxv264')
+        summary.payload_json = {'freshness': {'data_freshness_status': 'fresh', 'latest_observation_date': source['points'][-1]['date']}}
+        refresh_risk_cases(session, ['sxv264'])
+        session.commit()
+        from watchlist_app.db.models.workbench import RiskCase
+        from sqlalchemy import select
+        assert not list(session.scalars(select(RiskCase).where(RiskCase.instrument_id == 'sxv264', RiskCase.signal == 'period_loss', RiskCase.trigger_active.is_(True))))
+
+
+@pytest.mark.parametrize('missing_index,calibration_available,week_available', [(10, True, True), (-3, False, False)])
+def test_only_gaps_inside_the_actual_loss_or_calibration_sample_disable_it(missing_index, calibration_available, week_available):
+    source = series([100] * 399 + [95], gap_count=1, unavailable_return_interval_count=1)
+    missing = source['points'].pop(missing_index)['date']
+    source['intervals'] = build_return_intervals(source['points'], break_dates=[missing])
+    limits, calibration = initial_price_limits(source)
+    assert bool(limits) is calibration_available
+    if calibration_available:
+        assert calibration['observations'] == 252
+    readings = {row['period']: row for row in period_loss_readings(source, {'day': 3, 'week': 3, 'month': 3, 'quarter': 3})}
+    # The last single-day interval is complete in both cases.
+    assert readings['day']['return_pct'] == pytest.approx(-5)
+    assert readings['day']['breached']
+    assert (readings['week']['return_pct'] is not None) is week_available
+    if not week_available:
+        assert readings['week']['limitation'] and not readings['week']['breached']
+    # Missing interval evidence cannot be substituted with zero or inferred from levels.
+    source['intervals'].pop()
+    assert period_loss_readings(source, {'day': 3})[0]['return_pct'] is None
+
+
+@pytest.mark.parametrize('missing_evidence', ['intervals', 'calendar'])
+def test_zero_aggregate_gaps_cannot_certify_daily_price_risk(missing_evidence):
+    source = series([100] * 79 + [95])
+    assert source['frequency']['gap_count'] == 0
+    if missing_evidence == 'intervals':
+        source.pop('intervals')
+    else:
+        source['frequency']['gap_detection_basis'] = 'calendar_day_threshold'
+    assert initial_price_limits(source) == ({}, {})
+    readings = period_loss_readings(source, {'day': 3, 'week': 3})
+    assert all(row['return_pct'] is None and row['limitation'] and not row['breached'] for row in readings)

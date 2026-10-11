@@ -1,7 +1,7 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import AwareDatetime, BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -42,35 +42,53 @@ def require_instrument(session, instrument_id):
 @router.get("/research/instruments/{instrument_id}/dossier")
 def dossier(instrument_id: str, include_history: bool = False, source_id: str | None = None,
             version_id: str | None = None, current_only: bool = False,
+            projection: Literal["figure"] | None = None,
             session: Session = Depends(get_db_session)):
     require_instrument(session, instrument_id)
     try:
+        if projection and not source_id:
+            raise ValueError("图表读取需要指定本档案内的来源")
         if version_id:
-            saved = service.read_dossier_version(session, instrument_id, version_id)
+            # Select inside the authorized historical version before resolving
+            # its one requested original. Other cited originals stay retained.
+            saved = service.read_dossier_version(session, instrument_id, version_id,
+                                                references_only=bool(source_id))
             if source_id:
                 source = next((row for row in saved.get("sources", []) if row.get("source_id") == source_id), None)
                 if source is None:
                     raise ValueError("该研究版本没有引用这份原始依据")
-                return source
+                return _selected_source(session, source, projection=projection,
+                                        cutoff=saved.get("information_cutoff"))
             return saved
         result = service.read_dossier(session, instrument_id, include_history=include_history,
                                       current_only=current_only and not source_id and not include_history,
                                       include_working_context=bool(source_id))
         if source_id:
             from watchlist_app.services.research_notebook import dossier_source
-            return dossier_source(result, source_id)
-        return dossier_view(result)
+            source = dossier_source(result, source_id, references_only=True)
+            return _selected_source(session, source, projection=projection)
+        return dossier_view(result, session=session)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     except LookupError as error:
         raise HTTPException(404, str(error)) from error
 
 
+def _selected_source(session, source, *, projection=None, cutoff=None):
+    if projection == "figure":
+        from watchlist_app.services.research_run_evidence import resolve_reference
+        return resolve_reference(source, session=session, bound_source=True, projection="figure")
+    from watchlist_app.services.market_evidence import hydrate_source
+    return hydrate_source(source, cutoff=datetime.fromisoformat(cutoff) if cutoff else None, bound_source=True)
+
+
 @router.put("/research/instruments/{instrument_id}/dossier/mandate")
-def save_mandate(instrument_id: str, request: service.ResearchMandateInput, session: Session = Depends(get_db_session)):
+def save_mandate(instrument_id: str, request: service.ResearchGuidanceInput, session: Session = Depends(get_db_session)):
     require_instrument(session, instrument_id)
     try:
-        return service.save_mandate(session, instrument_id, request)
+        return service.save_guidance(session, instrument_id, request)
+    except service.ResearchGuidanceConflict as error:
+        raise HTTPException(409, str(error)) from error
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
 
@@ -120,44 +138,46 @@ def activity(instrument_id: str, session: Session = Depends(get_db_session)):
 
 
 @router.post("/research/instruments/{instrument_id}/themes", status_code=201)
-def create_theme(instrument_id: str, request: ThemeInput, background: BackgroundTasks, session: Session = Depends(get_db_session)):
+def create_theme(instrument_id: str, request: ThemeInput, session: Session = Depends(get_db_session)):
     require_instrument(session, instrument_id)
     try:
         result = save_theme(session, instrument_id, request)
     except (ValueError, LookupError) as error:
         raise HTTPException(422, str(error)) from error
     session.commit()
-    return _request_theme_research(session, instrument_id, result, background) if result["status"] == "active" else result
+    return _request_theme_research(session, instrument_id, result) if result["status"] == "active" else result
 
 
-def _request_theme_research(session, instrument_id, result, background):
-    from watchlist_app.services.research_runner import harness_available, run_analysis, authorize_run
+def _request_theme_research(session, instrument_id, result):
+    from watchlist_app.services.research_runner import harness_available
+    from watchlist_app.services.research_execution import enqueue_run
     if not harness_available():
         return {**result, "research_run_id": None, "research_status": "unavailable",
                 "research_message": "主题已保存；研究运行环境尚不可用，恢复后将补充初始研究。"}
     from watchlist_app.services.sector_research import begin_run
     from studio_identity import IdentityError, current_principal
     run, created = begin_run(session, [instrument_id], question=f"为重点主题 {result['theme_id']} 补充研究基线：读取创建背景和引用资料，主动检索补充证据，明确研究问题、当前认识、重要性和下一观察。")
-    if created:
+    if created or run.status == "queued":
         principal = current_principal()
+        from watchlist_app.services.research_access import run_attempt
+        attempt = run_attempt(run)
         try:
-            token = authorize_run(principal, run.entry_id)
+            enqueue_run(principal, run.entry_id, attempt=attempt)
         except (IdentityError, HTTPException):
             return {**result, "research_run_id": run.entry_id, "research_status": "failed",
                     "research_message": "主题已保存；研究授权暂不可用，尚未建立研究基线。"}
-        background.add_task(run_analysis, run.entry_id, token, principal)
     return {**result, "research_run_id": run.entry_id, "research_status": run.status}
 
 
 @router.patch("/research/instruments/{instrument_id}/themes/{theme_id}")
-def update_theme(instrument_id: str, theme_id: str, request: ThemePatch, background: BackgroundTasks, session: Session = Depends(get_db_session)):
+def update_theme(instrument_id: str, theme_id: str, request: ThemePatch, session: Session = Depends(get_db_session)):
     require_instrument(session, instrument_id)
     try:
         result = save_theme(session, instrument_id, request, theme_id=theme_id)
         session.commit()
         if result["status"] == "active" and result["baseline_status"] == "pending" and any(
                 key in request.model_fields_set for key in ("title", "question", "background", "reference", "status")):
-            return _request_theme_research(session, instrument_id, result, background)
+            return _request_theme_research(session, instrument_id, result)
         return result
     except LookupError as error:
         raise HTTPException(404, str(error)) from error

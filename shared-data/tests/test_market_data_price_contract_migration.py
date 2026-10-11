@@ -141,6 +141,7 @@ def _insert_contract_test_instrument(
     *,
     instrument_id: str,
     schema: str,
+    quote_policy: dict[str, object] | None = None,
 ) -> None:
     _set_search_path(connection, schema)
     has_exchange_code = any(
@@ -161,13 +162,17 @@ def _insert_contract_test_instrument(
                 refresh_status_json, lifecycle_state_json, market_data_updated_at
             ) VALUES (
                 :instrument_id, :instrument_name, 'equity', 'USD',
-                '{{}}'{exchange_value}, '{{"market_calendar":"XNAS"}}', '{{}}', '{{}}', NULL
+                :quote_policy{exchange_value}, '{{"market_calendar":"XNAS"}}', '{{}}', '{{}}', NULL
             )
             """
         ),
         {
             "instrument_id": instrument_id,
             "instrument_name": f"Concurrent contract {instrument_id}",
+            "quote_policy": json.dumps(quote_policy if quote_policy is not None else {
+                "trading": ["close"], "valuation": ["close"], "total_return": ["adjusted_close"],
+                "chart": ["close"], "reference": ["close"],
+            }),
         },
     )
 
@@ -415,6 +420,7 @@ def test_observation_contract_normalizes_legacy_refresh_cursor_once(
             connection,
             instrument_id="legacy-email-refresh",
             schema="",
+            quote_policy={},
         )
         connection.execute(
             sa.text(

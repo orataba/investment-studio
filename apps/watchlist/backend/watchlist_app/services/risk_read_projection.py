@@ -12,14 +12,32 @@ def _risk_case_brief(case):
     return {**{key: value for key, value in case.items() if key not in {"history_json", "evidence_json"}},
         **{key: evidence.get(key) for key in ("impact_level", "urgency", "risk_channels", "impact_analysis", "action_condition", "confidence")},
         "evidence_json": {key: value for key, value in evidence.items() if key not in {"body", "title", "sources"}},
-        "sources": [{key: value for key, value in source.items() if key != "text"}
+        "sources": [{key: value for key, value in source.items() if key != "text"
+                     or (isinstance(value, dict) and value.get("inline") is False)}
                     for source in evidence.get("sources", [])]}
 
 
-def _same_evidence(left, right):
+def _same_evidence(left, right, *, source_path=()):
     # JSON equality also preserves scalar types (Python considers True == 1)
     # and numeric representations; object key order does not identify evidence.
-    return left == right and json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
+    def identity(value, path):
+        if isinstance(value, list):
+            return [identity(item, (*path, index)) for index, item in enumerate(value)]
+        if isinstance(value, dict):
+            if (value.get("content_sha256") and value.get("inline") is False
+                    and (value.get("read") or {}).get("tool") == "read_risk_evidence"):
+                return {key: value[key] for key in ("content_sha256", "type", "count")}
+            bound_source = (len(path) >= 2 and isinstance(path[-1], int)
+                and path[-2] in {"sources", "source_views", "input_sources"} and "data" not in path)
+            if (bound_source and value.get("source_type") == "computed_metric"
+                    and isinstance(value.get("retained_reference"), dict)
+                    and (value.get("read") or {}).get("tool") == "read_risk_evidence"):
+                # The retained locator identifies an immutable original. Its
+                # current/prior delivery address does not change that evidence.
+                return {key: identity(item, (*path, key)) for key, item in value.items() if key != "read"}
+            return {key: identity(item, (*path, key)) for key, item in value.items()}
+        return value
+    return json.dumps(identity(left, source_path), sort_keys=True) == json.dumps(identity(right, source_path), sort_keys=True)
 
 
 def _reference_case_evidence(packet, case_maps):
@@ -40,7 +58,7 @@ def _reference_case_evidence(packet, case_maps):
                     path = [side, category, index, "sources", source_index]
                     if side == "previous":
                         for candidate, candidate_path in current_sources.get(case["case_id"], []):
-                            if not _same_evidence(source, candidate):
+                            if not _same_evidence(source, candidate, source_path=("sources", 0)):
                                 continue
                             reference = {key: value for key, value in source.items()
                                          if key in {"source_id", "document_id", "version_id", "source_type"}}
@@ -69,7 +87,7 @@ def _reference_case_evidence(packet, case_maps):
                         for field, value in view.items():
                             # Keep small metadata and scalars readable. Only a
                             # repeated structure that actually shrinks is reused.
-                            if not value or not isinstance(value, (dict, list)) or not _same_evidence(value, source.get(field)):
+                            if not value or not isinstance(value, (dict, list)) or not _same_evidence(value, source.get(field), source_path=(field,)):
                                 continue
                             reference = {"same_as_path": [*path, field]}
                             if json_bytes(reference) < json_bytes(value):
@@ -126,6 +144,9 @@ def _risk_instrument_page(build, count, *, unbounded_single=False):
 
 def _risk_instrument_packet(context, instrument_id, *, section="overview", offset=0,
                             comparison_source_id=None, _unbounded_single=False):
+    from watchlist_app.services.risk_evidence_projection import risk_snapshot_projection
+    context = {**context, "risk_inputs": risk_snapshot_projection(context.get("risk_inputs")),
+               "prior_inputs": risk_snapshot_projection(context.get("prior_inputs"), "previous")}
     if not context.get("risk_run") or instrument_id not in context["risk_inputs"]["instrument_ids"]:
         raise ValueError("只能读取本次风控范围内的标的。")
     if section not in {"overview", "cases", "comparisons", "sample_dates", "research_context"}:
@@ -154,10 +175,10 @@ def _risk_instrument_packet(context, instrument_id, *, section="overview", offse
 
     def packet(current, previous, *, total, end):
         return {**base, "current": current,
-            "previous": {"unchanged": True} if previous == current else previous,
+            "previous": {"unchanged": True} if _same_evidence(previous, current) else previous,
             "offset": offset, "next_offset": end if end < total else None, "total": total,
             "read_note": "current_counts/previous_counts计数为事项而非规则；quantitative=0不代表未配置复核线。overview.instrument.price_rule_summary区分默认/自定义/来源未知及configured/evaluable/triggered/unavailable；period_limits、period_readings、price_risk_calibration均为本轮冻结输入，旧快照缺少摘要时不可用当前设置反推。按overview计数，前后均为0的分区可跳过；有内容的cases/research_context从offset=0读至next_offset=null。cases包含完整风险事项；research_context保留PM档案、观点原文、当前问题与预测，不能当作已核实事实；comparisons按需读完各页后依各自共同样本比较，不合成排名。sample_dates按comparison_source_id另读实际共同日期。"
-                + ("same_as_path指向同一原页内完全相同的完整依据，保留本页offset（续读时为page_offset），沿目标的next_offset/deferred读完，引用本身不代表原件已读。" if section == "cases" else "")}
+                + ("same_as_path指向同一原页内完全相同的完整依据，保留本页offset（续读时为page_offset），沿目标的next_offset/deferred读完；read_risk_evidence为按论证需要读取的原始计算输入，不属于必须逐点遍历的风险正文。引用本身不代表原件已读。" if section == "cases" else "")}
 
     if section == "overview":
         if offset:
@@ -202,7 +223,7 @@ def _risk_instrument_packet(context, instrument_id, *, section="overview", offse
             # an unchanged prior page merely because their brief fields match.
             if snapshots[1] and result["previous"] == {"unchanged": True} and any(
                 not _same_evidence((maps[0][key][1].get("evidence_json") or {}).get("sources", []),
-                                   (maps[1][key][1].get("evidence_json") or {}).get("sources", []))
+                                   (maps[1][key][1].get("evidence_json") or {}).get("sources", []), source_path=("sources",))
                 for key in selected
             ):
                 result["previous"] = values[1]

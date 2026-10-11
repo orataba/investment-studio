@@ -125,12 +125,15 @@ class NumericStore:
 
         Every capture is retained, including A -> B -> A. Readers only see files
         and current projections committed in the same PostgreSQL transaction.
+        The chunk iterator may add acquisition metadata to its own details
+        dictionary. A serialized snapshot of the final details is committed with
+        ready status; later caller mutations cannot change the published batch.
         """
         spec = get_dataset(dataset)
         batch_id = str(uuid4())
         started = datetime.now(UTC)
         default_observed = instant(observed_at or started)
-        details = dict(details or {})
+        details = details if details is not None else {}
         with self.engine.begin() as conn:
             self._register_dataset(conn, spec)
             conn.execute(insert(batches).values(id=batch_id,dataset=dataset,source=source,status="writing",started_at=started,row_count=0,details=serializable({k:v for k,v in details.items() if k!="snapshot_scopes"})))
@@ -209,7 +212,8 @@ class NumericStore:
                     conn.execute(insert(snapshots),list(snapshot_records.values()))
                 self._publish_current(conn,dataset,projections.values(),scope_records=snapshot_records.values())
                 now = datetime.now(UTC)
-                conn.execute(update(batches).where(batches.c.id==batch_id).values(status="ready",published_at=now,row_count=total))
+                conn.execute(update(batches).where(batches.c.id==batch_id).values(status="ready",published_at=now,row_count=total,
+                    details=serializable({k:v for k,v in details.items() if k!="snapshot_scopes"})))
                 conn.execute(update(datasets).where(datasets.c.name==dataset).values(updated_at=now))
             return {"batch_id":batch_id,"dataset":dataset,"status":"ready","row_count":total,"parts":len(published_files)}
         except Exception as exc:

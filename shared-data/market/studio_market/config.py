@@ -17,6 +17,7 @@ class MarketSettings:
     datahub_api_url: str = "http://datahubco.com/app-api/openapi/v1/tushare"
     gtja_access_key_id_file: Path | None = None
     gtja_access_key_secret_file: Path | None = None
+    futu_config_dir: Path = Path("~/.config/orataba/secrets/investment-studio/futu")
 
     def __post_init__(self) -> None:
         if not self.database_url:
@@ -24,6 +25,7 @@ class MarketSettings:
         if make_url(self.database_url).password is not None:
             raise ValueError("Keep the database password outside DATABASE_URL; use PostgreSQL credential configuration")
         object.__setattr__(self, "data_root", Path(self.data_root).expanduser())
+        object.__setattr__(self, "futu_config_dir", Path(self.futu_config_dir).expanduser())
 
     @classmethod
     def from_environment(cls, database_url: str | None = None, data_root: str | Path | None = None) -> "MarketSettings":
@@ -40,6 +42,7 @@ class MarketSettings:
             datahub_api_url=os.environ.get(prefix+"DATAHUB_API_URL", "http://datahubco.com/app-api/openapi/v1/tushare"),
             gtja_access_key_id_file=file("GTJA_ACCESS_KEY_ID_FILE"),
             gtja_access_key_secret_file=file("GTJA_ACCESS_KEY_SECRET_FILE"),
+            futu_config_dir=Path(os.environ.get(prefix + "FUTU_CONFIG_DIR", "~/.config/orataba/secrets/investment-studio/futu")),
         )
 
     def read_secret(self, name: str) -> str:
