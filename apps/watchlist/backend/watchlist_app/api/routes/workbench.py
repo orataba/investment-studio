@@ -160,7 +160,9 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
         {"catalogue", "instrument_inputs", "research_dossiers", "sector_inputs", "sector_estimate_evidence", "prior_events",
          "market_coverage", "data_gaps"} if request.resource == "instrument" else
         {"research_dossiers", "catalogue"} if request.resource == "dossier" else {"sector_estimate_evidence", "instrument_inputs", "catalogue"})
-    if request.resource == "context" and request.section != "overview":
+    if request.resource == "context" and request.section == "scope_index":
+        fields = common | {"risk_scope", "risk_inputs", "prior_inputs"}
+    elif request.resource == "context" and request.section != "overview":
         # The section reader validates the name and returns the complete chosen
         # value. Other retained conversations, figures and risk snapshots cannot
         # contribute to this page and need not be decoded on every page request.

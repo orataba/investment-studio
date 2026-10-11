@@ -251,3 +251,121 @@ def test_contract_size_question_and_current_judgment_leave_a_readable_overview(m
         assert overview["current_investment_view"]["inline"] is False
         assert overview["current_investment_view"]["read"]["section"] == "investment_view"
     assert complete("read_research_dossier", {"instrument_id": "xlk", "section": "investment_view"}) == view
+
+
+def _risk_scope_context():
+    instruments = [{"instrument_id": f"asset-{i}", "name": f"持仓{i}", "instrument_type": "public_fund"}
+                   for i in range(11)]
+    reports = [{"case_id": f"case-{i}", "instrument_id": f"asset-{i % 10}", "title": f"当时报告{i}",
+                "signal": "research", "severity": "attention", "body": "原文证据"} for i in range(39)]
+    snapshot = {"scope": {"kind": "portfolio", "id": "p"}, "scope_available": True,
+        "instrument_ids": [item["instrument_id"] for item in instruments], "input_as_of": "2026-10-09",
+        "instruments": instruments, "research": reports, "quantitative": [], "coverage": [],
+        "portfolio": {"portfolio_id": "p", "positions": [{"instrument_id": "asset-0", "note": ""}],
+                      "risk_context": {"portfolio_metrics": {"nav": 100}, "derivatives": {"positions": []}}},
+        "limitations": []}
+    prior = deepcopy(snapshot)
+    prior["research"] = [{"case_id": "prior-only", "instrument_id": "asset-10", "title": "前期仍需复核", "body": "历史原文"}]
+    context = {"run_id": "scope-run", "risk_run": True, "risk_scope": {"portfolio_id": "p"},
+               "cutoff": "2026-10-11T19:00:57.747569+00:00", "risk_inputs": snapshot, "prior_inputs": prior}
+    # The real failure had 11 instruments, 39 reports and a 50,451-byte index.
+    # Reproduce that envelope with synthetic holdings; no private fixture data.
+    index = projection._risk_scope_index(context)
+    from watchlist_app.services.research_read_projection import json_bytes
+    snapshot["portfolio"]["positions"][0]["note"] = "x" * (50451 - json_bytes(index))
+    assert json_bytes(projection._risk_scope_index(context)) == 50451
+    return context
+
+
+@pytest.mark.parametrize("nested_large_fields", [False, True])
+def test_risk_scope_index_is_lossless_bounded_and_keeps_prior_required_reads(monkeypatch, nested_large_fields):
+    from watchlist_app.services.research_read_projection import checked_overview
+    from watchlist_app.services.risk_read_projection import missing_required_reads
+    context = _risk_scope_context()
+    if nested_large_fields:
+        context["risk_inputs"]["research"][0]["title"] = "完整标题🙂" * 15000
+        context["risk_inputs"]["portfolio"]["positions"][0]["note"] = "完整持仓限制🙂" * 15000
+        context["risk_inputs"]["portfolio"]["risk_context"]["derivatives"]["positions"] = [
+            {"holding_id": "contract-1", "name": "完整合约名称🙂" * 15000}]
+    before = deepcopy(context)
+    raw_index = projection._risk_scope_index(context)
+    with pytest.raises(ValueError, match="概览超过工具返回上限"):
+        checked_overview(deepcopy(raw_index))
+    missing = missing_required_reads(context)
+    assert any(read["instrument_id"] == "asset-10" and read["section"] == "cases" for read in missing)
+    monkeypatch.setattr(mcp, "request", server_projection(lambda suffix: context))
+    overview = wire("read_research_context", {})
+    references = {key: value["read"] for key, value in overview.items()
+                  if isinstance(value, dict) and value.get("inline") is False}
+    assert "risk_inputs" in references
+    for key, selector in references.items():
+        tool = selector["tool"]
+        assert tool == "read_research_context" and selector["section"] == "scope_index"
+        assert complete(tool, {"section": selector["section"]}, path=selector["path"]) == raw_index[key]
+    assert complete("read_research_context", {"section": "scope_index"}) == raw_index
+    assert missing_required_reads(context) == missing  # The directory is not delivered evidence.
+    assert context == before
+    with pytest.raises(ValueError, match="读取路径"):
+        mcp.read_research_context(section="scope_index", path=["unrelated_retained_data"])
+    with pytest.raises(ValueError, match="风控范围索引"):
+        mcp.read_research_context(section="catalogue")
+
+
+def test_risk_scope_http_pages_use_read_projection_and_recheck_authority(client, monkeypatch):
+    from sqlalchemy import event, select
+    from studio_identity import Principal
+    from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic, ResearchRiskReadState
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services import research_access, research_run_context
+    from watchlist_app.db.research_read_context import derive_read_context
+    import watchlist_app.main as main
+    context = {**_risk_scope_context(), "research_actor": {"kind": "user", "user_id": "pm-one"},
+               "execution": {"attempt": 1}, "unrelated_retained_data": "不得加载的完整历史" * 100000}
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="scope-topic", title="风控", visibility="private", created_by_user_id="pm-one"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="scope-run", topic_id="scope-topic", kind="analysis", title="风控",
+                                  status="running", context_json=context))
+        session.add(ResearchEntry(entry_id="ordinary-run", topic_id="scope-topic", kind="analysis", title="普通研究",
+            status="running", context_json={**context, "risk_run": False, "research_run": True, "run_id": "ordinary-run"}))
+        session.commit()
+    actor = Principal("pm-one", "PM", "default", resource_scope={"kind": "run", "id": "scope-run", "attempt": "1"})
+    monkeypatch.setattr(main, "resolve_request", lambda *args, **kwargs: actor)
+    checked_portfolios = []
+    monkeypatch.setattr(research_access, "require_portfolio", checked_portfolios.append)
+    loaded_fields = []
+    original_load = research_run_context.load_run_fields
+    def track_load(session, run_id, fields, **kwargs):
+        loaded_fields.append((set(fields), kwargs.get("summary_only", False)))
+        return original_load(session, run_id, fields, **kwargs)
+    monkeypatch.setattr(research_run_context, "load_run_fields", track_load)
+    def reject_full_entry_load(*_):
+        pytest.fail("A scope index page must not materialize the complete retained research context")
+    event.listen(ResearchEntry, "load", reject_full_entry_load)
+    try:
+        path = "/api/research/runs/scope-run/read"
+        overview = client.post(path, json={"resource": "context"})
+        assert overview.status_code == 200, overview.text
+        assert len(overview.content) <= 48000 and overview.json()["risk_inputs"]["inline"] is False
+        loaded_fields.clear()
+        response = client.post(path, json={"resource": "context", "section": "scope_index", "path": ["instrument_detail_reads"]})
+        assert response.status_code == 200, response.text
+        assert response.json()["cutoff"] == context["cutoff"]
+        assert response.json()["risk_scope"] == context["risk_scope"]
+        expected = projection._risk_scope_index(derive_read_context(context))["instrument_detail_reads"]
+        assert response.json()["data"] == expected
+        assert any(fields == {"risk_inputs", "prior_inputs"} and summary for fields, summary in loaded_fields)
+        assert all(not (fields & {"risk_inputs", "prior_inputs"}) or summary for fields, summary in loaded_fields)
+        assert checked_portfolios and set(checked_portfolios) == {"p"}
+        actor = Principal("pm-one", "PM", "default", resource_scope={"kind": "run", "id": "scope-run", "attempt": "2"})
+        assert client.post(path, json={"resource": "context", "section": "scope_index"}).status_code == 409
+        actor = Principal("other-pm", "Other", "default")
+        assert client.post(path, json={"resource": "context", "section": "scope_index"}).status_code == 403
+        actor = Principal("pm-one", "PM", "default", resource_scope={"kind": "run", "id": "ordinary-run", "attempt": "1"})
+        ordinary = client.post("/api/research/runs/ordinary-run/read", json={"resource": "context", "section": "scope_index"})
+        assert ordinary.status_code == 422 and "不在本轮上下文目录" in ordinary.text
+    finally:
+        event.remove(ResearchEntry, "load", reject_full_entry_load)
+    with get_session_factory()() as session:
+        assert session.scalars(select(ResearchRiskReadState)).all() == []
+        assert session.get(ResearchEntry, "scope-run").context_json == context

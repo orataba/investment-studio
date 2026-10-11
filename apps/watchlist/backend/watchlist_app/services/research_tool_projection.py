@@ -7,7 +7,7 @@ import json
 from typing import Literal, get_args
 from urllib.parse import quote
 from watchlist_app.services.research_read_projection import (
-    checked_overview, coverage_detail, coverage_summary, dossier_overview, dossier_sections, read_page, shape,
+    checked_overview, coverage_detail, coverage_summary, dossier_overview, dossier_sections, json_bytes, read_page, shape,
 )
 from watchlist_app.services.research_estimate_tools import estimate_overview
 from watchlist_app.services.risk_read_projection import _risk_overview_pages, required_detail_reads
@@ -57,8 +57,24 @@ def read_research_context(request, section: str = "overview", offset: int = 0, l
             "market_coverage": coverage_summary(context.get("market_coverage")),
             "sections": section_shapes,
             "next_read": "自动研究逐一读取instrument_ids；对话按问题读取page_context、非空referenced_research_update/referenced_research_versions/referenced_risk_case及相关history/evidence。图表/底稿追问须读取referenced_research_versions绑定的精确版本及其source_ids，不用当前版本替换。referenced_risk_case是当前风险快照；不是历史版本。catalogue按需分页发现相关标的，不要求遍历登记库。read_research_instrument提供当前判断与资料目录，read_research_dossier按section读取任务、复核议程和底稿，source_id/version_id读取原文/原版本。所有选读分区跟随next_offset及deferred.path读完；未读资料不代表缺失。个人对话仅在用户明确要求后先authorize_team_research，再submit_research_review；组合对话不能发布团队研究。"}, pageable_fields=[(["question"], {"tool": "read_research_context", "section": "question"})] if "question" in context else [])
-    if section != "overview" or offset or path:
-        raise ValueError("风控使用read_risk_instrument/read_portfolio_risk分区；范围索引不使用section/offset/path。")
+    if section not in {"overview", "scope_index"}:
+        raise ValueError("风控范围索引使用overview或scope_index；原始风控资料使用read_risk_instrument/read_portfolio_risk。")
+    if section == "overview" and (offset or path):
+        raise ValueError("overview不使用offset/path；请按返回的scope_index读取指针续读范围索引。")
+    index = _risk_scope_index(context)
+    if section == "scope_index":
+        return read_page(index, {"run_id": context.get("run_id"), "risk_scope": context["risk_scope"],
+                                "cutoff": context["cutoff"], "section": section},
+                         offset=offset, limit=limit, path=path)
+    # Preserve existing small-scope responses. Any growing directory branch can
+    # be read losslessly through the same bound index, without exposing raw inputs.
+    pageable = sorted((key for key in index if key not in {"risk_run", "cutoff", "next_read"}),
+                      key=lambda key: json_bytes(index[key]), reverse=True)
+    return checked_overview(index, pageable_fields=[([key], {
+        "tool": "read_research_context", "section": "scope_index", "path": [key]}) for key in pageable])
+
+
+def _risk_scope_index(context):
     snapshot = context["risk_inputs"]
     # Full portfolio snapshots exceed the harness's 50 KB tool-result limit.
     # Send the scope index here; read each retained instrument separately below.
@@ -84,7 +100,7 @@ def read_research_context(request, section: str = "overview", offset: int = 0, l
         "reports": [{key: case.get(key) for key in ("case_id", "instrument_id", "title", "signal", "severity")}
                     for category in ("research", "quantitative", "coverage") for case in snapshot[category]],
         "prior_input_as_of": (context.get("prior_inputs") or {}).get("input_as_of"),
-        "next_read": "执行instrument_overview_pages全部条目：按tool调用批量页offset或单项instrument_id，条目相互独立，可并行读取；核对全部页均已取得，不必逐项重读overview。按instrument_detail_reads明确列出的工具参数读取全部必读页，包含仅历史存在的记录；提交前服务会检查概览与这些资料是否全部交付，缺页须补读后重交完整结果；某分区current与previous计数均为0可直接跳过。comparisons按业绩研判需要读取，选读时沿next_offset读完；未读比较不能据以判断相对表现。PM档案、观点原文和研究判断是待验证输入，不是独立事实。组合另以 read_portfolio_risk 读取每个组合模块；targets_by_taxonomy 与 concentration 包含本轮全部分类，不随浏览器的分组选项裁剪。concentration从offset=0开始，按next_offset逐页读到null；每页source_continuations还须用其offset/source_offset继续读取来源直到清空。tail_risk 保留样本量与未建模敞口，未覆盖不代表零风险。derivatives 按 derivative_holdings 内的 holding_id 逐份读取。这里只是范围索引。"}
+        "next_read": "先展开所有inline=false的范围索引字段：按其read调用read_research_context(section='scope_index', path=...)，沿next_offset和每个deferred.path读全，不能把指针当作空目录。索引读取不算完成风控证据交付。执行instrument_overview_pages全部条目：按tool调用批量页offset或单项instrument_id，条目相互独立，可并行读取；核对全部页均已取得，不必逐项重读overview。按instrument_detail_reads明确列出的工具参数读取全部必读页，包含仅历史存在的记录；提交前服务会检查概览与这些资料是否全部交付，缺页须补读后重交完整结果；某分区current与previous计数均为0可直接跳过。comparisons按业绩研判需要读取，选读时沿next_offset读完；未读比较不能据以判断相对表现。PM档案、观点原文和研究判断是待验证输入，不是独立事实。组合另以 read_portfolio_risk 读取每个组合模块；targets_by_taxonomy 与 concentration 包含本轮全部分类，不随浏览器的分组选项裁剪。concentration从offset=0开始，按next_offset逐页读到null；每页source_continuations还须用其offset/source_offset继续读取来源直到清空。tail_risk 保留样本量与未建模敞口，未覆盖不代表零风险。derivatives 按 derivative_holdings 内的 holding_id 逐份读取。这里只是范围索引。"}
 
 
 
