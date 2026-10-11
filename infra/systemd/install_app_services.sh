@@ -367,7 +367,8 @@ Environment=INVESTMENT_STUDIO_SECRET_ROOT=$(printf '%q' "$ENV_ROOT")
 ExecStart=$PYTHON_BIN -m watchlist_app.research_worker
 Restart=always
 RestartSec=5
-KillMode=control-group
+# Let the worker cancel Harness and expire its lease before the cgroup fallback.
+KillMode=mixed
 TimeoutStopSec=45
 Nice=5
 IOSchedulingClass=best-effort

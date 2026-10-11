@@ -174,3 +174,54 @@ def test_normal_completion_does_not_stop_the_exited_group(monkeypatch):
     process = SimpleNamespace(returncode=0, communicate=lambda **kw: ("completed", ""))
     monkeypatch.setattr(runner, "_stop_process_group", lambda item: pytest.fail("Successful wait must not stop twice"))
     assert runner._wait_harness(process) == ("completed", "", 0)
+
+
+@pytest.mark.parametrize("returncode", [-15, 0])
+@pytest.mark.parametrize("accepted", [False, True])
+def test_cancellation_during_communicate_keeps_worker_interruption_semantics(monkeypatch, returncode, accepted):
+    cancellation = Event()
+    stopped = []
+    process = SimpleNamespace(returncode=returncode)
+
+    def communicate(**kwargs):
+        # SIGTERM can arrive while communicate waits, including just as the
+        # Harness exits. Neither a killed child nor a final reply owns recovery.
+        cancellation.set()
+        return "last reply", ""
+
+    process.communicate = communicate
+    monkeypatch.setattr(runner, "_stop_process_group", stopped.append)
+    with pytest.raises(runner.ResearchExecutionInterrupted):
+        runner._wait_harness(process, cancellation=cancellation, accepted=lambda: accepted)
+    assert stopped == [process]
+
+
+@pytest.mark.parametrize("cancel_during", ["acceptance", "cleanup", "final_read"])
+def test_accepted_timeout_cleanup_preserves_cancellation_and_stops_once(monkeypatch, cancel_during):
+    cancellation = Event()
+    stopped = []
+    process = SimpleNamespace(args=["offline-harness"], returncode=None)
+
+    def communicate(timeout=None):
+        if process.returncode is None:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        if cancel_during == "final_read":
+            cancellation.set()
+        return "submitted", ""
+
+    def accepted():
+        if cancel_during == "acceptance":
+            cancellation.set()
+        return True
+
+    def stop(item):
+        stopped.append(item)
+        item.returncode = -15
+        if cancel_during == "cleanup":
+            cancellation.set()
+
+    process.communicate = communicate
+    monkeypatch.setattr(runner, "_stop_process_group", stop)
+    with pytest.raises(runner.ResearchExecutionInterrupted):
+        runner._wait_harness(process, cancellation=cancellation, accepted=accepted)
+    assert stopped == [process]

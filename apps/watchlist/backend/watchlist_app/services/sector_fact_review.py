@@ -63,6 +63,9 @@ scope and timing; their receipt IDs are not original evidence IDs. A snapshot di
 does not authorize a source_id absent from sources. If no eligible original source is supplied, use source_ids=[].
 Acquisition receipts describe what was actually searched or fetched. No newly acquired source, no matching
 search result, or failed coverage does not establish that no material news exists.
+Apply the same distinction to specific disclosures: a missing or unverified filing does not establish
+that it has not been published. Check coverage prose, assumptions and next-check text as well as headlines;
+correct unsupported absence/publication claims to the actual acquisition limit, without inventing a release date.
 Compare acquisition.market_coverage's latest bundle/received dates and tool_evidence's actual observation
 dates with cutoff; a stale corpus or market snapshot cannot establish full news coverage through cutoff.
 The complete acquisition summary remains required. Full market_coverage is a separate section of this
@@ -108,6 +111,10 @@ describe a scheduled or expected event, never an event that has already happened
 of a schedule is not confirmation that its outcome occurred.
 2. Check the exact subject, ticker, numbers, units and observation dates. USO RSI above 70 must
 NEVER be attributed to XLE. Different securities, businesses and dates are not interchangeable.
+Check conditional thresholds and invalidation clauses too. Metrics with the same displayed unit are
+not interchangeable: a bond yield and its term premium are distinct measures, not one shared percentage
+threshold. Bind each numerical condition to its own metric and evidence; remove an unsupported threshold
+while preserving the supported qualitative condition, rather than supplying one from model knowledge.
 Attribute each number to the original source that actually contains it; a number in one news
 article cannot be attributed to a separately cited brokerage report. Distinguish current
 drawdown from the observed historical maximum. A recent decline alone does not establish a

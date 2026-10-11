@@ -72,14 +72,21 @@ def _wait_harness(process, *, cancellation=None, accepted=None, timeout=1800):
                 reply, errors = process.communicate(timeout=min(2, remaining))
                 # A durable, validated submission is the completion boundary even
                 # when the CLI exits during its final acknowledgement/cleanup.
-                return reply, errors, 0 if accepted is not None and accepted() else process.returncode
+                returncode = 0 if accepted is not None and accepted() else process.returncode
             except subprocess.TimeoutExpired:
                 if accepted is not None and accepted():
                     # Stop unnecessary acknowledgements/tool loops before publication.
                     cleanup_started = True
                     _stop_process_group(process)
                     reply, errors = process.communicate()
-                    return reply, errors, 0
+                    returncode = 0
+                else:
+                    continue
+            # A stop can arrive during a result read, acceptance check or cleanup.
+            # Both completion paths retain the worker's lease-recovery boundary.
+            if cancellation.is_set():
+                raise ResearchExecutionInterrupted()
+            return reply, errors, returncode
     except BaseException:
         if not cleanup_started:
             # Stop descendants even when the shell has already exited. This must

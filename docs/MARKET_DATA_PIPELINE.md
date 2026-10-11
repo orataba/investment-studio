@@ -153,6 +153,7 @@ bin/investment-studio market pipeline registered-prices --market hk
 
 数值定时采集、发行和复制由 `infra/scripts/install_market_pipeline.py` 安装；它仅写定义，启用是独立部署操作。
 每周任务更新证券目录、公司资料以及指数当前成份和历史成份事件，已有历史族持续积累。证券目录请求显式保留 FMP 全部股份类别（`includeAllShareClasses=true`），以证券代码为单位保留同一发行人的不同上市股份，不按公司合并。采集时间与各市场闭市日期分别判断；大型全市场批次不会阻塞登记资产收盘价采集。FMP 参考资料在公共采集成功或副本收到数据后统一投影到登记资产；部分失败只投影已完成证券并保留失败明细。独立盘前参考资料任务仅保留 Tushare 来源，不重复读取同一批 FMP 投影。
+FMP 授权 API 使用普通 HTTPS，不采用浏览器 TLS 模拟或第二套传输回退。连接／读取超时与截断响应属于瞬时传输失败，沿用最多三次尝试；不完整 CSV 不进入发布。公司资料 bulk 分页保留每页至少 60.1 秒的间隔，分页完成与 ready 批次才是采集进展依据。
 原有数据刷新任务负责将共享数据投影到应用并执行私有净值结算，不再各自抓取股票及 ETF 历史。
 
 日报和周报定时器由 `infra/systemd/install_briefing_timers.sh` 安装，默认北京时间日报 08:30、周六周报 09:00。

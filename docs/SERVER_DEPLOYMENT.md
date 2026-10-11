@@ -218,6 +218,13 @@ new work; its process group is stopped with the service. Active-state checks and
 the existing eight HTTP readiness checks both remain required. Verify model and
 research outcomes separately from process readiness.
 
+The worker uses `KillMode=mixed`: stopping it first sends SIGTERM to its main
+process so it can cancel Harness and expire the current lease for recovery.
+Remaining children are killed after the main process exits or the existing
+45-second stop timeout. Stop this worker and confirm its process group is empty
+before restarting APIs during a coordinated deployment; queued inputs and the
+interrupted run stay under their original authority.
+
 Include this worker in writer-stop, migration, restore and rollback inventories.
 The first queue migration preserves old in-process inputs/drafts but marks old
 queued/running requests failed: they have no transferable original-subject queue

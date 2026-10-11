@@ -279,6 +279,62 @@ def test_market_preflight_resolves_text_objects_under_text_root_and_checks_conte
         sync.verify_files(Connection(), tmp_path)
 
 
+@pytest.mark.parametrize('table', ['fund_nav_event', 'fund_nav_reinvestment_evidence'])
+@pytest.mark.parametrize('failure', ['missing', 'changed', 'outside_symlink'])
+def test_snapshot_rejects_missing_or_changed_private_confirmation(tmp_path, table, failure):
+    content = b'original private confirmation'
+    digest = hashlib.sha256(content).hexdigest()
+    provenance = {'private_evidence_ref': 'private-confirmation:' + digest,
+                  'source_sha256': digest}
+
+    class Connection:
+        def execute(self, query):
+            return [(provenance,)] if 'instrument_data.' + table in query else []
+
+    target = tmp_path / 'evidence/portfolio-1/confirmation.png'
+    target.parent.mkdir(parents=True)
+    if failure == 'changed':
+        target.write_bytes(b'replacement private confirmation')
+    elif failure == 'outside_symlink':
+        outside = tmp_path / 'outside.png'
+        outside.write_bytes(content)
+        target.symlink_to(outside)
+    with pytest.raises(ValueError, match='[Pp]rivate|Snapshot file is missing'):
+        sync.verify_files(Connection(), tmp_path)
+
+
+def test_snapshot_accepts_retained_private_original_and_unrelated_public_provenance(tmp_path):
+    content = b'original private confirmation'
+    digest = hashlib.sha256(content).hexdigest()
+    target = tmp_path / 'evidence/portfolio-1/confirmation.png'
+    target.parent.mkdir(parents=True)
+    target.write_bytes(content)
+
+    class Connection:
+        def execute(self, query):
+            if 'instrument_data.fund_nav_event' in query:
+                return [({'private_evidence_ref': 'private-confirmation:' + digest,
+                          'source_sha256': digest},),
+                        ({'source_sha256': 'a' * 64, 'source_url': 'https://example.test'},)]
+            return []
+
+    sync.verify_files(Connection(), tmp_path)
+
+
+@pytest.mark.parametrize('provenance', [
+    {'private_evidence_ref': 'private-confirmation:not-a-sha256'},
+    {'private_evidence_ref': '../outside.png'},
+    {'private_evidence_ref': 'private-confirmation:' + 'a' * 64, 'source_sha256': 'b' * 64},
+])
+def test_snapshot_rejects_invalid_or_conflicting_private_reference(tmp_path, provenance):
+    class Connection:
+        def execute(self, query):
+            return [(provenance,)] if 'instrument_data.fund_nav_event' in query else []
+
+    with pytest.raises(ValueError, match='private evidence'):
+        sync.verify_files(Connection(), tmp_path)
+
+
 @pytest.mark.parametrize('path', ['numeric/us_eod_daily/batch/part.parquet',
                                  'numeric/outbox/unexpected-reference.zip'])
 def test_market_preflight_never_ignores_missing_catalogue_files(tmp_path, path):

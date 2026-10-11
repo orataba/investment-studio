@@ -247,6 +247,38 @@ def verify_files(connection, directory):
             if hashlib.file_digest(stream, "sha256").hexdigest() != digest:
                 raise ValueError("A retained source document failed its content hash check")
     verify_document_files(connection, directory / "documents")
+    verify_private_evidence_files(connection, directory / "evidence")
+
+
+def verify_private_evidence_files(connection, root):
+    # Private confirmations use a content identity, not a storage filename.
+    # Check historical revisions too: they remain retained financial evidence.
+    required = set()
+    for (provenance,) in connection.execute("""
+        SELECT provenance_json FROM instrument_data.fund_nav_event
+        UNION ALL
+        SELECT provenance_json FROM instrument_data.fund_nav_reinvestment_evidence"""):
+        reference = (provenance or {}).get("private_evidence_ref")
+        if reference is None:
+            continue
+        match = re.fullmatch(r"private-confirmation:([0-9a-f]{64})", reference) if isinstance(reference, str) else None
+        if match is None:
+            raise ValueError("Snapshot contains an invalid private evidence reference")
+        digest = match.group(1)
+        if provenance.get("source_sha256", digest) != digest:
+            raise ValueError("Snapshot contains conflicting private evidence hashes")
+        required.add(digest)
+    if not required:
+        return
+    retained = set()
+    for path in root.rglob("*"):
+        if path.is_file():
+            target = checked_file(root, path.relative_to(root))
+            with target.open("rb") as stream:
+                retained.add(hashlib.file_digest(stream, "sha256").hexdigest())
+    missing = required - retained
+    if missing:
+        raise ValueError(f"Private confirmation evidence is missing or failed its content hash check: {', '.join(sorted(missing))}")
 
 
 def verify_document_files(connection, root):
