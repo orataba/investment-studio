@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 vi.mock('./ResearchCurrentNumbers', () => ({ default: () => <div data-testid="current-numbers" /> }))
 import ResearchQuantObservations from './ResearchQuantObservations'
@@ -35,4 +35,27 @@ it('keeps canonical quantitative data available before model analysis exists', (
   const { container } = render(<ResearchQuantObservations instrumentId="private-fund" notebook={null} />)
   expect(container.textContent).toContain('尚未形成量化分析')
   expect(screen.getByTestId('current-numbers')).toBeTruthy()
+})
+
+it('shows published analysis under free module keys by its retained numeric sources, not its title', () => {
+  const module = { summary: '', analysis: '', coverage: 'partial' as const, gaps: [], next_check: '', source_ids: [], figure_source_ids: [], evidence_as_of: '2026-10-12' }
+  const notebook: SavedResearchNotebook = {
+    run_id: 'published', checked_at: '2026-10-12', source_ids: [], key_drivers: [], questions: [], important_changes: [], next_research: [],
+    modules: [
+      { ...module, key: 'return-path-and-volatility', title: '收益路径与波动结构', summary: '8月至10月月收益为负，7月为正。', analysis: '10月尚未结束，不能与完整月份直接等同。', figure_source_ids: ['returns'] },
+      { ...module, key: 'exposure-and-valuation-evidence', title: '敞口与估值证据', summary: '持仓资料缺失，不等于没有持仓。', source_ids: ['holdings'] },
+      { ...module, key: 'unrelated', title: '量化标题不构成分类依据', summary: '没有数值来源的另项分析。', source_ids: ['unclassified'] },
+      { ...module, key: 'market-quantitative', summary: '已确认尚缺估值数据。' },
+    ],
+    sources: [{ source_id: 'returns', title: '留存收益路径', observation_domain: 'market' }, { source_id: 'holdings', title: '留存持仓资料', observation_domain: 'fundamental' }, { source_id: 'unclassified', title: '未分类资料' }],
+  }
+  render(<ResearchQuantObservations instrumentId="513130-sh" notebook={notebook} />)
+  expect(screen.queryByText(/尚未形成量化分析/)).toBeNull()
+  expect(screen.getByText('8月至10月月收益为负，7月为正。')).toBeTruthy()
+  expect(screen.getByText('持仓资料缺失，不等于没有持仓。')).toBeTruthy()
+  expect(screen.getByText('已确认尚缺估值数据。')).toBeTruthy()
+  expect(screen.queryByText('没有数值来源的另项分析。')).toBeNull()
+  const analysis = screen.getByRole('heading', { name: '收益路径与波动结构' }).closest('article')!
+  fireEvent.click(within(analysis).getByRole('button', { name: '量化解释与依据' }))
+  expect(screen.getByText('10月尚未结束，不能与完整月份直接等同。')).toBeTruthy()
 })
