@@ -1,9 +1,9 @@
 """Current risk-review versions, without preparing another model evidence corpus."""
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Boolean, select, true
+from sqlalchemy import Boolean, String, select, true
 from studio_identity import current_principal
 
 from watchlist_app.db.models import (
@@ -77,7 +77,7 @@ def input_version(session, state):
         return None
     from watchlist_app.services.risk_performance import peer_context, _taxonomy_peers
     from watchlist_app.services.research_access import (
-        instrument_run_scope, research_context_projection, topic_portfolio_ids_by_topic,
+        instrument_run_scope, research_context_projection, research_projection_rows, topic_portfolio_ids_by_topic,
     )
     from investment_studio_instrument_core.db_models import Instrument
     from types import SimpleNamespace
@@ -131,18 +131,111 @@ def input_version(session, state):
         true() if principal.local_unrestricted else ResearchTopic.team_id == principal.team_id)).all()
     allowed = {topic for topic, portfolios in topic_portfolio_ids_by_topic(session, topics).items() if not portfolios}
     versions["research"] = sorted([dict(row._mapping) for row in research if row.topic_id in allowed], key=lambda row: row["entry_id"])
-    versions["themes"] = [dict(row._mapping) for row in session.execute(select(ResearchEntry.entry_id,
-        ResearchEntry.updated_at, ResearchEntry.status).where(ResearchEntry.kind == "note",
+    theme_relation, theme_fields = research_context_projection(session, {"role": String, "theme_status": String})
+    theme_query = select(ResearchEntry.entry_id, ResearchEntry.updated_at, ResearchEntry.status,
+        *(value.label(key) for key, value in theme_fields.items())).where(ResearchEntry.kind == "note",
         ResearchEntry.topic_id.in_([f"dossier:{iid}" for iid in ids]),
-        true() if principal.local_unrestricted else ResearchEntry.team_id == principal.team_id).order_by(ResearchEntry.entry_id))]
+        true() if principal.local_unrestricted else ResearchEntry.team_id == principal.team_id).order_by(ResearchEntry.entry_id)
+    if theme_relation is not None:
+        theme_query = theme_query.join(theme_relation, true())
+    versions["themes"] = [dict(row._mapping) for row in research_projection_rows(session, theme_query,
+        {key: (key,) for key in theme_fields})]
+    inactive_themes = {row["entry_id"] for row in versions["themes"]
+                       if row["role"] == "research_theme" and row["theme_status"] != "active"}
     markets = {row.instrument_id: research_market_for_instrument(SimpleNamespace(**dict(row._mapping)))
         for row in session.execute(select(Instrument.instrument_id, Instrument.instrument_type,
             Instrument.exchange_code, Instrument.source_settings_json).where(Instrument.instrument_id.in_(ids)))}
-    return serialize_payload({"contract": 1, "scope": state["scope"], "instrument_ids": state["instrument_ids"],
+    # A date rollover matters only when an actual active forecast becomes due.
+    # Keep dates on evidence, but do not buy another assessment every midnight.
+    from watchlist_app.services.sector_research import review_states
+    notebooks = review_states(session, instrument_ids=ids, for_risk=True)["last_completed"] if ids else {}
+    forecast_states = {}
+    for iid in ids:
+        market = markets.get(iid)
+        today = datetime.now(UTC).astimezone(ZoneInfo(RESEARCH_TIMEZONES[market])).date() if market else None
+        forecast_states[iid] = {str(item.get("version_id") or item.get("key")): (
+            "unknown_clock" if today is None else "due" if date.fromisoformat(item["review_on"]) <= today else "scheduled")
+            for item in ((notebooks.get(iid) or {}).get("current_research") or {}).get("forecasts", [])
+            if item.get("status", "active") == "active" and item.get("theme_id") not in inactive_themes and item.get("review_on")}
+    return serialize_payload({"contract": 2, "scope": state["scope"], "instrument_ids": state["instrument_ids"],
         "catalogue": state["instruments"], "cases": sorted(state["cases"], key=lambda row: row["case_id"]),
         "portfolio": (state["portfolio"] or {}).get("version"),
         "peer_groups": peer_groups, "comparison_settings": profiles, "versions": versions,
-        # Forecast due-state changes at its market midnight even without a write.
-        "review_days": {iid: {"market": markets.get(iid), "day":
-            datetime.now(UTC).astimezone(ZoneInfo(RESEARCH_TIMEZONES[markets[iid]])).date().isoformat()
-            if markets.get(iid) else None} for iid in ids}})
+        "forecast_review_states": forecast_states})
+
+
+def automatic_review_inputs(state, *, tracked_case_ids=()):
+    """Existing risk transitions admit paid work; daily numerical clocks do not.
+
+    Physical source generations still belong to input_version for publication
+    and browser freshness. Recalc already appends quantitative case history only
+    for triggers, rule changes, clearances or PM actions, not daily readings.
+    This small projection is saved on the run; it is not another current store.
+    """
+    if not state or not state.get("scope_available", True):
+        return None
+    cases = state.get("cases")
+    if cases is None:
+        cases = [row for key in ("research", "quantitative", "coverage") for row in state.get(key, [])]
+    selected = []
+    for row in cases:
+        evidence = row.get("evidence_json") or {}
+        assessment = evidence.get("risk_assessment") or {}
+        active = row.get("trigger_active") and row.get("status") not in {"handled", "resolved"}
+        pending = assessment.get("status") == "pending"
+        if row.get("severity") != "attention" or not (active or pending or row.get("case_id") in tracked_case_ids):
+            continue
+        if evidence.get("direction") == "opportunity" and not assessment:
+            continue
+        value = {key: row.get(key) for key in ("case_id", "instrument_id", "signal", "status", "trigger_active")}
+        if row["signal"].startswith("sector:"):
+            value["withdrawn"] = bool(evidence.get("withdrawn"))
+            # An editorial event version must not buy another assessment merely
+            # because its source clock changed. A material referral pins its
+            # own event version; an independent changed decision remains visible.
+            value["assessment"] = {key: assessment.get(key) for key in (
+                "status", "event_version_id", "reason", "impact_explanation", "observation_condition")}
+            if pending and not value["assessment"]["event_version_id"]:
+                value["assessment"]["event_version_id"] = evidence.get("event_version_id")
+            if not assessment:
+                value["legacy_judgment"] = {key: row.get(key) for key in ("title", "body")}
+        else:
+            value["history_count"] = row.get("history_count", len(row.get("history_json") or []))
+            if row["signal"] not in {"drawdown_limit", "period_loss"}:
+                value["judgment"] = {key: row.get(key) for key in ("title", "body")}
+        selected.append(value)
+    return serialize_payload({"contract": 1, "scope": {key: state["scope"][key] for key in ("kind", "id")},
+        "instrument_ids": state["instrument_ids"], "cases": sorted(selected, key=lambda row: row["case_id"])})
+
+
+def saved_automatic_inputs(context):
+    """Map old frozen evidence, never invent an accepted baseline from live data."""
+    if "risk_automatic_inputs" in context:
+        return context["risk_automatic_inputs"]
+    frozen = context.get("risk_input_version") or context.get("risk_inputs")
+    return automatic_review_inputs(frozen) if frozen else None
+
+
+def new_referral_since(state, cutoff):
+    """An explicit later referral can establish a missing legacy baseline.
+
+    Case updated_at is deliberately insufficient: ordinary price refreshes also
+    advance it. Only the existing material referral's submission clock counts.
+    """
+    try:
+        boundary = datetime.fromisoformat(str(cutoff).replace("Z", "+00:00"))
+        boundary = boundary.replace(tzinfo=boundary.tzinfo or UTC)
+    except (TypeError, ValueError):
+        return False
+    for row in (state or {}).get("cases", []):
+        assessment = (row.get("evidence_json") or {}).get("risk_assessment") or {}
+        if row.get("severity") != "attention" or assessment.get("status") != "pending":
+            continue
+        try:
+            submitted = datetime.fromisoformat(str(assessment.get("submitted_at")).replace("Z", "+00:00"))
+            submitted = submitted.replace(tzinfo=submitted.tzinfo or UTC)
+        except (TypeError, ValueError):
+            continue
+        if submitted > boundary:
+            return True
+    return False

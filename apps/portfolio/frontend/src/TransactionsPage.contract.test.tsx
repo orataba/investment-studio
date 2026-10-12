@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { LANGUAGE_STORAGE_KEY, LanguageProvider, LanguageSelector } from '../../../../packages/ui/src/i18n'
 import TransactionsPage from './pages/TransactionsPage'
+import { PortfolioCapabilitiesContext } from './components/PortfolioCapabilitiesProvider'
 import type {
   PortfolioTransactionCaptureAnalysisRevision,
   PortfolioTransactionCaptureBatchRecord,
@@ -688,6 +689,41 @@ describe('Transactions rendered page contract', () => {
     assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
     expect(within(assistant).getByText('running-capture')).toBeInTheDocument()
     expect(apiMocks.startPortfolioTransactionCaptureAnalysis).not.toHaveBeenCalled()
+    expect(apiMocks.commitPortfolioTransactionImport).not.toHaveBeenCalled()
+  })
+
+  it('keeps a paused screenshot draft and originals readable without restarting the attempt', async () => {
+    const batch = { ...screenshotBatchFixture({ batchId: 'paused-capture', records: [], candidates: [] }),
+      analysis_run_status: 'paused' as const, analysis_run_error: '研究已暂停，原件和草稿保留。' }
+    apiMocks.getPortfolioTransactionCaptureBatches.mockResolvedValue({ portfolio_id: '3', batches: [batch] })
+    const user = userEvent.setup()
+    renderPortfolioPage(<PortfolioCapabilitiesContext.Provider value={{ research_enabled: true, model_work: { paused: true, code: 'paused', message: 'Model work is paused.' } }}><TransactionsPage /></PortfolioCapabilitiesContext.Provider>, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'From Screenshot' }))
+    const assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
+    await user.click(within(assistant).getByRole('tab', { name: /History/ }))
+    expect(await within(assistant).findByText('paused-capture')).toBeInTheDocument()
+    expect(within(assistant).getByText('研究已暂停，原件和草稿保留。')).toBeInTheDocument()
+    expect(within(assistant).getByText(batch.latest_analysis!.analysis.summary)).toBeInTheDocument()
+    expect(within(assistant).getByRole('img', { name: 'Screenshot evidence broker-activity.png' })).toBeInTheDocument()
+    expect(within(assistant).queryByText('The last analysis did not finish.')).not.toBeInTheDocument()
+    expect(apiMocks.startPortfolioTransactionCaptureAnalysis).not.toHaveBeenCalled()
+    expect(apiMocks.createPortfolioTransactionCaptureBatch).not.toHaveBeenCalled()
+    expect(apiMocks.commitPortfolioTransactionImport).not.toHaveBeenCalled()
+  })
+
+  it('blocks screenshot model work during a pause without preventing saved ledger reading', async () => {
+    renderPortfolioPage(<PortfolioCapabilitiesContext.Provider value={{ research_enabled: true, model_work: { paused: true, code: 'paused', message: 'Model work is paused.' } }}><TransactionsPage /></PortfolioCapabilitiesContext.Provider>, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    fireEvent.click(await screen.findByRole('button', { name: 'From Screenshot' }))
+    const assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
+    expect(within(assistant).getByText('Model work is paused.')).toBeInTheDocument()
+    const input = document.querySelector<HTMLInputElement>('input[type="file"][accept*="image/png"]')!
+    fireEvent.change(input, { target: { files: [new File(['sample'], 'receipt.png', { type: 'image/png' })] } })
+    const analyze = within(assistant).getByRole('button', { name: 'Research paused' })
+    expect(analyze).toBeDisabled()
+    fireEvent.click(analyze)
+    expect(apiMocks.uploadPortfolioTransactionCapture).not.toHaveBeenCalled()
+    expect(apiMocks.startPortfolioTransactionCaptureAnalysis).not.toHaveBeenCalled()
+    expect(apiMocks.createPortfolioTransactionCaptureBatch).not.toHaveBeenCalled()
     expect(apiMocks.commitPortfolioTransactionImport).not.toHaveBeenCalled()
   })
 

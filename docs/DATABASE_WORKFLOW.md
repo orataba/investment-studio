@@ -19,6 +19,10 @@ Runtime database pools check connections with SQLAlchemy `pool_pre_ping` before 
 
 The live audit accepts the exact seven heads registered in `FINAL_FLAT_TABLE_HEADS` in [audit_live_data.py](../infra/scripts/audit_live_data.py). A new migration must update that registry and the current-head fixture in [test_audit_live_data.py](../infra/tests/test_audit_live_data.py); its migration-source check verifies all seven chains without accessing a business database. Run that test module before invoking an installer.
 
+Watchlist 0070 adds `research_monitor_state` for per-team/instrument scan cursors, pending information, attempted revisions and successful application. 0071 backfills the exact last risk assessment and pending revision from retained evidence one case at a time. Neither migration changes financial facts, old event history, author/time provenance, or ordinary NAV data. Unknown historical assessment remains unknown. Runtime pause is host configuration, not a business-table authorization rule.
+
+Portfolio 0073 extends the transaction-capture job status constraint with `paused`. An operator pause preserves the screenshot, accepted input and existing draft under the same attempt fence; it is a terminal state until an explicit retry. It does not create ledger transactions or relabel existing failures. Briefing uses the same terminal pause meaning without a schema change.
+
 ## Start PostgreSQL
 
 ```bash

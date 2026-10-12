@@ -6,15 +6,12 @@
 .research-dossier-panel .research-investment-dimensions > div { padding: 0; background: transparent; }
 .research-dossier-panel .research-investment-dimensions > div:first-child dd { font-size: 16px; line-height: 1.8; }
 .research-dossier-panel .research-investment-dimensions dt { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-.research-current-brief { border-bottom: 1px solid var(--line); padding-bottom: 24px; }
 .research-current-direction { font-size: 23px; line-height: 1.85; font-weight: 500; white-space: pre-line; margin: 24px 0 30px; letter-spacing: -.015em; }
 .research-current-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 20px 42px; margin-bottom: 24px; }
 .research-current-summary > p { margin: 0; font-size: 14px; line-height: 1.85; }
 
 .research-current-summary strong { display: block; font-size: 12px; font-weight: 500; color: var(--muted); margin-bottom: 8px; }
 .research-current-summary span { display: block; white-space: pre-line; }
-.research-current-brief > .sector-event-ask + .sector-event-ask { margin-left: 20px; }
-.research-current-brief > details { margin: 9px 0; }
 .research-important-changes { padding: 16px 0; border-bottom: 1px solid var(--line); margin: 16px 0; }
 .research-important-changes h3 { margin: 0 0 8px; font-size: 15px; font-weight: 500; }
 .research-important-changes ul { margin-bottom: 0; }
@@ -248,16 +245,7 @@ body:has(.research-aside-backdrop) { overflow: hidden; }
 }
 
 /* V1 uses the same retained research in four compact reading sections. */
-.research-current-brief .research-current-direction { font-size: 18px; font-weight: 400; margin: 18px 0 20px; line-height: 1.8; }
-.research-insight-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
-.research-insight-list { min-width: 0; }
-.research-insight-list > h4 { font-size: 15px; font-weight: 500; margin: 0 0 12px; }
-.research-insight-list > h4 span { color: var(--muted); font-weight: 400; }
-.research-insight { padding: 12px 0; border-top: 1px solid var(--line); }
-.research-insight h5 { font-size: 14px; font-weight: 400; line-height: 1.7; margin: 0; }
-.research-insight p, .research-insight-list > p { font-size: 14px; line-height: 1.8; margin: 8px 0; }
-.research-insight summary, .research-event-card summary, .research-event-backfills > summary { font-size: 12px; color: var(--accent); cursor: pointer; }
-.research-insight .research-support-link { margin-right: 18px; }
+.research-event-card summary, .research-event-backfills > summary { font-size: 12px; color: var(--accent); cursor: pointer; }
 .research-report-events, .research-report-tracking, .research-quant-observations { scroll-margin-top: 80px; }
 .research-event-filters { display: flex; gap: 6px; }
 .research-event-filters button, .research-event-details button { height: 30px; padding: 0 10px; background: #fff; border: 1px solid var(--line); color: var(--ink); border-radius: 0; font: inherit; font-size: 12px; cursor: pointer; }
@@ -328,21 +316,10 @@ body:has(.research-aside-backdrop) { overflow: hidden; }
 .research-judgment-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 36px; margin: 20px 0 28px; }
 .research-judgment-lead { min-width: 0; }
 .research-judgment-lead:only-child { grid-column: 1 / -1; }
-.research-current-brief .research-judgment-lead .research-current-direction { max-width: 72ch; margin: 0; }
 .research-judgment-lead > .sector-research-limitation { font-size: 12px; line-height: 1.7; margin: 12px 0 0; }
 .research-judgment-conditions { display: grid; gap: 16px; align-content: start; padding-left: 24px; margin: 0; border-left: 1px solid var(--line); }
 .research-judgment-conditions dt { margin-bottom: 5px; color: var(--muted); font-size: 12px; }
 .research-judgment-conditions dd { margin: 0; font-size: 13px; line-height: 1.8; white-space: pre-line; overflow-wrap: anywhere; }
-.research-monitoring-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); column-gap: 32px; align-items: start; border-bottom: 1px solid var(--line); margin: 24px 0; }
-.research-monitoring-grid > * { min-width: 0; }
-.research-monitoring-grid .research-recent-events { margin: 0; padding: 0 0 24px; border-top: 0; }
-.research-monitoring-grid .research-report-tracking { margin: 0; padding: 0 0 24px 28px; border-top: 0; border-left: 1px solid var(--line); }
-.research-monitoring-grid .research-themes { padding: 0; }
-.research-monitoring-grid .research-dossier-section-heading { flex-wrap: wrap; row-gap: 12px; }
-.research-monitoring-grid .research-event-day { grid-template-columns: 58px minmax(0, 1fr); gap: 16px; }
-.research-monitoring-grid .research-event-day-entries { padding-left: 20px; }
-.research-monitoring-grid .research-event-day-entries > .research-event-card::before { left: -25px; }
-.research-monitoring-grid .research-theme-card:last-child { border-bottom: 0; }
 .research-dossier-full .research-quant-observations { border-top: 0; padding-top: 0; }
 .research-quant-observations > p { max-width: 84ch; }
 .research-quant-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 32px; align-items: start; }
@@ -357,21 +334,14 @@ body:has(.research-aside-backdrop) { overflow: hidden; }
 .sector-research-summary .research-report-status { margin: 12px 0 0; gap: 4px 14px; }
 .sector-research-summary .sector-research-attempt { padding: 0; margin: 12px 0; border: 0; }
 @media(max-width: 1100px) {
-  .research-monitoring-grid { grid-template-columns: minmax(0, 1fr); margin-bottom: 24px; }
-  .research-monitoring-grid .research-report-tracking { border-left: 0; border-top: 1px solid var(--line); padding: 24px 0; }
   .research-quant-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media(max-width: 720px) {
-  .research-insight-grid { grid-template-columns: 1fr; gap: 22px; }
   .research-recent-events .research-dossier-section-heading { align-items: flex-start; gap: 12px; flex-wrap: wrap; }
-  .research-current-brief .research-current-direction { font-size: 17px; }
   .investment-research-reading .sector-research-heading { align-items: flex-start; gap: 12px; }
   .investment-research-reading .research-report-status { display: grid; gap: 4px; }
   .research-judgment-layout { grid-template-columns: minmax(0, 1fr); gap: 20px; }
   .research-judgment-conditions { padding: 16px 0 0; border-left: 0; border-top: 1px solid var(--line); }
-  .research-monitoring-grid .research-event-day { grid-template-columns: 48px minmax(0, 1fr); gap: 10px; }
-  .research-monitoring-grid .research-event-day-entries { padding-left: 15px; }
-  .research-monitoring-grid .research-event-day-entries > .research-event-card::before { left: -20px; }
 }
 
 .research-focused-reader { max-width: 1160px; margin: 0 auto; }
@@ -383,6 +353,22 @@ body:has(.research-aside-backdrop) { overflow: hidden; }
 .research-focused-reader .research-guidance-bar .research-support-link { display: none; }
 .research-focused-reader .research-current-direction { font-size: 19px; line-height: 1.85; }
 .research-focused-reader .research-judgment-layout { grid-template-columns: minmax(0, 5fr) minmax(0, 3fr); gap: 32px; }
-.research-focused-reader .research-monitoring-grid { grid-template-columns: minmax(0, 1fr); }
-.research-focused-reader .research-monitoring-grid .research-report-tracking { padding: 24px 0; border-left: 0; border-top: 1px solid var(--line); }
 @media (max-width: 760px) { .research-focused-reader .research-judgment-layout { grid-template-columns: 1fr; } }
+
+/* The default reader follows the asset contract; old full narratives remain in the archive. */
+.research-current-sections { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 28px 36px; margin: 28px 0; }
+.research-current-section { min-width: 0; scroll-margin-top: 80px; }
+.research-current-section:empty { display: none; }
+.research-current-sections .research-recent-events, .research-current-sections .research-themes { margin: 0; padding: 0; border: 0; }
+.research-section-quantitative, .research-section-strategy, .research-section-materials { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 24px; }
+.research-current-sections-private { grid-template-columns: minmax(0, 1fr); }
+.research-current-sections-private .research-current-section { grid-column: 1; }
+.research-strategy-summary > p { max-width: 80ch; font-size: 14px; line-height: 1.8; }
+.research-current-materials h2, .research-strategy-summary h2 { margin: 0 0 16px; font-size: 18px; font-weight: 500; }
+.research-material-index { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 32px; padding: 0; margin: 16px 0; list-style: none; }
+.research-material-index li { min-width: 0; }
+.research-material-index h3 { font-size: 14px; font-weight: 500; margin: 0 0 8px; }
+.research-material-index summary, .research-material-index a { font-size: 12px; color: var(--accent); }
+.research-theme-review-note { color: var(--muted); font-size: 11px; margin: 12px 0 0; }
+@media (max-width: 900px) { .research-current-sections { grid-template-columns: minmax(0, 1fr); } .research-section-themes { border-top: 1px solid var(--line); padding-top: 24px; } }
+@media (max-width: 640px) { .research-material-index { grid-template-columns: minmax(0, 1fr); } }

@@ -312,3 +312,17 @@ it('shows a shared risk receipt with one UTC clock and recovers status without r
   expect(screen.queryByRole('alert')).toBeNull()
   expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
 })
+
+
+it('retains an earlier assessment while paid work is paused and never polls a paused run', async () => {
+  const request = vi.fn().mockResolvedValue(payload('a', { available: false,
+    model_work: { paused: true, code: 'paused', message: '全局研究已暂停。' }, latest_completed: completed('a'),
+    latest_run: { run_id: 'paused', status: 'paused', created_at: '2026-10-12', completed_at: null, message: '' } }))
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" />)
+  await load()
+  expect(screen.getByText(completed('a').summary)).toBeTruthy()
+  expect(screen.getByText('全局研究已暂停。')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '研究已暂停' }).hasAttribute('disabled')).toBe(true)
+  await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
+  expect(request).toHaveBeenCalledOnce()
+})

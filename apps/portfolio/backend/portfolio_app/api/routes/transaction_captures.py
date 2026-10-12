@@ -237,6 +237,8 @@ def start_portfolio_transaction_capture_analysis(
     """Queue the restricted DeepSeek harness without waiting for model completion."""
 
     _capture_batch_or_404(portfolio_id, batch_id)
+    from studio_runtime.model_work import require_model_work
+    require_model_work()
     try:
         batch = queue_transaction_capture_analysis_run(
             portfolio_id=portfolio_id,

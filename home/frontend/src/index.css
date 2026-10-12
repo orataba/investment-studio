@@ -446,3 +446,7 @@ textarea {
 .home-risk-content button { padding: 0; border: 0; background: transparent; color: var(--studio-muted); font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 .home-risk-pages { display: flex; align-items: center; gap: 16px; margin-top: 10px; font-size: 11px; }
 @media (max-width: 760px) { .home-important-risks { grid-template-columns: 1fr; gap: 8px; margin-top: 24px; } .home-risk-object { flex-basis: 75px; } }
+
+.home-risk-review-state { flex: 0 0 auto; font-size: 10px; color: var(--studio-muted); }
+.home-risk-coverage { margin: 8px 0 0; font-size: 11px; }
+@media (max-width: 760px) { .home-risk-content li a { flex-wrap: wrap; gap: 3px 8px; } .home-risk-title { flex: 1; } .home-risk-review-state { margin-left: 83px; } }

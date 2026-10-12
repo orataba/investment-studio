@@ -156,7 +156,26 @@ export type HistoricalResearchCase = {
   sources: Array<{ title: string; url: string; supports: string }>
   limitations: string[]
 }
+export type ResearchSection = 'events' | 'themes' | 'quantitative' | 'strategy' | 'materials'
+export type ResearchApplicability = {
+  schema_version: 1
+  instrument_type: string
+  underlying: { asset_class: string | null; strategy: unknown; status: 'documented' | 'unknown' }
+  mechanisms: Record<string, unknown>
+  monitoring: { generic_news: boolean; numeric_change_requires_research: false; material_channels: string[] }
+  section_order: ResearchSection[]
+}
+export type ResearchMaterialIndex = {
+  source_id: string | null; title: string; source_type: string; source?: string | null; published_at: string | null
+  as_of_date: string | null; recorded_at: string | null; body_available: boolean | null; version?: string | null; download_url?: string | null
+}
+export type ResearchWorkingSet = {
+  mode: string; cutoff: string | null; selected_theme_ids: string[]; reviewed_theme_ids: string[]
+}
 export type ResearchDossier = {
+  research_applicability?: ResearchApplicability
+  material_index?: ResearchMaterialIndex[]
+  working_set?: ResearchWorkingSet | null
   themes?: ResearchTheme[]
   available_modules?: Array<Pick<ResearchPlanModule, 'id' | 'title' | 'version'>>
   research_plan?: ResearchPlan

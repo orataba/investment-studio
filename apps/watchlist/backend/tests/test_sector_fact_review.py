@@ -100,9 +100,16 @@ def test_removes_or_corrects_each_event_and_preserves_unreviewed_sectors(monkeyp
 
 
 def test_explicit_recheck_uses_real_context_boundary_and_feeds_prior_publication_error(client, monkeypatch, retained_run):
+    from datetime import UTC, datetime
+    from watchlist_app.db.models import InstrumentAttributeValue, InstrumentDetail
     from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
     from watchlist_app.db.session import get_session_factory
     from watchlist_app.services.research_runner import queue_retry
+    from .conftest import canonical_quote_policy, seed_shared_instrument
+    for iid in ("xle", "xlk"):
+        seed_shared_instrument({"instrument_id": iid, "instrument_name": iid.upper(), "instrument_type": "etf",
+            "currency": "USD", "exchange_code": "ARCX", "quote_selection_policy": canonical_quote_policy("etf"),
+            "identifiers": [{"identifier_type": "provider_symbol", "identifier_value": f"fmp:{iid.upper()}", "is_primary": True}]})
 
     original = draft()
     context = review._api_request("test-run", "context?originals=true")
@@ -113,6 +120,12 @@ def test_explicit_recheck_uses_real_context_boundary_and_feeds_prior_publication
         "draft": deepcopy(original), "cutoff": context["cutoff"], "result": {"reviews": []}}}}
     context["web_evidence"].append(old_checkpoint)
     with get_session_factory()() as session:
+        for iid in ("xle", "xlk"):
+            session.add(InstrumentDetail(instrument_id=iid, instrument_name=iid.upper(), instrument_type="etf", detail_view_type="etf"))
+        session.flush()
+        for iid in ("xle", "xlk"):
+            session.add(InstrumentAttributeValue(instrument_id=iid, attribute_key="coverage_status",
+                value_json="Invested", adopted_at=datetime.now(UTC)))
         session.add(ResearchTopic(topic_id="explicit-recheck", title="Research"))
         session.flush()
         run = ResearchEntry(entry_id="test-run", topic_id="explicit-recheck", kind="analysis", title="Research",

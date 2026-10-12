@@ -24,6 +24,29 @@ def review(**kwargs):
     return sector_research.SectorReview.model_validate({'instrument_id': 'fund-us-agg', **kwargs})
 
 
+@pytest.mark.parametrize('field,item', [
+    ('questions', {'key': 'question', 'question': '旧事项的影响是否仍在？', 'assessment': '需核对', 'next_check': '读取原文'}),
+    ('forecasts', {'key': 'forecast', 'claim': '旧事项可能影响利润', 'horizon': '下季度'}),
+    ('forecast_reviews', {'key': 'review', 'forecast_key': 'memory-margin',
+        'forecast_version_id': 'prior:forecasts:memory-margin', 'outcome': '对照旧事实'}),
+    ('lessons', {'key': 'lesson', 'lesson': '保留当时条件'}),
+])
+def test_knowledge_event_reference_requires_this_run_to_have_read_the_exact_history(research_client, field, item):
+    from watchlist_app.db.models.workbench import RiskCase
+    run, themes = bound_run()
+    with get_session_factory()() as session:
+        session.add(RiskCase(case_id='old-event', instrument_id='fund-us-agg', signal='sector:closed-event',
+            title='Closed event', body='Original', status='recorded', trigger_active=False,
+            evidence_json={'event_version_id': 'old-event:1', 'follow_up': 'none'}, history_json=[]))
+        session.flush()
+        submission = review(research={field: [{**item, 'event_key': 'closed-event', 'theme_id': 'current-theme'}]})
+        with pytest.raises(ValueError, match='本轮未读取的事件'):
+            sector_research._validate_research_links(session, run, submission, themes)
+        run.context_json['research_historical_reads'] = {'exact': {'instrument_id': 'fund-us-agg', 'kind': 'event',
+            'version_id': 'old-event:1', 'value': {'event_key': 'closed-event', 'case_id': 'old-event'}, 'sources': []}}
+        sector_research._validate_research_links(session, run, submission, themes)
+
+
 @pytest.mark.parametrize('status', ['paused', 'closed'])
 @pytest.mark.parametrize('field', ['forecast_reviews', 'lessons'])
 def test_prior_forecast_can_be_reviewed_under_current_theme_without_resuming_old_theme(research_client, status, field):

@@ -21,6 +21,14 @@ from .test_research_refresh_batch import batch_module, ready_notebook
 pytestmark = pytest.mark.postgresql_integration
 
 
+@pytest.fixture(autouse=True)
+def configured_recovery_scheduler(postgres_watchlist_env, monkeypatch):
+    # Admission stays real: these fixtures explicitly enable their one current
+    # Invested instrument, while the actor/attempt isolation assertions remain.
+    from watchlist_app.core.settings import get_settings
+    monkeypatch.setattr(get_settings(), "research_automatic_enabled", True)
+
+
 def add_instrument_detail(session, iid):
     session.add(InstrumentDetail(instrument_id=iid, instrument_type="public_fund", detail_view_type="public_fund",
         instrument_name="Recovery fixture", is_active=True, metadata_json={}))

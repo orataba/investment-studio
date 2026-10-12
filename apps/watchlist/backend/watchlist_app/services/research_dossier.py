@@ -440,6 +440,60 @@ def material_record(entry: ResearchEntry, instrument_id: str) -> dict:
         "metadata": metadata, "recorded_at": entry.created_at})
 
 
+def material_index(session, instrument_id, *, actor):
+    """Directory metadata, without loading evidence bodies or extracting PDFs."""
+    from sqlalchemy import func
+    from studio_identity import current_principal
+    rows = session.execute(select(ResearchEntry.entry_id, ResearchEntry.title, ResearchEntry.source,
+        ResearchEntry.created_at, ResearchEntry.updated_at, ResearchEntry.context_json,
+        (func.length(ResearchEntry.body) > 0).label("body_available")).join(ResearchTopic).where(
+            ResearchTopic.topic_id == f"dossier:{instrument_id}", ResearchTopic.visibility == "team",
+            ResearchEntry.kind == "evidence", True if current_principal().local_unrestricted else ResearchTopic.team_id == actor["team_id"])
+        .order_by(ResearchEntry.created_at.desc(), ResearchEntry.entry_id))
+    result = []
+    for row in rows:
+        metadata = row.context_json or {}
+        result.append({"source_id": f"material:{row.entry_id}", "entry_id": row.entry_id,
+            "title": row.title, "source_type": "instrument_material", "source": row.source,
+            "published_at": metadata.get("published_at"), "as_of_date": metadata.get("effective_date"),
+            "recorded_at": row.created_at, "updated_at": row.updated_at, "body_available": row.body_available})
+    manual = session.get(InstrumentManualProfile, instrument_id)
+    for row in (manual.documents_payload_json or {}).get("current_documents", []) if manual else []:
+        # The existing document source identity contains extracted body content.
+        # A directory cannot invent that identity or assert extraction succeeded.
+        result.append({"source_id": None, "title": row.get("title") or row.get("file_name") or "登记资料",
+            "source_type": "instrument_material", "source": row.get("source"),
+            "download_url": row.get("download_url"), "published_at": row.get("published_at"),
+            "as_of_date": row.get("as_of_date"), "recorded_at": row.get("uploaded_at"), "body_available": None})
+    return serialize_payload(result)
+
+
+def latest_working_set(session, instrument_id, *, actor):
+    from sqlalchemy import JSON, true
+    from watchlist_app.services.research_access import (
+        research_context_projection, research_projection_rows, topic_portfolio_ids,
+    )
+    topic = session.get(ResearchTopic, f"instrument-events:{instrument_id}")
+    if (not topic or topic.visibility != "team" or topic.team_id != actor["team_id"]
+            or topic_portfolio_ids(session, topic)):
+        return None
+    # This is an authorized shared dossier projection, not access to another
+    # run. Scoped tool tokens may read the same shared state as _notebooks,
+    # without gaining arbitrary access to its originating research execution.
+    relation, fields = research_context_projection(session, {"research_working_sets": JSON},
+        json_column=ResearchEntry.read_context_json)
+    query = select(ResearchEntry.entry_id,
+        fields["research_working_sets"][instrument_id].label("working_set")).where(
+            ResearchEntry.topic_id == topic.topic_id, ResearchEntry.kind == "analysis",
+            ResearchEntry.status == "completed", ResearchEntry.team_id == actor["team_id"])
+    if relation is not None:
+        query = query.join(relation, true())
+    rows = research_projection_rows(session, query.order_by(ResearchEntry.completed_at.desc(),
+        ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc()).limit(1),
+        {"working_set": ("research_working_sets", instrument_id)}, json_column=ResearchEntry.read_context_json)
+    return rows[0].working_set if rows else None
+
+
 def add_material(session: Session, instrument_id: str, *, title: str, body: str, source: str,
                  published_at=None, effective_date=None, source_kind=None) -> dict:
     from studio_identity import current_principal
@@ -760,6 +814,11 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
     instrument = require_instrument(session, instrument_id)
     mandate = read_mandate(session, instrument_id)
     research_plan = plan_for_mandate(mandate["registration"], mandate)
+    from watchlist_app.services.research_applicability import research_applicability
+    applicability = research_applicability(mandate["registration"])
+    reading_state = {"research_applicability": applicability,
+        "material_index": material_index(session, instrument_id, actor=actor),
+        "working_set": latest_working_set(session, instrument_id, actor=actor)}
     if current_only:
         # The four-zone page gets event/theme summaries separately. Its initial
         # notebook read must not hydrate the historical activity/source corpus.
@@ -771,7 +830,7 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
                                   for item in method_library()["frameworks"]],
             "notebook": notebook, "notebook_history": [], "themes": [], "pm_views": [],
             "materials": [], "historical_cases": [], "historical_case_limitations": [],
-            "prior_sources": [], "review_agenda": {}, "current_only": True})
+            "prior_sources": [], "review_agenda": {}, "current_only": True, **reading_state})
     versions = research_repository.list_note_revisions(session, instrument_id)
     notes = research_repository.list_notes(session, instrument_id)
     from watchlist_app.services.research_views import note_sources, read_current_stance
@@ -814,5 +873,5 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
         "notebook": notebook, "notebook_history": notebook_history,
         "themes": current_themes, "pm_views": pm_views,
         "current_stance": read_current_stance(session, instrument_id, actor=actor),
-        "review_agenda": agenda,
+        "review_agenda": agenda, **reading_state,
         "pm_views_note": "投资经理原始观点，与研究员判断分开。旧记录作者为空表示归属未确认，不能推断为当前人员。复核使用pm:<note_id>:<revision_number>读取当时版本。"})

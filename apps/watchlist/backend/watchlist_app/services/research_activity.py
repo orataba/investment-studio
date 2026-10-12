@@ -443,8 +443,8 @@ def review_agenda(session, instrument_id, notebook, pm_views, *, actor=None, the
     active_themes = [row for row in (themes if themes is not None else themes_view(session, instrument_id, actor=actor)["themes"])
                      if row["status"] == "active"]
     return {"focus_themes": active_themes, "focus_policy": {
-            "target_count": 5, "active_limit": 10,
-            "instruction": "每轮逐一回顾所有重点主题、当时判断、时间线与相关投资观点；决定保留、更新、合并替换或关闭。无变化只提交主题标识作为复核回执。人工创建不表示固定，仅pinned主题的核心与生命周期保留人工控制。"},
+            "active_limit": 10,
+            "instruction": "这里只是已有研究索引，不是本轮复核清单。按本轮冻结工作集回顾受影响事项；其余历史及原件按需读取。未提交的主题不记为本轮已复核。"},
         "pending_events": [{"update_id": row["update_id"], "title": row["title"],
                 "next_check": row.get("next_check"), "reference": row["reference"]}
             for row in current if row["kind"] == "event" and row.get("follow_up") == "watch"

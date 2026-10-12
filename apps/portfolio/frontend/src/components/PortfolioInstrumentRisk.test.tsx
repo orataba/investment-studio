@@ -1,4 +1,4 @@
-import { fireEvent, render as renderTestingLibrary, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render as renderTestingLibrary, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router'
 import PortfolioInstrumentRisk from './PortfolioInstrumentRisk'
@@ -228,4 +228,38 @@ it('omits the assistant action when a risk panel has neither a callback nor a li
   render(<RiskPanel request={request} instrumentHref={(id) => `/instruments/${id}`} />)
   await screen.findByText('待核查风险')
   expect(screen.queryByText('问助手')).not.toBeInTheDocument()
+})
+
+
+it('separates a retained assessment from a newer pending event and binds each evidence list to its own version', async () => {
+  const old = { event_version_id: 'event-v1', title: '已确认的融资风险', body: '旧公告确认再融资窗口收窄。', status: 'active', reason: '独立复核后继续关注。', reviewed_at: '2026-09-05T12:00:00Z', checked_at: '2026-09-05T08:00:00Z',
+    sources: [{ source_id: 'source-v1', version_id: 'doc-v1', title: '旧融资公告', url: 'https://example.com/old', published_at: '2026-09-05' }] }
+  const pending = { event_version_id: 'event-v2', title: '传闻称融资取得新进展', body: '新进展尚待核实。', status: 'pending', checked_at: '2026-10-12T08:00:00Z', submitted_at: '2026-10-12T08:00:00Z', urgent_review_required: false,
+    sources: [{ source_id: 'source-v2', version_id: 'doc-v2', title: '新融资报道', url: 'https://example.com/new', published_at: '2026-10-12' }] }
+  const record = { case_id: 'a', instrument_id: 'a', title: pending.title, body: pending.body, signal: 'sector:financing', severity: 'attention', trigger_active: true, status: 'open', updated_at: '2026-10-12', evidence_json: { direction: 'risk', event_version_id: 'event-v2', risk_assessment: { status: 'pending' }, last_assessed_snapshot: old, pending_revision: pending, sources: pending.sources }, history_json: [] }
+  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: '标的 A' }], cases: [record] })
+  render(<RiskPanel request={request} instrumentHref={(id) => `/instruments/${id}`} />)
+  await screen.findByRole('heading', { name: old.title })
+  expect(screen.getByText(old.body)).toBeInTheDocument()
+  const next = screen.getByRole('region', { name: '新进展待复核' })
+  expect(within(next).getByText(pending.title)).toBeInTheDocument()
+  expect(within(next).getByText(pending.body)).toBeInTheDocument()
+  expect(screen.getByText(/^上次确认 /, { selector: 'p' }).querySelector('time')?.dateTime).toBe(old.reviewed_at)
+  fireEvent.click(screen.getByText('跟进与证据'))
+  const priorEvidence = screen.getByRole('region', { name: '上次确认的依据' })
+  expect(within(priorEvidence).getByRole('link', { name: '旧融资公告' })).toHaveAttribute('href', 'https://example.com/old')
+  expect(within(priorEvidence).queryByText('新融资报道')).not.toBeInTheDocument()
+  expect(within(screen.getByRole('region', { name: '新进展的依据' })).getByRole('link', { name: '新融资报道' })).toHaveAttribute('href', 'https://example.com/new')
+})
+
+it('labels a withdrawn finding as invalidated history even if an old active snapshot exists', async () => {
+  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: '标的 A' }], cases: [{ case_id: 'a', instrument_id: 'a', title: '已撤回的融资线索', body: '原稿不能作为现状。', signal: 'sector:financing', severity: 'observation', trigger_active: false, status: 'open', updated_at: '2026-10-12', evidence_json: { withdrawn: true, withdrawal_reason: '引述未获原始资料支持。', last_assessed_snapshot: { title: '旧确认', status: 'active' } }, history_json: [] }] })
+  render(<RiskPanel request={request} instrumentHref={(id) => `/instruments/${id}`} />)
+  // General/history cases are a user-selected scope, never current attention.
+  fireEvent.click(await screen.findByRole('button', { name: /全部记录/ }))
+  expect(await screen.findByText('核证撤回')).toBeInTheDocument()
+  fireEvent.click(screen.getByText('撤回前记录与来源'))
+  expect(screen.getByText('以下为已撤回的旧稿，不再作为当前风险判断。')).toBeInTheDocument()
+  expect(screen.queryByText('风险仍有效 · 新进展待复核')).not.toBeInTheDocument()
+  expect(screen.queryByText('旧确认')).not.toBeInTheDocument()
 })

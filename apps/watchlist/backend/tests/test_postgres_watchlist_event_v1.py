@@ -46,54 +46,17 @@ def test_pg_event_publish_and_nul_safe_projection_preserve_history_and_risk(post
         case.evidence_json = {key: value for key, value in case.evidence_json.items() if key != "source_views"}
         session.commit()
         assert event_page(session, iid, scope="watch")["events"][0]["sources"][0]["title"] == "Test notice"
-        # Legacy adoption is idempotent and never resolves an existing active risk.
+        # Starting new work must not invent dates for unknown legacy terms or
+        # mutate an already assessed risk.
         case.evidence_json = {key: value for key, value in case.evidence_json.items() if key not in {"follow_up_until", "follow_up_started_at"}}
         session.commit()
-        service.initialize_event_follow_up_terms(session, [iid], now=datetime.now(UTC))
-        session.commit()
-        term, revision = case.evidence_json["follow_up_until"], len(case.history_json)
-        service.initialize_event_follow_up_terms(session, [iid], now=datetime.now(UTC))
-        session.commit()
-        assert case.evidence_json["follow_up_until"] == term and len(case.history_json) == revision
+        before_evidence, before_history = dict(case.evidence_json), list(case.history_json)
+        service.begin_run(session, [iid])
+        session.refresh(case)
+        assert case.evidence_json == before_evidence and case.history_json == before_history
         assert case.trigger_active and case.status == "investigating"
         history = event_page(session, iid, scope="history", limit=1)
         assert history["total"] == 1 and len(history["events"]) == 1
-
-
-def test_pg_legacy_term_initialization_preserves_concurrent_risk_decision(postgres_watchlist_env, monkeypatch):
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError
-    from threading import Event
-    iid = postgres_watchlist_env["instrument_id"]
-    monkeypatch.setattr(service, "_research_market", lambda session, iid: "fund_nav")
-    with get_session_factory()() as session:
-        session.add(InstrumentDetail(instrument_id=iid, instrument_type="public_fund", detail_view_type="public_fund", instrument_name="Concurrent Fund", metadata_json={}))
-        session.flush()
-        session.add(RiskCase(case_id="legacy-concurrent", instrument_id=iid, signal="sector:legacy", title="旧事项", body="原有证据",
-            status="recorded", trigger_active=False, evidence_json={"follow_up": "watch", "next_watch": "下一次公告"}, history_json=[]))
-        session.commit()
-    read = Event()
-    def initialize():
-        with get_session_factory()() as session:
-            cached = session.get(RiskCase, "legacy-concurrent")
-            assert not cached.trigger_active
-            read.set()
-            service.initialize_event_follow_up_terms(session, [iid], now=datetime.now(UTC))
-            session.commit()
-    with get_session_factory()() as officer, ThreadPoolExecutor(max_workers=1) as pool:
-        case = officer.get(RiskCase, "legacy-concurrent", with_for_update=True)
-        future = pool.submit(initialize)
-        assert read.wait(timeout=5)
-        with pytest.raises(TimeoutError):
-            future.result(timeout=0.1)
-        case.evidence_json = {**case.evidence_json, "risk_assessment": {"status": "active", "reason": "独立复核新风险"}}
-        case.trigger_active, case.status = True, "investigating"
-        officer.commit()
-        future.result(timeout=5)
-    with get_session_factory()() as session:
-        saved = session.get(RiskCase, "legacy-concurrent")
-        assert saved.evidence_json["follow_up_until"]
-        assert saved.evidence_json["risk_assessment"]["reason"] == "独立复核新风险"
-        assert saved.trigger_active and saved.status == "investigating"
 
 
 @pytest.mark.parametrize('writer', ['pm_follow_up', 'automatic_refresh'])
@@ -157,3 +120,48 @@ def test_pg_concurrent_first_risk_refresh_creates_one_case(postgres_watchlist_en
             future.result(timeout=5)
     with get_session_factory()() as session:
         assert len(list(session.scalars(select(RiskCase).where(RiskCase.instrument_id == iid, RiskCase.signal == 'data_coverage')))) == 1
+
+
+def test_pg_working_set_filters_before_loading_nul_sources_and_monitor_is_transactional(postgres_watchlist_env, monkeypatch):
+    from copy import deepcopy
+    from sqlalchemy import event
+    from watchlist_app.db.models.research_monitor import ResearchMonitorState
+    from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
+    from watchlist_app.services.research_dossier import latest_working_set
+    from watchlist_app.services import research_working_set, research_monitor, research_triggers
+    iid = postgres_watchlist_env["instrument_id"]
+    now = datetime.now(UTC)
+    with get_session_factory()() as session:
+        session.add(InstrumentDetail(instrument_id=iid, instrument_type="public_fund", detail_view_type="public_fund", instrument_name="Monitor", metadata_json={}))
+        session.flush()
+        session.add_all([RiskCase(case_id=key, instrument_id=iid, signal=f"sector:{key}", title=key, body=key,
+            status="recorded", trigger_active=False, evidence_json={"follow_up": follow, "next_watch": "准确\x00原文",
+                "sources": [{"source_id": key, "text": "Original\x00" * 20000}]}, history_json=[])
+            for key, follow in (("watch", "watch"), ("closed", "none"))])
+        session.commit()
+        assert session.get(ResearchMonitorState, ("default", iid)) is None  # 0070 does not invent previous coverage.
+        session.expunge_all()
+        loaded = []
+        event.listen(session, "loaded_as_persistent", lambda _s, obj: loaded.append(obj.case_id) if isinstance(obj, RiskCase) else None)
+        selected = research_working_set.current_events(session, iid)
+        assert loaded == ["watch"] and selected[0]["next_watch"] == "准确\x00原文"
+        assert selected[0]["evidence"]["sources"][0]["text"].count("\x00") == 20000
+        monkeypatch.setattr(research_triggers, "research_trigger", lambda *a, **k: {"reasons": [], "coverage_cursor": {}})
+        state, result = research_monitor.scan(session, iid, {}, team_id="default", now=now)
+        assert result is None
+        session.commit()
+        before = deepcopy(state.scan_cursor_json)
+        state.scan_cursor_json = {"should_rollback": True}
+        session.flush()
+        session.rollback()
+        assert state.scan_cursor_json == before and state.applied_at is None
+        topic_id = f"instrument-events:{iid}"
+        session.add(ResearchTopic(topic_id=topic_id, title="Shared monitor", visibility="team", team_id="default"))
+        session.flush()
+        working = {"selected_theme_ids": ["主题\x00原值"], "reviewed_theme_ids": [], "cutoff": now.isoformat()}
+        session.add(ResearchEntry(entry_id="completed-monitor", topic_id=topic_id, team_id="default",
+            kind="analysis", title="Published monitor", status="completed", completed_at=now,
+            context_json={"sector_run": True, "instrument_ids": [iid], "research_working_sets": {iid: working},
+                "unrelated_history": "Old original\x00" * 20000}))
+        session.commit()
+        assert latest_working_set(session, iid, actor={"team_id": "default"}) == working

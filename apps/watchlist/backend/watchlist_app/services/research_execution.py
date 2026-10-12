@@ -11,6 +11,7 @@ import logging
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select, text, update
 from studio_identity import IdentityError, principal_context, resolve_token, revoke_delegation
+from studio_runtime.model_work import ModelWorkPaused, model_work_status
 
 from watchlist_app.core.settings import get_settings
 from watchlist_app.db.models.research_execution import ResearchExecution
@@ -21,6 +22,39 @@ from watchlist_app.services.research_access import require_entry_access, run_att
 QUEUE_GRANT_SECONDS = 24 * 3600  # Home's existing maximum, still bounded by the parent login.
 MAX_INTERRUPTED_ATTEMPTS = 3
 logger = logging.getLogger(__name__)
+
+
+def _policy_reason(session, run):
+    from watchlist_app.services.research_policy import require_run_policy
+    try:
+        require_run_policy(session, run)
+    except ModelWorkPaused as error:
+        return str(error)
+    except HTTPException as error:
+        if error.status_code != 409:
+            raise
+        return str(error.detail)
+    return None
+
+
+def _pause_business(run, attempt, reason):
+    """Preserve unfinished inputs without changing an already terminal result."""
+    if run and run.status in {"queued", "running"}:
+        context = dict(run.context_json or {})
+        execution = dict(context.get("execution") or {})
+        execution.update(stage="paused", paused_at=utc_now().isoformat(), pause_reason=reason,
+                         attempt=max(execution.get("attempt", 0), attempt))
+        run.context_json = {**context, "execution": execution}
+        run.status, run.body, run.completed_at = "paused", reason, None
+
+
+def _pause_locked(run, job, reason):
+    """End execution, preserving unfinished evidence and fencing old credentials."""
+    _pause_business(run, job.attempt, reason)
+    token = job.delegation_token
+    job.status, job.owner_id, job.delegation_token = "finished", None, None
+    job.lease_expires_at = None
+    return token
 
 
 def utc_now():
@@ -43,7 +77,7 @@ def enqueue_run(principal, run_id, *, attempt=None):
     """Persist dispatch before an HTTP request acknowledges the queued run."""
     from watchlist_app.services.research_runner import authorize_run, same_research_initiator
     with get_session_factory()() as session, principal_context(principal):
-        run = session.get(ResearchEntry, run_id)
+        run = session.get(ResearchEntry, run_id, with_for_update=True)
         require_entry_access(session, run)
         expected = run_attempt(run)
         if run.status != "queued" or (attempt is not None and expected != attempt):
@@ -53,6 +87,7 @@ def enqueue_run(principal, run_id, *, attempt=None):
         existing = session.get(ResearchExecution, run_id)
         if existing and existing.attempt == expected and existing.status in {"queued", "running"}:
             return False
+        _require_dispatch_policy(session, run, expected)
     token = authorize_run(principal, run_id, attempt=expected, ttl_seconds=QUEUE_GRANT_SECONDS)
     previous_token = None
     keep_token = False
@@ -65,6 +100,7 @@ def enqueue_run(principal, run_id, *, attempt=None):
             job = session.get(ResearchExecution, run_id, with_for_update=True)
             if job and job.attempt == expected and job.status in {"queued", "running"}:
                 return False
+            _require_dispatch_policy(session, run, expected)
             if job is None:
                 job = ResearchExecution(run_id=run_id, attempt=expected, status="queued", queued_at=utc_now())
                 session.add(job)
@@ -82,6 +118,18 @@ def enqueue_run(principal, run_id, *, attempt=None):
     return True
 
 
+def _require_dispatch_policy(session, run, attempt):
+    from watchlist_app.services.research_policy import require_run_policy
+    try:
+        require_run_policy(session, run)
+    except ModelWorkPaused as error:
+        # The request may have committed immediately before the host switch.
+        # Preserve it as paused instead of leaving an undispatched queued row.
+        _pause_business(run, attempt, str(error))
+        session.commit()
+        raise
+
+
 @dataclass(frozen=True)
 class Claim:
     run_id: str
@@ -94,6 +142,8 @@ class Claim:
 def claim_next(owner_id, *, now=None):
     """Admission across every worker process; manual and scheduled work share it."""
     now = now or utc_now()
+    if model_work_status()["paused"]:
+        return None
     with get_session_factory()() as session:
         if session.get_bind().dialect.name == "postgresql":
             session.execute(text("SELECT pg_advisory_xact_lock(hashtext('watchlist:research-capacity'))"))
@@ -110,11 +160,19 @@ def claim_next(owner_id, *, now=None):
         if row is None:
             return None
         # Lock order is always business run then private execution state.
-        run = session.execute(select(ResearchEntry.status).where(ResearchEntry.entry_id == row.run_id).with_for_update()).first()
+        from watchlist_app.services.research_policy import run_policy_projection
+        run = run_policy_projection(session, row.run_id, locking=True)
         job = session.get(ResearchExecution, row.run_id, with_for_update=True)
         if run is None or run.status != "queued" or job.status != "queued" or job.attempt != row.attempt:
             return None
         if not job.delegation_token:
+            return None
+        reason = _policy_reason(session, run)
+        if reason:
+            run = session.get(ResearchEntry, row.run_id, with_for_update=True)
+            token = _pause_locked(run, job, reason)
+            session.commit()
+            _revoke(token)
             return None
         job.status, job.owner_id, job.heartbeat_at = "running", owner_id, now
         job.lease_expires_at = now + timedelta(seconds=get_settings().research_worker_lease_seconds)
@@ -175,6 +233,12 @@ def recover_expired(*, now=None):
             if run is None or run.status not in {"queued", "running"}:
                 pass  # A committed publication survives loss of the worker acknowledgement.
             else:
+                reason = _policy_reason(session, run)
+                if reason:
+                    token = _pause_locked(run, job, reason)
+                    session.commit()
+                    _revoke(token)
+                    continue
                 context = dict(run.context_json or {})
                 execution = dict(context.get("execution") or {})
                 failures = [*execution.get("failures", []), {"attempt": row.attempt,
@@ -216,6 +280,8 @@ def recover_expired(*, now=None):
 def recover_undispatched(*, now=None):
     """Close the API-commit/queue-commit crash gap without inventing authority."""
     now = now or utc_now()
+    if model_work_status()["paused"]:
+        return
     cutoff = now - timedelta(seconds=get_settings().research_worker_lease_seconds)
     with get_session_factory()() as session:
         ids = list(session.scalars(select(ResearchEntry.entry_id).outerjoin(
@@ -239,23 +305,88 @@ def recover_undispatched(*, now=None):
             session.commit()
 
 
+def pause_pending(*, now=None, limit=100):
+    """Operator/worker reconciliation while paused; never steal a live lease.
+
+    Paused work requires an explicit new request. Merely resuming the host must
+    not replay the backlog accumulated before an operator's pause.
+    """
+    if not model_work_status()["paused"]:
+        return 0
+    now = now or utc_now()
+    with get_session_factory()() as session:
+        ids = list(session.scalars(select(ResearchExecution.run_id).where(or_(
+            ResearchExecution.status == "queued",
+            (ResearchExecution.status == "running") & (ResearchExecution.lease_expires_at <= now)))
+            .order_by(ResearchExecution.queued_at, ResearchExecution.run_id).limit(limit)))
+    paused = 0
+    for run_id in ids:
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, run_id, with_for_update=True)
+            job = session.get(ResearchExecution, run_id, with_for_update=True)
+            state = model_work_status()
+            if (not state["paused"] or not job or job.status == "finished"
+                    or (job.status == "running" and _utc(job.lease_expires_at) > now)):
+                continue
+            token = _pause_locked(run, job, state["message"])
+            session.commit()
+        _revoke(token)
+        paused += 1
+    # A request can commit its run and crash before durable dispatch. Give that
+    # dispatch the same grace window as normal recovery, then close its status
+    # without inventing a grant or replaying it when the host resumes.
+    remaining = max(0, limit - paused)
+    if not remaining:
+        return paused
+    cutoff = now - timedelta(seconds=get_settings().research_worker_lease_seconds)
+    with get_session_factory()() as session:
+        ids = list(session.scalars(select(ResearchEntry.entry_id).outerjoin(
+            ResearchExecution, ResearchExecution.run_id == ResearchEntry.entry_id).where(
+                ResearchEntry.kind == "analysis", ResearchEntry.status == "queued",
+                ResearchEntry.updated_at <= cutoff,
+                or_(ResearchExecution.run_id.is_(None), ResearchExecution.status == "finished"))
+            .order_by(ResearchEntry.updated_at, ResearchEntry.entry_id).limit(remaining)))
+    for run_id in ids:
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, run_id, with_for_update=True)
+            job = session.get(ResearchExecution, run_id, with_for_update=True)
+            state = model_work_status()
+            if (not state["paused"] or run is None or run.kind != "analysis" or run.status != "queued"
+                    or _utc(run.updated_at) > cutoff or (job is not None and job.status != "finished")):
+                continue
+            _pause_business(run, 0, state["message"])
+            session.commit()
+            paused += 1
+    return paused
+
+
 def execute_claim(claim, cancellation):
     from watchlist_app.services.research_runner import (authorize_run, run_analysis, _fail_authorization, _fail_run,
         ResearchExecutionInterrupted)
     interrupted = False
     try:
+        with get_session_factory()() as session:
+            from watchlist_app.services.research_policy import require_run_policy, run_policy_projection
+            require_run_policy(session, run_policy_projection(session, claim.run_id))
         issuer = resolve_token(claim.delegation_token, "watchlist")
         # A fresh per-attempt grant remains a child of the original queue grant;
         # never substitute the worker's service identity for a user's task.
         token = authorize_run(issuer, claim.run_id, attempt=claim.attempt)
         run_analysis(claim.run_id, token, issuer, attempt=claim.attempt, cancellation=cancellation)
-    except ResearchExecutionInterrupted:
+    except (ResearchExecutionInterrupted, ModelWorkPaused):
         interrupted = True
         with get_session_factory()() as session:
-            session.execute(update(ResearchExecution).where(ResearchExecution.run_id == claim.run_id,
-                ResearchExecution.attempt == claim.attempt, ResearchExecution.owner_id == claim.owner_id,
-                ResearchExecution.status == "running").values(lease_expires_at=utc_now()))
+            run = session.get(ResearchEntry, claim.run_id, with_for_update=True)
+            job = session.get(ResearchExecution, claim.run_id, with_for_update=True)
+            token = None
+            if job and job.attempt == claim.attempt and job.owner_id == claim.owner_id and job.status == "running":
+                reason = _policy_reason(session, run)
+                if reason:
+                    token = _pause_locked(run, job, reason)
+                else:
+                    job.lease_expires_at = utc_now()
             session.commit()
+        _revoke(token)
     except (IdentityError, HTTPException) as error:
         _fail_authorization(claim.run_id, error, attempt=claim.attempt)
     except Exception as error:

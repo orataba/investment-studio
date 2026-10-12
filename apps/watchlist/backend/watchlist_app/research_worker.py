@@ -9,8 +9,9 @@ from uuid import uuid4
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from studio_runtime.model_work import model_work_status
 from watchlist_app.core.settings import get_settings
-from watchlist_app.services.research_execution import claim_next, execute_claim, heartbeat, recover_expired, recover_undispatched
+from watchlist_app.services.research_execution import claim_next, execute_claim, heartbeat, pause_pending, recover_expired, recover_undispatched
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,8 @@ def run_worker(stop):
                         future.result()
                     except Exception:
                         logger.exception("Research worker failed run_id=%s attempt=%s", claim.run_id, claim.attempt)
-            if stop.is_set():
+            paused = model_work_status()["paused"]
+            if stop.is_set() or paused:
                 for _, cancelled in active.values():
                     cancelled.set()
             if monotonic() >= next_heartbeat:
@@ -62,13 +64,18 @@ def run_worker(stop):
                         # Stop model work when ownership cannot be maintained.
                         cancelled.set()
                         logger.exception("Research heartbeat failed run_id=%s attempt=%s", claim.run_id, claim.attempt)
-                if not stop.is_set():
+                if not stop.is_set() and not paused:
                     try:
                         recover_undispatched()
                     except Exception:
                         logger.exception("Research dispatch reconciliation failed")
+                elif paused:
+                    try:
+                        pause_pending()
+                    except Exception:
+                        logger.exception("Research pause reconciliation failed")
                 next_heartbeat = monotonic() + settings.research_worker_heartbeat_seconds
-            if not stop.is_set():
+            if not stop.is_set() and not paused:
                 try:
                     recover_expired()
                     while len(active) < settings.research_worker_concurrency and dependencies_ready():

@@ -661,8 +661,10 @@ PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
 
 Research publication is a separate acceptance step after service deployment.
 Use each environment's own service identity, database and retained materials;
-never transfer local research records into production. The current scope is the
-active instruments whose latest coverage status is `Proposed` or `Invested`.
+never transfer local research records into production. The current scope is all
+registered, active assets whose latest coverage status is `Invested`.
+The host model-work switch and current investment status remain authoritative; see
+[Model work control](#model-work-control).
 
 For a controlled batch, temporarily set
 `INVESTMENT_STUDIO_WATCHLIST_RESEARCH_WORKER_ENABLED=false` in the external
@@ -873,3 +875,44 @@ memory budget. Every read checks source freshness, and writes/recalculations
 change the generation; a wall-clock minute no longer forces the same expensive
 calculation again. Live task warnings and derivative observations remain outside
 that cache.
+
+## Model work control
+
+Paid model work uses the non-secret `~/.config/investment-studio/model-work.json`
+of the service user on that host. Missing or invalid configuration fails closed.
+`INVESTMENT_STUDIO_MODEL_WORK_CONTROL_FILE` can select an explicit operator-owned
+path; never reuse a credential file. The runtime reads it before admission and
+launch, and while awaiting model output.
+
+```bash
+.venv/bin/python -m studio_runtime.model_work status
+.venv/bin/python -m studio_runtime.model_work pause
+# Resume only after reviewing the intended host and automatic-research setting.
+.venv/bin/python -m studio_runtime.model_work resume
+```
+
+This switch covers Watchlist research/conversations/risk, Briefing generation and
+Portfolio screenshot analysis. It does not disable deterministic Portfolio
+research/optimization, accounting, public-data ingestion, NAVs or document edits.
+`INVESTMENT_STUDIO_PORTFOLIO_RESEARCH_ENABLED` remains the deterministic product
+capability, separate from the AI pause switch.
+
+Watchlist automatic research defaults off. Enable it with
+`INVESTMENT_STUDIO_WATCHLIST_RESEARCH_AUTOMATIC_ENABLED`. All registered, active
+assets whose latest coverage status is Invested are eligible; no per-class quota
+or separate instrument list applies. Pending themes, retries, queue claims and
+actual launches recheck current eligibility. Enable automation only on the cloud;
+keep local model work paused. Never alter investment status to obtain eligibility.
+`RESEARCH_WORKER_ENABLED=false` only stops the scheduler thread, not manual queue
+execution or independent Briefing and capture processes.
+
+Pause reconciliation preserves inputs/drafts and marks unfinished research
+`paused`, without inventing success or a research failure. It never steals a live
+lease. Resuming the host switch does not replay paused historical jobs. Deliberate
+manual recovery still checks policy, ownership, attempt and publication versions.
+Preserve disabled worker and Briefing timer intent during releases; deployment
+does not authorize broadening automatic model work.
+
+Watchlist `GET /api/research-policy` exposes the operational switch and current Invested
+eligibility. Existing connection/capability/status endpoints expose `model_work`.
+UI capability is explanatory; backend admission remains authoritative.

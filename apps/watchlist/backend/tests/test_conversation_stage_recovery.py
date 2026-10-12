@@ -51,7 +51,7 @@ def test_authorized_conversation_has_independent_deadlines_and_saved_answer(priv
         review = kw["env"]["INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW"] == "1"
         launches.append(review)
         def communicate(timeout):
-            assert timeout == 1800
+            assert timeout == 2
             if not review:
                 assert kw["env"]["INVESTMENT_STUDIO_RESEARCH_GENERATION_ONLY"] == "1"
                 update_context(private_run, submitted_draft=DRAFT)
@@ -114,10 +114,12 @@ def test_plain_private_answer_never_starts_review_or_publication(private_run, mo
 def test_review_deadline_preserves_answer_and_explicit_failed_publication(private_run, monkeypatch):
     update_context(private_run, conversation_answer=ANSWER, submitted_draft=DRAFT,
                    execution={"attempt": 1, "resume": True})
+    ticks = iter([0, 0, 1801])
+    monkeypatch.setattr(runner, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
     def timeout(**kw):
-        assert kw["timeout"] == 1800
+        assert kw["timeout"] == 2
         raise subprocess.TimeoutExpired("review", 1800)
-    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **kw: SimpleNamespace(communicate=timeout, returncode=-15))
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **kw: SimpleNamespace(communicate=timeout, returncode=-15, args=a[0]))
     monkeypatch.setattr(runner, "_stop_process_group", lambda *a: None)
     monkeypatch.setattr(sector_research, "apply_result", lambda *a: pytest.fail("Timeout is not accepted review"))
     runner._run_analysis(private_run)
@@ -173,3 +175,40 @@ def test_checkpoint_publication_still_revalidates_and_rolls_back_conflicts(priva
     assert status == "draft" and answer == ANSWER and "should_rollback" not in context
     assert context["research_publication"]["status"] == "conflict"
     assert context["research_publication"]["stage"] == "publication"
+
+
+@pytest.mark.parametrize("iid,allowed", [("xlk", True), ("xlf", False)])
+def test_conversation_publication_rechecks_actual_invested_ids(private_run, client, monkeypatch, iid, allowed):
+    from .test_sector_research import seed_sector
+    seed_sector(client, monkeypatch)
+    draft = {"reviews": [{"instrument_id": iid}]}
+    update_context(private_run, instrument_ids=["xlk", "xlf"], conversation_answer=ANSWER,
+        submitted_draft=draft, execution={"attempt": 1, "resume": True},
+        web_evidence=[{"review": {"checkpoint": {"draft": draft,
+            "cutoff": "2026-10-01T00:00:00Z", "result": draft}}}])
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **kw: pytest.fail("Use retained checkpoint, no model"))
+    calls = []
+    monkeypatch.setattr(sector_research, "apply_result", lambda *a: calls.append(True))
+    runner._run_analysis(private_run)
+    status, answer, context = read_run(private_run)
+    assert status == "draft" and answer == ANSWER
+    assert calls == ([True] if allowed else [])
+    assert context["research_publication"]["status"] == ("published" if allowed else "failed")
+    assert context["submitted_draft"] == draft
+
+
+def test_pause_after_process_read_prevents_final_publication(private_run, monkeypatch):
+    import os
+    from pathlib import Path
+    from studio_runtime.model_work import ModelWorkPaused
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **kw: SimpleNamespace(returncode=0))
+    def last_read(*a, **kw):
+        Path(os.environ["INVESTMENT_STUDIO_MODEL_WORK_CONTROL_FILE"]).write_text('{"paused":true}')
+        return ANSWER, "", 0
+    monkeypatch.setattr(runner, "_wait_harness", last_read)
+    monkeypatch.setattr(sector_research, "apply_result", lambda *a: pytest.fail("No publication after pause"))
+    with pytest.raises(ModelWorkPaused):
+        runner._run_analysis(private_run)
+    status, _answer, context = read_run(private_run)
+    assert status == "running"  # Queue owner performs the fenced paused transition.
+    assert not context.get("research_publication")

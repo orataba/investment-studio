@@ -540,3 +540,23 @@ it.each([
   expect(screen.queryByText(translated)).toBeNull()
   expect(mocks.write).not.toHaveBeenCalled()
 })
+
+
+it('keeps a paused draft readable and blocks sending without polling the paused task', async () => {
+  vi.useFakeTimers()
+  entries = [{ ...answer, status: 'paused' }]
+  const original = mocks.read.getMockImplementation()!
+  mocks.read.mockImplementation((path: string) => path === '/research/connections'
+    ? Promise.resolve({ assistant_available: false, portfolios: [], model_work: { paused: true, code: 'paused', message: '全局研究已暂停。' } }) : original(path))
+  render(<MemoryRouter initialEntries={['/assistant?topic=chat-1']}><ResearchPage instrumentId="fund-a" /></MemoryRouter>)
+  await act(async () => {})
+  expect(screen.getByText('证据不足', { selector: 'strong' })).toBeTruthy()
+  expect(screen.getByText('全局研究已暂停。')).toBeTruthy()
+  const send = screen.getByRole('button', { name: '研究已暂停' })
+  expect(send.hasAttribute('disabled')).toBe(true)
+  fireEvent.click(send)
+  const count = mocks.read.mock.calls.length
+  await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
+  expect(mocks.read).toHaveBeenCalledTimes(count)
+  expect(mocks.write).not.toHaveBeenCalled()
+})

@@ -595,6 +595,15 @@ if grep -q 'startup-write:test.investment-studio.cloud-sync' "$DISABLED_CLOUD_CA
   exit 1
 fi
 
+# A user-paused research worker also stays disabled across installation.
+DISABLED_RESEARCH_CASE="$TEST_ROOT/disabled-research"
+prepare_case "$DISABLED_RESEARCH_CASE"
+printf '%s\n' test.investment-studio.research-worker > "$DISABLED_RESEARCH_CASE/disabled"
+export EVENT_LOG="$DISABLED_RESEARCH_CASE/events"
+HEALTH_FAIL=false run_installer "$DISABLED_RESEARCH_CASE" > "$DISABLED_RESEARCH_CASE/output" 2>&1
+assert_schedule_stayed_disabled "$DISABLED_RESEARCH_CASE" research-worker
+! grep -Eq 'launchctl:kickstart .*research-worker$' "$EVENT_LOG"
+
 # Removing the full-snapshot config selects public replication. Retire an old
 # loaded full-snapshot agent before starting the public-only schedule.
 PUBLIC_SYNC_CASE="$TEST_ROOT/public-sync"

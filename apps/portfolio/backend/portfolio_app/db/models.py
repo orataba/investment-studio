@@ -762,7 +762,7 @@ class TransactionCaptureBatchModel(Base):
             name="status",
         ),
         CheckConstraint(
-            "analysis_run_status IN ('idle', 'queued', 'running', 'succeeded', 'failed')",
+            "analysis_run_status IN ('idle', 'queued', 'running', 'succeeded', 'failed', 'paused')",
             name="analysis_run_status",
         ),
         CheckConstraint(

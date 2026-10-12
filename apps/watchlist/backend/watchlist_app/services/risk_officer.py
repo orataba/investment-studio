@@ -341,28 +341,45 @@ def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=No
     previous = session.scalar(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id)
         .order_by(ResearchEntry.created_at.desc()).limit(1))
     now = datetime.now(UTC)
+    automatic_inputs = None
+    if scheduled_dates is not None and instrument_id:
+        from watchlist_app.services.risk_review_state import automatic_review_inputs, current_scope, new_referral_since, saved_automatic_inputs
+        saved_automatic = saved_automatic_inputs(previous.context_json) if previous else None
+        tracked_ids = {row["case_id"] for row in (saved_automatic or {}).get("cases", [])}
+        automatic_state = current_scope(session, scope)
+        automatic_inputs = automatic_review_inputs(automatic_state, tracked_case_ids=tracked_ids)
+        if previous is None and (automatic_inputs is None or not automatic_inputs["cases"]):
+            return None, False
     if previous:
         if previous.status in {"queued", "running"}:
             return previous, False
         same_days = scheduled_dates and all((previous.context_json.get("research_dates") or {}).get(iid) == day
                                            for iid, day in scheduled_dates.items())
         same_inputs = False
-        if same_days and previous.status == "completed":
+        if scheduled_dates is not None and previous.status in {"completed", "failed", "paused"}:
             from watchlist_app.services.risk_review_state import current_scope, input_version
             saved_version = previous.context_json.get("risk_input_version")
             # Publication incorporates the officer's own case assessments into
             # this version. Comparing the pre-assessment evidence instead would
             # trigger another run merely because reviewed_at/run_id changed,
             # indefinitely when an honest assessment remains pending.
-            same_inputs = (saved_version == input_version(session, current_scope(session, scope))
-                           if saved_version is not None else
-                           previous.context_json.get("risk_inputs") == read_snapshot(session, **scope))
+            if instrument_id:
+                saved_automatic = saved_automatic_inputs(previous.context_json)
+                # Unknown legacy input alone cannot justify paid work, but an
+                # explicitly later material referral must not be frozen forever.
+                same_inputs = automatic_inputs is None or (
+                    not new_referral_since(automatic_state, previous.context_json.get("cutoff"))
+                    if saved_automatic is None else saved_automatic == automatic_inputs)
+            else:
+                same_inputs = (saved_version == input_version(session, current_scope(session, scope))
+                               if saved_version is not None else
+                               previous.context_json.get("risk_inputs") == read_snapshot(session, **scope))
             # Older reports could complete without assessing a pending referral.
             # Reuse an unchanged report only after that handoff has a receipt.
             assessed_ids = {item["case_id"] for item in (previous.context_json.get("result") or {}).get("case_assessments", [])}
-            if _pending_research_case_ids(previous.context_json.get("risk_inputs") or {}) - assessed_ids:
+            if previous.status == "completed" and _pending_research_case_ids(previous.context_json.get("risk_inputs") or {}) - assessed_ids:
                 same_inputs = False
-        if same_days and (previous.status == "failed" or same_inputs):
+        if same_inputs or (not instrument_id and same_days and previous.status == "failed"):
             if previous.status == "failed":
                 from watchlist_app.services.research_runner import queue_retry
                 if queue_retry(session, previous, now=now):
@@ -371,7 +388,8 @@ def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=No
             return previous, False
     run = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, kind="analysis", title="风险研判", source="已留存风险与组合持仓", status="queued", body="", created_at=now,
         context_json={"research_actor": research_identity(), "risk_run": True, "risk_scope": scope, "cutoff": now.isoformat(),
-                      "scheduled": scheduled_dates is not None, "research_dates": scheduled_dates or {}})
+                      "scheduled": scheduled_dates is not None, "research_dates": scheduled_dates or {},
+                      **({"risk_automatic_inputs": automatic_inputs} if scheduled_dates is not None and instrument_id else {})})
     session.add(run)
     session.commit()
     return run, True
@@ -386,13 +404,18 @@ def prepare_run(run_id):
             raise ValueError("风险研判记录不存在。")
         if run.status not in {"queued", "running"}:
             raise ValueError("已结束的风控记录不能重新准备输入。")
-        from watchlist_app.services.risk_review_state import current_scope, input_version
+        from watchlist_app.services.risk_review_state import automatic_review_inputs, current_scope, input_version, saved_automatic_inputs
         scope = run.context_json["risk_scope"]
-        before = input_version(session, current_scope(session, scope))
+        before_state = current_scope(session, scope)
+        before = input_version(session, before_state)
         snapshot = read_snapshot(session, **scope)
-        after = input_version(session, current_scope(session, scope))
+        after_state = current_scope(session, scope)
+        after = input_version(session, after_state)
         # A concurrent source update must not label the older bound evidence current.
         bound_version = before if before is not None and before == after else None
+        tracked_ids = {row["case_id"] for row in (saved_automatic_inputs(run.context_json) or {}).get("cases", [])}
+        automatic_before = automatic_review_inputs(before_state, tracked_case_ids=tracked_ids)
+        automatic_after = automatic_review_inputs(after_state, tracked_case_ids=tracked_ids)
         from watchlist_app.services.research_access import research_context_projection, research_projection_rows
         relation, fields = research_context_projection(session, {"risk_inputs": JSON})
         prior_query = select(fields["risk_inputs"].label("risk_inputs")).select_from(ResearchEntry)
@@ -405,6 +428,7 @@ def prepare_run(run_id):
         topic.instrument_ids = snapshot["instrument_ids"]
         prepared_at = datetime.now(UTC).isoformat()
         run.context_json = {**run.context_json, "risk_inputs": snapshot, "risk_input_version": bound_version, "prepared_at": prepared_at,
+            "risk_automatic_inputs": automatic_before if automatic_before == automatic_after else None,
             "cutoff": prepared_at,
             **({"input_snapshot_cutoff": prepared_at} if snapshot["scope_available"] else {}),
             "prior_inputs": prior[0].risk_inputs if prior else None,
@@ -530,7 +554,9 @@ def apply_result(session, run, payload):
         if not (same_assessment and same_state):
             assessed.append((case, assessment))
     from watchlist_app.services.risk_workspace_projection import case_summary_rows
+    from watchlist_app.services.risk_review_state import automatic_review_inputs, saved_automatic_inputs
     bound_version = run.context_json.get("risk_input_version")
+    automatic_inputs = saved_automatic_inputs(run.context_json)
     before = {row["case_id"]: row for row in case_summary_rows(session, {case.instrument_id for case, _ in assessed})}
     case_changes = []
     actor = {key: run.context_json.get("research_actor", {}).get(key) for key in ("user_id", "display_name", "kind", "service_id")}
@@ -539,7 +565,9 @@ def apply_result(session, run, payload):
                     "risk_assessment": (case.evidence_json or {}).get("risk_assessment")}
         timestamp = datetime.now(UTC)
         value = {**assessment.model_dump(), "reviewed_at": timestamp.isoformat(), "run_id": run.entry_id}
-        case.evidence_json = {**case.evidence_json,
+        from watchlist_app.services.risk_case_state import assessed_risk_fields
+        continuity = assessed_risk_fields(case, value)
+        case.evidence_json = {**case.evidence_json, **continuity,
             # Legacy events derive their version from history length. A risk
             # receipt must not advance the underlying research event version.
             "event_version_id": assessment.event_version_id,
@@ -558,18 +586,35 @@ def apply_result(session, run, payload):
     saved = result.model_dump()
     saved["case_changes"] = case_changes
     saved["limitations"] = list(dict.fromkeys([*snapshot["limitations"], *saved["limitations"]]))
-    if bound_version and assessed:
+    if assessed:
         session.flush()
         after = {row["case_id"]: row for row in case_summary_rows(session, {case.instrument_id for case, _ in assessed})}
         own_ids = {case.case_id for case, _ in assessed}
         # Absorb only our own assessment output when this case still matched
         # the bound input before publication. Never refresh other dependencies
         # or hide an external change that arrived during model execution.
-        bound_version = {**bound_version, "cases": [after[row["case_id"]]
-            if row["case_id"] in own_ids and row == before.get(row["case_id"]) else row
-            for row in bound_version["cases"]]}
+        if bound_version:
+            bound_version = {**bound_version, "cases": [after[row["case_id"]]
+                if row["case_id"] in own_ids and row == before.get(row["case_id"]) else row
+                for row in bound_version["cases"]]}
+        if automatic_inputs is not None:
+            def projected(rows):
+                value = automatic_review_inputs({**automatic_inputs, "cases": list(rows.values())},
+                    tracked_case_ids={row["case_id"] for row in automatic_inputs["cases"]})
+                return {row["case_id"]: row for row in value["cases"]}
+            before_auto, after_auto = projected(before), projected(after)
+            updated = []
+            for row in automatic_inputs["cases"]:
+                case_id = row["case_id"]
+                if case_id in own_ids and row == before_auto.get(case_id):
+                    if case_id in after_auto:
+                        updated.append(after_auto[case_id])
+                else:
+                    updated.append(row)
+            automatic_inputs = {**automatic_inputs, "cases": updated}
     run.context_json = {**run.context_json, "result": saved,
         "risk_input_version": bound_version,
+        "risk_automatic_inputs": automatic_inputs,
         "risk_review_view": {"input_as_of": snapshot["input_as_of"], "evidence_sources": evidence_sources(snapshot),
             "price_rule_summary": {**snapshot["price_rule_summary"], "instruments": [
                 {"instrument_id": item["instrument_id"], "name": item["name"], **item["price_rule_summary"]}
@@ -613,6 +658,7 @@ def evidence_sources(snapshot):
 
 def review_workspace(session, **scope):
     from sqlalchemy import JSON, true
+    from studio_runtime.model_work import model_work_status
     from watchlist_app.services.research_runner import harness_available
     from watchlist_app.services.research_access import research_context_projection, research_projection_rows
     from watchlist_app.services.risk_review_state import current_scope, input_version
@@ -652,7 +698,13 @@ def review_workspace(session, **scope):
             "completed_at": completed.completed_at, **view, "stale": stale}
         if completed.review_corrections:
             saved["review_note"] = "本次内容经 Codex 依据留存数据复核修订，原模型稿及修订原因已保留。"
-    return serialize_payload({"available": harness_available() and state["scope_available"], "scope": state["scope"],
+    model_work = model_work_status()
+    configured = harness_available()
+    reason = (model_work["message"] if model_work["paused"] else
+              "当前风险范围资料尚不可用，不能发起研判。" if not state["scope_available"] else
+              "风险研判尚未配置运行环境。" if not configured else None)
+    return serialize_payload({"available": not model_work["paused"] and configured and state["scope_available"],
+        "model_work": model_work, "reason": reason, "scope": state["scope"],
         "input_as_of": state["input_as_of"], "counts": state["counts"],
         "instruments": [{key: item.get(key) for key in ("instrument_id", "name", "as_of_date")} for item in state["instruments"]],
         "holdings": state["holdings"], "limitations": state["limitations"], "latest_completed": saved,

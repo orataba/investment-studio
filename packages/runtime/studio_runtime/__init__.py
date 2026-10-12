@@ -169,6 +169,14 @@ def install_diagnostics(app, service: str) -> None:
                             headers={"X-Request-ID": request_id, "Cache-Control": "no-store"})
 
     app.add_exception_handler(Exception, unexpected_error)
+    from .model_work import ModelWorkPaused
+
+    async def model_work_paused(_request, error):
+        from starlette.responses import JSONResponse
+        return JSONResponse(status_code=409, content={"detail": str(error), "code": "model_work_paused"},
+                            headers={"Cache-Control": "no-store"})
+
+    app.add_exception_handler(ModelWorkPaused, model_work_paused)
 
 
 # Operations also run in release and maintenance CLIs, without an ASGI app.

@@ -9,7 +9,8 @@ EXACT_FIELDS = frozenset({
     "source_run_id", "publication", "kind", "priority", "priority_reason", "pinned", "synthesis",
     "latest_development", "next_check", "figure_source_ids", "reference", "last_reviewed_at",
     "baseline_status", "baseline_requested_at", "migration_origin", "lifecycle_owner",
-    "incremental_trigger", "numeric_monitor_inputs", "market_queries", "attempted_theme_baselines",
+    "incremental_trigger", "market_queries", "attempted_theme_baselines",
+    "research_working_sets",
 })
 
 

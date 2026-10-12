@@ -67,3 +67,17 @@ it('translates the distinct request and execution clocks with stage limit explan
   expect(screen.getByText('Limit per stage (minutes)')).toBeTruthy()
   expect(screen.getByText('The elapsed time above covers this whole attempt, not the current stage.')).toBeTruthy()
 })
+
+
+it('retains a paused attempt without treating it as complete, failed or still running', () => {
+  render(<ResearchRunStatus runId="paused" status="paused" createdAt={requested}
+    completedAt="2026-10-09T04:12:00Z" execution={{ started_at: started, stage: 'paused', attempt: 1 }} />)
+  expect(screen.getAllByText('已暂停').length).toBeGreaterThan(0)
+  expect(screen.getByText('研究已暂停。已有草稿与证据保留，此任务不会自动恢复。')).toBeTruthy()
+  expect(screen.queryByText('已完成')).toBeNull()
+  expect(screen.queryByText('执行未完成')).toBeNull()
+  expect(screen.getByText('4:00')).toBeTruthy()
+  act(() => vi.advanceTimersByTime(60000))
+  expect(screen.getByText('4:00')).toBeTruthy()
+  expect(vi.getTimerCount()).toBe(0)
+})

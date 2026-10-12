@@ -85,7 +85,7 @@ def test_sector_enqueue_decodes_only_latest_matching_run(client, monkeypatch, sc
     monkeypatch.setattr(sector_research, "_research_dates",
         lambda _session, ids, now: {iid: now.date().isoformat() for iid in ids})
     from watchlist_app.services import research_triggers
-    monkeypatch.setattr(research_triggers, "research_trigger", lambda *args, **kwargs: None)
+    monkeypatch.setattr(research_triggers, "research_trigger", lambda *args, **kwargs: {"reasons": [], "coverage_cursor": {}})
     loaded = []
     def loaded_entry(record, _context):
         loaded.append(record.entry_id)

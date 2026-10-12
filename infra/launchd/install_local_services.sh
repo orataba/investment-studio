@@ -215,9 +215,9 @@ Path(sys.argv[2]).write_text("".join(label + "\n" for label in disabled))
 PY
 }
 
-is_disabled_schedule() {
+is_preserved_disabled() {
   case "$1" in
-    *-data-refresh|market-sync|cloud-sync)
+    *-data-refresh|market-sync|cloud-sync|research-worker)
       grep -Fxq "$LABEL_PREFIX.$1" "$DISABLED_SERVICES_FILE"
       ;;
     *) return 1 ;;
@@ -230,7 +230,7 @@ restore_previous_services() {
   if [[ -f "$SERVICE_STATE_FILE" ]]; then
     while IFS= read -r service || [[ -n "$service" ]]; do
       [[ -n "$service" ]] || continue
-      if ! is_disabled_schedule "$service"; then
+      if ! is_preserved_disabled "$service"; then
         printf '%s\n' "$service" >> "$RESTORE_SERVICE_STATE_FILE"
       fi
     done < "$SERVICE_STATE_FILE"
@@ -462,8 +462,8 @@ printf '%s\n' "${INVESTMENT_STUDIO_PROJECT_SCHEMA_MANIFEST_PATH:-}" > "$WORK_DIR
 for service in "${services[@]}"; do
   label="$LABEL_PREFIX.$service"
   plist="$LAUNCH_AGENTS_DIR/$label.plist"
-  if is_disabled_schedule "$service"; then
-    echo "Preserving disabled schedule: $label"
+  if is_preserved_disabled "$service"; then
+    echo "Preserving disabled service: $label"
     continue
   fi
   launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
@@ -472,6 +472,9 @@ for service in "${services[@]}"; do
 done
 
 for service in home-api watchlist-api portfolio-api briefing-api home-web watchlist-web portfolio-web briefing-web research-worker; do
+  if is_preserved_disabled "$service"; then
+    continue
+  fi
   launchctl kickstart -k "$domain/$LABEL_PREFIX.$service"
 done
 
@@ -493,7 +496,7 @@ for ((attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++)); do
       break
     fi
   done
-  if [[ "$healthy" == "true" ]]; then
+  if [[ "$healthy" == "true" ]] && ! is_preserved_disabled research-worker; then
     worker_state="$(launchctl print "$domain/$LABEL_PREFIX.research-worker" 2>/dev/null || true)"
     if ! grep -Eq '^[[:space:]]*state = running$' <<< "$worker_state"; then
       healthy="false"

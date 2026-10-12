@@ -92,3 +92,90 @@ def test_run_scoped_and_unprivileged_service_cannot_read_home_alerts(client, mon
     ):
         monkeypatch.setattr(main, "resolve_request", lambda *a, **kw: principal)
         assert client.get("/api/risk/alerts").status_code == 403
+
+
+def test_assessed_major_survives_revision_and_pending_review_without_lending_old_approval(client):
+    from watchlist_app.services.risk_case_state import advance_event_risk, assessed_risk_fields
+    with get_session_factory()() as session:
+        seed_alerts(session)
+        case = session.get(RiskCase, "major")
+        for version, material in (("editorial", False), ("material", True)):
+            snapshot = {**case.evidence_json, "event_version_id": version,
+                "title": "NEW_UNREVIEWED_TITLE", "body": "NEW_UNREVIEWED_BODY", "recorded_at": "2026-10-12T02:00:00Z"}
+            changes = advance_event_risk(case, snapshot, material_change=material,
+                sources=[{"source_type": "public_source"}])
+            case.title, case.body = snapshot["title"], snapshot["body"]
+            case.evidence_json = {**snapshot, **changes}
+            session.commit()
+            alert = next(row for row in client.get("/api/risk/alerts?limit=10").json()["alerts"] if row["case_id"] == "major")
+            assert alert["title"] == "major"
+            assert alert["event_version_id"] == "current-version"
+            assert alert["alert_state"] == "assessment_pending"
+            assert alert["pending_revision"]["title"] == "NEW_UNREVIEWED_TITLE"
+            assert alert["pending_revision"]["event_version_id"] == version
+            assert "NEW_UNREVIEWED_BODY" not in str(alert)
+        decision = {"status": "pending", "event_version_id": "material", "reason": "等待独立原件",
+            "reviewed_at": "2026-10-12T03:00:00Z", "run_id": "risk-review"}
+        case.evidence_json = {**case.evidence_json, **assessed_risk_fields(case, decision), "risk_assessment": decision}
+        session.commit()
+        assert any(row["case_id"] == "major" for row in client.get("/api/risk/alerts?limit=10").json()["alerts"])
+        # Explicit evidence withdrawal hides it, without deleting historical proof.
+        case.evidence_json = {**case.evidence_json, "withdrawn": True, "withdrawal_reason": "原件被正式撤回"}
+        session.commit()
+        assert not any(row["case_id"] == "major" for row in client.get("/api/risk/alerts?limit=10").json()["alerts"])
+
+
+def test_credible_urgent_pending_has_separate_state_and_never_claims_old_confirmation(client):
+    from watchlist_app.services.risk_case_state import advance_event_risk, assessed_risk_fields
+    with get_session_factory()() as session:
+        seed_alerts(session)
+        case = session.get(RiskCase, "pending")
+        case.trigger_active, case.status = False, "recorded"
+        snapshot = {**case.evidence_json, "title": "限时但待独立核实", "information_type": "fact",
+            "direction": "risk", "confidence": "reported", "urgency": "immediate", "impact_level": "major",
+            "action_condition": "明日资金到期前核实赎回通知", "sources": [{"source_type": "public_source",
+                "document_id": "d", "version_id": "v", "published_at": "2026-10-12"}]}
+        case.evidence_json = {**snapshot, **advance_event_risk(case, snapshot, material_change=True, sources=snapshot["sources"])}
+        session.commit()
+        alert = next(row for row in client.get("/api/risk/alerts?limit=10").json()["alerts"] if row["case_id"] == "pending")
+        assert alert["alert_state"] == "unverified_urgent"
+        assert alert["last_assessed_snapshot"] is None
+        assert alert["reviewed_at"] is None
+        assert alert["confidence"] == "reported"
+        assert alert["pending_revision"]["urgent_review_required"]
+        # An old resolved case can acquire a NEW credible urgent revision.
+        case.status = "resolved"
+        session.commit()
+        assert any(row["case_id"] == "pending" for row in client.get("/api/risk/alerts?limit=10").json()["alerts"])
+        decision = {"status": "resolved", "event_version_id": snapshot["event_version_id"], "reason": "新事项已核实解除"}
+        case.evidence_json = {**case.evidence_json, **assessed_risk_fields(case, decision), "risk_assessment": decision}
+        session.commit()
+        assert not any(row["case_id"] == "pending" for row in client.get("/api/risk/alerts?limit=10").json()["alerts"])
+
+
+def test_numeric_refresh_neither_adds_pending_badge_nor_hides_existing_urgent_referral(client):
+    from watchlist_app.services.risk_case_state import advance_event_risk
+    with get_session_factory()() as session:
+        seed_alerts(session)
+        for case_id in ("major", "pending"):
+            case = session.get(RiskCase, case_id)
+            if case_id == "pending":
+                case.trigger_active, case.status = False, "recorded"
+                original = {**case.evidence_json, "title": "明确期限待核实", "information_type": "fact",
+                    "urgency": "immediate", "action_condition": "明日到期前核实",
+                    "sources": [{"source_type": "public_source", "document_id": "notice",
+                                 "version_id": "original", "published_at": "2026-10-12"}]}
+                case.evidence_json = {**original, **advance_event_risk(case, original, material_change=True, sources=original["sources"])}
+            numeric = {**case.evidence_json, "title": "NEW_NUMBER_TITLE", "body": "净值更新",
+                       "event_version_id": "number-version", "sources": [{"source_type": "computed_metric"}]}
+            state = advance_event_risk(case, numeric, material_change=True, sources=numeric["sources"])
+            case.title, case.body = numeric["title"], numeric["body"]
+            case.evidence_json = {**numeric, **state}
+        session.commit()
+    rows = {row["case_id"]: row for row in client.get("/api/risk/alerts?limit=10").json()["alerts"]}
+    assert rows["major"]["alert_state"] == "assessed" and rows["major"]["pending_revision"] is None
+    assert rows["major"]["title"] == "major" and rows["major"]["event_version_id"] == "current-version"
+    assert rows["pending"]["alert_state"] == "unverified_urgent"
+    assert rows["pending"]["title"] == "明确期限待核实"
+    assert rows["pending"]["pending_revision"]["event_version_id"] == "current-version"
+    assert rows["pending"]["last_assessed_snapshot"] is None

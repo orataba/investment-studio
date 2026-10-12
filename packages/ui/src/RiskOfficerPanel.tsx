@@ -1,3 +1,4 @@
+import type { ModelWorkStatus } from './modelWork'
 import WorkspaceSkeleton from './WorkspaceSkeleton'
 import InfoHint from './InfoHint'
 import { useEffect, useRef, useState } from 'react'
@@ -9,10 +10,12 @@ import RiskChangeAudit from './RiskChangeAudit'
 import { resolveWorkspaceUrl } from './navigation'
 import './risk-officer.css'
 
-type RunStatus = 'queued' | 'running' | 'completed' | 'failed'
+type RunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'paused'
 type StartedRun = { run_id: string; status: RunStatus }
 export type RiskOfficerReview = {
   available: boolean
+  model_work?: ModelWorkStatus
+  reason?: string | null
   scope: { kind: 'watchlist' | 'instrument' | 'portfolio'; id: string; name: string }
   input_as_of: string | null
   counts: { research: number; quantitative: number; coverage: number }
@@ -40,7 +43,7 @@ export type RiskOfficerReview = {
 
 type Props = { canRun?: boolean; request: RiskRequest; scopeQuery: string; refreshToken?: number; onCompleted?: () => void }
 const running = (status: RunStatus | undefined) => status === 'queued' || status === 'running'
-const settled = (status: RunStatus | undefined) => status === 'completed' || status === 'failed'
+const settled = (status: RunStatus | undefined) => status === 'completed' || status === 'failed' || status === 'paused'
 const frequencyLabels: Record<string, string> = { daily: '日度', weekly: '周度', monthly: '月度' }
 const portfolioHref = (path: string | null | undefined) => path?.startsWith('/portfolios/')
   ? `${resolveWorkspaceUrl(import.meta.env.VITE_PORTFOLIO_URL, 'portfolio')}${path}` : undefined
@@ -78,7 +81,7 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
         setData(result)
         setPending(null)
         setError('')
-        polling = Boolean(result.latest_run && !settled(result.latest_run.status))
+        polling = Boolean(!result.model_work?.paused && result.latest_run && !settled(result.latest_run.status))
         if (polling && result.latest_run) {
           observedRun.current = result.latest_run.run_id
         } else if (result.latest_run && observedRun.current === result.latest_run.run_id) {
@@ -128,7 +131,7 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
   const latest = pending || data?.latest_run
   const unknownStatus = Boolean(latest && !running(latest.status) && !settled(latest.status))
   const busy = posting || running(latest?.status)
-  const canSubmit = Boolean(canRun && data?.available && !busy && !unknownStatus && !error)
+  const canSubmit = Boolean(canRun && data?.available && !data?.model_work?.paused && !busy && !unknownStatus && !error)
   useEffect(() => { if (!canSubmit) setConfirming(false) }, [canSubmit])
   const completed = data?.latest_completed
   const names = new Map(data?.instruments.map((instrument) => [instrument.instrument_id, instrument.name]))
@@ -160,7 +163,7 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
     <header className="risk-officer-heading">
       <div><div className="risk-officer-title"><h2>风险研判</h2>{data && <InfoHint label="风控输入" detail={`研究上报: ${data.counts.research} · 量化触发事项: ${data.counts.quantitative} · 监测受限: ${data.counts.coverage} · 输入截至: ${data.input_as_of?.slice(0, 10) || '尚无输入日期'}`} />}</div>{data && <p translate="no">{data.scope.name}</p>}</div>
       <button type="button" disabled={!canSubmit} onClick={() => data?.scope.kind === 'portfolio' ? void update() : setConfirming(true)}>
-        {busy ? '研判进行中…' : '更新研判'}
+        {data?.model_work?.paused ? '研究已暂停' : busy ? '研判进行中…' : '更新研判'}
       </button>
     </header>
     {confirming && data && <ConfirmDialog open title="更新共享风险研判" confirmLabel="确认更新研判" confirmTone="primary" busy={posting}
@@ -171,13 +174,14 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
     </>} />}
     {!data && !error && <WorkspaceSkeleton />}
     {data && <>
-      {!data.available && <p className="risk-officer-warning" role="status">风险研判服务不可用，暂时无法更新。</p>}
+      {!data.available && <p className="risk-officer-warning" role="status">{data.model_work?.message || data.reason || '风险研判服务不可用，暂时无法更新。'}</p>}
       {busy && <p className="risk-officer-muted" role="status">研判进行中，完成后将自动更新。</p>}
       {unknownStatus && <p className="risk-officer-warning" role="status">任务状态暂未确认；保留已有结论，确认状态前不能重复提交。 <button type="button" onClick={() => setRefresh(value => value + 1)}>刷新状态</button></p>}
       {data.latest_run?.status === 'failed' && !busy && <p className="risk-officer-warning" role="status">
         本次研判失败：{data.latest_run.message || '本次未生成有效结论。'}
       </p>}
-      {!completed && !busy && <p className="risk-officer-muted">尚未研判。点击“更新研判”发起首次研判。</p>}
+      {data.latest_run?.status === 'paused' && <p className="risk-officer-muted">本次研判已暂停，已有结论保留。</p>}
+      {!completed && !busy && !data.model_work?.paused && <p className="risk-officer-muted">尚未研判。点击“更新研判”发起首次研判。</p>}
       {completed && <section className="risk-officer-conclusion" aria-label="最近完成的研判">
         <div className="risk-officer-conclusion-heading"><h3>最近完成的研判</h3>
           <time title={completed.completed_at} dateTime={completed.completed_at}>{researchStamp(completed.completed_at)}</time>

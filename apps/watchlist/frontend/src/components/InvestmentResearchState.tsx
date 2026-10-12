@@ -1,59 +1,19 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { dateLabel, SourceList } from './ResearchEvidence'
+import { useState, type ReactNode } from 'react'
+import { dateLabel } from './ResearchEvidence'
 import type { AskResearchAssistant, InvestmentView, ResearchForecast, ResearchForecastReview, ResearchLesson, ResearchInsight, ResearchReference, SavedResearchNotebook } from '../lib/researchDossierApi'
 import ResearchOpinionComposer from './ResearchOpinionComposer'
 import { useStudioAccount } from './AccountBoundary'
 import ResearchReadingAside from './ResearchReadingAside'
-import ResearchLoading from '../../../../../packages/ui/src/WorkspaceSkeleton'
-import InfoHint from '../../../../../packages/ui/src/InfoHint'
-import { ReferencedResearchEvent } from './ResearchEventCard'
-import { getResearchTheme, type ResearchTheme } from '../lib/researchDossierApi'
 
 const forecastStatus = { active: '持续观察', confirmed: '结果已出现', refuted: '预测未成立', expired: '观察期已结束', withdrawn: '已撤回' }
 type Sources = (ids: string[]) => ReactNode
 
-function ReferencedThemeEvidence({ instrumentId, themeId }: { instrumentId: string; themeId: string }) {
-  const [theme, setTheme] = useState<ResearchTheme | null>(null)
-  const [error, setError] = useState('')
-  useEffect(() => {
-    const controller = new AbortController()
-    void getResearchTheme(instrumentId, themeId, controller.signal).then(value => { if (!controller.signal.aborted) setTheme(value) })
-      .catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '主题依据读取失败。') })
-    return () => controller.abort()
-  }, [instrumentId, themeId])
-  return error ? <p role="alert">{error}</p> : theme ? <section className="research-insight-theme-evidence">
-    <h3 translate="no">{theme.title}</h3>
-    <p className="sector-research-note">实质更新 {dateLabel(theme.last_changed_at)} · 最近检查 {dateLabel(theme.last_reviewed_at)}</p>
-    <p className="research-dossier-text" translate={theme.synthesis ? 'no' : undefined}>{theme.synthesis || '主题基线尚待建立。'}</p>
-    {theme.latest_development && <p translate="no">{theme.latest_development}</p>}
-    {theme.next_check && <p><span>下一观察：</span><span translate="no">{theme.next_check}</span></p>}
-    <SourceList instrumentId={instrumentId} versionId={theme.source_version_id} sources={theme.sources || []} />
-  </section> : <ResearchLoading />
-}
-
-function InsightList({ title, items, legacy, view, instrumentId, sources }: { title: string; items?: ResearchInsight[] | null; legacy: string; view: InvestmentView; instrumentId: string; sources: Sources }) {
-  const [all, setAll] = useState(false)
-  return <section className="research-insight-list" aria-label={title}>
-    <h4>{title}{Boolean(items?.length) && <span> · {items!.length}</span>}</h4>
-    {items?.length ? <>
-      {(all ? items : items.slice(0, 3)).map(item => <article key={item.key} className="research-insight">
-        <h5 translate="no">{item.title}</h5>
-        <ResearchReadingAside label="依据与下一观察" title={`${item.title} · 依据与下一观察`}>
-          <p translate="no">{item.explanation}</p>
-          <p><strong>下一观察</strong> <span translate={item.next_watch ? 'no' : undefined}>{item.next_watch || '尚待明确。'}</span></p>
-          {sources([...new Set([...(item.source_ids || []), ...(item.figure_source_ids || [])])])}
-          {item.event_keys?.map(key => <ReferencedResearchEvent key={`${instrumentId}:${key}`} instrumentId={instrumentId} eventKey={key} />)}
-          {item.theme_ids?.map(id => <ReferencedThemeEvidence key={`${instrumentId}:${id}`} instrumentId={instrumentId} themeId={id} />)}
-        </ResearchReadingAside>
-      </article>)}
-      {items.length > 3 && <button className="research-support-link" type="button" aria-expanded={all} onClick={() => setAll(value => !value)}>{all ? '收起' : `展开其余 ${items.length - 3} 项`}</button>}
-    </> : items == null && legacy ? <p translate="no">{legacy}</p> : <p className="sector-research-note">{view.coverage_status === 'assessed' ? `在已检查范围内，未发现足够明确的新${title}线索。` : view.coverage_status === 'not_established' ? '研究基线尚未建立，不能据此作出判断。' : '资料或覆盖范围不足，尚不能形成明确判断。'}</p>}
-  </section>
-}
-
 function ViewBody({ view, sources }: { view: InvestmentView; sources: Sources }) {
-  return <><dl className="research-investment-dimensions">
-    {([['direction', '方向判断'], ['horizon', '适用期限'], ['attractiveness', '当前投资吸引力'], ['risk', '风险状况'], ['conviction', '判断把握程度'], ['invalidation', '改判条件'], ['next_check', '下一步验证']] as const).map(([key, label]) => view[key] && <div key={key}><dt>{label}</dt><dd translate="no">{view[key]}</dd></div>)}
+  return <>
+    {view.coverage_status === 'limited' && <p className="sector-research-limitation">已保存的研究部分可用，未覆盖部分不能据此判断。</p>}
+    {view.coverage_status === 'not_established' && <p className="sector-research-limitation">研究基线尚未建立，不能据此作出判断。</p>}
+    <dl className="research-investment-dimensions">
+    {([['direction', '方向判断'], ['horizon', '适用期限'], ['attractiveness', '当前投资吸引力'], ['risk', '风险状况'], ['conviction', '判断把握程度'], ['invalidation', '改判条件'], ['next_check', '下一步验证']] as const).map(([key, label]) => view[key] && !(key === 'attractiveness' && view.opportunities != null) && !(key === 'risk' && view.risks != null) && <div key={key}><dt>{label}</dt><dd translate="no">{view[key]}</dd></div>)}
   </dl>
     {view.coverage_note && <p className="sector-research-note" translate="no">{view.coverage_note}</p>}
     {([['opportunities', '机会'], ['risks', '风险']] as const).map(([key, label]) => Boolean(view[key]?.length) && <section key={key} className="research-insight-history"><h4>{label}</h4>{view[key]!.map(item => <article key={item.key}>
@@ -135,7 +95,7 @@ function LessonBody({ lesson, sources }: { lesson: ResearchLesson; sources: Sour
   </>
 }
 
-export default function InvestmentResearchState({ instrumentId, notebook, sources, onAskAssistant, historical = false, mode = 'full', compact = false }: { instrumentId: string; notebook: SavedResearchNotebook; sources: Sources; onAskAssistant?: AskResearchAssistant; historical?: boolean; mode?: 'full' | 'view' | 'records'; compact?: boolean }) {
+export default function InvestmentResearchState({ instrumentId, notebook, sources, onAskAssistant, historical = false, mode = 'full' }: { instrumentId: string; notebook: SavedResearchNotebook; sources: Sources; onAskAssistant?: AskResearchAssistant; historical?: boolean; mode?: 'full' | 'view' | 'records' }) {
   const [writing, setWriting] = useState(false)
   const [notice, setNotice] = useState('')
   const canWrite = useStudioAccount()?.team_role !== 'reader'
@@ -149,32 +109,19 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
   const lessons = notebook.lessons || []
   const reference: ResearchReference = { instrument_id: instrumentId, notebook_version_id: notebook.version_id }
   return <>
-    {(view || brief) && mode !== 'records' && <section className={`research-notebook-current${compact ? ' research-current-brief' : ''}`} aria-label={historical ? '当时投资判断' : compact ? '当前机会与风险' : '当前投资判断'}>
-      <div className="research-judgment-heading"><h3>{historical ? '当时投资判断' : compact ? '当前机会与风险' : '当前投资判断'}</h3>{compact && view?.coverage_note && <InfoHint label="研究覆盖说明" detail={view.coverage_note} kind={view.coverage_status === 'limited' || view.coverage_status === 'not_established' ? 'attention' : 'explanation'} />}<time dateTime={view?.updated_at || brief?.updated_at || undefined}>{dateLabel(view?.updated_at || brief?.updated_at)}</time></div>
-      {brief && !compact && <div className="research-decision-brief" aria-label="投资建议">
+    {(view || brief) && mode !== 'records' && <section className="research-notebook-current" aria-label={historical ? '当时投资判断' : '当前投资判断'}>
+      <div className="research-judgment-heading"><h3>{historical ? '当时投资判断' : '当前投资判断'}</h3><time dateTime={view?.updated_at || brief?.updated_at || undefined}>{dateLabel(view?.updated_at || brief?.updated_at)}</time></div>
+      {brief && <div className="research-decision-brief" aria-label="投资建议">
         <p className="research-current-direction" translate="no">{brief.recommendation}</p>
         {brief.rationale && <p className="research-decision-rationale" translate="no">{brief.rationale}</p>}
         {brief.updated_at && brief.updated_at !== view?.updated_at && <p className="sector-research-note">建议修订于 <time dateTime={brief.updated_at}>{dateLabel(brief.updated_at)}</time></p>}
         {(brief.horizon || brief.next_decision) && <dl className="research-decision-conditions">{brief.horizon && <div><dt>建议期限</dt><dd translate="no">{brief.horizon}</dd></div>}{brief.next_decision && <div><dt>下一决策节点</dt><dd translate="no">{brief.next_decision}</dd></div>}</dl>}
         {brief.conditions.length > 0 && <div className="research-decision-triggers"><h4>建议成立的条件</h4><ul>{brief.conditions.map((condition, index) => <li key={index} translate="no">{condition}</li>)}</ul></div>}
       </div>}
-      {view && (compact ? <>
-        <div className="research-judgment-layout">
-          <div className="research-judgment-lead">
-            <p className="research-current-direction" translate={view.direction ? 'no' : undefined}>{view.direction || '当前总结尚待补充。'}</p>
-            {view.coverage_status === 'limited' && <p className="sector-research-limitation">已保存的研究部分可用，未覆盖部分不能据此判断。</p>}
-          </div>
-          {(view.invalidation || view.next_check) && <dl className="research-judgment-conditions" aria-label="判断条件与下一验证">
-            {view.invalidation && <div><dt>改判条件</dt><dd translate="no">{view.invalidation}</dd></div>}
-            {view.next_check && <div><dt>下一验证</dt><dd translate="no">{view.next_check}</dd></div>}
-          </dl>}
-        </div>
-        <div className="research-insight-grid"><InsightList title="机会" items={view.opportunities} legacy={view.attractiveness} {...{ view, instrumentId, sources }} /><InsightList title="风险" items={view.risks} legacy={view.risk} {...{ view, instrumentId, sources }} /></div>
-      </> : <ViewBody view={view} sources={sources} />)}
-      {!view && compact && brief && <><p className="research-current-direction" translate="no">{brief.recommendation}</p><p className="sector-research-note">沿用历史研究摘要；当前机会与风险尚未形成结构化认识。</p></>}
+      {view && <ViewBody view={view} sources={sources} />}
       <div className="research-judgment-tools">
       <ResearchReadingAside label="判断依据与适用范围">
-        {compact && notebook.key_drivers.length > 0 && <><h4>主要理由</h4><ul>{notebook.key_drivers.map((text, index) => <li key={index} translate="no">{text}</li>)}</ul></>}
+        {notebook.key_drivers.length > 0 && <><h4>主要理由</h4><ul>{notebook.key_drivers.map((text, index) => <li key={index} translate="no">{text}</li>)}</ul></>}
         {view?.horizon && <p><strong>适用期限</strong> <span translate="no">{view.horizon}</span></p>}
         {view?.conviction && <p><strong>判断把握程度</strong> <span translate="no">{view.conviction}</span></p>}
         {notebook.publication && <section className="research-publication-byline"><h4>编制说明</h4><p><span translate="no">{notebook.publication.display_name}</span> 编制 · 研究截至 <time dateTime={notebook.publication.research_as_of}>{notebook.publication.research_as_of}</time>{notebook.publication.baseline && ' · 首次研究基线'}</p><p translate="no">{notebook.publication.verification_note}</p>{!notebook.publication.independent_model_review && <p>作者核对来源；未经独立模型核证。</p>}</section>}
@@ -187,7 +134,7 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
       </div>
       {writing && view && <ResearchOpinionComposer instrumentId={instrumentId} title="对当前研究判断的观点" context={viewOpinionContext(view, notebook)} onCancel={() => setWriting(false)} onSaved={() => { setWriting(false); setNotice('投资观点已保存。') }} />}
       {notice && <p role="status">{notice}</p>}
-      {!compact && Boolean(view?.versions?.length) && <details className="research-dossier-record"><summary>观点修订历史 · {view!.versions!.length} 次</summary>{view!.versions!.map(version => <article key={version.version_id}><h4>{dateLabel(version.updated_at)}</h4><ViewBody view={version} sources={sources} />{version.assumptions.length > 0 && <><h4>当时的关键假设</h4><ul className="research-dossier-list">{version.assumptions.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul></>}{sources(version.source_ids)}{onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant('请复核这个历史观点。先按当时已知信息审视原判断，再区分后来出现的变化与遗漏；不要把后来的结果当作当时已知。', { ...reference, investment_view_version_id: version.version_id })}>追问当时的观点</button>}</article>)}</details>}
+      {Boolean(view?.versions?.length) && <details className="research-dossier-record"><summary>观点修订历史 · {view!.versions!.length} 次</summary>{view!.versions!.map(version => <article key={version.version_id}><h4>{dateLabel(version.updated_at)}</h4><ViewBody view={version} sources={sources} />{version.assumptions.length > 0 && <><h4>当时的关键假设</h4><ul className="research-dossier-list">{version.assumptions.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul></>}{sources(version.source_ids)}{onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant('请复核这个历史观点。先按当时已知信息审视原判断，再区分后来出现的变化与遗漏；不要把后来的结果当作当时已知。', { ...reference, investment_view_version_id: version.version_id })}>追问当时的观点</button>}</article>)}</details>}
     </section>}
     {mode !== 'view' && activeForecasts.length > 0 && <section className="research-notebook-current" aria-label={historical ? '当时持续预测' : '持续预测'}><h3>{historical ? '当时持续预测' : '持续预测'}</h3>{activeForecasts.map(forecast => <ForecastRecord key={forecast.key} {...{ forecast, reference, sources, onAskAssistant }} />)}</section>}
     {mode !== 'view' && (concludedForecasts.length > 0 || reviews.length > 0 || lessons.length > 0) && <details className="research-dossier-archive"><summary>预测复盘与研究经验</summary>

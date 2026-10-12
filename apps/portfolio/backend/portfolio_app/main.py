@@ -89,8 +89,9 @@ if settings.research_enabled:
 
 
 @app.get("/api/capabilities")
-def capabilities() -> dict[str, bool]:
-    return {"research_enabled": settings.research_enabled}
+def capabilities() -> dict:
+    from studio_runtime.model_work import model_work_status
+    return {"research_enabled": settings.research_enabled, "model_work": model_work_status()}
 
 
 @app.get("/")

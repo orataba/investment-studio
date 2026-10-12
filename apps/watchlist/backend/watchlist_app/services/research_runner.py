@@ -2,6 +2,7 @@
 import json
 import logging
 from studio_runtime import operation
+from studio_runtime.model_work import ModelWorkPaused, model_work_status, require_model_work
 from studio_runtime.processes import stop_process_group as _stop_process_group
 import os
 from pathlib import Path
@@ -58,12 +59,9 @@ def _wait_harness(process, *, cancellation=None, accepted=None, timeout=1800):
     """Own the process group until completion, including local polling failures."""
     cleanup_started = False
     try:
-        if cancellation is None:
-            reply, errors = process.communicate(timeout=timeout)
-            return reply, errors, process.returncode
         deadline = time.monotonic() + timeout
         while True:
-            if cancellation.is_set():
+            if model_work_status()["paused"] or (cancellation is not None and cancellation.is_set()):
                 raise ResearchExecutionInterrupted()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -84,7 +82,7 @@ def _wait_harness(process, *, cancellation=None, accepted=None, timeout=1800):
                     continue
             # A stop can arrive during a result read, acceptance check or cleanup.
             # Both completion paths retain the worker's lease-recovery boundary.
-            if cancellation.is_set():
+            if model_work_status()["paused"] or (cancellation is not None and cancellation.is_set()):
                 raise ResearchExecutionInterrupted()
             return reply, errors, returncode
     except BaseException:
@@ -192,10 +190,12 @@ def queue_retry(session, run, *, now=None, manual=False, recheck_review=False):
     """
     session.refresh(run, with_for_update=True)
     context = dict(run.context_json or {})
-    if run.status != "failed" or not (context.get("sector_run") or context.get("risk_run")):
+    if run.status not in ({"failed", "paused"} if manual else {"failed"}) or not (context.get("sector_run") or context.get("risk_run")):
         return False
     from watchlist_app.services.research_access import require_entry_access, require_portfolio, require_team_write
     require_entry_access(session, run)
+    from watchlist_app.services.research_policy import require_run_policy
+    require_run_policy(session, run)
     principal = current_principal()
     if not same_research_initiator(context, principal):
         return False  # Recovery never adopts another person's original task.
@@ -251,6 +251,8 @@ def queue_retry(session, run, *, now=None, manual=False, recheck_review=False):
 
 
 def harness_available():
+    if model_work_status()["paused"]:
+        return False
     secret_root = Path(os.environ.get("INVESTMENT_STUDIO_SECRET_ROOT", str(Path.home() / ".config/orataba/secrets/investment-studio")))
     env_file = Path(os.environ.get("INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ENV_FILE", str(secret_root / "portfolio-copilot.env")))
     node = shutil.which("node")
@@ -297,8 +299,8 @@ def run_analysis(run_id: str, token: str | None = None, issuer=None, *, attempt:
             with operation("watchlist_research", run_id=run_id):
                 _run_analysis(run_id, execution_authorization=execution_authorization, attempt=attempt,
                               cancellation=cancellation)
-    except ResearchExecutionInterrupted:
-        raise
+    except (ResearchExecutionInterrupted, ModelWorkPaused):
+        raise ResearchExecutionInterrupted()
     except (IdentityError, HTTPException) as error:
         _fail_authorization(run_id, error, attempt=attempt)
     except Exception as error:
@@ -359,6 +361,21 @@ def authorize_run(principal, run_id, *, attempt=None, ttl_seconds=3600):
 
 
 def _run_analysis(run_id: str, *, execution_authorization=None, attempt=None, cancellation=None):
+    from studio_runtime.provider_usage import capture_provider_usage, merge_provider_usage
+    expected = attempt if attempt is not None else _current_attempt(run_id)
+    def record(summary):
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, run_id, with_for_update=True, populate_existing=True)
+            if run is not None and (run.context_json.get("execution") or {}).get("attempt", 0) == expected:
+                run.context_json = {**run.context_json, "provider_usage": merge_provider_usage(
+                    run.context_json.get("provider_usage"), summary)}
+                session.commit()
+    with capture_provider_usage(record, app="watchlist", run_id=run_id, attempt=expected) as usage:
+        return _execute_analysis(run_id, execution_authorization=execution_authorization,
+            attempt=attempt, cancellation=cancellation, usage=usage)
+
+
+def _execute_analysis(run_id: str, *, execution_authorization=None, attempt=None, cancellation=None, usage):
     if cancellation is not None and cancellation.is_set():
         raise ResearchExecutionInterrupted()
     with get_session_factory()() as session:
@@ -367,6 +384,8 @@ def _run_analysis(run_id: str, *, execution_authorization=None, attempt=None, ca
             return
         from watchlist_app.services.research_access import require_entry_access
         require_entry_access(session, run)
+        from watchlist_app.services.research_policy import require_run_policy
+        require_run_policy(session, run)
         # Resolve the same reserved number for internal callers as for an
         # explicitly dispatched claim before changing queued -> running.
         attempt = run_attempt(run)
@@ -433,8 +452,13 @@ def _run_analysis(run_id: str, *, execution_authorization=None, attempt=None, ca
                 "research_result": None, "research_publication": {"status": "not_requested"}}, ensure_ascii=False), "", 0
         else:
             def launch():
+                require_model_work()
+                with get_session_factory()() as policy_session:
+                    from watchlist_app.services.research_policy import require_run_policy, run_policy_projection
+                    require_run_policy(policy_session, run_policy_projection(policy_session, run_id))
                 return subprocess.Popen(["/bin/bash", str(SCRIPT), run_id, *mode], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
-                    env={**os.environ, "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN": current_principal().credential,
+                    env={**os.environ, **usage.environment("review" if resume_review else "generation"),
+                     "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN": current_principal().credential,
                      "INVESTMENT_STUDIO_RESEARCH_GENERATION_ONLY": "1" if not risk_run and not resume_review else "0",
                      "INVESTMENT_STUDIO_RESEARCH_RESUME_GENERATION": "1" if not risk_run and prepared and not resume_review else "0",
                      "INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW": "1" if resume_review else "0"})
@@ -506,8 +530,8 @@ def _run_analysis(run_id: str, *, execution_authorization=None, attempt=None, ca
         elif reply.strip() or risk_run:
             outcome = reply.strip()
             completed = True
-    except ResearchExecutionInterrupted:
-        raise
+    except (ResearchExecutionInterrupted, ModelWorkPaused):
+        raise ResearchExecutionInterrupted()
     except subprocess.TimeoutExpired:
         outcome = "研究助手本次运行超时；可以缩小问题范围后重试。"
         runtime_error = {"type": "TimeoutExpired", "summary": outcome, "exit_code": process.returncode,
@@ -533,6 +557,10 @@ def _run_analysis(run_id: str, *, execution_authorization=None, attempt=None, ca
         run = session.get(ResearchEntry, run_id, with_for_update=True, populate_existing=True)
         if run and run.status == "running":
             require_entry_access(session, run)
+            # A pause or investment-status change may arrive after the final process read.
+            # Recheck before any completed answer or shared result is published.
+            from watchlist_app.services.research_policy import require_run_policy
+            require_run_policy(session, run)
             if runtime_error:
                 # Generation may save its bound draft just before its deadline.
                 # Recover that review without another investigation even when
@@ -564,6 +592,11 @@ def _run_analysis(run_id: str, *, execution_authorization=None, attempt=None, ca
                     result = document.get("research_result")
                     if result is not None:
                         try:
+                            from watchlist_app.services.sector_research import ReviewResult
+                            from watchlist_app.services.research_policy import require_instrument_research
+                            proposed = ReviewResult.model_validate(result)
+                            if proposed.reviews:
+                                require_instrument_research(session, [review.instrument_id for review in proposed.reviews])
                             run.context_json = {**run.context_json, "execution": {
                                 **run.context_json.get("execution", {}), "stage": "publication"}}
                             apply_result(session, run, json.dumps(result, ensure_ascii=False))

@@ -111,7 +111,7 @@ function FinancialEvidence({ company }: { company: Record<string, unknown> }) {
   </div>
 }
 
-function SavedEvidence({ source, instrumentId, versionId }: { source: NotebookSource; instrumentId: string; versionId?: string }) {
+export function SavedEvidence({ source, instrumentId, versionId }: { source: NotebookSource; instrumentId: string; versionId?: string }) {
   const [expanded, setExpanded] = useState(false)
   const [saved, setSaved] = useState<SavedResearchSource | null>(null)
   const [error, setError] = useState('')

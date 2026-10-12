@@ -226,3 +226,14 @@ def test_accepted_timeout_cleanup_preserves_cancellation_and_stops_once(monkeypa
     with pytest.raises(runner.ResearchExecutionInterrupted):
         runner._wait_harness(process, cancellation=cancellation, accepted=accepted)
     assert stopped == [process]
+
+
+@pytest.fixture(autouse=True)
+def admit_offline_runner_fixtures(monkeypatch):
+    # These synthetic runs test leases, credentials and process failure handling.
+    # Real Invested admission (including these execution boundaries) is exercised
+    # separately by test_research_policy with registry/status-backed assets.
+    from watchlist_app.services import research_policy
+    from studio_runtime.model_work import require_model_work
+    monkeypatch.setattr(research_policy, "require_run_policy", lambda *a, **kw: require_model_work())
+    monkeypatch.setattr(research_policy, "require_instrument_research", lambda *a, **kw: require_model_work())

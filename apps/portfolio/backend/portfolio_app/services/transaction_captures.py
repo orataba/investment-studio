@@ -603,7 +603,10 @@ def finish_transaction_capture_analysis_run(
     attempt: int,
     succeeded: bool,
     error: str | None = None,
+    paused: bool = False,
 ) -> bool:
+    if succeeded and paused:
+        raise ValueError("An analysis attempt cannot both succeed and pause.")
     session_factory = get_session_factory()
     with session_factory() as session:
         batch = session.scalar(
@@ -614,12 +617,17 @@ def finish_transaction_capture_analysis_run(
             )
             .with_for_update()
         )
-        if batch is None or batch.analysis_run_attempt != attempt:
+        if (
+            batch is None
+            or batch.analysis_run_attempt != attempt
+            or batch.analysis_run_status not in {"queued", "running"}
+        ):
             return False
         timestamp = _utc_timestamp()
-        batch.analysis_run_status = "succeeded" if succeeded else "failed"
+        batch.analysis_run_status = "paused" if paused else "succeeded" if succeeded else "failed"
         batch.analysis_run_completed_at = timestamp
-        batch.analysis_run_error = None if succeeded else str(error or "Analysis failed.")[:1_000]
+        default_error = "研究已暂停，已有草稿与截图保留。" if paused else "Analysis failed."
+        batch.analysis_run_error = None if succeeded else str(error or default_error)[:1_000]
         batch.updated_at = timestamp
         session.commit()
         return True

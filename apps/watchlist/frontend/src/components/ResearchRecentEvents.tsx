@@ -5,17 +5,17 @@ import ResearchEventCard from './ResearchEventCard'
 import ResearchLoading from '../../../../../packages/ui/src/WorkspaceSkeleton'
 import InfoHint from '../../../../../packages/ui/src/InfoHint'
 
-export default function ResearchRecentEvents({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, themeNames = {} }: {
-  instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; themeNames?: Record<string, string>
+export default function ResearchRecentEvents({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, themeNames = {}, initialScope = 'recent', hideWhenEmpty = false }: {
+  instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; themeNames?: Record<string, string>; initialScope?: ResearchEventScope; hideWhenEmpty?: boolean
 }) {
-  const [scope, setScope] = useState<ResearchEventScope>('recent')
+  const [scope, setScope] = useState<ResearchEventScope>(initialScope)
   const [offset, setOffset] = useState(0)
   const [refresh, setRefresh] = useState(0)
   const [snapshot, setSnapshot] = useState<{ instrumentId: string; scope: ResearchEventScope; data: ResearchEventsResponse } | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const data = snapshot?.instrumentId === instrumentId && snapshot.scope === scope ? snapshot.data : null
-  useEffect(() => { setScope('recent'); setOffset(0) }, [instrumentId])
+  useEffect(() => { setScope(initialScope); setOffset(0) }, [instrumentId, initialScope])
   useEffect(() => { setOffset(0) }, [reviewRunId, reviewStatus])
   useEffect(() => {
     const updated = (event: Event) => { if ((event as CustomEvent<string[]>).detail.includes(instrumentId)) { setOffset(0); setRefresh(value => value + 1) } }
@@ -41,8 +41,9 @@ export default function ResearchRecentEvents({ instrumentId, reviewRunId, review
   const lateCount = data?.late_arrival_count ?? data?.late_arrivals.length ?? 0
   const groups = new Map<string, ResearchUpdate[]>()
   for (const update of data?.events || []) { const day = update.timeline_date || '日期待核实'; groups.set(day, [...(groups.get(day) || []), update]) }
-  return <section className="research-recent-events" aria-label="近期重要进展" aria-busy={loading}>
-    <div className="research-dossier-section-heading"><div className="research-section-title"><h2>近期重要进展</h2><InfoHint label="重要进展范围" detail="近 7 天的重要事件、基本面变化与市场信号，按信息日期排列；持续跟进及补录记录单独保留。" /></div><div className="research-event-filters" aria-label="事件范围">
+  if (hideWhenEmpty && data && !data.events.length && !error && !loading && scope === initialScope) return null
+  return <section className="research-recent-events" aria-label="近期值得关注" aria-busy={loading}>
+    <div className="research-dossier-section-heading"><div className="research-section-title"><h2>近期值得关注</h2><InfoHint label="重要进展范围" detail="近期已记录的重要事项；持续跟进不受日期限制，历史按需查阅。" /></div><div className="research-event-filters" aria-label="事件范围">
       {([['recent', '近 7 天'], ['watch', '仍在跟进'], ['history', '历史']] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={scope === value} onClick={() => { setScope(value); setOffset(0) }}>{label}</button>)}
     </div></div>
     {error && <p role="alert">事件暂时无法读取：{error}{data && '。以下保留上次有效内容。'}</p>}

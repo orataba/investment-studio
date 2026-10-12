@@ -32,6 +32,7 @@ def test_missing_provider_model_channel_is_actionable_without_fallback(monkeypat
 @pytest.mark.parametrize("failure", [subprocess.TimeoutExpired("offline-harness", 1), OSError("pipe read failed")])
 @pytest.mark.parametrize("cleanup_fails", [False, True])
 def test_failed_wait_cleans_group_and_pipes_without_masking_original_failure(monkeypatch, caplog, failure, cleanup_fails):
+    monkeypatch.setattr(runner, "communicate_model_process", lambda process, **kwargs: process.communicate(**kwargs))
     process = SimpleNamespace(returncode=None, stdout=StringIO(), stderr=StringIO())
     stopped = []
 

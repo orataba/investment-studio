@@ -1,3 +1,4 @@
+import { usePortfolioCapabilities } from '../components/PortfolioCapabilitiesProvider'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import ResearchRunStatus from '../../../../../packages/ui/src/ResearchRunStatus'
 import { useSecurityCatalog } from '../lib/useSecurityCatalog'
@@ -452,8 +453,8 @@ function transactionCaptureDisplayStatus(
   if (batch.analysis_run_status === 'queued' || batch.analysis_run_status === 'running') {
     return batch.analysis_run_status
   }
-  if (batch.analysis_run_status === 'failed') {
-    return 'failed'
+  if (batch.analysis_run_status === 'failed' || batch.analysis_run_status === 'paused') {
+    return batch.analysis_run_status
   }
   return batch.status
 }
@@ -466,6 +467,7 @@ function transactionCaptureStatusLabel(
   if (batch.analysis_run_status === 'queued') return 'Queued'
   if (batch.analysis_run_status === 'running') return 'Analyzing'
   if (batch.analysis_run_status === 'failed') return 'Analysis failed'
+  if (batch.analysis_run_status === 'paused') return 'Paused'
   if (batch.status === 'review_required') {
     return hasTransactionCaptureImport(batch.latest_analysis) ? 'Needs review' : 'No draft'
   }
@@ -1080,6 +1082,7 @@ function resolvePositionLotImpactKinds(
 }
 
 export default function TransactionsPage() {
+  const { model_work: modelWork } = usePortfolioCapabilities()
   const canEditPortfolio = Boolean(usePortfolioAccess()?.can_edit)
   const { portfolioId = '' } = useParams()
   const { language, t } = useLanguage()
@@ -2844,7 +2847,7 @@ export default function TransactionsPage() {
   }
 
   async function handleTransactionCaptures() {
-    if (!canEditPortfolio) return
+    if (!canEditPortfolio || modelWork?.paused) return
     const files = captureDraftFiles.map((draft) => draft.file)
     if (!files.length || uploadingCapture || !portfolioId) {
       return
@@ -2908,7 +2911,7 @@ export default function TransactionsPage() {
   }
 
   async function handleScreenshotAnalysis(batch: PortfolioTransactionCaptureBatchRecord) {
-    if (!canEditPortfolio) return
+    if (!canEditPortfolio || modelWork?.paused) return
     if (
       !portfolioId
       || startingCaptureBatchId
@@ -5170,7 +5173,7 @@ export default function TransactionsPage() {
               </button>
             </div>
 
-            <p className="transaction-capture-run-note">Closing this panel does not cancel analysis or record transactions. Reopen to continue reviewing the same batch; recording requires a separate confirmation.</p>
+            <>{modelWork?.paused && <p className="transaction-capture-run-note" role="status">{modelWork.message || 'Research is paused. Saved drafts remain available for review.'}</p>}<p className="transaction-capture-run-note">Closing this panel does not cancel analysis or record transactions. Reopen to continue reviewing the same batch; recording requires a separate confirmation.</p></>
             {captureAnalysisActiveKey && <button type="button" className="toolbar-link" onClick={() => openCaptureAssistant('history', captureAnalysisActiveKey.split('|')[0])}>Continue running analysis</button>}
             <div className="transaction-capture-assistant-body">
               {captureAssistantView === 'new' ? (
@@ -5283,10 +5286,10 @@ export default function TransactionsPage() {
                     <button
                       type="button"
                       className="button-primary"
-                      disabled={!captureDraftFiles.length || uploadingCapture}
+                      disabled={!captureDraftFiles.length || uploadingCapture || modelWork?.paused}
                       onClick={() => void handleTransactionCaptures()}
                     >
-                      {uploadingCapture ? 'Starting analysis…' : 'Analyze screenshots'}
+                      {modelWork?.paused ? 'Research paused' : uploadingCapture ? 'Starting analysis…' : 'Analyze screenshots'}
                     </button>
                   </footer>
                 </div>
@@ -5348,9 +5351,12 @@ export default function TransactionsPage() {
                             runId={selectedCaptureBatch.batch_id}
                             status={selectedCaptureBatch.analysis_run_status}
                             completedAt={selectedCaptureBatch.analysis_run_completed_at}
-                            execution={{ attempt: selectedCaptureBatch.analysis_run_attempt, started_at: selectedCaptureBatch.analysis_run_started_at || undefined, stage: selectedCaptureBatch.analysis_run_status === 'queued' ? 'queued' : 'generation' }}
+                            execution={{ attempt: selectedCaptureBatch.analysis_run_attempt, started_at: selectedCaptureBatch.analysis_run_started_at || undefined, stage: selectedCaptureBatch.analysis_run_status === 'paused' ? 'paused' : selectedCaptureBatch.analysis_run_status === 'queued' ? 'queued' : 'generation' }}
                             timeoutSeconds={selectedCaptureBatch.analysis_timeout_seconds ?? null}
                           />}
+                          {selectedCaptureBatch.analysis_run_status === 'paused' && selectedCaptureBatch.latest_analysis && <p role="status">
+                            {selectedCaptureBatch.analysis_run_error || 'Research is paused. Saved drafts and evidence remain available; this task will not resume automatically.'}
+                          </p>}
                           <div className="transaction-capture-evidence-grid">
                             {selectedCaptureBatch.captures.map((capture) => (
                               <figure key={capture.capture_id}>
@@ -6564,7 +6570,7 @@ export default function TransactionsPage() {
                                     <button
                                       type="button"
                                       className="toolbar-link"
-                                      disabled={startingCaptureBatchId === selectedCaptureBatch.batch_id}
+                                      disabled={startingCaptureBatchId === selectedCaptureBatch.batch_id || modelWork?.paused}
                                       onClick={() => void handleScreenshotAnalysis(selectedCaptureBatch)}
                                     >
                                       Analyze again
@@ -6581,12 +6587,16 @@ export default function TransactionsPage() {
                                   ? 'Waiting to start.'
                                   : selectedCaptureBatch.analysis_run_status === 'running'
                                     ? 'Reading and checking the screenshots.'
+                                    : selectedCaptureBatch.analysis_run_status === 'paused'
+                                      ? 'Research paused'
                                     : selectedCaptureBatch.analysis_run_status === 'failed'
                                       ? 'The last analysis did not finish.'
                                       : 'Screenshots are ready to analyze.'}
                               </strong>
                               <p>
-                                {selectedCaptureBatch.analysis_run_status === 'failed'
+                                {selectedCaptureBatch.analysis_run_status === 'paused'
+                                  ? selectedCaptureBatch.analysis_run_error || 'Research is paused. Saved drafts and evidence remain available; this task will not resume automatically.'
+                                : selectedCaptureBatch.analysis_run_status === 'failed'
                                   ? selectedCaptureBatch.analysis_run_error
                                     ?? 'Try the analysis again.'
                                   : 'AI will create an editable draft. It cannot record transactions by itself.'}
@@ -6599,7 +6609,7 @@ export default function TransactionsPage() {
                                     <button
                                       type="button"
                                       className="button-primary"
-                                      disabled={startingCaptureBatchId === selectedCaptureBatch.batch_id}
+                                      disabled={startingCaptureBatchId === selectedCaptureBatch.batch_id || modelWork?.paused}
                                       onClick={() => void handleScreenshotAnalysis(selectedCaptureBatch)}
                                     >
                                       {startingCaptureBatchId === selectedCaptureBatch.batch_id

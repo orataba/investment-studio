@@ -22,7 +22,10 @@ def test_research_deployment_boundary(monkeypatch, enabled):
     from tests.conftest import authorize_fixture_client
     authorize_fixture_client(main_module.app)
     with TestClient(main_module.app) as client:
-        assert client.get("/api/capabilities").json() == {"research_enabled": enabled}
+        assert client.get("/api/capabilities").json() == {
+            "research_enabled": enabled,
+            "model_work": {"paused": False, "code": None, "message": None},
+        }
         assert client.get("/api/portfolios").status_code == 200
         summary = client.get("/api/workspace/summary?portfolio_id=investment-studio")
         assert summary.status_code == 503

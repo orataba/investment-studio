@@ -77,3 +77,4 @@ from watchlist_app.db.models.workbench import ResearchTopic, ResearchEntry, Risk
 from watchlist_app.db.models.research_execution import ResearchExecution
 
 from watchlist_app.db.models.research_run_evidence import ResearchRunEvidence
+from watchlist_app.db.models.research_monitor import ResearchMonitorState

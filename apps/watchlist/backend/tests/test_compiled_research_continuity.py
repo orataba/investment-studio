@@ -46,8 +46,9 @@ def test_compiled_research_and_exact_evidence_reach_next_automatic_round(client,
         bound = run.context_json["research_dossiers"][0]
         assert bound["notebook"]["version_id"] == published["notebook"]["version_id"]
         assert bound["notebook"]["investment_view"]["direction"] == revision["review"]["research"]["investment_view"]["direction"]
-        assert bound["themes"][0]["updates"] == theme["updates"]
-        assert len(bound["themes"][0]["updates"]) >= 2
+        assert bound["themes"][0]["source_version_id"] == theme["source_version_id"]
+        assert bound["themes"][0]["synthesis"] == theme["synthesis"]
+        assert "updates" not in bound["themes"][0] and "versions" not in bound["themes"][0]
         assert bound["review_agenda"]["focus_themes"][0]["theme_id"] == theme["theme_id"]
         assert bound["pm_views"] == []
         # A repeated instrument read must keep the same bound research snapshot.

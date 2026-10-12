@@ -37,7 +37,9 @@ def test_assistant_retains_originating_page_and_reads_prepared_research(client, 
     page = {"surface": "instrument", "instrument_id": "sxv264", "tab": "events", "currency": "CNY", "start": "2026-08-01", "end": "2026-09-06"}
     run = start_analysis(client, monkeypatch, page_context=page)
     assert run["context_json"]["page_context"] == page
-    evidence = client.post(f"/api/research/runs/{run['entry_id']}/tools", json={"tool": "instruments", "instrument_ids": ["sxv264"]}).json()["result"]["assets"][0]
+    response = client.post(f"/api/research/runs/{run['entry_id']}/tools", json={"tool": "instruments", "instrument_ids": ["sxv264"]})
+    assert response.status_code == 200, response.text
+    evidence = response.json()["result"]["assets"][0]
     assert evidence["research_tracking"]["run_id"] == "prepared-research"
     assert evidence["research_tracking"]["summary"] == "已有结论"
     assert "不是本轮最新核实" in evidence["research_tracking_note"]
@@ -147,7 +149,9 @@ def test_daily_notebook_material_and_assistant_share_the_same_instrument_evidenc
     assert saved_source.json()['body'] == material['body']
     conversation = start_analysis(client, monkeypatch)
     path = f"/api/research/runs/{conversation['entry_id']}/tools"
-    found = client.post(path, json={'tool': 'dossier', 'instrument_ids': ['sxv264']}).json()['result']
+    response = client.post(path, json={'tool': 'dossier', 'instrument_ids': ['sxv264']})
+    assert response.status_code == 200, response.text
+    found = response.json()['result']
     assert found['notebook']['questions'][0]['key'] == 'exposure'
     found = client.post(path, json={'tool': 'dossier', 'instrument_ids': ['sxv264'], 'source_id': sid}).json()['result']
     assert found['body'] == material['body']

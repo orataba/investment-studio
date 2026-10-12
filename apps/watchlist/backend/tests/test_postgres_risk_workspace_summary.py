@@ -23,6 +23,7 @@ def test_home_alerts_project_large_nul_evidence_without_reading_private_run(post
     with get_session_factory()() as session:
         seed_alerts(session, postgres_watchlist_env["instrument_id"])
     def deserialize(value):
+        value = value.decode("utf-8") if isinstance(value, bytes) else value
         assert "UNSELECTED" not in value and "DO_NOT_READ_PRIVATE" not in value
         return json.loads(value)
     engine = create_engine(get_engine().url, json_deserializer=deserialize,
@@ -122,5 +123,37 @@ def test_risk_summary_projects_evidence_and_preserves_nul_and_current_authority(
             detail = risk_case_detail('projected-risk', updated_at=case['updated_at'], session=session)
             assert detail['history_json'] == history
             assert detail['evidence_json']['sources'] == evidence['sources']
+    finally:
+        engine.dispose()
+
+
+def test_postgres_home_keeps_assessed_version_while_latest_revision_is_pending(postgres_watchlist_env):
+    from studio_identity import Principal, principal_context
+    from watchlist_app.services.risk_alerts import important_risk_alerts
+    from watchlist_app.services.risk_case_state import advance_event_risk
+    from .test_risk_alerts import seed_alerts
+    iid = postgres_watchlist_env["instrument_id"]
+    with get_session_factory()() as session:
+        seed_alerts(session, iid)
+        case = session.get(RiskCase, "major")
+        snapshot = {**case.evidence_json, "title": "尚未核实的新正文", "event_version_id": "new-version"}
+        case.evidence_json = {**snapshot, **advance_event_risk(case, snapshot, material_change=True,
+            sources=[{"source_type": "public_source"}])}
+        case.title = snapshot["title"]
+        session.commit()
+    def deserialize(value):
+        value = value.decode("utf-8") if isinstance(value, bytes) else value
+        assert "UNSELECTED" not in value and "DO_NOT_READ_PRIVATE" not in value
+        return json.loads(value)
+    engine = create_engine(get_engine().url, json_deserializer=deserialize,
+        connect_args={"options": "-c search_path=watchlist,instrument_data,public -c default_transaction_read_only=on"})
+    try:
+        with principal_context(Principal("reader", "Reader", "default")), Session(engine) as session:
+            result = important_risk_alerts(session, limit=10)
+            alert = next(row for row in result["alerts"] if row["case_id"] == "major")
+            assert alert["title"] == "major" and alert["event_version_id"] == "current-version"
+            assert alert["alert_state"] == "assessment_pending"
+            assert alert["pending_revision"]["event_version_id"] == "new-version"
+            assert not session.identity_map
     finally:
         engine.dispose()

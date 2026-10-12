@@ -56,6 +56,17 @@ export type RiskCaseHistory = {
   after?: { status: string; trigger_active: boolean; risk_assessment?: unknown }
   risk_assessment?: RiskAssessment
 }
+export type RiskEvidenceSource = { source_id?: string; document_id?: string; version_id?: string; url?: string | null; title?: string | null; published_at?: string | null }
+export type RiskAssessmentSnapshot = {
+  event_version_id: string | null; title: string | null; body?: string | null
+  impact_level: string | null; urgency: string | null; confidence: string | null
+  checked_at: string | null; source_run_id: string | null
+  status: 'active' | 'resolved' | 'dismissed'; reason: string | null
+  reviewed_at: string | null; run_id: string | null; source_ids?: string[]; sources?: RiskEvidenceSource[]
+}
+export type RiskPendingRevision = Omit<RiskAssessmentSnapshot, 'status' | 'reason' | 'reviewed_at' | 'run_id'> & {
+  status: 'pending'; submitted_at: string | null; urgent_review_required: boolean
+}
 export type RiskCase = {
   case_id: string
   instrument_id: string
@@ -99,6 +110,17 @@ export function riskPendingState(assessment: unknown, eventVersion: unknown): 'r
     && Number.isFinite(reviewedAt)
     && (receipt.submitted_at == null || (Number.isFinite(submittedAt) && reviewedAt >= submittedAt))
     ? 'verification' : 'review'
+}
+
+/** Risk-case projections explicitly distinguish no referral from a later NAV version. */
+export function riskCasePendingState(evidence: Record<string, unknown>): 'review' | 'verification' | null {
+  if ('pending_revision' in evidence) {
+    if (evidence.pending_revision === null) return null
+    const revision = evidence.pending_revision as RiskPendingRevision | undefined
+    return riskPendingState(evidence.risk_assessment, revision?.event_version_id) || 'review'
+  }
+  // Historical case records without the projection retain their original contract.
+  return riskPendingState(evidence.risk_assessment, evidence.event_version_id)
 }
 
 export type RiskRequest = <T>(path: string, init?: RequestInit) => Promise<T>

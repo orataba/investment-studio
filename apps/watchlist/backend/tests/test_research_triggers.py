@@ -30,7 +30,7 @@ def capture(store, body, *, observed=1, received=1, url="https://example.com/gol
 
 def session(cases=(), calendar="XNYS"):
     return SimpleNamespace(scalars=lambda statement: (row for row in cases),
-        execute=lambda statement: (row for row in ()),
+        execute=lambda statement: ((row, len(row.history_json)) for row in cases if row.signal.startswith("sector:")) if statement.column_descriptions[0].get("entity") is triggers.RiskCase else (row for row in ()),
         get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="sqlite")),
         get=lambda model, iid: SimpleNamespace(instrument_type="etf", source_settings_json={"market_calendar": calendar}, exchange_code=calendar))
 
@@ -139,7 +139,30 @@ def test_unrelated_later_fetch_cutoff_does_not_consume_an_unread_correction(stor
     result = triggers.research_trigger(session(), "gold", prior, now=stamp(5))
     assert result["reasons"][0]["sources"][0]["previous_source_id"] == first["source_id"]
     prior["market_text_sources"].append({"source_id": latest["source_id"]})
-    assert triggers.research_trigger(session(), "gold", prior, now=stamp(5)) is None
+    # Reading a new version somewhere does not establish that every current
+    # theme/event still depending on the old version has been reassessed.
+    changes = triggers.research_trigger(session(), "gold", prior, now=stamp(5))["reasons"][0]["sources"]
+    assert changes[0]["previous_source_ids"] == [first["source_id"]]
+    followup = {**prior, "incremental_trigger": result}
+    assert triggers.research_trigger(session(), "gold", followup, now=stamp(5)) is None
+
+
+def test_correction_preserves_all_old_dependencies_when_another_theme_already_uses_latest(store):
+    first = capture(store, "Gold original reserve disclosure")
+    second = capture(store, "Gold corrected reserve disclosure", observed=2, received=2)
+    latest = capture(store, "Gold final reserve disclosure", observed=3, received=3)
+    changed = triggers._revised_originals(store,
+        {row["source_id"]: row for row in (first, second, latest)}, None, stamp(4))
+    assert len(changed) == 1 and changed[0]["source_id"] == latest["source_id"]
+    assert changed[0]["previous_source_ids"] == sorted([first["source_id"], second["source_id"]])
+    from watchlist_app.services.research_working_set import build_working_set
+    working_set = build_working_set({"instrument_id": "gold", "themes": [
+        {"theme_id": "a", "source_version_id": "a:1", "status": "active", "priority": "important", "source_ids": [first["source_id"]]},
+        {"theme_id": "b", "source_version_id": "b:1", "status": "active", "priority": "important", "source_ids": [second["source_id"]]},
+        {"theme_id": "c", "source_version_id": "c:1", "status": "active", "priority": "important", "source_ids": [latest["source_id"]]},
+    ], "notebook": {}}, [], {"cutoff": stamp(4).isoformat(), "scheduled": True, "last_successful_review_cutoff": stamp(2).isoformat(),
+        "incremental_trigger": {"gold": {"reasons": [{"kind": "new_research_sources", "sources": changed}]}}})
+    assert set(working_set["affected_theme_ids"]) == {"a", "b"}
 
 
 @pytest.mark.parametrize("correction", [{"title": "Correction notice"}, {"published_at": "2019-01-01"},
@@ -325,7 +348,7 @@ def test_scheduled_run_reopens_for_same_day_source_and_does_not_retry_consumed_t
         assert saved["reasons"][0]["sources"][0]["source_id"] == source["source_id"]
         same, created = service.begin_run(database, ["trigger-gold"], scheduled=True)
         assert not created and same.entry_id == second.entry_id
-        # A failed attempt retains the consumed cursor. It must not schedule forever.
+        # A failed attempt retains pending work but is not scheduled forever.
         second.status = "failed"
         second.created_at = Clock.current
         database.commit()
@@ -348,7 +371,7 @@ def test_scheduled_run_reopens_for_same_day_source_and_does_not_retry_consumed_t
         following, created = service.begin_run(database, ["trigger-gold"], scheduled=True)
         assert created and following.entry_id != manual.entry_id
         sources = following.context_json["incremental_trigger"]["trigger-gold"]["reasons"][0]["sources"]
-        assert [item["source_id"] for item in sources] == [new_source["source_id"]]
+        assert {item["source_id"] for item in sources} == {source["source_id"], new_source["source_id"]}
         assert following.context_json["incremental_trigger"]["trigger-gold"]["coverage_cursor"]["market_queries"][0]["cutoff"] == stamp(3, 12).isoformat()
 
 

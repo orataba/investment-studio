@@ -1,3 +1,4 @@
+import type { ModelWorkStatus } from '../../../../../packages/ui/src/modelWork'
 import type { ConcentrationSettingsInput } from './concentrationApi'
 import type {
   InstrumentCore,
@@ -90,6 +91,7 @@ export type WorkspaceSection = {
 
 export type PortfolioCapabilities = {
   research_enabled: boolean
+  model_work?: ModelWorkStatus
 }
 
 export type TaxonomyAssignmentScope = 'instrument'
@@ -3090,7 +3092,7 @@ export type PortfolioTransactionCaptureBatchRecord = {
   status: 'ready' | 'review_required'
   capture_count: number
   latest_analysis_revision: number
-  analysis_run_status: 'idle' | 'queued' | 'running' | 'succeeded' | 'failed'
+  analysis_run_status: 'idle' | 'queued' | 'running' | 'succeeded' | 'failed' | 'paused'
   analysis_run_attempt: number
   analysis_timeout_seconds?: number
   analysis_run_started_at?: string | null

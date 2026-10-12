@@ -207,9 +207,10 @@ def test_chat_runner_keeps_answer_and_shared_publication_outcome_independent(cli
     class CompletedProcess:
         returncode = 0
         def __init__(self, review):
+            self.args = ["offline-harness"]
             self.review = review
         def communicate(self, timeout):
-            assert timeout == 1800
+            assert 0 < timeout <= 2
             if not self.review:
                 with get_session_factory()() as session:
                     run = session.get(ResearchEntry, "chat-run")
@@ -258,6 +259,7 @@ def test_chat_runner_retains_answer_when_independent_reviewer_declines_publicati
     class CompletedProcess:
         returncode = 0
         def __init__(self, review):
+            self.args = ["offline-harness"]
             self.review = review
         def communicate(self, timeout):
             if not self.review:
@@ -300,6 +302,7 @@ def test_unexpected_publication_failure_rolls_back_and_finishes_the_run(client, 
     class CompletedProcess:
         returncode = 0
         def __init__(self, review):
+            self.args = ["offline-harness"]
             self.review = review
         def communicate(self, timeout):
             if surface == "conversation" and not self.review:
@@ -419,9 +422,10 @@ def test_sector_review_has_its_own_deadline_over_the_saved_draft(client, monkeyp
     class Process:
         returncode = 0
         def __init__(self, review):
+            self.args = ["offline-harness"]
             self.review = review
         def communicate(self, timeout):
-            assert timeout == 1800
+            assert 0 < timeout <= 2
             if not self.review:
                 with get_session_factory()() as session:
                     run = session.get(ResearchEntry, "stages")
@@ -441,6 +445,9 @@ def test_sector_review_has_its_own_deadline_over_the_saved_draft(client, monkeyp
         assert run.context_json["submitted_draft"] == json.loads(result)
         run.status = "completed"
     monkeypatch.setattr(sector_research, "apply_result", publish)
+    clock = iter([0, 1, 1801, 1802, 3603])
+    from types import SimpleNamespace
+    monkeypatch.setattr(runner, "time", SimpleNamespace(monotonic=lambda: next(clock)))
     runner.run_analysis("stages")
     assert calls == [("1", "0"), ("0", "1")]
     with get_session_factory()() as session:
@@ -483,9 +490,10 @@ def test_review_renews_original_issuer_grant_without_reusing_expired_generation_
     class Process:
         returncode = 0
         def __init__(self, review):
+            self.args = ["offline-harness"]
             self.review = review
         def communicate(self, timeout):
-            assert timeout == 1800
+            assert 0 < timeout <= 2
             if not self.review:
                 with get_session_factory()() as session:
                     run = session.get(ResearchEntry, run_id)
@@ -514,3 +522,48 @@ def test_review_renews_original_issuer_grant_without_reusing_expired_generation_
         assert run.status == ("failed" if review_authority_revoked else "completed")
         if review_authority_revoked:
             assert run.context_json["runtime_error"]["status_code"] == 403
+
+
+@pytest.fixture(autouse=True)
+def admit_offline_runner_fixtures(monkeypatch):
+    # These synthetic runs test leases, credentials and process failure handling.
+    # Real Invested admission (including these execution boundaries) is exercised
+    # separately by test_research_policy with registry/status-backed assets.
+    from watchlist_app.services import research_policy
+    from studio_runtime.model_work import require_model_work
+    monkeypatch.setattr(research_policy, "require_run_policy", lambda *a, **kw: require_model_work())
+    monkeypatch.setattr(research_policy, "require_instrument_research", lambda *a, **kw: require_model_work())
+
+
+def test_provider_usage_survives_failed_generation_without_storing_provider_text(client, monkeypatch, tmp_path):
+    from pathlib import Path
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="usage-topic", title="用量"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="usage-run", topic_id="usage-topic", kind="analysis", title="用量",
+            status="queued", context_json={"sector_run": True}))
+        session.commit()
+    monkeypatch.setattr(sector_research, "prepare_run", lambda *_: None)
+    def start(*_args, **kwargs):
+        env = kwargs["env"]
+        common = {"invocation_id": env["INVESTMENT_STUDIO_MODEL_USAGE_INVOCATION"], "session_id": "offline", "turn": 0, "step": 0}
+        path = Path(env["INVESTMENT_STUDIO_MODEL_USAGE_FILE"])
+        path.write_text("\n".join(json.dumps({**common, **row}) for row in (
+            {"kind": "start"}, {"kind": "usage", "tokens": {"uncached_input_tokens": 30,
+                "output_tokens": 10, "cache_read_tokens": 20, "cache_write_tokens": 0}})))
+        class Process:
+            returncode = 1
+            def communicate(self, **_):
+                return "", "private-provider-original"
+        return Process()
+    monkeypatch.setattr(runner.subprocess, "Popen", start)
+    runner.run_analysis("usage-run")
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "usage-run")
+        assert run.status == "failed"
+        usage = run.context_json["provider_usage"]["invocations"][0]
+        assert usage["stage"] == "generation" and usage["status"] == "partial"
+        assert usage["tokens"]["uncached_input_tokens"] == 30
+        assert "private-provider-original" not in json.dumps(run.context_json)
+    assert list((tmp_path / "investment-studio/model-usage").iterdir()) == []

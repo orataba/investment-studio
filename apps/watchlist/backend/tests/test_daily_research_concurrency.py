@@ -1,24 +1,35 @@
 from watchlist_app.services import risk_review_state
+from datetime import UTC, datetime
+from investment_studio_instrument_core.db_models import Instrument
 from threading import Event, Lock, Thread
 from types import SimpleNamespace
 import pytest
 
-from watchlist_app.db.models import InstrumentDetail
+from watchlist_app.db.models import InstrumentAttributeValue, InstrumentDetail
 from watchlist_app.db.models.workbench import ResearchEntry
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services import research_runner, research_workbench, risk_officer, sector_research as service
 
 
 def daily_scope(client, monkeypatch, *, members=6):
-    ids = [f"daily-{number}" for number in range(8)]
+    from watchlist_app.core.settings import get_settings
+    kinds = ["equity", "etf", "index", "public_fund", "private_fund", "crypto"]
+    ids = [f"daily-{number}" for number in range(len(kinds))]
+    monkeypatch.setattr(get_settings(), "research_automatic_enabled", True)
     with get_session_factory()() as session:
-        session.add_all(InstrumentDetail(instrument_id=iid, instrument_type="equity", detail_view_type="equity",
-            instrument_name=iid, is_active=True, metadata_json={}) for iid in ids)
+        for iid, kind in zip(ids, kinds):
+            session.add(Instrument(instrument_id=iid, instrument_name=iid, instrument_type=kind, currency="USD", exchange_code="XNYS" if kind in {"equity", "etf"} else None,
+                quote_selection_policy_json={"total_return": ["adjusted_close"]} if kind in {"equity", "etf"} else {}, source_settings_json={}, lifecycle_state_json={"status": "active"}))
+            session.add(InstrumentDetail(instrument_id=iid, instrument_type=kind, detail_view_type=kind,
+                instrument_name=iid, is_active=True, metadata_json={}))
+        session.flush()
+        session.add_all(InstrumentAttributeValue(instrument_id=iid, attribute_key="coverage_status",
+            value_json="Invested", adopted_at=datetime.now(UTC)) for iid in ids)
         session.commit()
     monkeypatch.setattr(service, "daily_review_groups", lambda session: [[iid] for iid in ids])
     monkeypatch.setattr(service, "_research_market", lambda session, iid: "cn")
-    monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {"portfolios": [{"portfolio_id": "held"}]})
-    monkeypatch.setattr(risk_review_state, "current_scope", lambda session, scope: {"instrument_ids": ids[:members] if scope.get("portfolio_id") == "held" else []})
+    monkeypatch.setattr(research_workbench, "portfolio_options", lambda: pytest.fail("Automatic research must not enumerate portfolios"))
+    monkeypatch.setattr(risk_review_state, "current_scope", lambda session, scope: {"instrument_ids": [scope["instrument_id"]] if scope.get("instrument_id") in ids[:members] else []})
     monkeypatch.setattr(risk_officer, "read_snapshot", lambda *args, **kwargs: pytest.fail("Scheduler must use the lightweight scope directory"))
     return ids
 
@@ -67,7 +78,7 @@ def test_configured_workers_finish_due_instruments_in_fair_order_before_scope_ri
         worker.join(10)
     assert not worker.is_alive()
     assert max(active) == concurrency and sorted(started) == ids
-    assert actions.index("risk") == len(ids)
+    assert actions.index("risk") == len(ids) and actions.count("risk") == len(ids)
 
 
 @pytest.mark.parametrize("concurrency", [1, 4])
@@ -238,7 +249,7 @@ def test_manual_member_finishing_during_other_research_unblocks_scope_risk(clien
     monkeypatch.setattr(risk_officer, "begin_run", lambda session, **scope:
         (calls.append(scope) or SimpleNamespace(entry_id="risk", status="completed"), False))
     service.run_daily_reviews(Event())
-    assert len(calls) == 1 and calls[0]["portfolio_id"] == "held"
+    assert len(calls) == 1 and calls[0]["instrument_id"] == ids[0]
 
 
 def test_same_day_completed_front_candidate_does_not_starve_remaining_work(client, monkeypatch):
@@ -264,9 +275,8 @@ def test_same_day_completed_front_candidate_does_not_starve_remaining_work(clien
 def test_foreign_scope_becomes_ready_after_another_risk_job_completes(client, monkeypatch):
     ids = daily_scope(client, monkeypatch, members=0)
     monkeypatch.setattr(service, 'daily_review_groups', lambda session: [[ids[0]], [ids[1]]])
-    monkeypatch.setattr(research_workbench, 'portfolio_options', lambda: {'portfolios': [{'portfolio_id': 'busy'}, {'portfolio_id': 'ready'}]})
     monkeypatch.setattr(risk_review_state, 'current_scope', lambda session, scope:
-        {'instrument_ids': [ids[0]] if scope.get('portfolio_id') == 'busy' else [ids[1]] if scope.get('portfolio_id') == 'ready' else []})
+        {'instrument_ids': [scope['instrument_id']] if scope.get('instrument_id') in ids[:2] else []})
     with get_session_factory()() as session:
         manual, _ = service.begin_run(session, ids[:1])
         manual.status = 'running'
@@ -276,19 +286,19 @@ def test_foreign_scope_becomes_ready_after_another_risk_job_completes(client, mo
         session.commit()
     calls = []
     def begin_risk(session, **scope):
-        calls.append(scope['portfolio_id'])
-        return SimpleNamespace(entry_id=scope['portfolio_id'], status='queued'), True
+        calls.append(scope['instrument_id'])
+        return SimpleNamespace(entry_id='risk:' + scope['instrument_id'], status='queued'), True
     def analyze(run_id):
         assert run_id != manual_id
-        assert run_id in {'ready', 'busy'}
-        if run_id == 'ready':
+        assert run_id in {'risk:' + iid for iid in ids[:2]}
+        if run_id == 'risk:' + ids[1]:
             with get_session_factory()() as session:
                 session.get(ResearchEntry, manual_id).status = 'completed'
                 session.commit()
     monkeypatch.setattr(risk_officer, 'begin_run', begin_risk)
     monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     service.run_daily_reviews(Event())
-    assert calls == ['ready', 'busy']
+    assert calls == [ids[1], ids[0]]
 
 
 @pytest.mark.parametrize("concurrency", [1, 3])
@@ -320,7 +330,7 @@ def test_real_durable_queue_holds_scheduler_slots_until_execution_finishes(clien
     try:
         wait_count(concurrency)
         # No synchronous run_analysis mock: committed queue entries remain
-        # pending. They must hold all scheduler slots, rather than queue all 8.
+        # pending. They must hold all scheduler slots, rather than queue every eligible instrument.
         time.sleep(0.15)
         assert len(pending()) == concurrency
         with get_session_factory()() as session:

@@ -7,11 +7,12 @@ import pytest
 from sqlalchemy import select
 
 from watchlist_app.api.routes import sector_research as routes
-from watchlist_app.db.models import InstrumentAttributeValue, InstrumentDetail, WatchlistItem
+from watchlist_app.db.models import InstrumentDetail, WatchlistItem
 from watchlist_app.db.models.research import InstrumentResearchProfile
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic, RiskCase
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services import research_runner, research_workbench, sector_research as service
+from .research_policy_fixture import seed_invested_research
 
 
 def seed_instruments(client, monkeypatch):
@@ -51,6 +52,7 @@ def reply(iid, *, summary="存在需跟进的重要变化。", sources=None, the
 
 def test_single_instrument_scope_and_runs_do_not_expand_or_block_sector_daily_checks(client, monkeypatch):
     seed_instruments(client, monkeypatch)
+    seed_invested_research(monkeypatch, ["event-equity", "event-index", "xlk"])
     ids = ["event-equity", "savf63", "sxv264", "fund-us-agg", "event-index"]
     with get_session_factory()() as session:
         names = {iid: session.get(InstrumentDetail, iid).instrument_name for iid in ids}
@@ -99,7 +101,8 @@ def test_prepare_preserves_bond_etf_evidence_and_original_event_survives_latest_
         "holdings": {"data": {"report_period": "2026-03-31", "items": [{"name": "已披露债券", "weight_percent": 8}]},
                      "source_cutoff_at": "2026-04-30T00:00:00+00:00"}}
     calls = []
-    def evidence(session, ids, *, include_dossier=False, as_of=None):
+    def evidence(session, ids, *, include_dossier=False, as_of=None, working_only=False):
+        assert working_only is True
         calls.append(ids)
         return {"assets": [deepcopy(asset)]}
     monkeypatch.setattr(research_workbench, "instrument_evidence", evidence)
@@ -162,6 +165,7 @@ def test_prepare_preserves_bond_etf_evidence_and_original_event_survives_latest_
 
 def test_chat_publishes_explicitly_authorized_research_without_pm_adoption_or_invented_fund_opportunity(client, monkeypatch):
     seed_instruments(client, monkeypatch)
+    seed_invested_research(monkeypatch, ["sxv264"])
     monkeypatch.setattr(research_runner, "harness_available", lambda: True)
     monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: None)
     topic = client.post("/api/research/topics", json={"title": "私募普通对话", "instrument_ids": ["sxv264"]}).json()
@@ -194,15 +198,21 @@ def test_chat_publishes_explicitly_authorized_research_without_pm_adoption_or_in
         ordinary.status, ordinary.body = "draft", "缺少材料，已记录下一步研究任务。"
         profile = session.get(InstrumentResearchProfile, "sxv264")
         assert (profile.thesis, profile.current_view, profile.revision_number) == ("PM原始投资逻辑", "等待更多资料", 1)
+        from watchlist_app.db.models import InstrumentAttributeValue
+        session.add(InstrumentAttributeValue(instrument_id="sxv264", attribute_key="coverage_status",
+            value_json="Exited", adopted_at=datetime.now(UTC)))
         session.commit()
     result = client.get("/api/sector-research", params={"instrument_id": "sxv264"}).json()
     assert result["events"] == [] and result["sectors"][0]["latest_review"]["run_id"] == chat_id
-    assert result["research_enabled"] is True
+    # A saved conversational publication remains readable without making this
+    # non-Invested asset eligible for another shared model run.
+    assert result["research_enabled"] is False
 
 
 @pytest.mark.parametrize("iid", ["savf63", "sxv264"])
 def test_fund_run_starts_while_saved_research_and_dossier_remain_readable(client, monkeypatch, iid):
     seed_instruments(client, monkeypatch)
+    seed_invested_research(monkeypatch, [iid])
     monkeypatch.setattr(routes, "harness_available", lambda: True)
     started = []
     monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: started.append(run_id))
@@ -241,19 +251,14 @@ def test_non_sector_etf_singleton_keeps_its_instrument_sources(client, monkeypat
         assert context["instrument_inputs"][0]["instrument_id"] == "fund-us-agg"
 
 
-def test_daily_research_dispatches_selected_oldest_first_and_does_not_retry_failed_attempts(client, monkeypatch):
+def test_daily_research_orders_invested_assets_but_only_dispatches_new_information(client, monkeypatch):
     from threading import Event
-    from watchlist_app.services import shared_instrument_registry, risk_officer
+    from watchlist_app.services import risk_officer
     seed_instruments(client, monkeypatch)
+    seed_invested_research(monkeypatch, ["xlk", "event-equity", "event-index"])
     monkeypatch.setattr(service, "_research_due", lambda market, now: True)
-    monkeypatch.setattr(shared_instrument_registry, "list_shared_active_instrument_ids",
-        lambda **kwargs: ["xlk", "event-equity", "event-index", "inactive-equity"])
-    monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {"portfolios": []})
     monkeypatch.setattr(risk_officer, "begin_run", lambda session, **scope: (SimpleNamespace(entry_id="risk", status="completed"), False))
     with get_session_factory()() as session:
-        session.add_all(InstrumentAttributeValue(instrument_id=iid, attribute_key="coverage_status", value_json="Invested", adopted_at=datetime.now(UTC))
-            for iid in ["xlk", "event-equity", "event-index"])
-        session.commit()
         prior, _ = service.begin_run(session, ["event-equity"])
         prior.status = "completed"
         prior.context_json = {**prior.context_json, "cutoff": (datetime.now(UTC) - timedelta(days=2)).isoformat()}
@@ -270,9 +275,11 @@ def test_daily_research_dispatches_selected_oldest_first_and_does_not_retry_fail
             session.commit()
     monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     service.run_daily_reviews(Event())
-    assert sorted(calls) == [["event-equity"], ["event-index"], ["xlk"]]
+    # The completed equity has no new material input; scheduling it for a cheap
+    # scan does not authorize another model call merely because a day passed.
+    assert sorted(calls) == [["event-index"], ["xlk"]]
     service.run_daily_reviews(Event())
-    assert len(calls) == 3
+    assert len(calls) == 2
     with get_session_factory()() as session:
         for run in session.scalars(select(ResearchEntry)):
             age = 2 if run.context_json["instrument_ids"] == ["event-equity"] else 1
@@ -280,23 +287,34 @@ def test_daily_research_dispatches_selected_oldest_first_and_does_not_retry_fail
         session.commit()
         assert service.daily_review_groups(session)[0] == ["event-equity"]
     service.run_daily_reviews(Event())
-    assert len(calls) == 6 and sorted(calls[3:]) == [["event-equity"], ["event-index"], ["xlk"]]
+    assert len(calls) == 2
+    from watchlist_app.services.research_themes import ThemeInput, save_theme
+    with get_session_factory()() as session:
+        save_theme(session, "event-equity", ThemeInput(title="新请求的资本开支主题", question="资本开支是否改变融资需求？"))
+        session.commit()
+    service.run_daily_reviews(Event())
+    assert calls[2:] == [["event-equity"]]
 
 
-def test_daily_risk_waits_for_member_research_without_overriding_fair_instrument_order(client, monkeypatch):
+def test_daily_risk_waits_for_invested_research_without_expanding_to_watchlists(client, monkeypatch):
     from threading import Event
     from watchlist_app.core.settings import get_settings
     from watchlist_app.services import risk_officer
     from watchlist_app.db.models import Watchlist
     seed_instruments(client, monkeypatch)
+    seed_invested_research(monkeypatch, ["event-equity", "event-index"])
     monkeypatch.setattr(get_settings(), "research_worker_concurrency", 1)
     with get_session_factory()() as session:
         session.add(Watchlist(watchlist_id="held", name="重点列表", owner_type="team", owner_id="investment-team"))
         session.flush()
         session.add(WatchlistItem(watchlist_id="held", instrument_id="event-index", added_at=datetime.now(UTC)))
+        session.add(RiskCase(case_id="index-referral", instrument_id="event-index", signal="sector:index-change",
+            title="待确认的指数规则风险", status="open", trigger_active=False, evidence_json={
+                "direction": "risk", "risk_assessment": {"status": "pending", "event_version_id": "index-change:1"}}))
         session.commit()
     monkeypatch.setattr(service, "daily_review_groups", lambda session: [["event-equity"], ["event-index"]])
-    monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {"portfolios": []})
+    monkeypatch.setattr(research_workbench, "portfolio_options", lambda:
+        pytest.fail("Invested-asset scheduling must not enumerate portfolios"))
     monkeypatch.setattr(risk_officer, "read_snapshot", lambda *args, **kwargs:
         pytest.fail("Scheduling reads the member directory, not the full risk evidence corpus"))
     calls = []
@@ -304,7 +322,7 @@ def test_daily_risk_waits_for_member_research_without_overriding_fair_instrument
         with get_session_factory()() as session:
             run = session.get(ResearchEntry, run_id)
             if run.context_json.get("risk_run"):
-                assert run.context_json["risk_scope"] == {"watchlist_id": "held"}
+                assert run.context_json["risk_scope"] == {"instrument_id": "event-index"}
                 assert set(run.context_json["research_dates"]) == {"event-index"}
                 member = session.scalar(select(ResearchEntry).where(
                     ResearchEntry.topic_id == "instrument-events:event-index", ResearchEntry.kind == "analysis"))

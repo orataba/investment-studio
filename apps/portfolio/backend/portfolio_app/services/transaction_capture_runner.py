@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from studio_runtime.model_work import ModelWorkPaused, model_work_status, require_model_work, communicate_model_process
 from studio_identity import resolve_token, revoke_delegation
 from studio_runtime.processes import stop_process_group as _stop_process_group
 from portfolio_app.services.portfolio_access import require_access
@@ -39,20 +40,27 @@ def _harness_failure(stderr: str, return_code: int) -> str:
     return "截图分析进程退出，本次执行未完成。请重新分析。"
 
 
-def _run_harness_process(*, portfolio_id: str, batch_id: str, run_token: str) -> tuple[int, bool, str | None]:
+def _run_harness_process(*, portfolio_id: str, batch_id: str, run_token: str, attempt=None) -> tuple[int, bool, str | None]:
+    from studio_runtime.provider_usage import capture_provider_usage
+    # Capture batches have no general run-context JSON. Keep numeric receipts in
+    # the structured log, not inside transaction facts or analysis revisions.
+    with capture_provider_usage(app="portfolio", portfolio_id=portfolio_id, batch_id=batch_id, attempt=attempt) as usage:
+        return _execute_harness_process(portfolio_id=portfolio_id, batch_id=batch_id, run_token=run_token, usage=usage)
+
+
+def _execute_harness_process(*, portfolio_id: str, batch_id: str, run_token: str, usage) -> tuple[int, bool, str | None]:
+    require_model_work()
     process = subprocess.Popen(
         [str(HARNESS_RUNNER), portfolio_id, batch_id],
         cwd=BACKEND_ROOT.parents[2],
-        env={**os.environ, "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_RUN_TOKEN": run_token},
+        env={**os.environ, **usage.environment("capture"), "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_RUN_TOKEN": run_token},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
     )
     try:
-        _, stderr = process.communicate(
-            timeout=get_settings().copilot_analysis_timeout_seconds,
-        )
+        _, stderr = communicate_model_process(process, timeout=get_settings().copilot_analysis_timeout_seconds)
         return process.returncode, False, _harness_failure(stderr, process.returncode) if process.returncode else None
     except BaseException as exc:
         try:
@@ -93,6 +101,7 @@ def run_transaction_capture_analysis(
             portfolio_id=portfolio_id,
             batch_id=batch_id,
             run_token=run_token,
+            attempt=attempt,
         )
         revision_created = has_transaction_capture_agent_revision(
             portfolio_id=portfolio_id,
@@ -121,6 +130,11 @@ def run_transaction_capture_analysis(
             attempt=attempt,
             succeeded=False,
             error=error,
+        )
+    except ModelWorkPaused as error:
+        finish_transaction_capture_analysis_run(
+            portfolio_id=portfolio_id, batch_id=batch_id, attempt=attempt,
+            succeeded=False, paused=True, error=str(error),
         )
     except Exception:
         finish_transaction_capture_analysis_run(

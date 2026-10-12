@@ -35,6 +35,6 @@ export default function ResearchThemeComposer({ instrumentId, title, background,
     <details><summary>关联的研究背景</summary><p translate="no">{background}</p></details>
     {error && <p role="alert">{error}</p>}
     <ResearchScopeNotice instrumentId={instrumentId} />
-    <div className="research-theme-actions"><button type="submit" disabled={saving || (!selectedTheme && !name.trim())}>{saving ? '保存中…' : selectedTheme ? '关联并继续研究' : '创建并开始研究'}</button><button type="button" disabled={saving} onClick={onCancel}>取消</button></div>
+    <div className="research-theme-actions"><button type="submit" disabled={saving || (!selectedTheme && !name.trim())}>{saving ? '保存中…' : selectedTheme ? '关联主题' : '创建主题'}</button><button type="button" disabled={saving} onClick={onCancel}>取消</button></div>
   </form>
 }

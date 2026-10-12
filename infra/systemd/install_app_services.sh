@@ -667,12 +667,21 @@ fi
 
 publish_staged_units
 systemctl --user daemon-reload
-systemctl --user enable "${MANAGED_UNITS[@]}"
+STARTABLE_UNITS=()
+for unit in "${MANAGED_UNITS[@]}"; do
+  if [[ "$unit" == "$UNIT_PREFIX-research-worker.service" ]] && \
+      grep -Fxq "$unit"$'\t''disabled' "$ENABLED_STATE_FILE"; then
+    echo "Preserving disabled research worker: $unit"
+    continue
+  fi
+  STARTABLE_UNITS+=("$unit")
+done
+systemctl --user enable "${STARTABLE_UNITS[@]}"
 
 if [[ "$START_SERVICES" == "true" ]]; then
   mark_writers_may_have_resumed
-  systemctl --user restart "${MANAGED_UNITS[@]}"
-  for unit in "${MANAGED_UNITS[@]}"; do
+  systemctl --user restart "${STARTABLE_UNITS[@]}"
+  for unit in "${STARTABLE_UNITS[@]}"; do
     if ! systemctl --user is-active --quiet "$unit"; then
       echo "Managed systemd unit failed its active-state gate: $unit" >&2
       exit 1
@@ -704,7 +713,6 @@ if [[ "$START_SERVICES" == "true" ]]; then
     echo "Managed systemd service failed its readiness gate: $url" >&2
     exit 1
   fi
-  systemctl --user is-active --quiet "$UNIT_PREFIX-research-worker.service"
 fi
 
 if [[ "$RUN_MIGRATIONS" == "true" ]]; then

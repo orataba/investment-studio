@@ -28,14 +28,13 @@ it('translates fixed research controls and preserves original content, draft and
   const state = { ...notebook(view({ direction: '原始研究判断', risks: [1, 2, 3, 4].map(insight), coverage_status: 'limited' })), version_id: 'frozen-v1' }
   api.source.mockResolvedValue({ source_id: 'original', title: 'Risk', data: { analysis_kind: 'watchlist_observations', status: 'unavailable', metrics: {}, limitations: [] } })
   render(<LanguageProvider messages={researchMessages} patterns={researchPatterns}><LanguageSelector />
-    <InvestmentResearchState instrumentId="stock" compact notebook={state} sources={() => null} />
+    <InvestmentResearchState instrumentId="stock" notebook={state} sources={() => null} />
     <SavedFigure instrumentId="stock" notebookVersionId="frozen-v1" source={{ source_id: 'original', title: 'Risk' }} />
   </LanguageProvider>)
   await screen.findByText('Discuss and record')
   expect(screen.getByText('Risk', { selector: 'figcaption' })).toBeTruthy()
   expect(screen.getByText('原始研究判断')).toBeTruthy()
   expect(screen.getByText('Saved research is partially available. Uncovered areas cannot be assessed from it.')).toBeTruthy()
-  fireEvent.click(screen.getByRole('button', { name: 'Show remaining 1 items' }))
   expect(screen.getByText('风险 4')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Assessment evidence and scope' }))
   expect(await screen.findByRole('dialog', { name: 'Assessment evidence and scope' })).toBeTruthy()
@@ -67,31 +66,9 @@ it('distinguishes reviewed pending risk from a newer referral retaining an old r
   expect(screen.queryByText('风控已评估／待核实')).toBeNull()
 })
 
-it('keeps opportunity and risk together, discloses all hidden counts and binds each item to evidence', () => {
-  const state = notebook(view({ opportunities: [{ ...insight(0), title: '新增机会' }], risks: [1, 2, 3, 4].map(insight), coverage_status: 'assessed' }))
-  render(<InvestmentResearchState instrumentId="stock" compact notebook={state} sources={ids => <span>{ids.join(',')}</span>} />)
-  expect(screen.getByText('新增机会')).toBeTruthy()
-  expect(screen.getByText('风险 3')).toBeTruthy()
-  expect(screen.queryByText('风险 4')).toBeNull()
-  fireEvent.click(screen.getByRole('button', { name: '展开其余 1 项' }))
-  expect(screen.getByText('风险 4')).toBeTruthy()
-  const card = screen.getByRole('heading', { name: '风险 1' }).closest('article')!
-  fireEvent.click(within(card).getByText('依据与下一观察'))
-  const evidence = screen.getByRole('dialog', { name: '风险 1 · 依据与下一观察' })
-  expect(within(evidence).getByText('核对下一次披露。')).toBeTruthy()
-  expect(within(evidence).getByText('original')).toBeTruthy()
-  expect(screen.getByRole('region', { name: '当前机会与风险' }).querySelector('time')?.dateTime).toBe('2026-09-19')
-})
-
-it.each(['limited', 'not_established', undefined] as const)('does not interpret missing insight arrays as no risk (coverage %s)', coverage_status => {
-  render(<InvestmentResearchState instrumentId="stock" compact notebook={notebook(view({ opportunities: [], risks: [], coverage_status }))} sources={() => null} />)
-  expect(screen.queryByText(/未发现足够明确的新风险线索/)).toBeNull()
-  expect(screen.getAllByText(/尚未建立|不足/).length).toBeGreaterThan(0)
-})
-
 it('shows decision conditions beside the current judgment without opening evidence', () => {
-  render(<InvestmentResearchState instrumentId="stock" compact notebook={notebook(view({ invalidation: '订单连续下修时重新评估。', next_check: '核对季度现金回款。' }))} sources={() => null} />)
-  const conditions = screen.getByLabelText('判断条件与下一验证')
+  render(<InvestmentResearchState instrumentId="stock" notebook={notebook(view({ invalidation: '订单连续下修时重新评估。', next_check: '核对季度现金回款。' }))} sources={() => null} />)
+  const conditions = screen.getByRole('region', { name: '当前投资判断' })
   expect(within(conditions).getByText('改判条件')).toBeTruthy()
   expect(within(conditions).getByText('订单连续下修时重新评估。')).toBeTruthy()
   expect(within(conditions).getByText('核对季度现金回款。')).toBeTruthy()
@@ -100,19 +77,10 @@ it('shows decision conditions beside the current judgment without opening eviden
 })
 
 it.each([undefined, null])('keeps old string assessments readable with %s structured arrays', arrays => {
-  render(<InvestmentResearchState instrumentId="stock" compact notebook={notebook(view({ risk: '旧版流动性风险', attractiveness: '旧版需求机会', opportunities: arrays, risks: arrays }))} sources={() => null} />)
+  render(<InvestmentResearchState instrumentId="stock" notebook={notebook(view({ risk: '旧版流动性风险', attractiveness: '旧版需求机会', opportunities: arrays, risks: arrays }))} sources={() => null} />)
   expect(screen.getByText('旧版流动性风险')).toBeTruthy()
   expect(screen.getByText('旧版需求机会')).toBeTruthy()
   expect(screen.queryByText(/未发现足够明确/)).toBeNull()
-})
-
-it('gets a referenced older event on demand by its stable key', async () => {
-  api.events.mockResolvedValue(response([event({ title: '窗口外原事件' })]))
-  render(<InvestmentResearchState instrumentId="stock" compact notebook={notebook(view({ risks: [{ ...insight(1), event_keys: ['stable-event'] }] }))} sources={() => null} />)
-  expect(api.events).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByText('依据与下一观察'))
-  expect(await screen.findByRole('heading', { name: '窗口外原事件' })).toBeTruthy()
-  expect(api.events).toHaveBeenCalledWith('stock', 'history', expect.any(AbortSignal), 0, 'stable-event')
 })
 
 it('loads ongoing and paged historical events on demand without a client-side seven-day filter', async () => {
@@ -185,16 +153,6 @@ it.each(['watchlist_observations', 'event_market_reaction'])('renders fixed reta
   expect(screen.queryByText('0')).toBeNull()
 })
 
-it('opens a theme-only insight with its current analysis and original source in one click', async () => {
-  api.theme.mockResolvedValue({ theme_id: 'theme-1', title: '长期主题依据', synthesis: '多次披露支持需求改善，但现金回款仍待验证。', source_version_id: 'theme:theme-1:4', sources: [{ source_id: 'theme-source', title: '主题原始披露', url: 'https://example.com/disclosure' }] })
-  render(<InvestmentResearchState instrumentId="stock" compact notebook={notebook(view({ risks: [{ ...insight(1), source_ids: [], theme_ids: ['theme-1'] }] }))} sources={() => null} />)
-  expect(api.theme).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole('button', { name: '依据与下一观察' }))
-  expect(await screen.findByText('多次披露支持需求改善，但现金回款仍待验证。')).toBeTruthy()
-  expect(screen.getByRole('link', { name: '主题原始披露' }).getAttribute('href')).toBe('https://example.com/disclosure')
-  expect(api.theme).toHaveBeenCalledWith('stock', 'theme-1', expect.any(AbortSignal))
-})
-
 it('retains structured opportunities and risks in historical views without substituting current linked themes', () => {
   render(<InvestmentResearchState instrumentId="stock" historical notebook={notebook(view({ risks: [{ ...insight(1), theme_ids: ['historic-theme'] }], opportunities: [{ ...insight(2), title: '当时的机会' }] }))} sources={ids => <span>{ids.join(',')}</span>} />)
   expect(screen.getByRole('region', { name: '当时投资判断' })).toBeTruthy()
@@ -245,12 +203,12 @@ it('records a PM opinion with the structured judgment and all cited sources at t
     opportunities: [{ ...insight(1), title: '需求扩张', explanation: '新增订单支持收入可见度。', next_watch: '检查订单转化。', source_ids: ['opportunity-source'], figure_source_ids: ['quant-source'] }],
     risks: [{ ...insight(2), title: '回款延迟', explanation: '资金回收仍慢于投入。', next_watch: '检查应收账款账龄。', source_ids: ['risk-source', 'view-source'], figure_source_ids: ['quant-source'] }],
   })
-  const { rerender } = render(<InvestmentResearchState instrumentId="stock" compact notebook={{ ...notebook(original), version_id: 'notebook-original' }} sources={() => null} />)
+  const { rerender } = render(<InvestmentResearchState instrumentId="stock" notebook={{ ...notebook(original), version_id: 'notebook-original' }} sources={() => null} />)
   fireEvent.click(screen.getByRole('button', { name: '记录投资观点' }))
   const background = (screen.getByLabelText('当时背景与依据') as HTMLTextAreaElement).value
   for (const text of ['需求扩张：新增订单支持收入可见度。', '下一观察：检查订单转化。', '回款延迟：资金回收仍慢于投入。', '下一观察：检查应收账款账龄。', '覆盖状态：部分覆盖', '尚缺下季度回款资料。']) expect(background).toContain(text)
   fireEvent.change(screen.getByLabelText('我的投资观点'), { target: { value: '保留独立判断，等待回款验证。' } })
-  rerender(<InvestmentResearchState instrumentId="stock" compact notebook={notebook(view({ version_id: 'view-later', risks: [], opportunities: [] }))} sources={() => null} />)
+  rerender(<InvestmentResearchState instrumentId="stock" notebook={notebook(view({ version_id: 'view-later', risks: [], opportunities: [] }))} sources={() => null} />)
   fireEvent.click(screen.getByRole('button', { name: '保存投资观点' }))
   await waitFor(() => expect(api.note).toHaveBeenCalledWith('stock', expect.objectContaining({ note: expect.objectContaining({ body: '保留独立判断，等待回款验证。', research_context: {
     notebook_version_id: 'notebook-original', investment_view_version_id: 'view-original', source_ids: ['view-source', 'opportunity-source', 'quant-source', 'risk-source'], background,
@@ -258,7 +216,7 @@ it('records a PM opinion with the structured judgment and all cited sources at t
 })
 
 it.each([null, []])('keeps null legacy values distinct from explicit empty insight arrays in the PM background', arrays => {
-  render(<InvestmentResearchState instrumentId="stock" compact notebook={notebook(view({ opportunities: arrays, risks: arrays, attractiveness: '旧机会认识', risk: '旧风险认识', coverage_status: 'limited', coverage_note: '本轮公开信息覆盖受限。' }))} sources={() => null} />)
+  render(<InvestmentResearchState instrumentId="stock" notebook={notebook(view({ opportunities: arrays, risks: arrays, attractiveness: '旧机会认识', risk: '旧风险认识', coverage_status: 'limited', coverage_note: '本轮公开信息覆盖受限。' }))} sources={() => null} />)
   fireEvent.click(screen.getByRole('button', { name: '记录投资观点' }))
   const background = (screen.getByLabelText('当时背景与依据') as HTMLTextAreaElement).value
   if (arrays === null) {
@@ -274,15 +232,6 @@ it.each([null, []])('keeps null legacy values distinct from explicit empty insig
   expect(background).toContain('本轮公开信息覆盖受限。')
 })
 
-
-it('keeps the summary readable while moving coverage details and explanations behind explicit controls', () => {
-  const detail = '已读取已披露的行业资料；仅使用已留存证据。'
-  render(<InvestmentResearchState instrumentId="stock" compact notebook={notebook(view({ risks: [insight(1)], coverage_note: detail, coverage_status: 'assessed' }))} sources={() => null} />)
-  expect(screen.queryByText(detail)).toBeNull()
-  expect(screen.queryByText(insight(1).explanation)).toBeNull()
-  fireEvent.click(screen.getByRole('button', { name: `研究覆盖说明: ${detail}` }))
-  expect(screen.getByRole('tooltip').textContent).toContain(detail)
-})
 
 it('presents dated facts, investment impact, ratings and direct actions before opening evidence', async () => {
   api.note.mockResolvedValue({})

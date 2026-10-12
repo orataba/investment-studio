@@ -12,7 +12,10 @@ from watchlist_app.db.session import get_session_factory
 
 def seed_sector(client, monkeypatch):
     from .conftest import canonical_quote_policy, seed_shared_instrument
+    from watchlist_app.core.settings import get_settings
+    from watchlist_app.db.models import InstrumentAttributeValue
     monkeypatch.setattr(service, "_research_market", lambda session, iid: "us")
+    monkeypatch.setattr(get_settings(), "research_automatic_enabled", True)
     for iid in ("xlk", "xlf"):
         seed_shared_instrument({"instrument_id": iid, "instrument_name": iid.upper(),
             "instrument_type": "etf", "currency": "USD", "exchange_code": "ARCX",
@@ -21,6 +24,9 @@ def seed_sector(client, monkeypatch):
     with get_session_factory()() as session:
         for iid in ("xlk", "xlf"):
             session.add(InstrumentDetail(instrument_id=iid, instrument_type="etf", detail_view_type="etf", instrument_name=iid.upper(), metadata_json={}))
+        session.flush()
+        session.add(InstrumentAttributeValue(instrument_id="xlk", attribute_key="coverage_status",
+            value_json="Invested", adopted_at=datetime.now(UTC)))
         session.commit()
 
 
@@ -337,7 +343,8 @@ def test_review_can_bind_an_actual_prior_event_judgment_without_fabricating_a_fo
         assert next_run.context_json["reviews"]["xlk"]["change_kind"] == "knowledge"
 
 
-def test_stale_event_version_cannot_overwrite_a_newer_published_assessment(client, monkeypatch):
+@pytest.mark.parametrize("publication", ["event", "question"])
+def test_stale_event_version_cannot_overwrite_a_newer_published_assessment(client, monkeypatch, publication):
     seed_sector(client, monkeypatch)
     with get_session_factory()() as session:
         original, _ = service.begin_run(session, ["xlk"])
@@ -356,8 +363,15 @@ def test_stale_event_version_cannot_overwrite_a_newer_published_assessment(clien
         case.history_json = [*case.history_json, {"at": datetime.now(UTC).isoformat(), "action": "updated",
             "snapshot": {**case.evidence_json, "body": case.body}}]
         session.flush()
+        payload = result(theme=theme, sources=["web-one"], action="updated", body="过期输入下的新判断")
+        if publication == "question":
+            payload = json.dumps({"reviews": [{"instrument_id": "xlk", "change_kind": "knowledge",
+                "themes": [{"theme_id": theme["theme_id"], "theme_key": theme["theme_key"]}],
+                "research": {"questions": [{"key": "policy-impact", "question": "政策影响是否仍成立？",
+                    "assessment": "沿旧事件提出判断", "next_check": "核对原文", "event_key": "new-policy",
+                    "theme_id": theme["theme_id"]}]}}]})
         with pytest.raises(service.ResearchVersionConflict, match="事件"):
-            service.apply_result(session, next_run, result(theme=theme, sources=["web-one"], action="updated", body="过期输入下的新判断"))
+            service.apply_result(session, next_run, payload)
         assert case.body == "另一轮研究已经修正判断。" and len(case.history_json) == 2
 
 
@@ -548,15 +562,14 @@ def test_missing_owned_sector_snapshot_remains_a_gap_without_estimate_baseline(c
 def test_initialization_scope_distinguishes_followup_from_requested_baseline_completion(client, monkeypatch, view, explicit, prior_completed, expected):
     from watchlist_app.services import research_dossier
     seed_sector(client, monkeypatch)
-    original = research_dossier.read_dossier
-    def dossier(session, iid, **kwargs):
-        return {**original(session, iid, **kwargs), "notebook": {"investment_view": view}}
-    monkeypatch.setattr(research_dossier, "read_dossier", dossier)
+    # Persist an actual notebook; formal input no longer reads browser history.
+
     with get_session_factory()() as session:
         if prior_completed:
             previous, _ = service.begin_run(session, ["xlk"])
             previous.status = "completed"
             previous.completed_at = datetime.now(UTC)
+            previous.context_json = {**previous.context_json, "reviews": {"xlk": {"status": "limited", "research": {"investment_view": view}}}}
             session.commit()
         run, _ = service.begin_run(session, ["xlk"], initialization=explicit)
         rid = run.entry_id

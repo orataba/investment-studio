@@ -3,10 +3,17 @@ import { useLanguage } from '../../../packages/ui/src/i18n'
 import { resolveWorkspaceUrl, withLanguage } from '../../../packages/ui/src/navigation'
 import { researchStamp } from '../../../packages/ui/src/ResearchRunStatus'
 import type { StudioApp } from './StudioHome'
-import { readRiskAlerts, riskDestination, type RiskAlerts } from './riskAlerts'
+import { readRiskAlerts, riskDestination, type RiskAlerts, type RiskAlert } from './riskAlerts'
+
+export function ImportantRiskEntries({ apps, alerts }: { apps: StudioApp[]; alerts: RiskAlert[] }) {
+  const { t, language } = useLanguage()
+  return <ul>{alerts.map(alert => <li key={alert.case_id}><a data-workspace-link href={withLanguage(riskDestination(apps, alert.target), language)} title={`${t('Evidence confidence')}: ${t(alert.confidence || 'Not assessed')} · ${t('Evidence as of')}: ${researchStamp(alert.as_of)} · ${t('Reviewed')}: ${researchStamp(alert.reviewed_at)}`}>
+    <span className="home-risk-object" translate="no">{alert.instrument_name}</span><span className="home-risk-title" translate="no">{alert.title}</span>{alert.alert_state === 'assessment_pending' && <span className="home-risk-review-state">{t('New information awaiting review')}</span>}{alert.alert_state === 'unverified_urgent' && <span className="home-risk-review-state">{t('Major lead — unverified')}</span>}<span aria-hidden="true">↗</span>
+  </a></li>)}</ul>
+}
 
 export default function ImportantRisks({ apps }: { apps: StudioApp[] }) {
-  const { t, language } = useLanguage()
+  const { t } = useLanguage()
   const [result, setResult] = useState<RiskAlerts | null>(null)
   const [error, setError] = useState('')
   const [revision, setRevision] = useState(0)
@@ -29,13 +36,12 @@ export default function ImportantRisks({ apps }: { apps: StudioApp[] }) {
   }, [base, revision, offset])
   if (!base) return null
   return <aside className="home-important-risks" aria-label={t('Important risks')}>
-    <h2 title={t('Only major or urgent risks confirmed by the latest risk review and still requiring attention.')}>{t('Important risks')}</h2>
+    <h2 title={t('Unresolved major risks retain their last assessment. Material urgent leads awaiting verification are labeled separately.')}>{t('Important risks')}</h2>
     <div className="home-risk-content" aria-live="polite">
       {loading ? <span>{t('Loading…')}</span> : error ? <span>{t('Risk status unavailable.')} <button type="button" title={error} onClick={() => setRevision(value => value + 1)}>{t('Retry')}</button></span>
-        : !result?.alerts.length ? <span>{t('No published major or urgent items requiring attention.')}</span>
-        : <ul>{result.alerts.map(alert => <li key={alert.case_id}><a data-workspace-link href={withLanguage(riskDestination(apps, alert.target), language)} title={`${t('Evidence confidence')}: ${t(alert.confidence || 'Not assessed')} · ${t('Evidence as of')}: ${researchStamp(alert.as_of)} · ${t('Reviewed')}: ${researchStamp(alert.reviewed_at)}`}>
-          <span className="home-risk-object" translate="no">{alert.instrument_name}</span><span className="home-risk-title" translate="no">{alert.title}</span><span aria-hidden="true">↗</span>
-        </a></li>)}</ul>}
+        : !result?.alerts.length ? <span>{t('No items currently meet the important-risk criteria.')}</span>
+        : <ImportantRiskEntries apps={apps} alerts={result.alerts} />}
+      {!loading && !error && result?.model_work?.paused && <p className="home-risk-coverage">{t('Research paused; retained assessments and pending developments are shown.')}</p>}
       {!loading && !error && result && (offset > 0 || result.has_more) && <div className="home-risk-pages">
         {offset > 0 && <button type="button" onClick={() => setOffset(value => Math.max(0, value - 3))}>{t('Previous risks')}</button>}
         <span>{offset + 1}–{offset + result.alerts.length} / {result.total}</span>

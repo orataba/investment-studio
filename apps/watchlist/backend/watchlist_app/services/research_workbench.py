@@ -155,12 +155,12 @@ def catalogue(session: Session, instrument_ids=None):
     return output
 
 
-def instrument_evidence(session: Session, ids: list[str], *, include_dossier=True, as_of: datetime | None = None):
+def instrument_evidence(session: Session, ids: list[str], *, include_dossier=True, as_of: datetime | None = None, working_only=False):
     with calculation_input_read(session, ids):
-        return _read_instrument_evidence(session, ids, include_dossier=include_dossier, as_of=as_of)
+        return _read_instrument_evidence(session, ids, include_dossier=include_dossier, as_of=as_of, working_only=working_only)
 
 
-def _read_instrument_evidence(session: Session, ids: list[str], *, include_dossier=True, as_of=None):
+def _read_instrument_evidence(session: Session, ids: list[str], *, include_dossier=True, as_of=None, working_only=False):
     from watchlist_app.services.shared_instrument_registry import get_shared_fund_actions, get_shared_reference_data
     from watchlist_app.services.sector_estimates import read_estimate_evidence
     from watchlist_app.services.sector_research import latest_reviews
@@ -188,7 +188,11 @@ def _read_instrument_evidence(session: Session, ids: list[str], *, include_dossi
             if name == "performance" and as_of is not None and (reason := _snapshot_cutoff_limitation(row, as_of)):
                 asset[name] = {"data": None, "freshness": "unavailable", "source_cutoff_at": row.source_cutoff_at,
                                "reason": reason}
-        asset["research"] = _research_response(session, iid)
+        if working_only:
+            from watchlist_app.api.routes.research import _serialize_profile, research_repository
+            asset["research"] = {"profile": _serialize_profile(research_repository.get_profile(session, iid))}
+        else:
+            asset["research"] = _research_response(session, iid)
         asset["research_tracking"] = completed_research.get(iid)
         asset["research_tracking_note"] = "这是已保存的自动研究结论，不是本轮最新核实；请按生成日期使用，并回到原始证据核实相关事实。"
         manual = session.get(InstrumentManualProfile, iid, populate_existing=True)
@@ -201,7 +205,8 @@ def _read_instrument_evidence(session: Session, ids: list[str], *, include_dossi
         risk = session.get(InstrumentRiskReadModel, iid, populate_existing=True)
         asset["risk"] = risk.payload_json if risk else None
         asset["risk_freshness"] = risk.data_freshness_status if risk else "missing"
-        asset["risk_cases"] = [{"case_id": x.case_id, "title": x.title, "body": x.body, "trigger_active": x.trigger_active, "status": x.status, "observed_on": x.observed_on, "evidence": x.evidence_json} for x in session.scalars(select(RiskCase).where(RiskCase.instrument_id == iid))]
+        asset["risk_cases"] = [{"case_id": x.case_id, "title": x.title, "body": x.body, "trigger_active": x.trigger_active, "status": x.status, "observed_on": x.observed_on, "evidence": x.evidence_json} for x in session.scalars(select(RiskCase).where(
+            RiskCase.instrument_id == iid, RiskCase.trigger_active.is_(True) if working_only else True))]
         if include_dossier:
             from watchlist_app.services.research_dossier import read_dossier
             from watchlist_app.services.research_notebook import dossier_outline

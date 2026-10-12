@@ -26,3 +26,9 @@ it('only displays explicitly classified market observations and keeps other evid
   expect(screen.getByText('公司现金流')).toBeTruthy()
   expect(screen.getByText('尚未分类的计算')).toBeTruthy()
 })
+
+
+it('does not invent an empty quantitative chapter when no applicable module is saved', () => {
+  const { container } = render(<ResearchQuantObservations instrumentId="private-fund" notebook={null} />)
+  expect(container.textContent).toBe('')
+})

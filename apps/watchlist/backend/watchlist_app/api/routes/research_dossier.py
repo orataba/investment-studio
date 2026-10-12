@@ -151,9 +151,16 @@ def create_theme(instrument_id: str, request: ThemeInput, session: Session = Dep
 def _request_theme_research(session, instrument_id, result):
     from watchlist_app.services.research_runner import harness_available
     from watchlist_app.services.research_execution import enqueue_run
+    from watchlist_app.services.research_policy import require_instrument_research
+    from studio_runtime.model_work import ModelWorkPaused
+    try:
+        require_instrument_research(session, [instrument_id])
+    except (ModelWorkPaused, HTTPException) as error:
+        return {**result, "research_run_id": None, "research_status": "paused",
+                "research_message": "主题已保存；" + (str(error.detail) if isinstance(error, HTTPException) else str(error))}
     if not harness_available():
         return {**result, "research_run_id": None, "research_status": "unavailable",
-                "research_message": "主题已保存；研究运行环境尚不可用，恢复后将补充初始研究。"}
+                "research_message": "主题已保存；研究运行环境尚不可用，尚未建立初始研究。"}
     from watchlist_app.services.sector_research import begin_run
     from studio_identity import IdentityError, current_principal
     run, created = begin_run(session, [instrument_id], question=f"为重点主题 {result['theme_id']} 补充研究基线：读取创建背景和引用资料，主动检索补充证据，明确研究问题、当前认识、重要性和下一观察。")
@@ -163,6 +170,9 @@ def _request_theme_research(session, instrument_id, result):
         attempt = run_attempt(run)
         try:
             enqueue_run(principal, run.entry_id, attempt=attempt)
+        except ModelWorkPaused as error:
+            return {**result, "research_run_id": run.entry_id, "research_status": "paused",
+                    "research_message": "主题已保存；" + str(error)}
         except (IdentityError, HTTPException):
             return {**result, "research_run_id": run.entry_id, "research_status": "failed",
                     "research_message": "主题已保存；研究授权暂不可用，尚未建立研究基线。"}

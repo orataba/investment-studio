@@ -4923,6 +4923,7 @@ class TransactionCaptureBatchRecord(BaseModel):
         "running",
         "succeeded",
         "failed",
+        "paused",
     ] = "idle"
     analysis_run_attempt: int = Field(default=0, ge=0)
     analysis_run_started_at: str | None = None

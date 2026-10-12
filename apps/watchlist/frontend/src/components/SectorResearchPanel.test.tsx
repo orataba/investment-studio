@@ -13,7 +13,7 @@ vi.mock('../../../../../packages/ui/src/RiskOfficerPanel', () => ({ default: () 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-06T08:00:00+08:00')) })
 afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers() })
 const review = (status: string) => ({ run_id: 'run-1', status, checked_at: '2026-09-06T08:00:00+08:00', summary: '运行记录不能充当当前判断', coverage: ['未取得最新持仓数据'] })
-const payload = (status = 'completed') => ({ available: true, sectors: [{ instrument_id: 'xlk-us', ticker: 'XLK', sector_name: '科技', latest_review: review(status) }], events: [] })
+const payload = (status = 'completed') => ({ available: true, model_work: { paused: false, code: null, message: null }, instruments: [{ instrument_id: 'xlk-us', eligible: true, reason: null }], sectors: [{ instrument_id: 'xlk-us', ticker: 'XLK', sector_name: '科技', latest_review: review(status) }], events: [] })
 const load = async () => { await act(async () => {}) }
 const event = (): SectorEventRecord => ({ case_id: 'cloud-demand', instrument_id: 'xlk-us', event_key: 'cloud-demand', title: '云需求新增变化', body: '分析当前指引如何改变盈利预期。', direction: 'opportunity', information_type: 'fact', confidence: 'confirmed', next_watch: '', published_at: '2026-09-05', occurred_at: '2026-09-05', discovered_at: null, updated_at: null, trigger_active: true, status: 'open', sources: [{ source_id: 'source-1', title: '公司原始公告', url: 'https://example.com/earnings' }], coverage: [], history: [] })
 
@@ -230,8 +230,8 @@ it('discloses whole-instrument shared outputs before submitting an update', asyn
   await load()
   const scope = screen.getByRole('complementary', { name: '研究发布范围' })
   expect(scope.textContent).toContain('xlk-us')
-  expect(scope.textContent).toContain('自动新增研究主题与待审风险线索')
-  expect(scope.textContent).toContain('不会中止当前任务')
+  expect(scope.textContent).toContain('保存主题不代表研究已开始')
+  expect(scope.textContent).toContain('未复核主题保留原判断与日期')
   expect(request.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
 })
 
@@ -270,4 +270,46 @@ it('retains the original running task when status fails and uses read-only recov
   expect(screen.queryByRole('alert')).toBeNull()
   expect(screen.getByText('run-1')).toBeTruthy()
   expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
+})
+
+
+it.each(['paused', 'outside-invested-scope'])('prevents paid updates for %s while saved research stays readable', async mode => {
+  request.mockImplementation(async path => path.includes('/research-policy?') ? {
+    model_work: { paused: mode === 'paused', code: 'policy', message: '研究已暂停，已保存的内容仍可查看。' },
+    instruments: [{ instrument_id: 'xlk-us', eligible: false, reason: '仅当前在投且有效的标的可更新共享研究。' }],
+  } : payload('paused'))
+  render(<SectorResearchPanel instrumentId="xlk-us" />)
+  await load()
+  const button = screen.getByRole('button', { name: mode === 'paused' ? '研究已暂停' : '更新研究' })
+  expect(button.hasAttribute('disabled')).toBe(true)
+  fireEvent.click(button)
+  expect(screen.getByTestId('canonical-dossier')).toBeTruthy()
+  expect(screen.getByText(mode === 'paused' ? '研究已暂停，已保存的内容仍可查看。' : '仅当前在投且有效的标的可更新共享研究。')).toBeTruthy()
+  const calls = request.mock.calls.length
+  await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
+  expect(request.mock.calls).toHaveLength(calls)
+  expect(request.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true)
+})
+
+
+it('admits another invested instrument of the same type without an asset-type quota or automatic-schedule requirement', async () => {
+  request.mockImplementation(async (path, init?: RequestInit) => {
+    if (init?.method === 'POST') return { run_id: 'second-invested-run', status: 'queued' }
+    if (path.includes('/research-policy?')) return {
+      model_work: { paused: false, code: null, message: null }, automatic_enabled: false,
+      eligible_instruments: ['xlk-us', 'spy-us'], instruments: [
+        { instrument_id: 'xlk-us', instrument_type: 'etf', eligible: true, reason: null },
+        { instrument_id: 'spy-us', instrument_type: 'etf', eligible: true, reason: null },
+      ],
+    }
+    return { ...payload(), sectors: [] }
+  })
+  render(<SectorResearchPanel instrumentId="spy-us" />)
+  await load()
+  const update = screen.getByRole('button', { name: '更新研究' })
+  expect(update.hasAttribute('disabled')).toBe(false)
+  await act(async () => { fireEvent.click(update) })
+  expect(request).toHaveBeenCalledWith('/api/sector-research/runs', {
+    method: 'POST', body: JSON.stringify({ instrument_ids: ['spy-us'] }),
+  })
 })

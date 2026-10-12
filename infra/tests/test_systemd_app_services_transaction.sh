@@ -360,6 +360,18 @@ if [[ -z "$backup_line" || -z "$migration_line" || -z "$catalog_refresh_line" ||
   exit 1
 fi
 
+PAUSED_RESEARCH_CASE="$TEST_ROOT/paused-research"
+prepare_case "$PAUSED_RESEARCH_CASE"
+sed '/^investment-studio-research-worker.service$/d' "$PAUSED_RESEARCH_CASE/enabled" > "$PAUSED_RESEARCH_CASE/enabled.new"
+mv "$PAUSED_RESEARCH_CASE/enabled.new" "$PAUSED_RESEARCH_CASE/enabled"
+sed '/^investment-studio-research-worker.service$/d' "$PAUSED_RESEARCH_CASE/active" > "$PAUSED_RESEARCH_CASE/active.new"
+mv "$PAUSED_RESEARCH_CASE/active.new" "$PAUSED_RESEARCH_CASE/active"
+run_case "$PAUSED_RESEARCH_CASE" > "$PAUSED_RESEARCH_CASE/output" 2>&1
+! grep -Fxq investment-studio-research-worker.service "$PAUSED_RESEARCH_CASE/enabled"
+! grep -Fxq investment-studio-research-worker.service "$PAUSED_RESEARCH_CASE/active"
+! grep -E '^systemctl:(restart|enable) .*investment-studio-research-worker[.]service' "$PAUSED_RESEARCH_CASE/events"
+grep -q 'Preserving disabled research worker' "$PAUSED_RESEARCH_CASE/output"
+
 MIGRATION_CASE="$TEST_ROOT/migration-failure"
 prepare_case "$MIGRATION_CASE"
 set +e

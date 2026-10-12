@@ -21,6 +21,7 @@ class Settings(BaseSettings):
                               "http://127.0.0.1:5172", "http://localhost:5172"]
     recalc_worker_enabled: bool = True
     research_worker_enabled: bool = True
+    research_automatic_enabled: bool = False
     research_worker_concurrency: int = Field(default=1, ge=1, le=4)
     research_worker_lease_seconds: float = Field(default=300, gt=0)
     research_worker_heartbeat_seconds: float = Field(default=30, gt=0)

@@ -135,12 +135,14 @@ def test_late_preparation_cannot_replace_new_attempt_inputs(client, prepare):
     assert state() == before
 
 
-def test_dispatch_failure_consumes_reserved_number_before_another_retry(client):
+def test_dispatch_failure_consumes_reserved_number_before_another_retry(client, monkeypatch):
     from watchlist_app.services.research_access import run_attempt
+    from .test_sector_research import seed_sector
+    seed_sector(client, monkeypatch)
     save_run(attempt=1, status="queued")  # Attempt 2 is reserved by this queue item.
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, "attempt-run")
-        run.context_json = {**run.context_json, "sector_run": True}
+        run.context_json = {**run.context_json, "sector_run": True, "instrument_ids": ["xlk"]}
         session.commit()
     runner._fail_run("attempt-run", "dispatch failed before worker start", attempt=2,
         runtime_error={"type": "AuthorizationUnavailable"})

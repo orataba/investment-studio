@@ -153,7 +153,7 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
     common = {"sector_run", "research_run", "risk_run", "run_id", "cutoff", "input_snapshot_cutoff", "instrument_ids", "initialization"}
     fields = common | ({"question", "page_context", "referenced_research_update", "referenced_research_versions",
         "referenced_risk_case", "history", "conversation", "evidence", "watchlists", "limitations", "data_gaps",
-        "incremental_trigger", "analyst_focus", "user_records", "team_publication_instructions", "market_coverage", "market_queries",
+        "incremental_trigger", "research_working_sets", "analyst_focus", "user_records", "team_publication_instructions", "market_coverage", "market_queries",
         "catalogue", "tool_evidence", "computed_metrics", "topic_id", "as_of_date", "requested_at", "selected_instrument_ids",
         "watchlist_id", "portfolio_id", "team_id", "visibility", "risk_inputs", "risk_scope", "prior_inputs"}
         if request.resource == "context" else
@@ -207,7 +207,12 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
         if parsed.path.startswith("dossier/"):
             from urllib.parse import unquote
             params = {key: values[0] for key, values in parse_qs(parsed.query).items()}
-            return run_dossier(run_id, unquote(parsed.path.removeprefix("dossier/")), session=session, **params)
+            instrument_id = unquote(parsed.path.removeprefix("dossier/"))
+            value = run_dossier(run_id, instrument_id, session=session, **params)
+            if params.get("version_id") or params.get("update_id"):
+                from watchlist_app.services.research_working_set import bind_history_read
+                bind_history_read(session, run_id, instrument_id, params.get("version_id") or params["update_id"], value)
+            return value
         raise ValueError("不支持的研究读取")
 
     page = {key: getattr(request, key) for key in ("section", "offset", "limit", "path")}
@@ -254,7 +259,14 @@ def get_catalogue(session: Session = Depends(get_db_session)):
 @router.get("/research/connections")
 def get_connections():
     from watchlist_app.services.research_runner import harness_available
-    return {**portfolio_options(), "assistant_available": harness_available()}
+    from studio_runtime.model_work import model_work_status
+    return {**portfolio_options(), "assistant_available": harness_available(), "model_work": model_work_status()}
+
+
+@router.get("/research-policy")
+def get_research_policy(instrument_id: str | None = None, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.research_policy import research_capability
+    return research_capability(session, instrument_id)
 
 
 @router.get("/research/portfolios/{portfolio_id}/context")
@@ -506,6 +518,8 @@ def download_material(entry_id: str, session: Session = Depends(get_db_session))
 
 @router.post("/research/topics/{topic_id}/analysis", status_code=202)
 def start_analysis(topic_id: str, request: MessageInput, session: Session = Depends(get_db_session)):
+    from studio_runtime.model_work import require_model_work
+    require_model_work()
     from watchlist_app.services.research_runner import harness_available
     if not harness_available():
         raise HTTPException(503, "研究助手尚未配置 DeepSeek 运行环境")
@@ -711,7 +725,7 @@ def run_dossier(run_id: str, instrument_id: str, source_id: str | None = None, v
     from watchlist_app.services.research_run_context import load_run_fields
     if source_metadata_only and (not update_id or source_id or version_id):
         raise HTTPException(422, "来源索引模式只用于读取单个研究更新；原文和底稿版本仍需完整读取")
-    record = load_run_fields(session, run_id, {"sector_run", "research_run", "cutoff", "research_dossiers"},
+    record = load_run_fields(session, run_id, {"sector_run", "research_run", "cutoff", "research_dossiers", "research_historical_reads"},
                              summary_only=source_metadata_only)
     if not (record.context_json.get("sector_run") or record.context_json.get("research_run")):
         raise HTTPException(404, "本轮研究没有该标的的档案快照")
@@ -748,7 +762,11 @@ def run_dossier(run_id: str, instrument_id: str, source_id: str | None = None, v
             if not bound_pm_version and stamp and stamp.replace(tzinfo=stamp.tzinfo or UTC) > datetime.fromisoformat(record.context_json["cutoff"]):
                 raise ValueError("该版本在本轮截止时间之后才保存，请在新一轮读取")
             return version
-        return dossier_source(dossier, source_id) if source_id else dossier_outline(dossier)
+        if source_id:
+            historic = [source for item in (record.context_json.get("research_historical_reads") or {}).values()
+                        if item["instrument_id"] == instrument_id for source in item.get("sources", [])]
+            return dossier_source({**dossier, "prior_sources": [*dossier.get("prior_sources", []), *historic]}, source_id)
+        return dossier_outline(dossier)
     except (ValueError, LookupError) as error:
         raise HTTPException(404, str(error)) from error
 

@@ -1,3 +1,4 @@
+import type { ModelWorkStatus } from '../../../../packages/ui/src/modelWork'
 import { useEffect, useRef, useState } from 'react'
 import HorizontalTableScroll from '../../../../packages/ui/src/HorizontalTableScroll'
 import RequestRecovery from '../../../../packages/ui/src/RequestRecovery'
@@ -222,6 +223,7 @@ export default function App() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
   const [generating, setGenerating] = useState(false)
+  const [modelWork, setModelWork] = useState<ModelWorkStatus | null>(null)
   const [canGenerate, setCanGenerate] = useState(false)
   const [canReadSources, setCanReadSources] = useState(false)
   const [available, setAvailable] = useState<boolean | null>(null)
@@ -231,7 +233,7 @@ export default function App() {
   const isIndustry = kind === 'industry'
   const sourceOpen = Boolean(sourceId || source)
   const sourceRef = useModalDialog(sourceOpen, closeSource)
-  const statusText = (status: string) => ({ queued: copy('等待生成', 'Queued'), running: copy('正在生成', 'Generating'), completed: copy('已完成', 'Completed'), failed: copy('未完成', 'Failed') }[status] || status)
+  const statusText = (status: string) => ({ paused: copy('已暂停', 'Paused'), queued: copy('等待生成', 'Queued'), running: copy('正在生成', 'Generating'), completed: copy('已完成', 'Completed'), failed: copy('未完成', 'Failed') }[status] || status)
   const stamp = (value: string) => <EvidenceTime value={value} timezone={detail?.window.timezone} />
   const dates = Array.from(new Set(rows.map(row => row.report_date))).sort().reverse().map(date => {
     const versions = rows.filter(row => row.report_date === date).sort((a, b) => b.version - a.version)
@@ -266,7 +268,7 @@ export default function App() {
   useEffect(() => {
     if (kind === 'industry') return
     const controller = new AbortController()
-    request<{ harness_available: boolean; can_generate: boolean; can_read_sources: boolean }>('/status', { signal: controller.signal }).then(result => { if (controller.signal.aborted) return; setAvailable(result.harness_available); setCanGenerate(result.can_generate); setCanReadSources(result.can_read_sources) }).catch(reason => { if (!controller.signal.aborted) setError(String(reason.message)) })
+    request<{ harness_available: boolean; can_generate: boolean; can_read_sources: boolean; model_work?: ModelWorkStatus }>('/status', { signal: controller.signal }).then(result => { if (controller.signal.aborted) return; setAvailable(result.harness_available); setModelWork(result.model_work || null); setCanGenerate(result.can_generate); setCanReadSources(result.can_read_sources) }).catch(reason => { if (!controller.signal.aborted) setError(String(reason.message)) })
     return () => controller.abort()
   }, [isIndustry, revision])
   useEffect(() => {
@@ -324,10 +326,10 @@ export default function App() {
   }, [source, sourceError])
   useEffect(() => {
     if (isIndustry) return
-    if (!rows.some(row => pending(row.status)) && !(detail && pending(detail.status))) return
+    if (modelWork?.paused || (!rows.some(row => pending(row.status)) && !(detail && pending(detail.status)))) return
     const timer = window.setInterval(() => setRevision(value => value + 1), 5000)
     return () => window.clearInterval(timer)
-  }, [rows, detail?.status, kind])
+  }, [rows, detail?.status, kind, modelWork?.paused])
   function choose(id: string, replace = false) {
     if (id === selected) return
     focusEdition.current = !replace
@@ -368,6 +370,7 @@ export default function App() {
     setSourceId(id)
   }
   async function generate(cutoff: string) {
+    if (modelWork?.paused || available !== true || !canGenerate) return
     if (kind === 'industry') return
     setGenerating(true); setError('')
     try {
@@ -378,8 +381,9 @@ export default function App() {
   }
   return <main className="briefing-shell">
     <header className="briefing-masthead"><nav className="workspace-breadcrumbs" aria-label={copy('工作区导航', 'Workspace navigation')}><a data-workspace-link href={withLanguage(resolveWorkspaceUrl(import.meta.env.VITE_HOME_URL, 'home'), language)}>{copy('首页', 'Home')}</a><span aria-hidden="true">/</span><WorkspaceSwitcher current="briefing" /></nav><LanguageSelector /></header>
-    <div className="briefing-heading"><div className="section-heading"><h1>{copy('市场简报', 'Market Briefing')}</h1><InfoHint label={copy('关于市场简报', 'About Market Briefing')} detail={copy('关注值得理解的变化，保留每一份判断的依据。', 'Understand meaningful changes, with the evidence behind each edition.')} /></div>{!isIndustry && canGenerate && <div className="generation-actions"><button ref={generateButton} onClick={() => setShowGenerate(value => !value)} aria-expanded={showGenerate} disabled={available === false}>{copy('生成本期', 'Generate edition')}</button>{available === false && <InfoHint kind="attention" label={copy('生成不可用', 'Generation unavailable')} detail={copy('报告生成环境尚未配置。已完成报告仍可阅读。', 'Report generation is not configured. Completed editions remain available.')} />}</div>}</div>
-    {!isIndustry && showGenerate && <GenerateEditionForm kind={kind} busy={generating} onGenerate={generate} onCancel={() => { setShowGenerate(false); generateButton.current?.focus() }} /> }
+    <div className="briefing-heading"><div className="section-heading"><h1>{copy('市场简报', 'Market Briefing')}</h1><InfoHint label={copy('关于市场简报', 'About Market Briefing')} detail={copy('关注值得理解的变化，保留每一份判断的依据。', 'Understand meaningful changes, with the evidence behind each edition.')} /></div>{!isIndustry && canGenerate && <div className="generation-actions"><button ref={generateButton} onClick={() => setShowGenerate(value => !value)} aria-expanded={showGenerate} disabled={available !== true || modelWork?.paused}>{modelWork?.paused ? copy('研究已暂停', 'Research paused') : copy('生成本期', 'Generate edition')}</button>{available === false && <InfoHint kind="attention" label={copy('生成不可用', 'Generation unavailable')} detail={modelWork?.paused ? modelWork.message || copy('研究已暂停，已完成报告仍可阅读。', 'Research is paused. Completed editions remain available.') : copy('报告生成环境尚未配置。已完成报告仍可阅读。', 'Report generation is not configured. Completed editions remain available.')} />}</div>}</div>
+    {!isIndustry && modelWork?.paused && <p className="muted" role="status">{modelWork.message || copy('研究已暂停，已完成报告仍可阅读。', 'Research is paused. Completed editions remain available.')}</p>}
+    {!isIndustry && showGenerate && !modelWork?.paused && <GenerateEditionForm kind={kind} busy={generating} onGenerate={generate} onCancel={() => { setShowGenerate(false); generateButton.current?.focus() }} /> }
     {!isIndustry && error && <RequestRecovery error={error} onRetry={() => setRevision(value => value + 1)} busy={loading} />}
     <div className="briefing-tabs" role="tablist" aria-label={copy('报告类型', 'Report type')}>{(['daily', 'weekly', 'industry'] as const).map(type => <button role="tab" aria-selected={kind === type} key={type} onClick={() => changeKind(type)}>{type === 'daily' ? copy('日报', 'Daily') : type === 'weekly' ? copy('周报', 'Weekly') : copy('行业研究', 'Industry research')}</button>)}</div>
     {isIndustry ? <IndustryResearch /> : <div className="briefing-layout"><aside className="edition-index" aria-busy={loading}><h2>{copy('历史简报', 'Editions')}</h2>{loading && detail && <LoadingNotice active message={copy('加载中', 'Loading')} compact />}{dates.map(({ date, versions, primary }) => <div className="edition-date" key={date}><button className={`edition ${versions.some(row => row.report_id === selected) ? 'selected' : ''}`} aria-current={versions.some(row => row.report_id === selected) ? 'date' : undefined} onClick={() => choose(primary.report_id)}><strong>{date}</strong><span>{copy('版本', 'Version')} {primary.version}<small className={primary.status === 'failed' ? 'negative' : ''}>{statusText(primary.status)}</small></span></button>{versions.length > 1 && <details className="edition-history"><summary>{copy('版本历史', 'Version history')} · {versions.length}</summary>{versions.map(row => <button key={row.report_id} aria-current={selected === row.report_id ? 'page' : undefined} onClick={() => choose(row.report_id)} aria-label={`${date} ${copy('版本', 'Version')} ${row.version} ${statusText(row.status)}`}><span>v{row.version}</span><span className={row.status === 'failed' ? 'negative' : ''}>{statusText(row.status)}</span></button>)}</details>}</div>)}{total > rows.length && <button className="load-more" onClick={() => setLimit(value => value + 30)}>{copy('更多简报', 'More editions')}</button>}</aside>
@@ -388,6 +392,7 @@ export default function App() {
         {!detail && !selected && !loading && !error && <p className="muted">{copy('尚无报告。', 'No editions yet.')}</p>}
         {detailError && <RequestRecovery error={detailError} onRetry={() => setRevision(value => value + 1)} busy={detailLoading} />}
       {detail && <><header className="edition-header" id="edition-heading"><p className="eyebrow">{copy('版本', 'VERSION')} {detail.version} · <span role={pending(detail.status) ? 'status' : undefined}>{statusText(detail.status)}</span>{pending(detail.status) && <InfoHint label={copy('生成进度', 'Generation progress')} detail={copy('正在整理本期材料并生成报告，完成后此处自动更新。', 'Preparing evidence and composing this edition. This page updates when it completes.')} />}{detail.edition_role === 'preview' ? ` · ${copy('本地预览', 'LOCAL PREVIEW')}` : ''}<InfoHint label={copy('报告语言与状态', 'Report language and status')} detail={detail.status === 'completed' ? copy('研究内容保留原文。生成完成不代表来源齐备，限制见覆盖说明。', 'Research stays in its original language. Completed generation does not mean complete source coverage; see coverage details.') : copy('研究内容保留原文；切换界面语言不会改写报告。', 'Research stays in its original language; changing the interface language does not translate the report.')} /></p><h2>{detail.report_type === 'daily' ? copy('投研日报', 'Daily research briefing') : copy('投研周报', 'Weekly research briefing')} | {detail.report_date}</h2><dl className="edition-facts"><div><dt>{copy('资料时间范围', 'Evidence window')}</dt><dd>{detail.window.period_start && stamp(detail.window.period_start)} — {stamp(detail.cutoff)}</dd></div><div><dt>{copy('生成完成', 'Generated')}</dt><dd>{detail.completed_at ? stamp(detail.completed_at) : '—'}</dd></div><div><dt>{copy('时区', 'Timezone')}</dt><dd>{detail.window.timezone}</dd></div></dl></header>
+        {detail.status === 'paused' && <div className="muted" role="status"><p>{t(detail.error || copy('研究已暂停，原始资料与草稿保留，此任务不会自动恢复。', 'Research is paused. Inputs and drafts remain saved; this task will not resume automatically.'))}</p>{readableAlternative && <button onClick={() => choose(readableAlternative.report_id)}>{copy('阅读可用版本', 'Read available edition')} · {readableAlternative.report_date} · v{readableAlternative.version}</button>}</div>}
         {detail.status === 'failed' && <div className="error" role="alert"><p>{t(detail.error || copy('这次生成未形成可读报告。', 'This attempt did not produce a readable report.'))}</p>{readableAlternative && <button onClick={() => choose(readableAlternative.report_id)}>{copy('阅读可用版本', 'Read available edition')} · {readableAlternative.report_date} · v{readableAlternative.version}</button>}</div>}
         <CoverageSummary detail={detail} />
         {detail.report && <ReportBody detail={detail} onSource={showSource} canReadSources={canReadSources} />}

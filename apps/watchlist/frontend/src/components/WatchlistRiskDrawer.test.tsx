@@ -433,3 +433,52 @@ it('does not refresh an old instrument when a risk save finishes after the scope
   expect(props.onChanged).not.toHaveBeenCalled()
   expect(request.mock.calls.filter(([path, init]) => path.includes('instrument_id=a') && !init?.method)).toHaveLength(1)
 })
+
+const assessedV1 = {
+  event_version_id: 'a:1', title: '原已确认风险', body: '原判断依据未解除。', status: 'active',
+  reviewed_at: '2026-09-20T08:00:00Z', checked_at: '2026-09-19T08:00:00Z', confidence: 'confirmed',
+  reason: '原风险已核实。', sources: [{ source_id: 'original:v1', version_id: 'source-v1', title: '原始风险依据', url: 'https://example.com/risk-v1' }],
+}
+
+it('keeps confirmed content without inventing pending review after a NAV-only version', async () => {
+  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: '标的 A' }], cases: [{
+    ...caseFor('a'), signal: 'sector:stable', title: '最新净值读数标题', body: '仅数值更新的正文。',
+    evidence_json: { event_version_id: 'a:3', risk_assessment: { status: 'pending', event_version_id: 'a:3' },
+      last_assessed_snapshot: assessedV1, pending_revision: null, confidence: 'reported',
+      sources: [{ title: '最新净值输入', url: 'https://example.com/nav-v3' }] },
+  }] })
+  render(<InstrumentRiskDrawer instrumentId="a" instrumentName="标的 A" onClose={vi.fn()} onAskAssistant={vi.fn()} />)
+  await screen.findByRole('button', { name: '重点关注 1' })
+  expect(screen.queryByRole('button', { name: /待风控复核|待核实/ })).toBeNull()
+  expect(screen.getByRole('heading', { name: '原已确认风险' })).toBeTruthy()
+  expect(screen.getByText('原判断依据未解除。')).toBeTruthy()
+  expect(screen.queryByText('最新净值读数标题')).toBeNull()
+  expect(screen.queryByRole('region', { name: '新进展待复核' })).toBeNull()
+  fireEvent.click(screen.getByText('跟进与证据'))
+  expect(screen.getByText('a:1')).toBeTruthy()
+  expect(screen.getByRole('link', { name: '原始风险依据' }).getAttribute('href')).toBe('https://example.com/risk-v1')
+  expect(screen.getByText('证据状态：已确认')).toBeTruthy()
+  expect(screen.queryByRole('link', { name: '最新净值输入' })).toBeNull()
+})
+
+it('retains a pending v2 receipt and its sources after a later NAV-only v3 update', async () => {
+  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: '标的 A' }], cases: [{
+    ...caseFor('a'), signal: 'sector:stable', title: '净值版本三', body: '净值更新不替换待核资料。',
+    evidence_json: { event_version_id: 'a:3', risk_assessment: pendingReceipt, last_assessed_snapshot: assessedV1,
+      pending_revision: { event_version_id: 'a:2', title: '待核的业务进展', body: '第二版尚缺核实。', status: 'pending', confidence: 'reported',
+        checked_at: '2026-09-27T07:51:49Z', sources: [{ source_id: 'pending:v2', version_id: 'source-v2', title: '第二版原件', url: 'https://example.com/risk-v2' }] },
+      confidence: 'confirmed', sources: [] },
+  }] })
+  render(<InstrumentRiskDrawer instrumentId="a" instrumentName="标的 A" onClose={vi.fn()} onAskAssistant={vi.fn()} />)
+  await screen.findByRole('button', { name: '待核实 1' })
+  expect(screen.queryByRole('button', { name: /待风控复核/ })).toBeNull()
+  expect(screen.getByRole('heading', { name: '原已确认风险' })).toBeTruthy()
+  expect(screen.getByText('待核的业务进展')).toBeTruthy()
+  expect(screen.getByText(pendingReceipt.reason)).toBeTruthy()
+  fireEvent.click(screen.getByText('跟进与证据'))
+  expect(screen.getByText('a:1')).toBeTruthy()
+  expect(screen.getByText('a:2')).toBeTruthy()
+  expect(screen.getByRole('link', { name: '第二版原件' }).getAttribute('href')).toBe('https://example.com/risk-v2')
+  expect(screen.getByText('新进展证据状态：报道线索')).toBeTruthy()
+  expect(screen.queryByText('a:3')).toBeNull()
+})

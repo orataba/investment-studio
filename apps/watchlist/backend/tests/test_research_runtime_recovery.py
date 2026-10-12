@@ -351,6 +351,9 @@ def test_native_output_limit_marker_is_recorded_as_generation_failure(client, mo
 
 @pytest.mark.parametrize('has_draft', [False, True])
 def test_first_attempt_timeout_recovers_only_a_persisted_bound_review(client, monkeypatch, has_draft):
+    clock = iter([0, 1, 1801])
+    from types import SimpleNamespace
+    monkeypatch.setattr(runner, "time", SimpleNamespace(monotonic=lambda: next(clock)))
     from studio_identity import current_principal
     cutoff = '2026-09-23T00:00:00Z'
     save_run({'sector_run': True}, status='queued')
@@ -504,3 +507,14 @@ def test_research_publication_rechecks_current_shared_write_authority(client, su
             sector_research.apply_result(session, session.get(ResearchEntry, 'recovery'), '{"reviews": []}')
         assert denied.value.status_code == 403
         assert 'reviews' not in session.get(ResearchEntry, 'recovery').context_json
+
+
+@pytest.fixture(autouse=True)
+def admit_offline_runner_fixtures(monkeypatch):
+    # These synthetic runs test leases, credentials and process failure handling.
+    # Real Invested admission (including these execution boundaries) is exercised
+    # separately by test_research_policy with registry/status-backed assets.
+    from watchlist_app.services import research_policy
+    from studio_runtime.model_work import require_model_work
+    monkeypatch.setattr(research_policy, "require_run_policy", lambda *a, **kw: require_model_work())
+    monkeypatch.setattr(research_policy, "require_instrument_research", lambda *a, **kw: require_model_work())

@@ -163,6 +163,8 @@ def risk_review(watchlist_id: str | None = None, instrument_id: str | None = Non
 
 @router.post("/risk/review/runs", status_code=202)
 def start_review(request: ScopeInput, session: Session = Depends(get_db_session)):
+    from studio_runtime.model_work import require_model_work
+    require_model_work()
     if not harness_available():
         raise HTTPException(503, "风险研判尚未配置运行环境。")
     try:

@@ -23,6 +23,11 @@ RID = 'saved-failed-run'
 @pytest.fixture
 def saved_retry(client, monkeypatch):
     from watchlist_app.services import shared_instrument_registry
+    from watchlist_app.core.settings import get_settings
+    from .conftest import seed_shared_instrument, canonical_quote_policy
+    monkeypatch.setattr(get_settings(), 'research_automatic_enabled', True)
+    seed_shared_instrument({'instrument_id': IID, 'instrument_name': 'Retry ETF', 'instrument_type': 'etf',
+        'currency': 'USD', 'exchange_code': 'ARCX', 'quote_selection_policy': canonical_quote_policy('etf'), 'identifiers': [{'identifier_type': 'provider_symbol', 'identifier_value': 'fmp:RETRY', 'is_primary': True}]})
     class Clock(datetime):
         @classmethod
         def now(cls, tz=None):
@@ -79,9 +84,8 @@ def test_worker_recovers_cross_day_weekend_original_once_without_new_generation(
         assert session.scalar(select(func.count()).select_from(ResearchEntry).where(ResearchEntry.kind == 'analysis')) == 1
 
 
-@pytest.mark.parametrize('advance_attempt', [True, False], ids=['next-failure', 'same-failure'])
-def test_recovery_during_risk_pass_tracks_actual_failure_and_cooldown(saved_retry, monkeypatch, advance_attempt):
-    from watchlist_app.services import research_workbench, risk_officer
+def test_recovery_attempt_and_cooldown_are_rechecked_between_worker_passes(saved_retry, monkeypatch):
+    from watchlist_app.services import risk_officer
     clock = [NOW]
     class Clock(datetime):
         @classmethod
@@ -89,44 +93,37 @@ def test_recovery_during_risk_pass_tracks_actual_failure_and_cooldown(saved_retr
             return clock[0]
     monkeypatch.setattr(service, 'datetime', Clock)
     monkeypatch.setattr(runner, 'datetime', Clock)
-    monkeypatch.setattr(service, 'daily_review_groups', lambda session: [[IID]])
-    monkeypatch.setattr(research_workbench, 'portfolio_options', lambda: {
-        'portfolios': [{'portfolio_id': key} for key in ('one', 'two', 'three')]})
-    monkeypatch.setattr(risk_review_state, 'current_scope', lambda session, scope: {
-        'instrument_ids': [IID] if scope.get('portfolio_id') else []})
-    monkeypatch.setattr(risk_officer, 'begin_run', lambda session, **scope: (
-        SimpleNamespace(entry_id='risk:' + scope['portfolio_id'], status='queued'), True))
+    monkeypatch.setattr(service, 'daily_review_groups', lambda session: [])
+    monkeypatch.setattr(risk_review_state, 'current_scope', lambda session, scope: {'instrument_ids': [IID]})
+    monkeypatch.setattr(risk_officer, 'begin_run', lambda *a, **kw: (None, False))
     calls = []
     def analyze(run_id):
-        if run_id.startswith('risk:'):
-            calls.append(run_id)
-            # The first risk job ends before the retry cooldown; the second
-            # reaches it. A third job keeps the same worker pass open.
-            clock[0] += timedelta(seconds={'risk:one': 299, 'risk:two': 1, 'risk:three': 300}[run_id])
-            return
         assert run_id == RID
         with get_session_factory()() as session:
             run = session.get(ResearchEntry, run_id)
             context = deepcopy(run.context_json)
-            attempt = context['execution']['attempt'] + int(advance_attempt)
+            attempt = context['execution']['attempt'] + 1
             context['execution'].update(attempt=attempt, resume=False)
             context['runtime_error'] = saved_retry['runtime_error']
             run.context_json, run.status = context, 'failed'
-            run.completed_at = clock[0] if advance_attempt else NOW - timedelta(minutes=2)
-            calls.append(f'recovery:{attempt}')
+            run.completed_at = clock[0]
+            calls.append(attempt)
             session.commit()
     monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
-
     service.run_daily_reviews(Event())
-
-    expected = (['recovery:2', 'risk:one', 'risk:two', 'recovery:3', 'risk:three'] if advance_attempt
-                else ['recovery:1', 'risk:one', 'risk:two', 'risk:three'])
-    assert calls == expected
+    clock[0] += timedelta(seconds=299)
+    service.run_daily_reviews(Event())
+    assert calls == [2]
+    clock[0] += timedelta(seconds=1)
+    service.run_daily_reviews(Event())
+    clock[0] += timedelta(days=1)
+    service.run_daily_reviews(Event())
+    assert calls == [2, 3]
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, RID)
         for key in ('cutoff', 'input_snapshot_cutoff', 'instrument_inputs', 'submitted_draft'):
             assert run.context_json[key] == saved_retry[key]
-        assert service.automatic_recovery_runs(session) == ({} if advance_attempt else {IID: RID})
+        assert service.automatic_recovery_runs(session) == {}
         assert session.scalar(select(func.count()).select_from(ResearchEntry).where(ResearchEntry.kind == 'analysis')) == 1
 
 
@@ -256,7 +253,7 @@ def test_retry_invalidated_by_active_research_keeps_dependent_risk_scope_pending
         assert session.get(ResearchEntry, 'active-competitor').status == 'running'
 
 
-def test_pending_theme_keeps_existing_automatic_scope_and_rechecks_its_removal(saved_retry):
+def test_pending_theme_never_expands_invested_scope(saved_retry):
     with get_session_factory()() as session:
         session.add(InstrumentAttributeValue(instrument_id=IID, attribute_key='coverage_status', value_json='Watch', adopted_at=NOW))
         theme = ResearchEntry(entry_id='pending-theme', topic_id='instrument-events:' + IID, team_id='default',
@@ -265,8 +262,8 @@ def test_pending_theme_keeps_existing_automatic_scope_and_rechecks_its_removal(s
         session.add(theme)
         session.commit()
         assert IID not in service.active_research_ids(session)
-        assert service.daily_review_groups(session, now=NOW) == [[IID]]
-        assert service.automatic_recovery_runs(session) == {IID: RID}
+        assert service.daily_review_groups(session, now=NOW) == []
+        assert service.automatic_recovery_runs(session) == {}
         theme.context_json = {**theme.context_json, 'theme_status': 'closed'}
         session.commit()
         assert service.automatic_recovery_runs(session) == {}
@@ -289,7 +286,7 @@ def test_ordinary_due_worker_does_not_revive_failure_superseded_by_compiled_user
         assert service.automatic_recovery_runs(session) == {}
     monkeypatch.setattr(service, '_research_due', lambda market, now: True)
     monkeypatch.setattr(research_dossier, 'read_dossier', lambda session, iid: {'instrument_id': iid})
-    monkeypatch.setattr(research_triggers, 'research_trigger', lambda *args, **kw: None)
+    monkeypatch.setattr(research_triggers, 'research_trigger', lambda *args, **kw: {'reasons': [], 'coverage_cursor': {}})
     monkeypatch.setattr(research_workbench, 'portfolio_options', lambda: {'portfolios': []})
     monkeypatch.setattr(risk_review_state, 'current_scope', lambda session, scope: {'instrument_ids': []})
     monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda *args, **kwargs: pytest.fail('Superseded original must not run via the ordinary daily branch'))
@@ -319,9 +316,13 @@ def test_user_queued_run_is_not_dispatched_or_failed_by_daily_service(saved_retr
 def test_unsupported_market_retry_does_not_block_other_recoverable_instruments(saved_retry, monkeypatch):
     from watchlist_app.services import shared_instrument_registry, research_workbench, risk_officer
     other = 'supported-retry'
+    from watchlist_app.core.settings import get_settings
+    from .conftest import seed_shared_instrument, canonical_quote_policy
+    seed_shared_instrument({'instrument_id': other, 'instrument_name': 'Supported equity', 'instrument_type': 'equity',
+        'currency': 'USD', 'exchange_code': 'XNYS', 'quote_selection_policy': canonical_quote_policy('equity'), 'identifiers': [{'identifier_type': 'provider_symbol', 'identifier_value': 'fmp:SUPPORTED', 'is_primary': True}]})
     with get_session_factory()() as session:
-        session.add(InstrumentDetail(instrument_id=other, instrument_name='Supported ETF', instrument_type='etf',
-            detail_view_type='etf', is_active=True, metadata_json={}))
+        session.add(InstrumentDetail(instrument_id=other, instrument_name='Supported equity', instrument_type='equity',
+            detail_view_type='equity', is_active=True, metadata_json={}))
         session.flush()
         session.add(InstrumentAttributeValue(instrument_id=other, attribute_key='coverage_status', value_json='Invested', adopted_at=NOW))
         session.add(ResearchTopic(topic_id='instrument-events:' + other, title='Other', team_id='default', visibility='team', instrument_ids=[other]))
@@ -370,7 +371,7 @@ def test_user_queued_risk_is_not_dispatched_or_failed_by_daily_service(saved_ret
         assert session.get(ResearchEntry, 'user-risk').status == 'queued'
 
 
-def test_next_market_day_creates_service_run_without_adopting_old_user_failure(saved_retry, monkeypatch):
+def test_next_market_day_does_not_create_a_fresh_task_without_new_information(saved_retry, monkeypatch):
     from watchlist_app.services import research_workbench
     class Monday(datetime):
         @classmethod
@@ -399,7 +400,7 @@ def test_next_market_day_creates_service_run_without_adopting_old_user_failure(s
     monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: analyze(run_id))
     service.run_daily_reviews(Event())
     service.run_daily_reviews(Event())
-    assert len(calls) == 1
+    assert calls == []
     with get_session_factory()() as session:
         original = session.get(ResearchEntry, RID)
         assert original.status == 'failed' and original.context_json == original_context

@@ -644,3 +644,31 @@ it('shows missing trading sessions before reading the report and lists exact dat
   expect(screen.getByText(/应有交易日行情缺失，涨跌幅不可用.*缺失日期: 2026-09-08/)).toBeTruthy()
   expect(screen.getByText(/交易日历尚未确认，涨跌幅不可用/)).toBeTruthy()
 })
+
+
+it('keeps the saved report readable while global pause blocks a paid edition', async () => {
+  const fetcher = vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { harness_available: false, can_generate: false, can_read_sources: true, model_work: { paused: true, code: 'paused', message: '全局研究已暂停。' } }
+    : url.includes('/reports?') ? { rows: [detail], total: 1 } : detail }))
+  vi.stubGlobal('fetch', fetcher)
+  page(<App />)
+  await screen.findByRole('heading', { name: '央行继续观察就业' })
+  expect(screen.getByText('全局研究已暂停。')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: '生成本期' })).toBeNull()
+  expect(fetcher.mock.calls.every((call: unknown[]) => !(call[1] as RequestInit | undefined)?.method || (call[1] as RequestInit).method === 'GET')).toBe(true)
+})
+
+
+it('shows an intentional paused edition as retained work rather than a failed attempt', async () => {
+  const paused = { ...detail, status: 'paused', completed_at: null, error: '研究已暂停，原始资料与草稿保留。', report: null }
+  const fetcher = vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { harness_available: false, can_generate: false, can_read_sources: true, model_work: { paused: true, code: 'paused', message: '全局研究已暂停。' } }
+    : url.includes('/reports?') ? { rows: [paused], total: 1 } : paused }))
+  vi.stubGlobal('fetch', fetcher)
+  page(<App />)
+  const notice = await screen.findByText('研究已暂停，原始资料与草稿保留。')
+  expect(notice.closest('[role="status"]')).toBeTruthy()
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(screen.getAllByText('已暂停').length).toBeGreaterThan(0)
+  expect(fetcher.mock.calls.every((call: unknown[]) => !(call[1] as RequestInit | undefined)?.method || (call[1] as RequestInit).method === 'GET')).toBe(true)
+})

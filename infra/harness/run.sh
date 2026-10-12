@@ -10,4 +10,7 @@ if [[ -z "$harness_node" || ! -r "$harness_entry" ]]; then
 fi
 # Request execution never resolves or downloads packages. All callers use the
 # dependency tree installed for this release and the same restricted environment.
+if [[ -n "${INVESTMENT_STUDIO_MODEL_USAGE_PATCH:-}" ]]; then
+  exec "$harness_node" "$harness_entry" --patch "$INVESTMENT_STUDIO_MODEL_USAGE_PATCH" "$@"
+fi
 exec "$harness_node" "$harness_entry" "$@"

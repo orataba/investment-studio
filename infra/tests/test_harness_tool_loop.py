@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_native_reasoning_tool_loop_preserves_bound_facts_and_errors(tmp_path, app, api_status):
     if not (ROOT / "infra/harness/node_modules/@deepseek-ai/dsh/lib/bin.js").exists() or not shutil.which("node"):
         pytest.skip("Pinned Harness and Node must be provisioned for the native contract probe")
+    from studio_runtime.provider_usage import UsageCapture
+    usage = UsageCapture(tmp_path)
     image_case = app == "portfolio-image"
     app = "portfolio" if image_case else app
     configuration = {
@@ -100,6 +102,7 @@ def test_native_reasoning_tool_loop_preserves_bound_facts_and_errors(tmp_path, a
     env.update(app_env)
     env.update({api_env: base + "/api", "DEEPSEEK_API_KEY": "offline-provider-key", "DEEPSEEK_BASE_URL": base + "/v1", "DSH_HOME": str(tmp_path / "home"),
                 "DSH_TOOLS_MODE": "native", "DSH_PERMISSION_MODE": "read-only", "DSH_TELEMETRY_DISABLED": "1", "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME": "deepseek-v4.1-flash"})
+    env.update(usage.environment("capture" if app == "portfolio" else "generation"))
     try:
         result = subprocess.run([str(ROOT / "infra/harness/run.sh"), "--profile", "headless", "--patch", str(ROOT / "infra/config/deepseek_harness.patch.yml"),
                                  "--patch", str(ROOT / patch), "Read the bound context once and explain whether the requested return is available."],
@@ -141,3 +144,10 @@ def test_native_reasoning_tool_loop_preserves_bound_facts_and_errors(tmp_path, a
     else:
         assert "HTTP Error 500" in delivered
         assert "private-invalid-input" not in delivered
+
+    receipt = usage.read()["invocations"][0]
+    assert receipt["status"] == "complete"
+    assert receipt["reported_calls"] == receipt["started_calls"] == 2
+    assert receipt["tokens"]["uncached_input_tokens"] == 200
+    assert receipt["tokens"]["output_tokens"] == 40
+    assert "bound facts" not in usage.path.read_text() and "call_fixture" not in usage.path.read_text()

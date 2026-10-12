@@ -231,24 +231,6 @@ def test_price_adjustment_cutoff_never_uses_a_later_factor_and_missing_factor_is
     assert "front" in missing["unavailable_price_mode_reasons"]
 
 
-def test_numeric_monitor_sees_return_semantics_and_interval_availability_changes():
-    from copy import deepcopy
-    from unittest.mock import Mock
-    from watchlist_app.services.research_triggers import numeric_monitor_inputs
-    series = {"metadata": {"return_kind": "total_return", "return_measure": "simple", "return_series_status": "ready"},
-        "currency": "HKD", "frequency": {"resolved_frequency": "daily"},
-        "points": [{"date": "2026-09-01", "value": 100}, {"date": "2026-09-02", "value": 101}],
-        "intervals": [{"start_date": "2026-09-01", "date": "2026-09-02", "value": 0.01, "status": "complete"}]}
-    before = numeric_monitor_inputs(Mock(scalar=Mock(side_effect=[{"research_returns": series}, {}])), "test")
-    revised = deepcopy(series)
-    revised["metadata"]["return_series_status"] = "partial"
-    revised["intervals"][0].update(value=None, status="unavailable", reason="unresolved_action")
-    after = numeric_monitor_inputs(Mock(scalar=Mock(side_effect=[{"research_returns": revised}, {}])), "test")
-    assert before != after
-    assert after["series"]["status"] == "partial"
-    assert after["series"]["frequency"] == {"resolved_frequency": "daily"}
-
-
 @pytest.mark.parametrize("kind", ["equity", "etf", "index"])
 def test_materialized_detail_keeps_raw_observation_when_analytical_series_is_unavailable(client, kind):
     from .conftest import seed_shared_instrument, canonical_quote_policy

@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_native_output_boundary_and_product_budget_scope(tmp_path, mode, briefing_mode, budget, finish):
     if not (ROOT / 'infra/harness/node_modules/@deepseek-ai/dsh/lib/bin.js').exists() or not shutil.which('node'):
         pytest.skip('Pinned Harness and Node must be provisioned for the native contract probe')
+    from studio_runtime.provider_usage import UsageCapture
+    usage = UsageCapture(tmp_path)
     requests = []
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -33,7 +35,7 @@ def test_native_output_boundary_and_product_budget_scope(tmp_path, mode, briefin
                  'model': 'deepseek-v4.1-flash', 'choices': [{'index': 0,
                  'delta': {'role': 'assistant', 'content': 'fixture'}, 'finish_reason': None}]},
                 {'id': 'fixture', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': finish}],
-                 'usage': {'prompt_tokens': 100, 'completion_tokens': budget if finish == 'length' else 1}},
+                 'usage': {'prompt_tokens': 100, 'prompt_tokens_details': {'cached_tokens': 30}, 'completion_tokens': budget if finish == 'length' else 1}},
             ]
             wire = (''.join('data: ' + json.dumps(chunk) + '\n\n' for chunk in chunks) + 'data: [DONE]\n\n').encode()
             self.send_response(200)
@@ -54,6 +56,7 @@ def test_native_output_boundary_and_product_budget_scope(tmp_path, mode, briefin
         DSH_TELEMETRY_DISABLED='1', INVESTMENT_STUDIO_RESEARCH_PROJECT_ROOT=str(ROOT),
         INVESTMENT_STUDIO_RESEARCH_PERSONA='Reply briefly. This is an offline test.',
         INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE=mode, INVESTMENT_STUDIO_BRIEFING_HARNESS_MODE=briefing_mode)
+    env.update(usage.environment("review" if mode == "review" or briefing_mode == "review" else "generation"))
     try:
         result = subprocess.run([str(ROOT / 'infra/harness/run.sh'), '--profile', 'headless',
             '--patch', str(ROOT / 'infra/config/deepseek_harness.patch.yml'),
@@ -76,3 +79,10 @@ def test_native_output_boundary_and_product_budget_scope(tmp_path, mode, briefin
     else:
         assert result.returncode == 0, result.stderr
         assert marker not in result.stderr
+
+    receipt = usage.read()["invocations"][0]
+    assert receipt["status"] == "complete"
+    assert receipt["reported_calls"] == receipt["started_calls"] == 1
+    assert receipt["tokens"] == {"uncached_input_tokens": 70, "cache_read_tokens": 30, "cache_write_tokens": 0,
+                                 "output_tokens": budget if finish == "length" else 1}
+    assert "fixture" not in usage.path.read_text()

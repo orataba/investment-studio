@@ -5,6 +5,7 @@ import json
 import pytest
 
 from .test_research_themes import research_client, _themes
+from .research_policy_fixture import seed_invested_research
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services.research_themes import AnalystThemeUpdate, save_analyst_theme, theme_index
 
@@ -14,7 +15,7 @@ def test_title_only_user_theme_is_not_pinned_and_analyst_builds_its_baseline(res
     assert created.status_code == 201, created.text
     theme = created.json()
     assert theme["question"] == "" and theme["baseline_status"] == "pending" and not theme["pinned"]
-    assert theme["research_status"] == "unavailable"
+    assert theme["research_status"] == "paused"
     with get_session_factory()() as session:
         updated = save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(
             theme_key=theme["theme_key"], theme_id=theme["theme_id"], question="利率与信用变化是否改变债券回报？",
@@ -59,6 +60,7 @@ def test_active_theme_capacity_is_enforced_for_creation_and_resume(research_clie
 def test_new_theme_dispatch_returns_the_saved_run_without_calling_a_live_model(research_client, monkeypatch):
     from watchlist_app.services import research_runner
     calls = []
+    seed_invested_research(monkeypatch, ["fund-us-agg"])
     monkeypatch.setattr(research_runner, "harness_available", lambda: True)
     monkeypatch.setattr(research_runner, "authorize_run", lambda actor, run_id, *, attempt: "test-run-token")
     monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda *args, **kwargs: calls.append(args[1]))
@@ -74,7 +76,7 @@ def test_automatic_round_requires_each_active_theme_receipt(research_client):
     with get_session_factory()() as session:
         run, _ = sector_research.begin_run(session, ["fund-us-agg"])
         run.context_json = {**run.context_json, "research_dossiers": [read_dossier(session, "fund-us-agg")]}
-        with pytest.raises(ValueError, match="逐一复核"):
+        with pytest.raises(ValueError, match="未复核"):
             sector_research.validate_result(session, run, sector_research.ReviewResult.model_validate({"reviews": [{"instrument_id": "fund-us-agg"}]}))
         result = {"reviews": [{"instrument_id": "fund-us-agg", "themes": [{"theme_key": theme["theme_key"], "theme_id": theme["theme_id"]}]}]}
         sector_research.apply_result(session, run, json.dumps(result))
@@ -96,6 +98,7 @@ from .test_research_activity import activity_client, event, publish
 def test_attach_brief_event_to_existing_theme_preserves_original_and_requests_research(activity_client, monkeypatch):
     from watchlist_app.services.research_activity import research_activity, resolve_event_reference
     from watchlist_app.services import research_runner
+    seed_invested_research(monkeypatch, ["xlk"])
     theme = activity_client.post("/api/research/instruments/xlk/themes", json={"title": "资金用途"}).json()
     with get_session_factory()() as session:
         publish(session, events=[event(follow_up="none", next_watch="")])
@@ -169,7 +172,7 @@ def test_current_authenticated_user_can_own_title_only_theme_without_directory_s
     actor = research_client.get(_themes()).json()["identity"]
     response = research_client.post(_themes(), json={"title": "自主研究课题", "responsible_user_id": actor["user_id"]})
     assert response.status_code == 201, response.text
-    assert response.json()["research_status"] == "unavailable"
+    assert response.json()["research_status"] == "paused"
 
 
 def test_theme_only_numeric_publication_has_its_own_immutable_source_version(research_client):

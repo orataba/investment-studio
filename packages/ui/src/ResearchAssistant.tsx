@@ -1,3 +1,4 @@
+import type { ModelWorkStatus } from './modelWork'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useModalDialog } from './useModalDialog'
 import InfoHint from './InfoHint'
@@ -61,6 +62,8 @@ type Entry = {
 }
 type Connections = {
   assistant_available: boolean
+  model_work?: ModelWorkStatus
+  reason?: string | null
   portfolios: Array<{ portfolio_id: string; portfolio_name: string }>
 }
 type ResearchPublication = {
@@ -95,7 +98,7 @@ const toolLabels: Record<string, string> = {
   search: '公开信息检索',
   source: '公开原文',
 }
-const stateLabels: Record<string, string> = { queued: '等待回复', running: '回复中', draft: '研究答复', failed: '回复未完成' }
+const stateLabels: Record<string, string> = { queued: '等待回复', running: '回复中', paused: '已暂停', draft: '研究答复', failed: '回复未完成' }
 const matchingTopic = (topic: Topic, instrumentId?: string, portfolioId?: string) => topic.status !== 'archived'
   && topic.topic_id !== 'us-sector-daily-review'
   && !topic.topic_id.startsWith('instrument-events:')
@@ -341,7 +344,7 @@ export default function ResearchAssistant({
   }, [selected, instrumentId, pagePortfolioId])
 
   useEffect(() => {
-    if (!running || !selected) return
+    if (!running || !selected || connections?.model_work?.paused) return
     let active = true
     const timer = window.setInterval(() => {
       read<Conversation>(`/research/topics/${encodeURIComponent(selected)}`)
@@ -361,7 +364,7 @@ export default function ResearchAssistant({
       active = false
       window.clearInterval(timer)
     }
-  }, [selected, running])
+  }, [selected, running, connections?.model_work?.paused])
 
   useEffect(() => {
     for (const entry of detail?.entries || []) {
@@ -436,7 +439,7 @@ export default function ResearchAssistant({
   }
   async function send() {
     const message = question.trim()
-    if (!message || busy || historyLoading || running || otherRunning || !connections?.assistant_available) return
+    if (!message || busy || historyLoading || running || otherRunning || (!connections?.assistant_available || connections?.model_work?.paused)) return
     const pageContext: Record<string, string | null | ResearchAssistantReference> = {
       surface: pagePortfolioId ? 'portfolio' : instrumentId ? 'instrument' : 'watchlist',
       instrument_id: instrumentId || (focusIds.length === 1 ? focusIds[0] : null),
@@ -788,8 +791,8 @@ export default function ResearchAssistant({
             />
           </label>
           <small>
-            {connections && !connections.assistant_available
-              ? 'DeepSeek 尚未连接'
+            {connections?.model_work?.paused ? connections.model_work.message || '研究已暂停，已保存的内容仍可查看。' : connections && !connections.assistant_available
+              ? connections.reason || 'DeepSeek 尚未连接'
               : '⌘ / Ctrl + Enter 发送'}
           </small>
           <button
@@ -801,10 +804,11 @@ export default function ResearchAssistant({
               otherRunning ||
               !question.trim() ||
               !connections?.assistant_available ||
+              connections?.model_work?.paused === true ||
               Boolean(selected && !detail)
             }
           >
-            {running ? '回复中…' : '发送'}
+            {connections?.model_work?.paused ? '研究已暂停' : running ? '回复中…' : '发送'}
           </button>
         </div>
       </form>

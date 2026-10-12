@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+from studio_runtime.model_work import ModelWorkPaused, model_work_status, require_model_work, communicate_model_process
 
 from sqlalchemy import select, update
 
@@ -24,6 +25,8 @@ SCRIPT = ROOT / "apps/briefing/backend/scripts/run_briefing_harness.sh"
 
 
 def harness_available() -> bool:
+    if model_work_status()["paused"]:
+        return False
     secret_root = Path(os.environ.get("INVESTMENT_STUDIO_SECRET_ROOT", str(Path.home() / ".config/orataba/secrets/investment-studio")))
     env_file = Path(os.environ.get("INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ENV_FILE", str(secret_root / "portfolio-copilot.env")))
     node = shutil.which("node")
@@ -41,12 +44,27 @@ def interrupt_incomplete_runs():
 
 
 def _run_harness(report_id: str, mode: str, token: str) -> dict:
+    from studio_runtime.provider_usage import capture_provider_usage, merge_provider_usage
+    def record(summary):
+        with get_session_factory()() as session:
+            report = session.get(Report, report_id, with_for_update=True, populate_existing=True)
+            if report is not None:
+                report.input_json = {**(report.input_json or {}), "provider_usage": merge_provider_usage(
+                    (report.input_json or {}).get("provider_usage"), summary)}
+                session.commit()
+    with capture_provider_usage(record, app="briefing", report_id=report_id) as usage:
+        return _execute_harness(report_id, mode, token, usage=usage)
+
+
+def _execute_harness(report_id: str, mode: str, token: str, *, usage) -> dict:
     label = "校稿" if mode == "review" else "首稿"
+    require_model_work()
     process = subprocess.Popen(["/bin/bash", str(SCRIPT), report_id, mode], cwd=ROOT,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
-                               env={**os.environ, "INVESTMENT_STUDIO_BRIEFING_RUN_TOKEN": token})
+                               env={**os.environ, **usage.environment("review" if mode == "review" else "generation"),
+                                    "INVESTMENT_STUDIO_BRIEFING_RUN_TOKEN": token})
     try:
-        _reply, errors = process.communicate(timeout=1800)
+        _reply, errors = communicate_model_process(process, timeout=1800)
     except BaseException as exc:
         try:
             _stop_process_group(process)
@@ -118,6 +136,7 @@ def _execute_report(report_id: str, token: str, issuer: Principal, tokens: list[
             cutoff = cutoff.replace(tzinfo=UTC)
         report_type = report.report_type
     error = None
+    terminal_status = "failed"
     try:
         snapshot = build_input(report_type, cutoff, get_settings())
         with get_session_factory()() as session:
@@ -143,10 +162,14 @@ def _execute_report(report_id: str, token: str, issuer: Principal, tokens: list[
             if report.status != "running":
                 return
             _authorize(report, stage_token)
+            require_model_work()
             report.result_json = reviewed
             report.status = "completed"
             report.completed_at = datetime.now(UTC)
             session.commit()
+    except ModelWorkPaused as exc:
+        error = str(exc)
+        terminal_status = "paused"
     except IdentityError:
         error = "本轮账号或权限已失效，未发布报告。"
     except ValueError as exc:
@@ -158,5 +181,5 @@ def _execute_report(report_id: str, token: str, issuer: Principal, tokens: list[
         with get_session_factory()() as session:
             report = session.get(Report, report_id)
             if report.status == "running":
-                report.status, report.error = "failed", error
+                report.status, report.error = terminal_status, error
                 session.commit()

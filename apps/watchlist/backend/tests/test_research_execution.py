@@ -262,3 +262,14 @@ def test_worker_does_not_claim_during_dependency_restart(client, monkeypatch):
         return False
     monkeypatch.setattr(worker, "dependencies_ready", unavailable)
     worker.run_worker(stop)
+
+
+@pytest.fixture(autouse=True)
+def admit_offline_runner_fixtures(monkeypatch):
+    # These synthetic runs test leases, credentials and process failure handling.
+    # Real Invested admission (including these execution boundaries) is exercised
+    # separately by test_research_policy with registry/status-backed assets.
+    from watchlist_app.services import research_policy
+    from studio_runtime.model_work import require_model_work
+    monkeypatch.setattr(research_policy, "require_run_policy", lambda *a, **kw: require_model_work())
+    monkeypatch.setattr(research_policy, "require_instrument_research", lambda *a, **kw: require_model_work())

@@ -747,3 +747,12 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch, request) -> TestClient:
     settings_module.get_settings.cache_clear()
     session_module.get_engine.cache_clear()
     session_module.get_session_factory.cache_clear()
+
+
+
+@pytest.fixture(autouse=True)
+def isolated_model_work_control(tmp_path, monkeypatch):
+    # Tests use fake Harness processes. Never read or change the host switch.
+    path = tmp_path / "model-work.json"
+    path.write_text('{"paused": false}', encoding="utf-8")
+    monkeypatch.setenv("INVESTMENT_STUDIO_MODEL_WORK_CONTROL_FILE", str(path))

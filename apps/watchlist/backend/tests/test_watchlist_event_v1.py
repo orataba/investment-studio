@@ -350,3 +350,44 @@ def test_old_event_new_dated_development_enters_recent_without_redating_original
         publish(session, run, action="updated", recording_type="update", occurred_at="2019-12-31", published_at=today,
             body="原事项出现新的正式进展，新增条款将在下个月实施。", importance_score=4)
         assert case.evidence_json["development_at"] == today
+
+
+def test_new_event_identity_check_defers_unrelated_sources_and_all_history(client, monkeypatch):
+    from sqlalchemy import event as sql_event, inspect
+    from sqlalchemy.orm import Session
+    from watchlist_app.db.models.workbench import ResearchEntry
+    seed_sector(client, monkeypatch)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, ["xlk"])
+        add_sources(run)
+        original = publish(session, run)
+        original.history_json = [*original.history_json, {"original": "UNSELECTED_HISTORY" * 1000}]
+        session.add(RiskCase(case_id="unrelated", instrument_id="xlk", signal="sector:unrelated", title="其他事项",
+            body="完全不同的历史事项", evidence_json={"original": "UNSELECTED_SOURCE" * 1000}, history_json=[]))
+        session.commit()
+        run_id, original_id = run.entry_id, original.case_id
+    loaded, evidence_reads = [], []
+    def on_load(_session, value):
+        if isinstance(value, RiskCase):
+            assert {"history_json", "evidence_json"}.issubset(inspect(value).unloaded)
+            loaded.append(value.case_id)
+    def on_refresh(value, _context, attributes):
+        assert "history_json" not in attributes
+        if "evidence_json" in attributes:
+            evidence_reads.append(value.case_id)
+    sql_event.listen(Session, "loaded_as_persistent", on_load)
+    sql_event.listen(RiskCase, "refresh", on_refresh)
+    try:
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, run_id)
+            different = service.ReviewResult.model_validate_json(result(sources=["web-one"],
+                event_key="different", body="另一个有不同实质内容的新事项"))
+            service.validate_result(session, run, different)
+            assert set(loaded) == {original_id, "unrelated"} and evidence_reads == []
+            duplicate = service.ReviewResult.model_validate_json(result(sources=["web-one"], event_key="new-id-same-message"))
+            with pytest.raises(ValueError, match="沿用事件标识"):
+                service.validate_result(session, run, duplicate)
+            assert evidence_reads == [original_id]
+    finally:
+        sql_event.remove(Session, "loaded_as_persistent", on_load)
+        sql_event.remove(RiskCase, "refresh", on_refresh)

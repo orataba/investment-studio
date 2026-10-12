@@ -157,7 +157,7 @@ def theme_index(session, instrument_id, *, actor=None, active_only=False):
             and (not active_only or entry.context_json.get("theme_status") == "active")]
 
 
-def theme_summaries(session, instrument_id, *, actor=None):
+def theme_summaries(session, instrument_id, *, actor=None, original_sources=False):
     """Read current cards without fetching notebook timelines or theme archives."""
     from types import SimpleNamespace
     from sqlalchemy import JSON, String, true
@@ -193,7 +193,20 @@ def theme_summaries(session, instrument_id, *, actor=None):
         theme["sources"] = [browser_source_view(source) for source in theme.get("sources", [])]
         summaries.append(theme)
     summaries.sort(key=lambda row: (row["status"] != "active", row["priority"] != "core", row["title"], row["theme_id"]))
-    return {"identity": actor, "themes": summaries, "active_limit": ACTIVE_THEME_LIMIT, "target_count": 5}
+    if original_sources:
+        # Bind just selected current sources, not versions/timelines. The browser
+        # projection intentionally omits original computation locators.
+        selected = {row["theme_id"] for row in summaries if row["status"] == "active"}
+        relation, fields = research_context_projection(session, {"sources": JSON}, json_column=ResearchEntry.context_json)
+        query = select(ResearchEntry.entry_id, fields["sources"].label("sources")).where(ResearchEntry.entry_id.in_(selected))
+        if relation is not None:
+            query = query.join(relation, true())
+        originals = {row.entry_id: row.sources or [] for row in research_projection_rows(
+            session, query, {"sources": ("sources",)}, json_column=ResearchEntry.context_json)}
+        for row in summaries:
+            if row["theme_id"] in originals:
+                row["sources"] = originals[row["theme_id"]]
+    return {"identity": actor, "themes": summaries, "active_limit": ACTIVE_THEME_LIMIT}
 
 
 def _validate_capacity(session, instrument_id, value, *, theme_id=None, actor=None):
@@ -563,4 +576,4 @@ def themes_view(session, instrument_id, *, actor=None, activity=None, notes=None
                 theme["updates"].sort(key=lambda row: row["recorded_at"], reverse=True)
     themes.sort(key=lambda row: (row["status"] != "active", row["priority"] != "core",
         row["title"], row["theme_id"]))
-    return {"identity": actor, "themes": themes, "active_limit": ACTIVE_THEME_LIMIT, "target_count": 5}
+    return {"identity": actor, "themes": themes, "active_limit": ACTIVE_THEME_LIMIT}

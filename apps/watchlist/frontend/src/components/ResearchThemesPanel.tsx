@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { announceResearchPublication, RESEARCH_UPDATED } from '../lib/researchUpdates'
-import { createResearchTheme, getResearchTheme, getResearchThemes, updateResearchTheme, type AskResearchAssistant, type ResearchTheme, type ResearchThemeInput, type ResearchThemeKind, type ResearchThemesResponse } from '../lib/researchDossierApi'
+import { createResearchTheme, getResearchTheme, getResearchThemes, updateResearchTheme, type AskResearchAssistant, type ResearchTheme, type ResearchThemeInput, type ResearchThemeKind, type ResearchThemesResponse, type ResearchWorkingSet } from '../lib/researchDossierApi'
 import ResearchUpdateCard from './ResearchUpdateCard'
 import { dateLabel, SourceList } from './ResearchEvidence'
 import { SavedFigure } from './ResearchModules'
@@ -64,7 +64,7 @@ function ThemeCard(props: ThemeRecordProps) {
     <div className="research-theme-card-tools"><button type="button" className="research-support-link" aria-expanded={open} onClick={() => setOpen(value => !value)}>{open ? '收起研究脉络' : '研究脉络与时间线'}</button>
       {canWrite && <div className="research-theme-actions"><button type="button" disabled={saving} onClick={onEdit}>编辑主题</button><button type="button" disabled={saving} onClick={() => onStatus(theme.status === 'active' ? 'paused' : 'active')}>{theme.status === 'active' ? '暂停后续跟踪' : '恢复后续跟踪'}</button>{theme.status !== 'closed' && <button type="button" disabled={saving} onClick={() => setClosing(value => !value)}>结束主题跟踪</button>}</div>}
     </div>
-    <p className="sector-research-note">暂停或结束仅影响此主题后续跟踪；当前任务、已发布研究和待审风险线索均保留，其他研究与风险调度继续按各自范围运行。</p>
+    <p className="sector-research-note">暂停或结束主题不代表风险解除，已保存的判断与证据仍保留。</p>
     {theme.source_run_id && <p className="sector-research-note"><span>来源任务</span> <code translate="no">{theme.source_run_id}</code></p>}
     {closing && theme.status !== 'closed' && <form className="research-theme-editor" onSubmit={event => { event.preventDefault(); if (closeReason.trim()) onStatus('closed', closeReason.trim()) }}><label>结束原因<textarea required value={closeReason} onChange={event => setCloseReason(event.target.value)} /></label><div className="research-theme-actions"><button type="submit" disabled={saving || !closeReason.trim()}>保存并结束</button><button type="button" disabled={saving} onClick={() => setClosing(false)}>取消</button></div></form>}
     {open && <div className="research-theme-expanded">{error && <p role="alert">{error}{detail && '。以下保留上次有效内容。'}</p>}{detail ? <ThemeRecord {...props} theme={detail} /> : !error && <ResearchLoading />}</div>}
@@ -110,8 +110,8 @@ function ThemeRecord({ theme, instrumentId, canWrite, onAskAssistant }: ThemeRec
   </article>
 }
 
-export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, readOnly = false, onThemeNamesChange }: {
-  instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; readOnly?: boolean; onThemeNamesChange?: (names: Record<string, string>) => void
+export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, readOnly = false, onThemeNamesChange, workingSet }: {
+  instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; readOnly?: boolean; onThemeNamesChange?: (names: Record<string, string>) => void; workingSet?: ResearchWorkingSet | null
 }) {
   const [snapshot, setSnapshot] = useState<{ instrumentId: string; data: ResearchThemesResponse } | null>(null)
   const data = snapshot?.instrumentId === instrumentId ? snapshot.data : null
@@ -170,9 +170,9 @@ export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewS
   }
   const active = data?.themes.filter(theme => theme.status === 'active') || []
   const inactive = data?.themes.filter(theme => theme.status !== 'active') || []
-  const record = (theme: ResearchTheme) => <ThemeCard key={theme.theme_id} {...{ theme, instrumentId, canWrite, saving, onAskAssistant }} onEdit={() => setDraft({ ...theme })} onStatus={(status, reason) => void changeStatus(theme, status, reason)} />
-  return <section className="research-themes" aria-label="重点研究主题" aria-busy={!data && !error}>
-    <div className="research-dossier-section-heading"><div><h2>重点研究主题{active.length > 0 && <span> · {active.length}</span>}</h2></div>{!readOnly && <button type="button" disabled={!canWrite || saving || Boolean(draft) || active.length >= (data?.active_limit || 10)} onClick={() => { setDraft({ title: '', kind: 'other', priority: 'important', responsible_user_id: data?.identity.user_id }); setError('') }}>添加主题</button>}</div>
+  const record = (theme: ResearchTheme) => <div key={theme.theme_id}>{workingSet && !workingSet.reviewed_theme_ids.includes(theme.theme_id) && <p className="research-theme-review-note">本轮未复核 · 判断日期保留原记录</p>}<ThemeCard key={theme.theme_id} {...{ theme, instrumentId, canWrite, saving, onAskAssistant }} onEdit={() => setDraft({ ...theme })} onStatus={(status, reason) => void changeStatus(theme, status, reason)} /></div>
+  return <section className="research-themes" aria-label="持续研究主题" aria-busy={!data && !error}>
+    <div className="research-dossier-section-heading"><div><h2>持续研究主题{active.length > 0 && <span> · {active.length}</span>}</h2></div>{!readOnly && <button type="button" disabled={!canWrite || saving || Boolean(draft) || active.length >= (data?.active_limit || 10)} onClick={() => { setDraft({ title: '', kind: 'other', priority: 'important', responsible_user_id: data?.identity.user_id }); setError('') }}>添加主题</button>}</div>
     {error && <p role="alert">{error}</p>}<NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
     {!data && !error && <ResearchLoading />}
     {draft && canWrite && <form className="research-theme-editor" onSubmit={event => void save(event)}>
@@ -182,10 +182,10 @@ export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewS
       <details><summary>补充问题与背景</summary><label>研究问题（可选）<textarea rows={2} disabled={saving} value={draft.question || ''} onChange={event => setDraft({ ...draft, question: event.target.value })} /></label><label>背景（可选）<textarea rows={3} disabled={saving} value={draft.background || ''} onChange={event => setDraft({ ...draft, background: event.target.value })} /></label></details>
       </details><label className="research-theme-pin"><input type="checkbox" checked={draft.pinned || false} disabled={saving} onChange={event => setDraft({ ...draft, pinned: event.target.checked })} />固定此主题</label>
       {!draft.theme_id && <ResearchScopeNotice instrumentId={instrumentId} />}
-      <div className="research-theme-actions"><button type="submit" disabled={saving || !draft.title.trim()}>{saving ? '保存中…' : draft.theme_id ? '保存主题' : '创建并开始研究'}</button><button type="button" disabled={saving} onClick={() => setDraft(null)}>取消</button></div>
+      <div className="research-theme-actions"><button type="submit" disabled={saving || !draft.title.trim()}>{saving ? '保存中…' : draft.theme_id ? '保存主题' : '创建主题'}</button><button type="button" disabled={saving} onClick={() => setDraft(null)}>取消</button></div>
     </form>}
     <div className="research-theme-cards">{active.map(record)}</div>
     {inactive.length > 0 && <details className="research-theme-archive"><summary>暂停或结束的主题 · {inactive.length}</summary>{inactive.map(record)}</details>}
-    {data && !data.themes.length && <p className="sector-research-note">尚无重点主题。建立主题后，研究员将补充分析并持续更新。</p>}
+    {data && !data.themes.length && <p className="sector-research-note">尚无持续主题。可以记录需要长期跟踪的问题。</p>}
   </section>
 }

@@ -16,6 +16,7 @@ from briefing_app.contracts import GenerateRequest, ReportDraft
 from briefing_app.db import Report, get_session
 from briefing_app.evidence import current_source_index, read_bound_source
 from briefing_app.reports import begin_report, report_detail, report_summary, validate_draft, summary_statement, projected_report_summary
+from studio_runtime.model_work import model_work_status, require_model_work
 from briefing_app.runner import harness_available, interrupt_incomplete_runs, run_report
 from briefing_app.settings import get_settings
 
@@ -81,7 +82,7 @@ def create_app(settings=None):
         allowed = can_generate(request.state.principal, settings.edition_role)
         return {"harness_available": harness_available() if allowed else False, "timezone": settings.timezone,
                 "edition_role": settings.edition_role, "can_generate": allowed,
-                "can_read_sources": request.state.principal is not None}
+                "can_read_sources": request.state.principal is not None, "model_work": model_work_status()}
 
     @app.get("/api/briefing/reports")
     def reports(request: Request, report_type: Literal["daily", "weekly"] | None = None, offset: int = Query(0, ge=0),
@@ -107,6 +108,7 @@ def create_app(settings=None):
         principal = current_principal()
         if not can_generate(principal, settings.edition_role):
             raise HTTPException(403, "没有生成或发布报告的权限")
+        require_model_work()
         if not harness_available():
             raise HTTPException(503, "尚未配置 DeepSeek 报告运行环境")
         try:

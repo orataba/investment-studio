@@ -1130,3 +1130,42 @@ def test_analysis_rejects_account_evidence_outside_the_batch(client) -> None:
 
     assert response.status_code == 422
     assert "outside this batch" in response.json()["detail"]
+
+
+def test_paused_capture_retains_original_and_draft_and_fences_late_completion(client, monkeypatch):
+    from studio_runtime.model_work import ModelWorkPaused
+    from portfolio_app.services import transaction_capture_runner as runner
+    from portfolio_app.services.transaction_captures import (
+        create_transaction_capture_analysis_revision, queue_transaction_capture_analysis_run,
+        finish_transaction_capture_analysis_run,
+    )
+    capture = _upload_capture(client)
+    batch = _create_batch(client, [capture['capture_id']])
+    queued = queue_transaction_capture_analysis_run(portfolio_id='investment-studio', batch_id=batch['batch_id'])
+    analysis = {'summary': 'Draft retained during pause.', 'documents': [{'capture_id': capture['capture_id'], 'document_kind': 'unknown'}], 'candidates': [], 'questions': []}
+    revoked = []
+    retained_draft = []
+    url=f"/api/portfolios/investment-studio/transaction-capture-batches/{batch['batch_id']}"
+    monkeypatch.setattr(runner, 'revoke_delegation', revoked.append)
+    def pause(**_):
+        create_transaction_capture_analysis_revision(portfolio_id='investment-studio', batch_id=batch['batch_id'],
+            source='assistant', harness='deepseek-harness', provider='deepseek', model='offline', harness_session_id=None,
+            finish_reason=None, schema_version='portfolio.transaction-capture-analysis.v2', analysis=analysis,
+            transaction_import=None, preview=None, referenced_capture_ids={capture['capture_id']},
+            analysis_run_attempt=queued['analysis_run_attempt'])
+        retained_draft.append(client.get(url).json()['latest_analysis'])
+        raise ModelWorkPaused('研究已暂停，原件和草稿保留。')
+    monkeypatch.setattr(runner, '_run_harness_process', pause)
+    token='test-run:'+batch['batch_id']+':1'
+    runner.run_transaction_capture_analysis(portfolio_id='investment-studio',batch_id=batch['batch_id'],attempt=1,run_token=token)
+    url=f"/api/portfolios/investment-studio/transaction-capture-batches/{batch['batch_id']}"
+    detail=client.get(url).json()
+    assert detail['analysis_run_status']=='paused' and detail['analysis_run_attempt']==1
+    assert detail['analysis_run_completed_at'] and detail['analysis_run_error']=='研究已暂停，原件和草稿保留。'
+    assert detail['latest_analysis']==retained_draft[0] and detail['latest_analysis_revision']==1
+    assert detail['captures']==batch['captures'] and revoked==[token]
+    for succeeded in (True,False):
+        assert not finish_transaction_capture_analysis_run(portfolio_id='investment-studio',batch_id=batch['batch_id'],attempt=1,succeeded=succeeded)
+    monkeypatch.setattr(runner, '_run_harness_process', lambda **_: pytest.fail('A paused attempt must not run again'))
+    runner.run_transaction_capture_analysis(portfolio_id='investment-studio',batch_id=batch['batch_id'],attempt=1,run_token=token)
+    assert client.get(url).json()==detail

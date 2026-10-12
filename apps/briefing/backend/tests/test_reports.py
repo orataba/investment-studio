@@ -493,3 +493,64 @@ def test_macro_release_bare_numeric_cells_require_exact_bound_citations(snapshot
         validate_draft(ReportDraft.model_validate(payload), snapshot)
     release["number_citations"].append({"source_id": "text:v1", "value": "51.2", "quote": "制造业PMI为51.2"})
     assert validate_draft(ReportDraft.model_validate(payload), snapshot)["sections"][-1]["rows"][0][field] == "51.2"
+
+
+def test_provider_usage_keeps_generation_and_review_on_failed_calls(factory, monkeypatch, tmp_path):
+    import json
+    from pathlib import Path
+    from briefing_app import runner
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr(runner, "get_session_factory", lambda: factory)
+    with factory() as session:
+        report, _ = begin_report(session, "daily", datetime(2026, 9, 7, tzinfo=UTC), "Asia/Shanghai", edition_role="publisher")
+        report_id = report.report_id
+        report.status = "running"
+        session.commit()
+    def start(*args, **kwargs):
+        env = kwargs["env"]
+        common = {"invocation_id": env["INVESTMENT_STUDIO_MODEL_USAGE_INVOCATION"], "session_id": "offline", "turn": 0, "step": 0}
+        Path(env["INVESTMENT_STUDIO_MODEL_USAGE_FILE"]).write_text("\n".join(json.dumps({**common, **row}) for row in (
+            {"kind": "start"}, {"kind": "usage", "tokens": {"uncached_input_tokens": 10,
+                "output_tokens": 5, "cache_read_tokens": 2, "cache_write_tokens": 0}}, {"kind": "end"}, {"kind": "turn_end"})))
+        return SimpleNamespace(returncode=1, stdout=StringIO(), stderr=StringIO(), communicate=lambda **_: ("", "dsh: NETWORK"))
+    monkeypatch.setattr(runner.subprocess, "Popen", start)
+    for mode in ("write", "review"):
+        with pytest.raises(ValueError):
+            runner._run_harness(report_id, mode, "offline")
+    with factory() as session:
+        rows = session.get(Report, report_id).input_json["provider_usage"]["invocations"]
+        assert [row["stage"] for row in rows] == ["generation", "review"]
+        assert all(row["tokens"]["output_tokens"] == 5 for row in rows)
+    assert list((tmp_path / "investment-studio/model-usage").iterdir()) == []
+
+
+@pytest.mark.parametrize('pause_at', ['review', 'publication'])
+def test_intentional_pause_preserves_report_inputs_draft_and_never_publishes_or_replays(factory, snapshot, monkeypatch, report_test_actor, pause_at):
+    from briefing_app import runner
+    from studio_runtime.model_work import ModelWorkPaused
+    monkeypatch.setattr(runner, 'get_session_factory', lambda: factory)
+    monkeypatch.setattr(runner, 'build_input', lambda *args: deepcopy(snapshot))
+    with factory() as session:
+        report, _ = begin_report(session, 'daily', datetime(2026,9,7,tzinfo=UTC), 'Asia/Shanghai', edition_role='publisher')
+        report_id = report.report_id
+    modes, revoked = [], []
+    monkeypatch.setattr(runner, 'revoke_delegation', lambda token, principal: revoked.append(token))
+    def harness(iid, mode, token):
+        modes.append(mode)
+        with factory() as session:
+            row=session.get(Report,iid);row.draft_json={'mode': mode, 'report': draft()};session.commit()
+        if mode=='review' and pause_at=='review':raise ModelWorkPaused('研究已暂停，原件和草稿保留。')
+        return draft()
+    monkeypatch.setattr(runner, '_run_harness', harness)
+    if pause_at=='publication':
+        def paused():raise ModelWorkPaused('研究已暂停，原件和草稿保留。')
+        monkeypatch.setattr(runner, 'require_model_work', paused)
+    runner.run_report(report_id,report_id,report_test_actor)
+    with factory() as session:
+        row=session.get(Report,report_id)
+        assert row.status=='paused' and row.completed_at is None and row.result_json is None
+        assert row.input_json==snapshot and row.draft_json=={'mode':'review','report':draft()}
+        assert row.error=='研究已暂停，原件和草稿保留。'
+    assert modes==['write','review'] and revoked==[report_id]
+    runner.run_report(report_id,report_id,report_test_actor)
+    assert modes==['write','review']

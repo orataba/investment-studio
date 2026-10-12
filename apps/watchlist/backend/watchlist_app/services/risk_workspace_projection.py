@@ -11,6 +11,7 @@ CASE_EVIDENCE_FIELDS = {
     "importance": String, "direction": String, "confidence": String, "next_watch": String,
     "withdrawn": Boolean, "withdrawal_reason": String, "withdrawn_at": String,
     "risk_assessment": JSON, "event_version_id": String,
+    "last_assessed_snapshot": JSON, "pending_revision": JSON,
 }
 RISK_FIELDS = {
     "current_drawdown": Float, "drawdown_summary": JSON,

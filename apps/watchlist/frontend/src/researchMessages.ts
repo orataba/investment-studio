@@ -1,8 +1,19 @@
 import type { LanguageMessages, LanguagePatternMessages } from '../../../../packages/ui/src/i18n'
 
-export const researchMessages: LanguageMessages = { 'zh-Hans': {
+export const researchMessages: LanguageMessages = {
+ 'zh-Hans': {
   'Configured search endpoint did not execute native web search': '本轮公开网页搜索未能完成，相关信息覆盖受限。',
 }, en: {
+  '尚无持续主题。可以记录需要长期跟踪的问题。': 'No ongoing themes yet. Record a question that needs continued attention.',
+  '研究材料历史': 'Material history',
+  '近期值得关注': 'Recent matters to watch', '持续主题': 'Ongoing themes', '持续研究主题': 'Ongoing research themes',
+  '量化图表': 'Quantitative evidence', '策略依据与原文': 'Strategy evidence and originals',
+  '近期已记录的重要事项；持续跟进不受日期限制，历史按需查阅。': 'Recently recorded significant matters; ongoing follow-up is not limited by date. History is available on demand.',
+  '本轮未复核 · 判断日期保留原记录': 'Not reviewed in this round · original judgment date retained',
+  '暂停或结束主题不代表风险解除，已保存的判断与证据仍保留。': 'Pausing or closing a theme does not resolve its risks. Saved judgments and evidence remain available.',
+  '研究基线尚未建立；已保存的主题与材料仍可查看。': 'The research baseline has not been established. Saved themes and materials remain available.',
+  '事项历史': 'Matter history', '查看原件': 'View original',
+
   '研究问题与指导': 'Research question and guidance',
   '编辑研究指导': 'Edit research guidance',
   '保存研究指导': 'Save research guidance',

@@ -12,7 +12,10 @@ from watchlist_app.services.research_risk_state import get_risk_submission, risk
 @pytest.fixture(autouse=True)
 def portfolio_access_fixture(monkeypatch):
     # Domain tests below isolate snapshot semantics; actual ACL/revocation uses the account route suite.
-    from watchlist_app.services import research_access
+    from watchlist_app.services import research_access, research_policy
+    # Pilot admission is exercised separately; this suite retains full risk-scope
+    # and authorization checks for existing/manual multi-asset risk snapshots.
+    monkeypatch.setattr(research_policy, "require_run_policy", lambda *a, **k: None)
     monkeypatch.setattr(research_access, "require_portfolio", lambda pid: {"portfolio_id": pid, "role": "reader"})
 
 
@@ -221,7 +224,7 @@ def test_own_assessment_does_not_hide_pm_update_during_model_run(client):
         assert service.review_workspace(session, instrument_id="risk-a")["latest_completed"]["stale"] is True
 
 
-def test_review_version_tracks_theme_lifecycle_and_market_midnight(client, monkeypatch):
+def test_review_version_tracks_theme_lifecycle_and_actual_forecast_due_state(client, monkeypatch):
     from datetime import timedelta
     from investment_studio_instrument_core.db_models import Instrument
     from watchlist_app.db.models.workbench import ResearchTopic
@@ -248,9 +251,18 @@ def test_review_version_tracks_theme_lifecycle_and_market_midnight(client, monke
         session.commit()
         assert version() != prior
         prior = version()
-        current[0] += timedelta(minutes=2)  # Shanghai date crosses midnight; UTC date does not.
-        assert version() != prior
-        assert version()["review_days"]["risk-a"]["day"] == "2026-09-26"
+        current[0] += timedelta(minutes=2)  # Midnight alone is not new input.
+        assert version() == prior
+        from watchlist_app.services import sector_research
+        monkeypatch.setattr(sector_research, "review_states", lambda *a, **k: {"last_completed": {"risk-a": {
+            "current_research": {"forecasts": [{"key": "check", "status": "active", "review_on": "2026-09-27"}]}}}})
+        prior = version()
+        assert prior["forecast_review_states"]["risk-a"]["check"] == "scheduled"
+        current[0] += timedelta(days=1)
+        due = version()
+        assert due != prior and due["forecast_review_states"]["risk-a"]["check"] == "due"
+        current[0] += timedelta(days=1)
+        assert version() == due  # Already due does not generate daily repeats.
 
 
 def reply(**priority):
@@ -592,7 +604,7 @@ def test_structured_submission_preserves_quotes_and_runner_uses_it_without_conso
     class Process:
         returncode = 0
         def communicate(self, timeout):
-            assert timeout == 1800
+            assert 0 < timeout <= 2
             read_required_pages(client, rid)
             response = client.post(f"/api/research/runs/{rid}/risk-draft", json=payload)
             assert response.status_code == 200, response.text
@@ -703,7 +715,7 @@ def test_explicit_comparison_uses_common_dates_and_rejects_frequency_or_currency
         assert not evidence["comparisons"] and "频率不同" in evidence["limitations"][0]
 
 
-def test_same_day_completed_review_reruns_only_after_real_input_change(client):
+def test_completed_review_across_days_reruns_only_after_real_input_change(client):
     seed(client)
     with get_session_factory()() as session:
         run, _ = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-08"})
@@ -711,6 +723,8 @@ def test_same_day_completed_review_reruns_only_after_real_input_change(client):
         service.apply_result(session, run, reply())
         session.commit()
         assert not service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-08"})[1]
+        same, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-09"})
+        assert not created and same.entry_id == run.entry_id
         session.get(RiskCase, "research").body = "今天的新原文改变了既有研究判断。"
         session.commit()
         updated, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-08"})
@@ -945,7 +959,7 @@ def test_risk_pm_note_keeps_full_judgment_without_embedding_bound_original_corpu
     assert result.structured_content["next_offset"] is None
 
 
-def test_new_limited_check_changes_risk_inputs_without_new_event_and_keeps_the_gap(client):
+def test_new_limited_check_keeps_manual_staleness_without_buying_automatic_risk_review(client):
     from watchlist_app.db.models.workbench import ResearchTopic
     from watchlist_app.services.risk_review_state import current_scope, input_version
     seed(client)
@@ -968,7 +982,7 @@ def test_new_limited_check_changes_risk_inputs_without_new_event_and_keeps_the_g
         updated, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-09"})
 
         assert state["latest_completed"]["stale"]
-        assert created and updated.entry_id != run.entry_id
+        assert not created and updated.entry_id == run.entry_id
         assert snapshot["instruments"][0]["research_tracking"]["latest_check"]["reflection"] == receipt
         assert any("覆盖不足" in message for message in snapshot["limitations"])
         assert any("资讯尚未覆盖9月9日" in message for message in snapshot["limitations"])
@@ -1191,3 +1205,182 @@ def test_legacy_completed_report_without_pending_referral_receipt_is_requeued_on
         assert created and replacement.entry_id != run_id
         same, created = service.begin_run(session, instrument_id='risk-a', scheduled_dates=dates)
         assert not created and same.entry_id == replacement.entry_id
+
+
+def test_failed_frozen_same_input_does_not_bypass_retry_policy_at_midnight(client, monkeypatch):
+    from watchlist_app.services import research_runner, risk_review_state
+    seed(client)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-08"})
+        run.status = "failed"
+        version = risk_review_state.input_version(session, risk_review_state.current_scope(session, {"instrument_id": "risk-a"}))
+        run.context_json = {**run.context_json, "risk_input_version": version}
+        session.commit()
+        attempted = []
+        monkeypatch.setattr(research_runner, "queue_retry", lambda session, previous, **kw: attempted.append(previous.entry_id) or False)
+        prior, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-09"})
+        assert prior.entry_id == run.entry_id and not created
+        assert attempted == [run.entry_id]
+
+
+@pytest.mark.parametrize("legacy_frozen_version", [False, True])
+def test_ordinary_nav_and_daily_breached_reading_do_not_buy_new_risk_review(client, legacy_frozen_version):
+    from datetime import timedelta
+    seed(client)
+    now = datetime(2026, 9, 20, tzinfo=UTC)
+    with get_session_factory()() as session:
+        session.add(InstrumentChartReadModel(instrument_id="risk-a", payload_json={},
+            data_freshness_status="fresh", last_recalculated_at=now, source_cutoff_at=now))
+        session.commit()
+        run, _ = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-20"})
+        run_id = run.entry_id
+    service.prepare_run(run_id)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        service.apply_result(session, run, reply())
+        if legacy_frozen_version:
+            run.context_json = {key: value for key, value in run.context_json.items() if key != "risk_automatic_inputs"}
+        session.commit()
+        chart = session.get(InstrumentChartReadModel, "risk-a")
+        chart.last_recalculated_at = chart.source_cutoff_at = now + timedelta(days=1)
+        case = session.get(RiskCase, "price")
+        case.observed_on, case.body = date(2026, 9, 21), "复核线仍被触及，但普通价格读数更新。"
+        case.evidence_json = {"periods": [{"period": 1, "limit_pct": 5, "return_pct": -5.2}]}
+        session.commit()
+        # The report is physically dated; avoiding new spending cannot declare
+        # its market evidence fresh or remove the manual-review path.
+        assert service.review_workspace(session, instrument_id="risk-a")["latest_completed"]["stale"] is True
+        same, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-21"})
+        assert not created and same.entry_id == run_id
+        # Existing material rule transition history, rather than a daily return,
+        # admits the next automatic assessment.
+        case.history_json = [*case.history_json, {"action": "updated", "at": now.isoformat(), "detail": "新增区间越过复核线。"}]
+        session.commit()
+        changed, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-21"})
+        assert created and changed.entry_id != run_id
+
+
+def test_no_risk_case_or_coverage_only_does_not_create_first_automatic_run(client):
+    from sqlalchemy import select
+    seed(client)
+    with get_session_factory()() as session:
+        for case in session.scalars(select(RiskCase).where(RiskCase.instrument_id == "risk-a")):
+            case.trigger_active, case.status = False, "resolved"
+        session.add(RiskCase(case_id="only-coverage", instrument_id="risk-a", signal="data_coverage",
+            title="资料缺口", body="本地确定性提示", severity="coverage", status="open", trigger_active=True))
+        session.commit()
+        run, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-21"})
+        assert run is None and not created
+        assert session.scalar(select(ResearchEntry.entry_id)) is None
+        manual, created = service.begin_run(session, instrument_id="risk-a")
+        assert created and manual.status == "queued"
+
+
+def test_editorial_version_does_not_repeat_assessed_risk_but_new_referral_does(client):
+    seed(client)
+    with get_session_factory()() as session:
+        case = session.get(RiskCase, "research")
+        case.evidence_json = {**case.evidence_json, "event_version_id": "v1", "risk_assessment": {
+            "status": "active", "event_version_id": "v1", "reason": "原重大风险已确认。"}}
+        session.commit()
+        run, _ = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-20"})
+        run_id = run.entry_id
+    service.prepare_run(run_id)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        service.apply_result(session, run, reply())
+        session.commit()
+        case = session.get(RiskCase, "research")
+        case.evidence_json = {**case.evidence_json, "event_version_id": "editorial-v2"}
+        case.body = "旧风险文字勘误；新的事实尚未确认。"
+        session.commit()
+        assert service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-21"}) == (run, False)
+        case.evidence_json = {**case.evidence_json, "event_version_id": "material-v3", "risk_assessment": {
+            "status": "pending", "event_version_id": "material-v3", "impact_explanation": "新增事实需独立核实。"}}
+        session.commit()
+        changed, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-21"})
+        assert created and changed.entry_id != run_id
+
+
+def test_paused_automatic_risk_is_not_recreated_by_resuming_scheduler(client):
+    seed(client)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-20"})
+        run.status = "paused"
+        session.commit()
+        same, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-21"})
+        assert not created and same.entry_id == run.entry_id and same.status == "paused"
+        manual, created = service.begin_run(session, instrument_id="risk-a")
+        assert created and manual.entry_id != run.entry_id
+
+
+def test_risk_review_http_exposes_real_pause_without_rewriting_saved_run(client, monkeypatch):
+    import os
+    from pathlib import Path
+    seed(client)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, instrument_id="risk-a")
+        run_id = run.entry_id
+    # Even a configured executable cannot make model work available when the
+    # operator switch is paused. The GET truthfully preserves stored run status.
+    monkeypatch.setattr("watchlist_app.services.research_runner.harness_available", lambda: True)
+    control = Path(os.environ["INVESTMENT_STUDIO_MODEL_WORK_CONTROL_FILE"])
+    control.write_text('{"paused":true}')
+    response = client.get("/api/risk/review?instrument_id=risk-a")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["available"] is False and payload["model_work"]["paused"] is True
+    assert payload["model_work"]["code"] == "model_work_paused"
+    assert payload["reason"] == payload["model_work"]["message"]
+    assert payload["latest_run"]["run_id"] == run_id and payload["latest_run"]["status"] == "queued"
+    with get_session_factory()() as session:
+        assert session.get(ResearchEntry, run_id).status == "queued"
+    control.write_text('{"paused":false}')
+    resumed = client.get("/api/risk/review?instrument_id=risk-a").json()
+    assert resumed["available"] is True and resumed["model_work"]["paused"] is False
+    assert resumed["reason"] is None
+
+
+def test_failed_automatic_risk_allows_new_same_day_referral_but_does_not_resurrect_removed_case(client):
+    seed(client)
+    dates = {"risk-a": "2026-09-20"}
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, instrument_id="risk-a", scheduled_dates=dates)
+        run.status = "failed"
+        session.commit()
+        case = session.get(RiskCase, "research")
+        case.evidence_json = {**case.evidence_json, "event_version_id": "new-fact", "risk_assessment": {
+            "status": "pending", "event_version_id": "new-fact"}}
+        session.commit()
+        new, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates=dates)
+        assert created and new.entry_id != run.entry_id
+        new.status = "failed"
+        session.delete(case)
+        session.commit()
+        removal, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates=dates)
+        assert created and removal.entry_id != new.entry_id
+        assert session.get(RiskCase, "research") is None
+        assert "research" not in {row["case_id"] for row in removal.context_json["risk_automatic_inputs"]["cases"]}
+
+
+def test_unknown_legacy_baseline_waits_for_real_new_referral_not_daily_touch(client):
+    from datetime import timedelta
+    seed(client)
+    with get_session_factory()() as session:
+        old, _ = service.begin_run(session, instrument_id="risk-a")
+        old.status = "completed"
+        boundary = datetime.fromisoformat(old.context_json["cutoff"])
+        case = session.get(RiskCase, "research")
+        case.evidence_json = {**case.evidence_json, "risk_assessment": {
+            "status": "pending", "event_version_id": "old", "submitted_at": (boundary - timedelta(days=1)).isoformat()}}
+        case.updated_at = boundary + timedelta(days=1)
+        session.commit()
+        dates = {"risk-a": "2026-09-21"}
+        same, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates=dates)
+        assert not created and same.entry_id == old.entry_id
+        case.evidence_json = {**case.evidence_json, "risk_assessment": {
+            "status": "pending", "event_version_id": "new", "submitted_at": (boundary + timedelta(seconds=1)).isoformat()}}
+        session.commit()
+        new, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates=dates)
+        assert created and new.entry_id != old.entry_id
+        assert new.context_json["risk_automatic_inputs"]["cases"]

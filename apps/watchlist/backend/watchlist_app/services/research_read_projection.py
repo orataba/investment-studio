@@ -150,6 +150,8 @@ def dossier_sections(dossier):
         "decision_brief": notebook.get("decision_brief"),
         "mandate": dossier.get("mandate"), "frameworks": dossier.get("frameworks", []),
         "research_plan": dossier.get("research_plan"),
+        "research_applicability": dossier.get("research_applicability"),
+        "working_set": dossier.get("working_set"), "material_index": dossier.get("material_index", []),
         "available_modules": dossier.get("available_modules", []),
         "research_state": {key: value for key, value in notebook.items()
                            if key not in {*lists, "investment_view", "decision_brief", "sources"}},

@@ -628,3 +628,12 @@ def client():
             return response
     with MutationClient(main_module.app) as test_client:
         yield test_client
+
+
+
+@pytest.fixture(autouse=True)
+def isolated_model_work_control(tmp_path, monkeypatch):
+    # Tests use fake Harness processes. Never read or change the host switch.
+    path = tmp_path / "model-work.json"
+    path.write_text('{"paused": false}', encoding="utf-8")
+    monkeypatch.setenv("INVESTMENT_STUDIO_MODEL_WORK_CONTROL_FILE", str(path))

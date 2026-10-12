@@ -68,8 +68,13 @@ def sector_research(instrument_id: str | None = None, watchlist_id: str | None =
                 "latest_review": review_status_view(reviews.get(iid)),
                 "last_completed_review": review_status_view(completed.get(iid))} for iid in ids]
     available = bool(ids)
-    message = None if available else "当前范围没有可分析的已登记标的。"
-    return {"available": available, "research_enabled": available, "sectors": sectors,
+    from watchlist_app.services.research_policy import research_capability
+    policy = research_capability(session)
+    eligible = {row["instrument_id"] for row in policy["instruments"] if row["eligible"]}
+    enabled = available and bool(set(ids) & eligible) and not policy["model_work"]["paused"]
+    message = ("当前范围没有可分析的已登记标的。" if not available else
+               policy["model_work"]["message"] or (None if enabled else "此范围没有当前在投资产。"))
+    return {"available": available, "research_enabled": enabled, "model_work": policy["model_work"], "sectors": sectors,
             "events": service.events_for_instruments(session, ids) if include_events else [], "message": message}
 
 
@@ -131,6 +136,10 @@ def pin_event(case_id: str, request: EventFollowUpPatch, session: Session = Depe
 
 @router.post("/sector-research/runs", status_code=202)
 def start_run(request: RunInput, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.research_policy import require_instrument_research
+    if len(request.instrument_ids) != 1 or not service.scoped_ids(session, instrument_id=request.instrument_ids[0]):
+        raise HTTPException(422, "每次研究请选择一个已登记且有效的股票、基金、ETF、指数或加密资产")
+    require_instrument_research(session, request.instrument_ids)
     if not harness_available():
         raise HTTPException(503, "研究助手尚未配置DeepSeek运行环境")
     try:
@@ -372,6 +381,12 @@ def submit_draft(run_id: str, request: service.ReviewResult, session: Session = 
                     + "。请补充 status=reviewed 或 insufficient_evidence，并说明实际复核结果或证据缺口后重新提交。")
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
+    # A private conversation may read every authorized asset, but sending a
+    # shared draft into independent model review requires current Invested status.
+    # Human imports have a separate route and do not start that model work.
+    from watchlist_app.services.research_policy import require_instrument_research
+    require_instrument_research(session, [review.instrument_id for review in request.reviews],
+                                scheduled=bool(run.context_json.get("scheduled")))
     run.context_json = {**run.context_json, "submitted_draft": service.draft_payload(request)}
     session.commit()
     return {"status": "pending_fact_review", "run_id": run_id,

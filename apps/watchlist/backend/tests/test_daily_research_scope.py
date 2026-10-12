@@ -3,14 +3,21 @@ from datetime import UTC, datetime, timedelta
 from threading import Event
 
 import pytest
+from sqlalchemy import select
 from investment_studio_instrument_core.db_models import Instrument
 
 from watchlist_app.db.models import InstrumentAttributeValue, InstrumentDetail
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services import sector_research as service, shared_instrument_registry
+from watchlist_app.core.settings import get_settings
 
 
-def test_daily_scope_uses_latest_saved_proposed_or_invested_status_and_reloads_changes(client, monkeypatch):
+@pytest.fixture(autouse=True)
+def enabled_automatic_research(client, monkeypatch):
+    monkeypatch.setattr(get_settings(), "research_automatic_enabled", True)
+
+
+def test_daily_scope_includes_all_current_invested_and_reloads_changes(client, monkeypatch):
     monkeypatch.setattr(service, "_research_due", lambda market, now: True)
     monkeypatch.setattr(service, "_research_market", lambda session, iid: "us")
     rows = [
@@ -31,6 +38,9 @@ def test_daily_scope_uses_latest_saved_proposed_or_invested_status_and_reloads_c
         lambda **kwargs: [iid for iid, *_ in rows if iid != "not-registered"])
     with get_session_factory()() as session:
         for iid, kind, active, status in rows:
+            if iid not in {"not-registered", "unsupported"}:
+                session.add(Instrument(instrument_id=iid, instrument_name=iid, instrument_type=kind, currency="USD", exchange_code="XNYS" if kind in {"equity", "etf"} else None,
+                    quote_selection_policy_json={"total_return": ["adjusted_close"]} if kind in {"equity", "etf"} else {}, source_settings_json={}, lifecycle_state_json={"status": "active"}))
             session.add(InstrumentDetail(instrument_id=iid, instrument_type=kind, detail_view_type=kind,
                 instrument_name=iid, is_active=active, metadata_json={}))
             session.flush()
@@ -38,16 +48,16 @@ def test_daily_scope_uses_latest_saved_proposed_or_invested_status_and_reloads_c
                 session.add(InstrumentAttributeValue(instrument_id=iid, attribute_key="coverage_status",
                     value_json=status, adopted_at=datetime.now(UTC) - timedelta(days=1)))
         session.commit()
-        assert service.daily_review_groups(session) == [[iid] for iid in ["crypto-invested", "invested", "private-invested", "proposed", "public-proposed"]]
+        assert service.daily_review_groups(session) == [[iid] for iid in ["crypto-invested", "invested", "private-invested"]]
 
     # Use the same endpoint as Watchlist settings; old attribute history remains saved.
-    for iid, status in [("proposed", "Watch"), ("watch", "Proposed"), ("invested", "Exited")]:
+    for iid, status in [("proposed", "Watch"), ("watch", "Invested"), ("invested", "Exited"), ("public-proposed", "Invested")]:
         response = client.post(f"/api/instrument-attributes/instruments/{iid}",
             json={"values": [{"attribute_key": "coverage_status", "value": status}]})
         assert response.status_code == 200, response.text
     with get_session_factory()() as session:
         assert service.daily_review_groups(session) == [[iid] for iid in ["crypto-invested", "private-invested", "public-proposed", "watch"]]
-        # Leaving automatic scope does not prevent an explicit single-instrument check.
+        # Offline core construction stays available; actual dispatch still requires current Invested status.
         run, created = service.begin_run(session, ["proposed"])
         assert created and run.context_json["instrument_ids"] == ["proposed"]
 
@@ -78,6 +88,7 @@ def test_research_is_due_in_market_local_time_only_on_exchange_sessions(market, 
 
 
 def _registered(session, iid, kind, calendar, exchange=None):
+    # Admission reads actual registered instruments and persisted Invested status.
     session.add(Instrument(instrument_id=iid, instrument_name=iid, instrument_type=kind, currency="USD",
         exchange_code=exchange, quote_selection_policy_json={"total_return": ["adjusted_close"]} if kind in {"equity", "etf"} else {}, source_settings_json={"market_calendar": calendar},
         lifecycle_state_json={"status": "active"}))
@@ -110,7 +121,7 @@ def test_daily_scope_uses_registered_calendar_and_explicit_fund_nav_check_clock(
         assert service.daily_review_groups(session, now=us_morning) == [[iid] for iid in ["daily-cn", "daily-hk", "daily-index", "daily-private", "daily-private-us", "daily-public", "daily-us"]]
 
 
-def test_scheduled_us_review_deduplicates_across_beijing_midnight_and_reopens_next_us_day(client, monkeypatch):
+def test_scheduled_us_review_deduplicates_across_beijing_midnight_and_quiet_next_us_day(client, monkeypatch):
     class Clock:
         current = datetime.fromisoformat("2026-09-08T12:30:00+00:00")
         @classmethod
@@ -131,7 +142,7 @@ def test_scheduled_us_review_deduplicates_across_beijing_midnight_and_reopens_ne
         assert not created and same.entry_id == first.entry_id
         Clock.current = datetime.fromisoformat("2026-09-09T12:30:00+00:00")
         next_day, created = service.begin_run(session, ["daily-us"], scheduled=True)
-        assert created and next_day.entry_id != first.entry_id
+        assert not created and next_day.entry_id == first.entry_id
 
 
 def test_crypto_uses_completed_utc_day_clock_and_keeps_weekends_in_automatic_scope(client, monkeypatch):
@@ -188,7 +199,7 @@ def test_registered_catalogue_does_not_schedule_list_risk_but_invested_funds_sti
     assert {"watchlist_id": "all-instruments"} not in risk_scopes
 
 
-def test_new_proposed_instrument_initializes_on_weekend_once_and_retains_seven_day_window(client, monkeypatch):
+def test_new_instrument_requires_invested_then_initializes_once_on_weekend_with_original_window(client, monkeypatch):
     from watchlist_app.services import research_runner, research_workbench, risk_officer
     now = datetime(2026, 9, 27, 1, tzinfo=UTC)
     class Clock(datetime):
@@ -206,6 +217,9 @@ def test_new_proposed_instrument_initializes_on_weekend_once_and_retains_seven_d
         status.value_json = "Proposed"
         session.commit()
         assert service._research_due("us", now) is False
+        assert service.daily_review_groups(session, now=now) == []
+        status.value_json = "Invested"
+        session.commit()
         assert service.daily_review_groups(session, now=now) == [["new-proposed"]]
     dispatched = []
     def analyze(run_id):
@@ -259,8 +273,7 @@ def test_pending_research_referrals_reach_officer_outside_market_hours_without_d
     monkeypatch.setattr(risk_officer, "begin_run", begin_risk)
     monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda *args, **kwargs: pytest.fail("Referral must not launch a fresh instrument investigation"))
     service.run_daily_reviews(Event())
-    expected = ([{"portfolio_id": "held"}] if in_portfolio else []) + [
-        {"watchlist_id": "named-list"} if in_watchlist else {"instrument_id": "referral"}]
+    expected = [{"instrument_id": "referral"}]
     assert [{key: value for key, value in scope.items() if key != "scheduled_dates"} for scope in scopes] == expected
     assert all(set(scope["scheduled_dates"]) == {"referral"} for scope in scopes)
 

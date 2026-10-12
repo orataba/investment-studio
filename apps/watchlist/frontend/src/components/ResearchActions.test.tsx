@@ -51,7 +51,7 @@ it('links an event to an existing theme without creating a duplicate theme', asy
   render(<ResearchUpdateCard update={event} />)
   fireEvent.click(screen.getByRole('button', { name: '转为跟踪主题' }))
   fireEvent.change(await screen.findByLabelText('跟踪主题'), { target: { value: 'financing' } })
-  fireEvent.click(screen.getByRole('button', { name: '关联并继续研究' }))
+  fireEvent.click(screen.getByRole('button', { name: '关联主题' }))
   await waitFor(() => expect(api.update).toHaveBeenCalledWith('fund', 'financing', { reference: expect.objectContaining({ research_update_id: event.update_id, event_case_id: 'case', event_version_id: 'version', source_ids: ['original'] }) }))
   expect(api.create).not.toHaveBeenCalled()
 })
@@ -74,7 +74,7 @@ it.each(['notebook', 'theme'] as const)('uses precise source and %s references f
   await waitFor(() => expect(api.note).toHaveBeenCalledWith('fund', expect.objectContaining({ note: expect.objectContaining({ research_context: expect.objectContaining({ ...versionReference, source_ids: ['computed:1'], background: expect.stringContaining('已留存回报比较') }) }) })))
   if (kind === 'theme') expect(api.note.mock.calls[0][1].note.research_context.notebook_version_id).toBeUndefined()
   fireEvent.click(screen.getByRole('button', { name: '基于数据建立主题' }))
-  fireEvent.click(screen.getByRole('button', { name: '创建并开始研究' }))
+  fireEvent.click(screen.getByRole('button', { name: '创建主题' }))
   await waitFor(() => expect(api.create).toHaveBeenCalledWith('fund', expect.objectContaining({ kind: 'quantitative', reference: { ...versionReference, source_ids: ['computed:1'] } })))
 })
 
@@ -95,7 +95,7 @@ it('shows the backend research availability message after creating a theme from 
   api.create.mockResolvedValue({ research_status: 'unavailable', research_message: message })
   render(<ResearchUpdateCard update={event} />)
   fireEvent.click(screen.getByRole('button', { name: '转为跟踪主题' }))
-  fireEvent.click(screen.getByRole('button', { name: '创建并开始研究' }))
+  fireEvent.click(screen.getByRole('button', { name: '创建主题' }))
   expect((await screen.findByText(message)).closest('[role="status"]')).not.toBeNull()
 })
 

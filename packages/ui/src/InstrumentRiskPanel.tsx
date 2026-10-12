@@ -14,7 +14,10 @@ import {
   type RiskWorkspace,
   type RiskCase,
   type RiskAssessment,
-  riskPendingState,
+  type RiskAssessmentSnapshot,
+  type RiskPendingRevision,
+  type RiskEvidenceSource,
+  riskCasePendingState,
   percent,
   today,
 } from './instrumentRisk'
@@ -30,7 +33,7 @@ const due = (c: RiskCase) =>
 const attention = (c: RiskCase) =>
   c.trigger_active && c.severity === 'attention' && c.status !== 'handled'
   && (Boolean(c.evidence_json.risk_assessment) || c.evidence_json.direction !== 'opportunity')
-const pendingState = (c: RiskCase) => riskPendingState(c.evidence_json.risk_assessment, c.evidence_json.event_version_id)
+const pendingState = (c: RiskCase) => riskCasePendingState(c.evidence_json)
 const pendingReview = (c: RiskCase) => pendingState(c) === 'review'
 const pendingVerification = (c: RiskCase) => pendingState(c) === 'verification'
 const coverage = (c: RiskCase) => c.trigger_active && c.severity === 'coverage'
@@ -47,6 +50,17 @@ function evidenceHref(value: unknown) {
   } catch {
     return undefined
   }
+}
+
+function EvidenceLinks({ sources }: { sources: RiskEvidenceSource[] }) {
+  return <ul className="risk-event-sources">{sources.map((source, index) => {
+    const href = evidenceHref(source.url)
+    const title = source.title || source.url || '原始来源'
+    return <li key={`${source.source_id || source.url}:${source.version_id || index}`}>
+      {href ? <a href={href} target="_blank" rel="noopener noreferrer" translate="no">{title}</a> : <span translate="no">{title}（链接不可用）</span>}
+      <small>{source.published_at ? `发布时间 ${source.published_at}` : '发布时间待核实'}{source.version_id && <> · <code translate="no">{source.version_id}</code></>}</small>
+    </li>
+  })}</ul>
 }
 
 function CaseRow({
@@ -92,8 +106,13 @@ function CaseRow({
     return () => { cancelled = true }
   }, [detailsOpen, record.case_id, record.updated_at, record.detail_available, request, detailRetry])
   const evidence = (detail || record).evidence_json
-  const pending = riskPendingState(evidence.risk_assessment, evidence.event_version_id)
+  const pending = riskCasePendingState(evidence)
   const assessmentReason = pending === 'verification' ? (evidence.risk_assessment as RiskAssessment).reason : null
+  const assessed = evidence.last_assessed_snapshot as RiskAssessmentSnapshot | null | undefined
+  const pendingRevision = evidence.pending_revision as RiskPendingRevision | null | undefined
+  const retainedAssessment = assessed?.status === 'active'
+  const title = retainedAssessment ? assessed?.title || '此前已确认的风险' : record.title
+  const body = retainedAssessment ? assessed?.body || assessed?.reason : record.body
   const history = (detail || record).history_json || []
   const detailStatus = <>
     {detailLoading && <WorkspaceSkeleton />}
@@ -108,8 +127,9 @@ function CaseRow({
       : { risk_case_id: record.case_id, risk_case_updated_at: record.updated_at }),
   }
   const direction = ({ risk: '风险', opportunity: '机会', uncertain: '重大不确定性' } as Record<string, string>)[String(evidence.direction)]
-  const confidence = ({ confirmed: '已确认', reported: '报道线索', unverified: '待证实' } as Record<string, string>)[String(evidence.confidence)]
+  const confidence = ({ confirmed: '已确认', reported: '报道线索', unverified: '待证实' } as Record<string, string>)[String(pendingRevision ? pendingRevision.confidence : retainedAssessment ? assessed.confidence : evidence.confidence)]
   const sources = sectorEvent && Array.isArray(evidence.sources) ? evidence.sources as Array<{ url: string; title: string; published_at: string | null }> : []
+  const unassessedSources = pendingRevision ? pendingRevision.sources || [] : retainedAssessment ? [] : sources
   const question = `分析 ${asset.name} 的${sectorEvent ? direction || '风险与机会' : '风险'}事项：${record.title}。${record.body} 请核查原因、可能的组合影响和下一步需要补充的证据。`
   const nextStep = String(
     sectorEvent && evidence.next_watch
@@ -186,8 +206,15 @@ function CaseRow({
           {pending === 'verification' ? '已评估／待核实' : pending === 'review' && !record.trigger_active ? '已提交／待复核' : record.trigger_active ? statusLabels[record.status] : '当前未触发'}
         </span>
       </div>
-      <h3><a href={instrumentHref(record.instrument_id, record.signal)} translate="no">{record.title}</a></h3>
-      <p translate="no">{record.body}</p>
+      <h3><a href={instrumentHref(record.instrument_id, record.signal)} translate="no">{title}</a></h3>
+      {body && <p translate="no">{body}</p>}
+      {retainedAssessment && <p className="risk-source">上次确认 <time dateTime={assessed?.reviewed_at || undefined}>{researchStamp(assessed?.reviewed_at)}</time> · 原依据 <time dateTime={assessed?.checked_at || undefined}>{researchStamp(assessed?.checked_at)}</time></p>}
+      {pendingRevision && <section className="risk-pending-revision" aria-label="新进展待复核">
+        <strong>{pendingRevision.urgent_review_required ? '重大限时线索 · 尚未核实' : '新进展待复核'}</strong>
+        {retainedAssessment && pendingRevision.title && <p translate="no">{pendingRevision.title}</p>}
+        {retainedAssessment && pendingRevision.body && <p translate="no">{pendingRevision.body}</p>}
+        <p className="research-muted">新进展记录 <time dateTime={pendingRevision.checked_at || pendingRevision.submitted_at || undefined}>{researchStamp(pendingRevision.checked_at || pendingRevision.submitted_at)}</time> · {retainedAssessment ? '尚不能据此确认原风险已解除。' : '尚未形成独立确认。'}</p>
+      </section>}
       {assessmentReason && <p className="risk-next-step"><strong>风控评估</strong> <span translate="no">{assessmentReason}</span></p>}
       {record.trigger_active && record.severity !== 'observation' && (
         <p className="risk-next-step">
@@ -204,7 +231,7 @@ function CaseRow({
         )}
       <div className="risk-case-meta">
         <span>
-          {record.observed_on
+          {retainedAssessment ? '此前判断保留原确认时点' : record.observed_on
             ? `依据日期 ${record.observed_on}`
             : '依据日期待核对'}
           {record.follow_up_date && record.status !== 'handled' && (
@@ -230,17 +257,11 @@ function CaseRow({
         <summary>跟进与证据</summary>
         {detailStatus}
         {typeof evidence.run_id === 'string' && <p className="risk-source"><span>来源任务</span> <code translate="no">{evidence.run_id}</code></p>}
-        {sectorEvent && confidence && <p className="risk-source">证据状态：{confidence}</p>}
-        {sources.length > 0 && <ul className="risk-event-sources">
-          {sources.map((source, index) => {
-            const href = evidenceHref(source.url)
-            const title = source.title || source.url || '原始来源'
-            return <li key={`${source.url}:${index}`}>
-              {href ? <a href={href} target="_blank" rel="noopener noreferrer">{title}</a> : <span>{title}（链接不可用）</span>}
-              <small>{source.published_at ? `发布时间 ${source.published_at}` : '发布时间待核实'}</small>
-            </li>
-          })}
-        </ul>}
+        {retainedAssessment && <p className="risk-source">已确认版本 <code translate="no">{assessed?.event_version_id}</code> · <span translate="no">{assessed?.reason}</span></p>}
+        {pendingRevision && <p className="risk-source">待复核版本 <code translate="no">{pendingRevision.event_version_id}</code></p>}
+        {sectorEvent && confidence && <p className="risk-source">{pendingRevision ? '新进展证据状态' : '证据状态'}：{confidence}</p>}
+        {retainedAssessment && Boolean(assessed?.sources?.length) && <section aria-label="上次确认的依据"><h4>上次确认的依据</h4><EvidenceLinks sources={assessed!.sources!} /></section>}
+        {unassessedSources.length > 0 && <section aria-label={pendingRevision ? '新进展的依据' : '事项依据'}>{pendingRevision && <h4>新进展的依据</h4>}<EvidenceLinks sources={unassessedSources} /></section>}
         {evidence.source ? (
           <p className="risk-source">来源：{String(evidence.source)}</p>
         ) : null}

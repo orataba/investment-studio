@@ -541,6 +541,11 @@ def research_sources(context: dict, run_id: str, *, session=None) -> dict[str, d
     sources = {}
     cutoff = datetime.fromisoformat(context["cutoff"])
     hydrate = SourceHydrator(cutoff=cutoff, session=session)
+    for historical in (context.get("research_historical_reads") or {}).values():
+        for reference in historical.get("sources", []):
+            source = hydrate(reference, bound_source=True)
+            if _original_source(source, historical["instrument_id"], cutoff):
+                sources[source["source_id"]] = source
     for dossier in context.get("research_dossiers", []):
         iid = dossier["instrument_id"]
         for source in [*dossier.get("prior_sources", []), *(dossier.get("notebook") or {}).get("sources", []),
@@ -668,7 +673,7 @@ def _versioned(value: dict, previous: dict | None, model: type[BaseModel], versi
     versions = deepcopy((previous or {}).get("versions", []))
     if previous:
         versions.append({key: deepcopy(item) for key, item in previous.items() if key != "versions"})
-    return {**value, "version_id": version_id, "created_at": (previous or {}).get("created_at") or recorded_at,
+    return {**deepcopy(previous or {}), **value, "version_id": version_id, "created_at": (previous or {}).get("created_at") or recorded_at,
             "updated_at": recorded_at, "source_run_id": run_id, "versions": versions}
 
 
@@ -702,7 +707,9 @@ def retain_notebook(notebook: ResearchNotebook, previous: dict | None, sources: 
     # A same-key update changes only supplied fields, including explicit empty values.
     for field in ("modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons", "changes"):
         old = {row["key"]: row for row in previous.get(field, [])}
-        value[field] = [_merge_partial(item, old.get(item.key)) for item in getattr(notebook, field)]
+        value[field] = [{**{key: deepcopy(value) for key, value in (old.get(item.key) or {}).items()
+                           if key not in type(item).model_fields}, **_merge_partial(item, old.get(item.key))}
+                        for item in getattr(notebook, field)]
     updated = {q["key"] for q in value["questions"]}
     # Silence is not resolution. Unmentioned questions keep their original assessment and evidence.
     value["questions"] += [deepcopy(q) for q in previous.get("questions", []) if q["key"] not in updated]
@@ -718,7 +725,7 @@ def retain_notebook(notebook: ResearchNotebook, previous: dict | None, sources: 
     for field, model in (("modules", ResearchModule), ("forecasts", ResearchForecast), ("forecast_reviews", ForecastReview), ("lessons", ResearchLesson), ("changes", ResearchChange)):
         old = {row["key"]: row for row in previous.get(field, [])}
         incoming = {row["key"] for row in value[field]}
-        value[field] = [_versioned(row, old.get(row["key"]), model, f"{run_id}:{field}:{row['key']}", run_id, recorded_at)
+        value[field] = [_versioned({key: value for key, value in row.items() if key in model.model_fields}, old.get(row["key"]), model, f"{run_id}:{field}:{row['key']}", run_id, recorded_at)
                         for row in value[field]]
         if field == "modules":
             for row in value[field]:
@@ -761,7 +768,7 @@ def retain_notebook(notebook: ResearchNotebook, previous: dict | None, sources: 
         return [semantic(val) for val in item] if isinstance(item, list) else item
     changed = not previous or any(semantic(value[key]) != semantic(previous.get(key, ResearchNotebook.model_fields[key].get_default(call_default_factory=True)))
                                   for key in stable_fields)
-    return {**value, "schema_version": 2, "method_plan": deepcopy(research_plan or previous.get("method_plan")),
+    return {**deepcopy(previous), **value, "schema_version": 2, "method_plan": deepcopy(research_plan or previous.get("method_plan")),
             "run_id": run_id, "checked_at": cutoff,
             "version_id": run_id if changed else previous.get("version_id", previous.get("run_id", run_id)),
             "created_at": previous.get("created_at") or recorded_at,

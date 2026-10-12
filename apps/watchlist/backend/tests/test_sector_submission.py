@@ -2,22 +2,34 @@ from .research_projection_fixture import server_projection
 import copy
 import io
 import json
+import os
+from datetime import UTC, datetime
+from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
 from sqlalchemy import select
 
-from watchlist_app.db.models import InstrumentDetail
+from watchlist_app.db.models import InstrumentAttributeValue, InstrumentDetail
 from watchlist_app.db.models.workbench import ResearchEntry, RiskCase
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services import sector_research as service
 
 
 @pytest.fixture
-def submission(client):
+def submission(client, monkeypatch):
+    from watchlist_app.core.settings import get_settings
+    from .conftest import canonical_quote_policy, seed_shared_instrument
+    seed_shared_instrument({"instrument_id": "xlk", "instrument_name": "XLK", "instrument_type": "etf",
+        "currency": "USD", "exchange_code": "ARCX", "quote_selection_policy": canonical_quote_policy("etf"),
+        "identifiers": [{"identifier_type": "provider_symbol", "identifier_value": "fmp:XLK", "is_primary": True}]})
+    monkeypatch.setattr(get_settings(), "research_automatic_enabled", True)
     with get_session_factory()() as session:
         session.add(InstrumentDetail(instrument_id="xlk", instrument_type="etf", detail_view_type="etf",
                                      instrument_name="XLK", metadata_json={}))
+        session.flush()
+        session.add(InstrumentAttributeValue(instrument_id="xlk", attribute_key="coverage_status",
+            value_json="Invested", adopted_at=datetime.now(UTC)))
         session.commit()
         run, _ = service.begin_run(session, ["xlk"])
         run.context_json = {**run.context_json, "cutoff": "2026-09-07T00:00:00+00:00",
@@ -45,6 +57,31 @@ def submission(client):
         "research": {"modules": [{"key": "pricing-compensation", "summary": "资金投入与回报之间仍有不确定性。", "analysis": "尚缺估值依据。"}],
                      "source_ids": ["original"]}}]}
     return rid, draft
+
+
+@pytest.mark.parametrize("conversation", [False, True])
+@pytest.mark.parametrize("restriction", ["paused", "inactive", "no_longer_invested"])
+def test_draft_admission_rechecks_model_pause_and_current_invested_without_saving(
+        client, submission, monkeypatch, conversation, restriction):
+    rid, draft = submission
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, rid)
+        run.context_json = {**run.context_json, "sector_run": not conversation, "research_run": conversation}
+        if restriction == "no_longer_invested":
+            session.add(InstrumentAttributeValue(instrument_id="xlk", attribute_key="coverage_status",
+                value_json="Proposed", adopted_at=datetime.now(UTC)))
+        elif restriction == "inactive":
+            session.get(InstrumentDetail, "xlk").is_active = False
+        session.commit()
+        before = copy.deepcopy(run.context_json)
+    if restriction == "paused":
+        Path(os.environ["INVESTMENT_STUDIO_MODEL_WORK_CONTROL_FILE"]).write_text('{"paused":true}')
+    response = client.post(f"/api/research/runs/{rid}/sector-draft", json=draft)
+    assert response.status_code == 409, response.text
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, rid)
+        assert run.context_json == before and run.status == "queued"
+        assert session.scalars(select(RiskCase)).all() == []
 
 
 def test_submission_retains_structured_quotes_without_publishing(client, submission):

@@ -12,9 +12,9 @@ def test_portfolio_timeout_retries_without_freezing_invalid_inputs(client, monke
     monkeypatch.setattr(risk_officer, 'external_json', lambda *a: (_ for _ in ()).throw(TimeoutError('timed out')))
     monkeypatch.setattr(research_runner, 'resolve_token', lambda *a: research_test_actor)
     monkeypatch.setattr(research_runner.subprocess, 'Popen', lambda *a, **k: pytest.fail('Must not start model without inputs'))
-    days={'asset-a':'2026-10-02'}
     with get_session_factory()() as session:
-        run, created=risk_officer.begin_run(session,portfolio_id='isolated-timeout-portfolio',scheduled_dates=days)
+        # Portfolio review remains an explicit request under the automatic per-instrument research policy.
+        run, created=risk_officer.begin_run(session,portfolio_id='isolated-timeout-portfolio')
         assert created
         run_id=run.entry_id
     research_runner._run_analysis(run_id)
@@ -25,5 +25,5 @@ def test_portfolio_timeout_retries_without_freezing_invalid_inputs(client, monke
         assert run.context_json['runtime_error']['type']=='ResearchInputUnavailable'
         assert 'input_snapshot_cutoff' not in run.context_json
         assert research_runner.automatic_retry_due(run.context_json,run.completed_at,run.body,now=datetime.now(UTC)+timedelta(minutes=10))
-        same, created=risk_officer.begin_run(session,portfolio_id='isolated-timeout-portfolio',scheduled_dates=days)
-        assert same.entry_id==run_id and not created
+        assert not research_runner.queue_retry(session,run,now=run.completed_at.replace(tzinfo=UTC))
+        assert run.entry_id==run_id and run.status=='failed'
