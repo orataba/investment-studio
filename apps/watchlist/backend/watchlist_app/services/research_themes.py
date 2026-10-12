@@ -75,6 +75,23 @@ class ThemePatch(BaseModel):
     reference: ThemeReference | None = None
 
 
+class ThemeNoteInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    body: str = Field(min_length=1, max_length=12000)
+    expected_revision: int = Field(ge=1)
+
+    @field_validator("body")
+    @classmethod
+    def not_blank(cls, value):
+        if not value.strip():
+            raise ValueError("请输入人工记录")
+        return value.strip()
+
+
+class ThemeRevisionConflict(ValueError):
+    pass
+
+
 class AnalystThemeUpdate(BaseModel):
     """A sparse, reviewed update to a researcher-owned continuing question."""
     model_config = ConfigDict(extra="forbid")
@@ -123,6 +140,7 @@ def theme_record(entry):
         "origin": context.get("origin", "user"), "managed_by": context.get("managed_by", "user"),
         "theme_key": context.get("theme_key"), "close_reason": context.get("close_reason", ""),
         "source_ids": context.get("source_ids", []),
+        "manual_note_count": len(context.get("manual_notes", [])),
         "source_version_id": f"theme:{entry.entry_id}:{context.get('revision_number', 1)}",
         "updated_by": context.get("updated_by", context.get("author", "")),
         "updated_by_user_id": context.get("updated_by_user_id"),
@@ -134,6 +152,7 @@ def theme_record(entry):
             ("kind", "fundamental"), ("priority", "important"), ("priority_reason", ""),
             ("pinned", False), ("synthesis", ""), ("latest_development", ""), ("next_check", ""),
             ("figure_source_ids", []), ("reference", None), ("last_reviewed_at", None),
+            ("manual_notes", []),
             ("baseline_status", "pending"), ("baseline_requested_at", None), ("sources", []), ("migration_origin", None))}})
 
 
@@ -168,7 +187,7 @@ def theme_summaries(session, instrument_id, *, actor=None, original_sources=Fals
         "close_reason", "source_ids", "updated_by", "updated_by_user_id", "updated_by_role", "recorded_via",
         "source_run_id", "publication", "kind", "priority", "priority_reason", "pinned", "synthesis",
         "latest_development", "next_check", "figure_source_ids", "reference", "last_reviewed_at",
-        "baseline_status", "baseline_requested_at", "sources", "migration_origin", "lifecycle_owner")}
+        "baseline_status", "baseline_requested_at", "sources", "migration_origin", "lifecycle_owner", "manual_notes")}
     fields.update(role=String, theme_status=String)
     relation, payload = research_context_projection(session, fields, json_column=ResearchEntry.read_context_json)
     columns = ("entry_id", "title", "body", "author_user_id", "responsible_user_id", "team_id", "created_at", "updated_at")
@@ -189,6 +208,8 @@ def theme_summaries(session, instrument_id, *, actor=None, original_sources=Fals
         if not context.get("lifecycle_owner") and theme["status"] != "active":
             theme["lifecycle_owner"] = None
         theme.pop("versions", None)
+        theme["manual_note_count"] = len(theme["manual_notes"])
+        theme["manual_notes"] = theme["manual_notes"][-1:]
         from watchlist_app.services.research_read_projection import browser_source_view
         theme["sources"] = [browser_source_view(source) for source in theme.get("sources", [])]
         summaries.append(theme)
@@ -404,6 +425,56 @@ def save_theme(session, instrument_id, payload, *, theme_id=None, actor=None, pr
         _attach_event(session, instrument_id, entry.entry_id, value, actor=actor, timestamp=timestamp)
     session.flush()
     return theme_record(entry)
+
+
+def add_theme_note(session, instrument_id, theme_id, payload: ThemeNoteInput):
+    from watchlist_app.services.research_access import require_team_write
+    from watchlist_app.services.research_dossier import dossier_topic
+    require_team_write()
+    topic = dossier_topic(session, instrument_id)
+    actor = research_identity()
+    entry = get_theme(session, instrument_id, theme_id, actor=actor)
+    session.refresh(entry, with_for_update=True)
+    previous = theme_record(entry)
+    if previous["revision_number"] != payload.expected_revision:
+        raise ThemeRevisionConflict("主题已有新版本，请刷新后添加记录")
+    now = datetime.now(UTC)
+    note = {"note_id": uuid4().hex, "body": payload.body, "author_user_id": actor["user_id"],
+            "author": actor["display_name"], "created_at": now.isoformat()}
+    context = deepcopy(entry.context_json)
+    context.update(manual_notes=[*context.get("manual_notes", []), note],
+        revision_number=previous["revision_number"] + 1,
+        versions=[*context.get("versions", []), {key: value for key, value in previous.items() if key != "versions"}],
+        updated_by_user_id=actor["user_id"], updated_by=actor["display_name"], updated_by_role="user")
+    if context.get("theme_status") == "active":
+        context.update(baseline_status="pending", baseline_requested_at=now.isoformat())
+    entry.context_json = context
+    entry.updated_at = topic.updated_at = now
+    session.flush()
+    return theme_record(entry)
+
+
+def delete_theme(session, instrument_id, theme_id, *, expected_revision):
+    from watchlist_app.services.research_access import require_team_write
+    from watchlist_app.services.research_dossier import dossier_topic
+    from watchlist_app.db.models.workbench import RiskCase
+    require_team_write()
+    topic = dossier_topic(session, instrument_id)
+    entry = get_theme(session, instrument_id, theme_id)
+    session.refresh(entry, with_for_update=True)
+    if entry.context_json.get("revision_number", 1) != expected_revision:
+        raise ThemeRevisionConflict("主题已有新版本，请刷新后删除")
+    # Remove current links. Event originals and published runs are evidence of
+    # past judgments, and remain unchanged; deleting a theme never resolves risk.
+    for case in session.scalars(select(RiskCase).where(RiskCase.instrument_id == instrument_id,
+            RiskCase.signal.like("sector:%")).order_by(RiskCase.case_id)
+            .with_for_update().execution_options(populate_existing=True)):
+        value = case.evidence_json or {}
+        if theme_id in value.get("theme_ids", []):
+            case.evidence_json = {**value, "theme_ids": [iid for iid in value["theme_ids"] if iid != theme_id]}
+    session.delete(entry)
+    topic.updated_at = datetime.now(UTC)
+    session.flush()
 
 
 def analyst_theme_target(session, instrument_id, update, *, actor=None, themes=None):

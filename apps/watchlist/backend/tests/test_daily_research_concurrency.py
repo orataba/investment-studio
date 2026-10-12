@@ -13,9 +13,10 @@ from watchlist_app.services import research_runner, research_workbench, risk_off
 
 def daily_scope(client, monkeypatch, *, members=6):
     from watchlist_app.core.settings import get_settings
-    kinds = ["equity", "etf", "index", "public_fund", "private_fund", "crypto"]
+    kinds = ["equity", "etf", "index", "equity", "etf", "index"]
     ids = [f"daily-{number}" for number in range(len(kinds))]
     monkeypatch.setattr(get_settings(), "research_automatic_enabled", True)
+    monkeypatch.setattr("watchlist_app.services.research_schedule.automatic_research_allowed", lambda now: True)
     with get_session_factory()() as session:
         for iid, kind in zip(ids, kinds):
             session.add(Instrument(instrument_id=iid, instrument_name=iid, instrument_type=kind, currency="USD", exchange_code="XNYS" if kind in {"equity", "etf"} else None,

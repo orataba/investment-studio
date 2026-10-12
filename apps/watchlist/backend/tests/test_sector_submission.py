@@ -39,6 +39,8 @@ def submission(client, monkeypatch):
             "web_evidence": [{"operation": "search", "sources": []}, {"operation": "fetch", "sources": [{
                 "source_id": "original", "url": "https://example.com/disclosure", "title": "Disclosure",
                 "text": 'The company described its "AI investment" plan.', "published_at": "2026-08-01"}]}]}
+        from .research_sections_fixture import completed_sections
+        completed_sections(run)
         session.commit()
         rid = run.entry_id
     draft = {"reviews": [{"instrument_id": "xlk", "summary": '需要核对 "AI investment" 的回报。',
@@ -173,18 +175,18 @@ def test_quiet_submission_does_not_require_a_working_paper(client, submission):
 
 @pytest.mark.parametrize("missing_value", ["omitted", None])
 @pytest.mark.parametrize("status", ["reviewed", "insufficient_evidence"])
-def test_automatic_submission_requires_reflection_and_accepts_correction(client, submission, missing_value, status):
+def test_automatic_submission_accepts_optional_reflection(client, submission, missing_value, status):
     rid, draft = submission
     review = draft["reviews"][0]
     reflection = review.pop("reflection")
     if missing_value is None:
         review["reflection"] = None
     response = client.post(f"/api/research/runs/{rid}/sector-draft", json=draft)
-    assert response.status_code == 422
-    assert "reflection" in response.json()["detail"] and "xlk" in response.json()["detail"]
+    assert response.status_code == 200, response.text
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, rid)
-        assert "submitted_draft" not in run.context_json and run.context_json["reviews"] == {}
+        assert run.context_json["reviews"] == {}
+        assert not run.context_json["submitted_draft"]["reviews"][0].get("reflection")
         assert session.scalars(select(RiskCase)).all() == []
     review["reflection"] = {**reflection, "status": status}
     assert client.post(f"/api/research/runs/{rid}/sector-draft", json=draft).status_code == 200
@@ -192,7 +194,7 @@ def test_automatic_submission_requires_reflection_and_accepts_correction(client,
         assert session.get(ResearchEntry, rid).context_json["submitted_draft"]["reviews"][0]["reflection"]["status"] == status
 
 
-def test_automatic_submission_requires_reflection_for_every_instrument(client, submission):
+def test_automatic_submission_requires_specialists_for_every_instrument(client, submission):
     rid, draft = submission
     with get_session_factory()() as session:
         session.add(InstrumentDetail(instrument_id="xlf", instrument_type="etf", detail_view_type="etf",
@@ -309,22 +311,13 @@ def mcp_http(client, submission, monkeypatch):
     return rid, calls
 
 
-def test_mcp_submission_can_correct_missing_automatic_reflection(mcp_http, submission):
+def test_mcp_submission_does_not_require_automatic_reflection(mcp_http, submission):
     from watchlist_app import research_mcp
     rid, calls = mcp_http
     _, draft = submission
-    reflection = draft["reviews"][0].pop("reflection")
-    with pytest.raises(ValueError) as rejected:
-        research_mcp.submit_research_review(service.ReviewResult.model_validate(draft))
-    diagnostic = json.loads(str(rejected.value))
-    assert diagnostic["status"] == 422 and "reflection" in diagnostic["message"]
-    assert "reviewed" in diagnostic["message"] and "insufficient_evidence" in diagnostic["message"]
-    with get_session_factory()() as session:
-        assert "submitted_draft" not in session.get(ResearchEntry, rid).context_json
-    draft["reviews"][0]["reflection"] = reflection
+    draft["reviews"][0].pop("reflection")
     assert research_mcp.submit_research_review(service.ReviewResult.model_validate(draft))["status"] == "pending_fact_review"
-    assert len(calls) == 2 and calls[1][1]["reviews"][0]["reflection"] == {
-        **reflection, "reviewed_update_ids": []}
+    assert len(calls) == 1 and "reflection" not in calls[0][1]["reviews"][0]
 
 
 def test_mixed_citation_error_identifies_only_invalid_id_and_preserves_real_snapshots(mcp_http, submission):

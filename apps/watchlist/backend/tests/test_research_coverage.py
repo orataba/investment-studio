@@ -1,3 +1,4 @@
+from .research_sections_fixture import completed_sections
 from copy import deepcopy
 from datetime import UTC, datetime
 import json
@@ -102,6 +103,7 @@ def test_publication_preserves_actual_channel_limit_without_failing_quiet_reflec
         # A reviewer may return no acquisition gap; publication retains known
         # application limits. Repeated prose from the reviewer is deduplicated.
         for supplied_coverage in ([], gaps):
+            completed_sections(run)
             sector_research.apply_result(session, run, json.dumps({"reviews": [{"instrument_id": "h11001",
                 "events": [], "coverage": supplied_coverage, "reflection": {"status": "reviewed",
                     "summary": "已复核既有待验证事项，尚无新增判断", "reviewed_update_ids": []}}]}))

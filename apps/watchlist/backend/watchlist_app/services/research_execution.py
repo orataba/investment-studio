@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 import logging
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import Boolean, func, or_, select, text, true, update
 from studio_identity import IdentityError, principal_context, resolve_token, revoke_delegation
 from studio_runtime.model_work import ModelWorkPaused, model_work_status
 
@@ -153,8 +153,20 @@ def claim_next(owner_id, *, now=None):
         running = session.scalar(select(func.count()).select_from(ResearchExecution).where(ResearchExecution.status == "running"))
         if running >= get_settings().research_worker_concurrency:
             return None
-        row = session.execute(select(ResearchExecution.run_id, ResearchExecution.attempt)
-            .join(ResearchEntry, ResearchEntry.entry_id == ResearchExecution.run_id)
+        candidates = select(ResearchExecution.run_id, ResearchExecution.attempt)
+        candidates = candidates.select_from(ResearchExecution)
+        candidates = candidates.join(ResearchEntry, ResearchEntry.entry_id == ResearchExecution.run_id)
+        from watchlist_app.services.research_schedule import automatic_research_allowed
+        if not automatic_research_allowed(now):
+            from watchlist_app.services.research_access import research_context_projection
+            relation, fields = research_context_projection(session, {"scheduled": Boolean},
+                                                           json_column=ResearchEntry.read_context_json)
+            if relation is not None:
+                candidates = candidates.join(relation, true())
+            # Filter before LIMIT: the first deferred automatic run must not
+            # block a later manual assistant request. Its grant and state stay queued.
+            candidates = candidates.where(func.coalesce(fields["scheduled"], False).is_(False))
+        row = session.execute(candidates
             .where(ResearchExecution.status == "queued", ResearchEntry.status == "queued")
             .order_by(ResearchExecution.queued_at, ResearchExecution.run_id).limit(1)).first()
         if row is None:

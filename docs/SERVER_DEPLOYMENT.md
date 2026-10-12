@@ -662,7 +662,7 @@ PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
 Research publication is a separate acceptance step after service deployment.
 Use each environment's own service identity, database and retained materials;
 never transfer local research records into production. The current scope is all
-registered, active assets whose latest coverage status is `Invested`.
+registered, active equity research instruments whose latest coverage status is `Invested`. Private strategies and other non-equity research remain deferred; their risk and assistant tools retain their existing scopes.
 The host model-work switch and current investment status remain authoritative; see
 [Model work control](#model-work-control).
 
@@ -720,7 +720,7 @@ This check establishes a readable publication, not investment quality or full
 data coverage.
 
 After the batch and report checks, restore the original worker setting, restart
-only Watchlist API, and verify the automatic worker is running. Retain the
+the independent research worker, and verify its scheduler is running. Retain the
 manifest and acceptance evidence outside the source tree.
 
 After migration and before declaring Risk/Risk Budget production-ready, run the
@@ -909,9 +909,11 @@ research/optimization, accounting, public-data ingestion, NAVs or document edits
 capability, separate from the AI pause switch.
 
 Watchlist automatic research defaults off. Enable it with
-`INVESTMENT_STUDIO_WATCHLIST_RESEARCH_AUTOMATIC_ENABLED`. All registered, active
-assets whose latest coverage status is Invested are eligible; no per-class quota
-or separate instrument list applies. Pending themes, retries, queue claims and
+`INVESTMENT_STUDIO_WATCHLIST_RESEARCH_AUTOMATIC_ENABLED`. Investment research covers
+registered, active equity research instruments whose latest coverage status is
+Invested; private strategies and other non-equity assets retain automatic risk
+monitoring and the research assistant. No per-class quota or separate instrument
+list applies. Pending themes, retries, queue claims and
 actual launches recheck current eligibility. Enable automation only on the cloud;
 keep local model work paused. Never alter investment status to obtain eligibility.
 `RESEARCH_WORKER_ENABLED=false` only stops the scheduler thread, not manual queue

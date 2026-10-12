@@ -52,7 +52,7 @@ def _event_updates(session, iid, *, event_key=None):
                 sources=row.get("sources", []), occurred_at=row.get("occurred_at"), published_at=row.get("published_at"),
                 next_check=row.get("next_watch", ""), follow_up=follow_up,
                 analysis_depth=row.get("analysis_depth", "analysis"), direction=row.get("direction", "uncertain"),
-                information_type=row.get("information_type"),
+                information_type=row.get("information_type"), event_category=row.get("event_category", "other"),
                 confidence=row.get("confidence"), change=change, event_key=event["event_key"],
                 impact_level=row.get("impact_level"), urgency=row.get("urgency"),
                 risk_channels=row.get("risk_channels") or [], impact_analysis=row.get("impact_analysis", ""),
@@ -70,7 +70,7 @@ def _event_updates(session, iid, *, event_key=None):
     return updates
 
 
-def event_page(session, instrument_id, *, scope="recent", display_timezone="UTC", offset=0, limit=20, event_key=None, include_history=False, now=None):
+def event_page(session, instrument_id, *, scope="recent", display_timezone="UTC", offset=0, limit=20, event_key=None, include_history=False, now=None, event_category=None):
     """A small event-only read; never load notebook history or invoke calculations.
 
     Current reads omit event history and original source text at the SQL boundary.
@@ -90,6 +90,8 @@ def event_page(session, instrument_id, *, scope="recent", display_timezone="UTC"
             raise ValueError("请选择单个事件再读取其历史")
         history = sorted(_event_updates(session, instrument_id, event_key=event_key),
                          key=lambda row: (row["recorded_at"], row["update_id"]), reverse=True)
+        if event_category:
+            history = [row for row in history if row.get("event_category", "other") == event_category]
         total, end = len(history), min(len(history), offset + limit)
         return serialize_payload({"instrument_id": instrument_id, "events": history[offset:end],
             "late_arrivals": [], "late_arrival_count": 0, "total": total,
@@ -111,6 +113,8 @@ def event_page(session, instrument_id, *, scope="recent", display_timezone="UTC"
     filters = [RiskCase.instrument_id == instrument_id, RiskCase.signal.like("sector:%")]
     if event_key:
         filters.append(RiskCase.signal == f"sector:{event_key}")
+    if event_category:
+        filters.append(func.coalesce(RiskCase.evidence_json["event_category"].as_string(), "other") == event_category)
     query = query.where(*filters)
     history_total = None
     if scope == "history" and not event_key:

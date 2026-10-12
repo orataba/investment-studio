@@ -57,6 +57,8 @@ def publish(session, *, events=None, research=None, themes=None, reflection=None
     supplied = {item.get("theme_id") for item in row["themes"]}
     row["themes"].extend({"theme_id": theme["theme_id"], "theme_key": theme["theme_key"]}
         for theme in theme_index(session, "xlk") if theme["status"] == "active" and theme["theme_id"] not in supplied)
+    from .research_sections_fixture import completed_sections
+    completed_sections(run)
     service.apply_result(session, run, json.dumps({"reviews": [row]}))
     session.commit()
     return run

@@ -87,7 +87,7 @@ class UsageCapture:
         self.invocations = {}
 
     def environment(self, stage):
-        if stage not in {"generation", "review", "capture"}:
+        if stage not in {"generation", "review", "capture", "recent_updates", "themes", "quantitative"}:
             raise ValueError("Unknown model usage stage")
         invocation = uuid4().hex
         self.invocations[invocation] = stage

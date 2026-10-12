@@ -447,22 +447,24 @@ def dossier_outline(dossier: dict) -> dict:
 
     notebook = dict(dossier["notebook"]) if dossier.get("notebook") else None
     if notebook:
+        for field in ("forecasts", "forecast_reviews", "lessons"):
+            notebook.pop(field, None)
         for field in ("investment_view", "decision_brief"):
             if notebook.get(field):
                 notebook[field] = index_versions(notebook[field])
-        for field in ("modules", "forecasts", "forecast_reviews", "lessons", "changes"):
+        for field in ("modules", "changes"):
             if field in notebook:
                 notebook[field] = [index_versions(item) for item in notebook[field]]
-    return {**dossier,
+    return {**{key: value for key, value in dossier.items() if key != "review_agenda"},
         **({"mandate": index_versions(dossier["mandate"])} if dossier.get("mandate") else {}),
-        "version_history_note": "旧版本仅列版本与保存时间；需要当时的完整观点、预测、复盘或方法时，调用read_research_dossier(instrument_id=当前标的, version_id=所选版本)。当前正文保持完整，旧版本不补入后来资料。",
+        "version_history_note": "旧版本仅列版本与保存时间；需要当时的完整观点或研究记录时，调用read_research_dossier(instrument_id=当前标的, version_id=所选版本)。当前正文保持完整，旧版本不补入后来资料。",
         "prior_sources": [{k: s.get(k) for k in ("source_id", "document_id", "version_id", "title", "url", "published_at", "retrieved_at", "source_run_id")} | {"body_available": s.get("body_available", bool(s.get("text")))}
                           for s in dossier.get("prior_sources", [])],
         "prior_sources_note": "已取得原文的索引，不表示已核实其主张。按source_id重读正文与日期；原报告失败或撤回不影响原文留存。",
         "materials": [{k: v for k, v in m.items() if k != "body"} | {"body_available": bool(m.get("body"))}
                       for m in dossier.get("materials", [])],
         "historical_cases": [{k: c.get(k) for k in ("source_id", "case_id", "case_title", "role", "current_use", "limitations")}
-                             for c in dossier.get("historical_cases", [])],
+                             for c in dossier.get("historical_cases", []) if c.get("source_type") != "research_review"],
         "notebook": {**{key: value for key, value in notebook.items() if key != "method_plan"}, "sources": [{k: s.get(k) for k in
             ("source_id", "title", "url", "source_type", "source_run_id", "published_at", "retrieved_at", "run_cutoff")}
             for s in notebook.get("sources", [])]} if notebook else None}

@@ -44,6 +44,24 @@ def test_competing_workers_share_one_capacity_and_enqueue_is_idempotent(client):
     assert queue.heartbeat(accepted[0])
 
 
+def test_peak_hours_defer_automatic_queue_without_blocking_manual_requests(client):
+    save_run("automatic-first", context={"scheduled": True})
+    save_run("manual-later")
+    peak = datetime(2026, 10, 13, 2, tzinfo=UTC)  # Beijing Tuesday 10:00.
+    claim = queue.claim_next("manual-owner", now=peak)
+    assert claim.run_id == "manual-later"
+    with get_session_factory()() as session:
+        automatic = session.get(ResearchExecution, "automatic-first")
+        assert automatic.status == "queued" and automatic.delegation_token
+        assert session.get(ResearchEntry, "automatic-first").status == "queued"
+        manual = session.get(ResearchEntry, "manual-later")
+        manual.status = "completed"
+        session.commit()
+    queue.finish_claim(claim)
+    assert queue.claim_next("still-peak", now=peak) is None
+    assert queue.claim_next("offpeak", now=datetime(2026, 10, 13, 4, tzinfo=UTC)).run_id == "automatic-first"
+
+
 def test_expired_owner_is_fenced_and_checkpoint_retained_with_bounded_recovery(client):
     save_run("resume", context={"sector_run": True, "input_snapshot_cutoff": "2026-10-09T00:00:00Z",
         "submitted_draft": {"reviews": []}, "web_evidence": [{"review": {"checkpoint": "retained"}}]})

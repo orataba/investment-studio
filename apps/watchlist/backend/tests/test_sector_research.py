@@ -1,3 +1,4 @@
+from .research_sections_fixture import completed_sections
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -55,6 +56,8 @@ def bind_policy_theme(session, run):
 def add_sources(run, **overrides):
     source={"source_id":"web-one", "url":"https://example.com/news", "title":"Original", "text":"Original source text", "published_at":run.context_json["cutoff"], "time_status":"verified", **overrides}
     run.context_json={**run.context_json,"web_evidence":[{"operation":"search","sources":[]},{"operation":"fetch","sources":[source]}]}
+    from .research_sections_fixture import completed_sections
+    completed_sections(run)
 
 
 def test_manual_and_daily_research_share_one_run_per_instrument(client, monkeypatch):
@@ -102,6 +105,7 @@ def test_old_and_unknown_originals_keep_full_progress_without_duplicate_or_autom
         add_sources(run,published_at=old_publication)
         run.context_json={**run.context_json,"sector_company_data":{"xlk":{"MSFT":{"name":"Microsoft"}}}}
         cited = ["web-one",f"fmp:{run.entry_id}:xlk:MSFT"]
+        completed_sections(run)
         service.apply_result(session,run,result(theme=theme, sources=cited, published_at=old_publication, occurred_at="2020-05-30"))
         session.commit()
         case=session.scalar(select(RiskCase).where(RiskCase.signal=="sector:new-policy"))
@@ -112,10 +116,12 @@ def test_old_and_unknown_originals_keep_full_progress_without_duplicate_or_autom
         assert first["recording_type"] == "backfill" and first["discovered_at"] != old_publication
         assert first["sources"][0]["text"] == "Original source text"
         add_sources(run,source_id="refetched-id",published_at=old_publication)
+        completed_sections(run)
         service.apply_result(session,run,result(theme=theme, sources=["refetched-id"], action="updated", recording_type="update",
             published_at=old_publication, occurred_at="2020-05-30"))
         assert len(case.history_json) == 1
         add_sources(run,source_id="follow-up",published_at=None,time_status="unknown")
+        completed_sections(run)
         service.apply_result(session,run,result(theme=theme, sources=["follow-up"],action="updated",recording_type="update",
             body="新的公开传闻尚待核实，可能改变政策兑现路径。",direction="uncertain",information_type="rumor",confidence="unverified"))
         assert len(case.history_json) == 2
@@ -123,18 +129,22 @@ def test_old_and_unknown_originals_keep_full_progress_without_duplicate_or_autom
         assert case.history_json[1]["snapshot"]["published_at"] is None
         assert case.history_json[1]["snapshot"]["information_type"] == "rumor"
         add_sources(run,source_id="old-refetched-id",published_at=old_publication)
+        completed_sections(run)
         service.apply_result(session,run,result(theme=theme, sources=["old-refetched-id"],action="updated",recording_type="update",
             published_at=old_publication,occurred_at="2020-05-30"))
         assert len(case.history_json) == 3 and case.evidence_json["information_type"] == "fact"
         assert case.history_json[1]["snapshot"]["information_type"] == "rumor"
+        completed_sections(run)
         service.apply_result(session,run,result(theme=theme, ))
         assert case.evidence_json["follow_up"] == "watch" and not case.trigger_active and len(case.history_json) == 3
         from watchlist_app.services.risk_workbench import refresh_risk_cases
         refresh_risk_cases(session,["xlk"])
         assert case.evidence_json["follow_up"] == "watch" and not case.trigger_active
         add_sources(run,source_id="follow-up",published_at=None,time_status="unknown")
+        completed_sections(run)
         service.apply_result(session,run,result(theme=theme, sources=["follow-up"],action="resolved",recording_type="update",
             body="原文澄清此前传闻，相关不确定性已经解除。"))
+        completed_sections(run)
         service.apply_result(session,run,result(theme=theme, ))
         assert not case.trigger_active and case.evidence_json["follow_up"] == "resolved"
         session.commit()
@@ -151,13 +161,17 @@ def test_event_times_preserve_precision_and_cannot_invent_publication(client, mo
         theme = bind_policy_theme(session, run)
         add_sources(run,published_at="2026-08-01")
         with pytest.raises(ValueError, match="发布时间"):
+            completed_sections(run)
             service.apply_result(session,run,result(theme=theme, sources=["web-one"],published_at="2026-09-06"))
         with pytest.raises(ValueError, match="时区"):
+            completed_sections(run)
             service.apply_result(session,run,result(theme=theme, sources=["web-one"],occurred_at="2026-08-01T12:00:00"))
         add_sources(run,published_at=(datetime.fromisoformat(run.context_json["cutoff"])+timedelta(days=1)).isoformat())
         with pytest.raises(ValueError, match="未来首发"):
+            completed_sections(run)
             service.apply_result(session,run,result(theme=theme, sources=["web-one"]))
         add_sources(run,published_at="2026-08-01")
+        completed_sections(run)
         service.apply_result(session,run,result(theme=theme, sources=["web-one"],published_at="2026-08-01"))
         session.flush()
         case=session.scalar(select(RiskCase).where(RiskCase.signal=="sector:new-policy"))
@@ -210,6 +224,7 @@ def test_brief_follow_up_and_risk_trigger_are_independent_with_stable_versions(c
         run, _ = service.begin_run(session, ["xlk"])
         theme = bind_policy_theme(session, run)
         add_sources(run)
+        completed_sections(run)
         service.apply_result(session, run, result(theme=theme, sources=["web-one"], analysis_depth="brief", follow_up="none", next_watch=""))
         session.flush()
         case = session.scalar(select(RiskCase).where(RiskCase.signal == "sector:new-policy"))
@@ -219,11 +234,13 @@ def test_brief_follow_up_and_risk_trigger_are_independent_with_stable_versions(c
         assert brief["event_version_id"] == f"{case.case_id}:1"
         assert brief["recorded_at"] == brief["history"][0]["at"]
         assert brief["event_version_id"] == brief["history"][0]["snapshot"]["event_version_id"]
+        completed_sections(run)
         service.apply_result(session, run, result(theme=theme, sources=["web-one"], action="updated", follow_up="watch",
             next_watch="等待后续正式指引", analysis_depth="analysis", body="进一步核对原文，发现正式指引将明确新的现金流条件。"))
         opportunity = service.event_record(case)
         assert opportunity["follow_up"] == "watch" and not opportunity["trigger_active"]
         assert opportunity["event_version_id"] == f"{case.case_id}:2"
+        completed_sections(run)
         service.apply_result(session, run, result(theme=theme, sources=["web-one"], action="updated", direction="risk"))
         risk = service.event_record(case)
         assert risk["follow_up"] == "watch" and not risk["trigger_active"]
@@ -250,6 +267,7 @@ def test_research_publication_creates_multiple_themes_and_preserves_sparse_links
         draft = service.ReviewResult.model_validate(payload)
         service.validate_result(session, run, draft)
         assert theme_index(session, "xlk") == [], "Accepting a draft must not publish its themes"
+        completed_sections(run)
         service.apply_result(session, run, json.dumps(payload))
         session.commit()
         themes = {theme["theme_key"]: theme for theme in theme_index(session, "xlk")}
@@ -270,6 +288,7 @@ def test_research_publication_creates_multiple_themes_and_preserves_sparse_links
         submitted = service.draft_payload(sparse)
         assert "theme_ids" not in submitted["reviews"][0]["events"][0]
         assert "follow_up" not in submitted["reviews"][0]["events"][0]
+        completed_sections(next_run)
         service.apply_result(session, next_run, json.dumps(submitted))
         assert case.evidence_json["theme_ids"] == ids and case.evidence_json["follow_up"] == "none"
         assert len(theme_index(session, "xlk")) == 2
@@ -285,6 +304,7 @@ def test_invalid_theme_reference_does_not_publish_new_theme_or_event(client, mon
         payload["reviews"][0]["themes"] = [{"priority_reason": "该问题可能改变投资判断，需要持续核实", "theme_key": "valid-new", "title": "需求持续性", "question": "需求是否持续？",
             "source_ids": ["web-one"], "synthesis": "新政策可能带来需求，持续性尚需后续订单验证。", "next_check": "核对下一期订单；若缺少延续则停止持续跟踪。"}]
         with pytest.raises(ValueError, match="未读取"):
+            completed_sections(run)
             service.apply_result(session, run, json.dumps(payload))
         assert theme_index(session, "xlk") == []
         assert session.scalar(select(RiskCase).where(RiskCase.signal == "sector:new-policy")) is None
@@ -296,6 +316,7 @@ def test_new_reflection_is_saved_without_manufacturing_an_event(client, monkeypa
         run, _ = service.begin_run(session, ["xlk"])
         payload = {"reviews": [{"instrument_id": "xlk", "reflection": {
             "status": "insufficient_evidence", "summary": "原判断尚无可观察结果，暂不提炼经验。", "reviewed_update_ids": []}}]}
+        completed_sections(run)
         service.apply_result(session, run, json.dumps(payload))
         review = run.context_json["reviews"]["xlk"]
         assert review["change_kind"] == "none" and review["summary"] == ""
@@ -311,6 +332,7 @@ def test_review_can_bind_an_actual_prior_event_judgment_without_fabricating_a_fo
         original, _ = service.begin_run(session, ["xlk"])
         theme = bind_policy_theme(session, original)
         add_sources(original)
+        completed_sections(original)
         service.apply_result(session, original, result(theme=theme, sources=["web-one"]))
         session.commit()
         event = service.events_for_instruments(session, ["xlk"])[0]
@@ -324,8 +346,8 @@ def test_review_can_bind_an_actual_prior_event_judgment_without_fabricating_a_fo
         add_sources(next_run)
         valid_cutoff = next_run.context_json["cutoff"]
         next_run.context_json = {**next_run.context_json, "cutoff": prior_cutoff}
-        with pytest.raises(ValueError, match="事前判断"):
-            service._validate_update_reference(session, next_run, "xlk", update_id)
+        # Evidence acquisition may adjust the knowledge cutoff; the frozen input boundary owns prior judgments.
+        assert service._validate_update_reference(session, next_run, "xlk", update_id)["update_id"] == update_id
         next_run.context_json = {**next_run.context_json, "cutoff": valid_cutoff}
         next_run.context_json = {**next_run.context_json, "input_snapshot_cutoff": prior_cutoff}
         with pytest.raises(ValueError, match="事前判断"):
@@ -335,6 +357,7 @@ def test_review_can_bind_an_actual_prior_event_judgment_without_fabricating_a_fo
             "forecast_reviews": [{"key": "policy-outcome", "event_key": "new-policy", "related_research_update_id": update_id,
                 "outcome": "最新披露尚不能支持最初的收入改善假设。", "mechanism_assessment": "需区分政策生效与收入兑现。", "source_ids": ["web-one"]}]},
             "reflection": {"status": "reviewed", "reviewed_update_ids": [update_id]}}]}
+        completed_sections(next_run)
         service.apply_result(session, next_run, json.dumps(payload))
         session.commit()
         saved = read_dossier(session, "xlk")["notebook"]["forecast_reviews"][0]
@@ -350,6 +373,7 @@ def test_stale_event_version_cannot_overwrite_a_newer_published_assessment(clien
         original, _ = service.begin_run(session, ["xlk"])
         theme = bind_policy_theme(session, original)
         add_sources(original)
+        completed_sections(original)
         service.apply_result(session, original, result(theme=theme, sources=["web-one"]))
         session.commit()
         case = session.scalar(select(RiskCase).where(RiskCase.signal == "sector:new-policy"))
@@ -371,6 +395,7 @@ def test_stale_event_version_cannot_overwrite_a_newer_published_assessment(clien
                     "assessment": "沿旧事件提出判断", "next_check": "核对原文", "event_key": "new-policy",
                     "theme_id": theme["theme_id"]}]}}]})
         with pytest.raises(service.ResearchVersionConflict, match="事件"):
+            completed_sections(next_run)
             service.apply_result(session, next_run, payload)
         assert case.body == "另一轮研究已经修正判断。" and len(case.history_json) == 2
 
@@ -380,12 +405,14 @@ def test_brief_updates_do_not_replace_the_instrument_investment_conclusion(clien
     seed_sector(client, monkeypatch)
     with get_session_factory()() as session:
         first, _ = service.begin_run(session, ["xlk"])
+        completed_sections(first)
         service.apply_result(session, first, json.dumps({"reviews": [{"instrument_id": "xlk", "change_kind": "investment", "summary": "原有全标的投资判断",
             "research": {"investment_view": {"direction": "原有全标的投资判断"}}}]}))
         session.commit()
         second, _ = service.begin_run(session, ["xlk"])
         second.context_json = {**second.context_json, "research_dossiers": [read_dossier(session, "xlk")]}
         add_sources(second)
+        completed_sections(second)
         service.apply_result(session, second, result(sources=["web-one"], analysis_depth="brief", follow_up="none", next_watch=""))
         review = second.context_json["reviews"]["xlk"]
         assert review["summary"] == "" and review["change_kind"] == "knowledge"
@@ -406,6 +433,7 @@ def test_analyst_can_close_own_active_theme_with_final_question_and_event_in_one
         initial = json.loads(result(sources=["web-one"], theme_ids=["policy-effect"]))
         initial["reviews"][0]["themes"] = [{"priority_reason": "该问题可能改变投资判断，需要持续核实", "theme_key": "policy-effect", "title": "政策兑现", "question": "新政策能否改善收入？",
             "source_ids": ["web-one"], "synthesis": "政策已公布，但收入传导仍需公司披露。", "next_check": "读取下一份收入披露；确认兑现或无传导后结束专项跟踪。"}]
+        completed_sections(first)
         service.apply_result(session, first, json.dumps(initial))
         session.commit()
         theme = theme_index(session, "xlk")[0]
@@ -419,6 +447,7 @@ def test_analyst_can_close_own_active_theme_with_final_question_and_event_in_one
             "status": "closed", "close_reason": "所需验证已完成，后续纳入一般背景研究"}], research={"questions": [{
                 "key": "policy-outcome", "theme_id": ref, "question": theme["question"], "assessment": "现有证据支持改善但不证明唯一原因",
                 "status": "supported", "next_check": "", "source_ids": ["web-one"]}]})
+        completed_sections(second)
         service.apply_result(session, second, json.dumps(final))
         session.commit()
         assert theme_index(session, "xlk")[0]["status"] == "closed"
@@ -434,6 +463,7 @@ def test_automatic_publication_cannot_reopen_or_advance_a_pinned_inactive_theme(
     with get_session_factory()() as session:
         first, _ = service.begin_run(session, ["xlk"])
         add_sources(first)
+        completed_sections(first)
         service.apply_result(session, first, json.dumps({"reviews": [{"instrument_id": "xlk", "themes": [{
             "theme_key": "inactive-policy", "title": "旧政策研究", "question": "是否值得继续研究？",
             "priority_reason": "政策影响尚待核实，曾需要持续观察。", "source_ids": ["web-one"],
@@ -444,9 +474,11 @@ def test_automatic_publication_cannot_reopen_or_advance_a_pinned_inactive_theme(
         run, _ = service.begin_run(session, ["xlk"])
         run.context_json = {**run.context_json, "research_dossiers": [read_dossier(session, "xlk")]}
         with pytest.raises(ValueError, match="不能由自动研究"):
+            completed_sections(run)
             service.apply_result(session, run, json.dumps({"reviews": [{"instrument_id": "xlk", "themes": [
                 {"theme_key": theme["theme_key"], "status": "active"}]}]}))
         with pytest.raises(ValueError, match="暂停或结束"):
+            completed_sections(run)
             service.apply_result(session, run, json.dumps({"reviews": [{"instrument_id": "xlk", "research": {"questions": [{
                 "key": "unrequested-followup", "theme_id": theme["theme_id"], "question": theme["question"],
                 "assessment": "未经恢复便继续更新", "next_check": "后续披露"}]}}]}))
@@ -462,6 +494,7 @@ def test_shared_event_can_keep_inactive_theme_reference_without_reopening_or_new
         first, _ = service.begin_run(session, ["xlk"])
         first.context_json = {**first.context_json, "research_dossiers": [read_dossier(session, "xlk")]}
         add_sources(first)
+        completed_sections(first)
         service.apply_result(session, first, result(sources=["web-one"], themes=themes, theme_ids=[theme["theme_id"] for theme in themes]))
         save_theme(session, "xlk", ThemePatch(status="paused"), theme_id=themes[0]["theme_id"])
         session.commit()
@@ -469,6 +502,7 @@ def test_shared_event_can_keep_inactive_theme_reference_without_reopening_or_new
         second.context_json = {**second.context_json, "research_dossiers": [read_dossier(session, "xlk")],
                                "prior_events": service.events_for_instruments(session, ["xlk"])}
         add_sources(second)
+        completed_sections(second)
         service.apply_result(session, second, result(sources=["web-one"], themes=[themes[1]],
             action="updated", body="同一事件有了新的公开披露。"))
         session.commit()
@@ -496,6 +530,7 @@ def test_failed_supplementary_search_keeps_explicit_coverage_gap(client, monkeyp
     with get_session_factory()() as session:
         run,_=service.begin_run(session,["xlk"])
         run.context_json={**run.context_json,"web_evidence":[{"operation":"error","coverage":["search timeout"]}]}
+        completed_sections(run)
         service.apply_result(session,run,result())
         assert run.status=="completed"
         assert run.context_json["reviews"]["xlk"]["status"]=="limited"
@@ -506,6 +541,7 @@ def test_unchecked_news_cannot_be_reported_as_complete_coverage(client, monkeypa
     seed_sector(client, monkeypatch)
     with get_session_factory()() as session:
         run, _ = service.begin_run(session, ["xlk"])
+        completed_sections(run)
         service.apply_result(session, run, result())
         review = run.context_json["reviews"]["xlk"]
         assert review["status"] == "limited"
@@ -605,10 +641,12 @@ def test_only_computed_comparable_estimate_changes_can_substantiate_an_event(cli
             if baseline or changes:
                 assert evidence["changes"] == []
                 with pytest.raises(ValueError,match="可比较预期变动"):
+                    completed_sections(run)
                     service.apply_result(session,run,reply)
                 assert not session.new
             else:
                 with pytest.raises(ValueError,match="可比较预期变动"):
+                    completed_sections(run)
                     service.apply_result(session,run,result(theme=theme, sources=[f"fmp:{run.entry_id}:xlk:AAA"]))
                 add_sources(run)
                 cross_etf = json.loads(reply)
@@ -622,11 +660,14 @@ def test_only_computed_comparable_estimate_changes_can_substantiate_an_event(cli
                     "themes": [{"theme_id": theme["theme_id"], "theme_key": theme["theme_key"]}]})
                 run.context_json = {**run.context_json,"instrument_ids":["xlk","xlf"]}
                 with pytest.raises(ValueError,match="可比较预期变动"):
+                    completed_sections(run)
                     service.apply_result(session,run,json.dumps(cross_etf))
                 assert not session.new
                 run.context_json = {**run.context_json,"instrument_ids":["xlk"]}
                 with pytest.raises(ValueError,match="发生时间必须留空"):
+                    completed_sections(run)
                     service.apply_result(session,run,result(theme=theme, sources=[evidence["source_id"]],occurred_at=row["collected_at"]))
+                completed_sections(run)
                 service.apply_result(session,run,reply)
         session.flush()
         case=session.scalar(select(RiskCase).where(RiskCase.signal=="sector:new-policy"))
@@ -666,6 +707,7 @@ def test_shared_original_can_support_research_without_online_search(client, monk
         assert not run.context_json.get("web_evidence")
         assert run.context_json["market_coverage"] == page["coverage"]
         assert "text" not in run.context_json["market_text_sources"][0]
+        completed_sections(run)
         service.apply_result(session, run, result(theme=theme, sources=[source["source_id"]], published_at="2026-09-01"))
         session.commit()
         assert run.status == "completed"

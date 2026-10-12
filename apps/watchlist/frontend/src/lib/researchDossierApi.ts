@@ -108,9 +108,11 @@ export type ResearchNotebook = {
   facts?: Array<{ subject: string; metric: string; value: string; unit: string; period: string; comparison: string; uncertainty: string; source_ids: string[] }>
 }
 
-export type ResearchMandateInput = { guidance: string; expected_revision: number }
+export type ResearchSectionKey = 'overview' | 'recent_updates' | 'themes' | 'quantitative'
+export type ResearchSectionSkills = Record<ResearchSectionKey, string>
+export type ResearchMandateInput = { guidance: string; section_skills?: ResearchSectionSkills; expected_revision: number }
 export type ResearchMandate = ResearchRevision & {
-  guidance: string; revision: number
+  guidance: string; section_skills?: ResearchSectionSkills; revision: number
   title: string; background: string; mechanisms: string[]; research_approach: string[]; focus: string[]; source_plan: string[]; gaps: string[]
   user_constraints?: string[]; user_methods?: string[]; report_preferences?: ResearchReportPreferences
   module_focus?: Array<{ module_id: string; reason: string; source_ids: string[]; selected_by: 'user' | 'research' | 'initial' | null }>
@@ -203,6 +205,7 @@ export type ResearchTheme = ResearchThemeInput & {
   question: string
   theme_id: string; instrument_id: string; status: 'active' | 'paused' | 'closed'; author_user_id: string; author: string
   created_at: string; updated_at: string; revision_number: number
+  manual_notes?: Array<{ note_id: string; body: string; author_user_id: string; author: string; created_at: string }>
   notes: InstrumentResearchNote[]; research_progress: ResearchThemeProgress[]
   source_run_id?: string | null
   origin?: 'user' | 'researcher'; close_reason?: string; theme_key?: string; updates?: ResearchUpdate[]
@@ -233,6 +236,13 @@ export function createResearchTheme(instrumentId: string, theme: ResearchThemeIn
 }
 export function updateResearchTheme(instrumentId: string, themeId: string, theme: Partial<ResearchThemeInput>) {
   return fetchJson<ResearchTheme>(`${themesPath(instrumentId)}/${encodeURIComponent(themeId)}`, { method: 'PATCH', body: JSON.stringify(theme) })
+}
+
+export function deleteResearchTheme(instrumentId: string, themeId: string, expectedRevision: number) {
+  return fetchJson<void>(`${themesPath(instrumentId)}/${encodeURIComponent(themeId)}?expected_revision=${expectedRevision}`, { method: 'DELETE' })
+}
+export function addResearchThemeNote(instrumentId: string, themeId: string, body: string, expectedRevision: number) {
+  return fetchJson<ResearchTheme>(`${themesPath(instrumentId)}/${encodeURIComponent(themeId)}/notes`, { method: 'POST', body: JSON.stringify({ body, expected_revision: expectedRevision }) })
 }
 
 const dossierPath = (instrumentId: string) => `/api/research/instruments/${encodeURIComponent(instrumentId)}/dossier`
@@ -292,7 +302,9 @@ export function uploadResearchMaterial(instrumentId: string, file: File, materia
   return fetchJson<ResearchMaterial>(`${dossierPath(instrumentId)}/files`, { method: 'POST', headers: {}, body })
 }
 
+export type ResearchEventCategory = 'news' | 'opinion' | 'earnings' | 'meeting' | 'other'
 export type ResearchUpdate = {
+  event_category?: ResearchEventCategory
   run_id?: string | null
   risk_assessment?: RiskAssessment
   event_key?: string; importance_score?: number | null; importance_reason?: string
@@ -323,8 +335,9 @@ export type ResearchEventsResponse = {
   instrument_id: string; events: ResearchUpdate[]; late_arrivals: ResearchUpdate[]; late_arrival_count?: number
   total: number; next_offset: number | null; has_more: boolean
 }
-export function getResearchEvents(instrumentId: string, scope: ResearchEventScope, signal?: AbortSignal, offset = 0, eventKey?: string, includeHistory = false) {
+export function getResearchEvents(instrumentId: string, scope: ResearchEventScope, signal?: AbortSignal, offset = 0, eventKey?: string, includeHistory = false, eventCategory?: ResearchEventCategory) {
   const query = new URLSearchParams({ scope, display_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, offset: String(offset), limit: '20' })
+  if (eventCategory) query.set('event_category', eventCategory)
   if (eventKey) query.set('event_key', eventKey)
   if (includeHistory) query.set('include_history', 'true')
   return fetchJson<ResearchEventsResponse>(`/api/research/instruments/${encodeURIComponent(instrumentId)}/events?${query}`, { signal })

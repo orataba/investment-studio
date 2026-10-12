@@ -370,6 +370,8 @@ def test_analyst_uses_bound_theme_and_original_pm_revision_without_rewriting_pm(
             invalid["reviews"][0]["research"]["questions"][0].update(change)
             with pytest.raises(ValueError, match=message):
                 sector_research.validate_result(session, run, sector_research.ReviewResult.model_validate(invalid))
+        from .research_sections_fixture import completed_sections
+        completed_sections(run)
         sector_research.apply_result(session, run, json.dumps(payload, ensure_ascii=False))
         session.commit()
         paused_context = deepcopy(context)

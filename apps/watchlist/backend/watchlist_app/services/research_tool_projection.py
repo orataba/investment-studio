@@ -19,10 +19,22 @@ def read_research_context(request, section: str = "overview", offset: int = 0, l
                           path: list[str | int] | None = None) -> dict:
     """Start with the bound question, scope and section counts. Read catalogue to discover related IDs; history/evidence/page_context and selected references hold the actual conversation inputs. Read nonempty selected references before answering; read market_coverage for channel details. Every section is paginated: follow next_offset, then every deferred.path with the SAME section until complete. Text offsets are characters, array offsets rows, object offsets fields. Empty/unread sections never prove no new information. Automatic tracking covers instrument_ids; a conversation follows the question and selected page, not every catalogue member."""
     context = request("context")
+    if context.get("sector_run") and section == "overview":
+        if offset or path:
+            raise ValueError("overview不使用offset/path，请按分工入口读取。")
+        role = (context.get("execution") or {}).get("research_section", "overview")
+        return checked_overview({**{key: context[key] for key in (
+            "sector_run", "run_id", "question", "cutoff", "input_snapshot_cutoff", "instrument_ids") if key in context},
+            "sections": {"catalogue": shape(context.get("catalogue", [])), "question": shape(context.get("question", ""))},
+            "research_section": role,
+            "section_reads": [{"tool": "read_research_section", "instrument_id": iid, "section": role}
+                for iid in context.get("instrument_ids", [])],
+            "next_read": "先完整读取当前任务问题，再从分工入口读取本角色的技能、输入和交接结果。原件按明确问题及精确选择器读取，不把全底稿、历史或其他角色输入逐份复制进上下文。"},
+            pageable_fields=[(["question"], {"tool": "read_research_context", "section": "question"})] if "question" in context else [])
     if not context.get("risk_run"):
         sections = {key: context[key] for key in (
             "question", "page_context", "referenced_research_update", "referenced_research_versions", "referenced_risk_case", "history", "conversation", "evidence",
-            "watchlists", "limitations", "data_gaps", "incremental_trigger", "research_working_sets", "analyst_focus", "user_records", "team_publication_instructions", "initialization") if key in context}
+            "watchlists", "limitations", "data_gaps", "incremental_trigger", "research_working_sets", "section_results", "analyst_focus", "user_records", "team_publication_instructions", "initialization") if key in context}
         sections.update({"market_coverage": coverage_detail(context.get("market_coverage")),
             "catalogue": [{key: item[key] for key in ("instrument_id", "name", "instrument_type", "currency", "watchlist_ids") if key in item}
                           for item in context.get("catalogue", [])],
@@ -181,7 +193,7 @@ def read_research_instrument(request, instrument_id: str, section: ResearchRefer
                              fiscal_period: Literal["FY", "Q1", "Q2", "Q3", "Q4"] | None = None,
                              period_end: str | None = None, financial_view: Literal["statements", "facts"] = "statements",
                              path: list[str | int] | None = None) -> dict:
-    """Read ONE bound instrument's identity, complete current analyst judgment and section directory. Use read_research_dossier for mandate/agenda/current research lists and exact sources/versions. Read performance, performance_evidence, pm_profile, product_information, disclosed_holdings, registered_materials, events or sector_context here on demand; follow next_offset and ALL deferred.path with the SAME section. Reference tables/source_lineage use next_offset. FMP equity financials first lists statements: select period_end (YYYY-MM-DD), statement_type/fiscal_period then financial_view=facts for original line items; follow company.next_offset and cite each source_id. Directory reads do not mean evidence was read. Statements/facts join by statement_content_sha256. Everything stays on the run snapshot, never live data."""
+    """Read ONE bound instrument's identity, complete current analyst judgment and section directory. Automatic specialists start with read_research_section; use read_research_dossier for relevant current research and exact sources/versions. Read performance, performance_evidence, pm_profile, product_information, disclosed_holdings, registered_materials, events or sector_context here on demand; follow next_offset and ALL deferred.path with the SAME section. Reference tables/source_lineage use next_offset. FMP equity financials first lists statements: select period_end (YYYY-MM-DD), statement_type/fiscal_period then financial_view=facts for original line items; follow company.next_offset and cite each source_id. Directory reads do not mean evidence was read. Statements/facts join by statement_content_sha256. Everything stays on the run snapshot, never live data."""
     context = request("context")
     if context.get("risk_run") or instrument_id not in {row["instrument_id"] for row in context.get("catalogue", [])}:
         raise ValueError("只能读取本轮研究范围目录内的标的。")
@@ -229,7 +241,7 @@ def read_research_instrument(request, instrument_id: str, section: ResearchRefer
         "instrument_inputs": [overview],
         "reference_sections": overview["reference_sections"],
         "research_sections": {key: shape(value) for key, value in details.items()},
-        "next_read": "read_research_dossier按section读取mandate、frameworks、review_agenda及相关当前底稿/PM观点，source_id/version_id读原文和原版本。本工具的performance/performance_evidence、pm_profile、product_information、disclosed_holdings、registered_materials、events、sector_context按需读取；选读分区沿next_offset和deferred.path读全。reference_sections原始表沿next_offset读全；公司预期用detail_read入口。覆盖详情在read_research_context(section='market_coverage')。索引、未读页不能当作已核实或资料缺失。",
+        "next_read": "专员先用read_research_section读取分工上下文；read_research_dossier按section读取相关mandate、frameworks、当前底稿或PM观点，source_id/version_id读原文和原版本。本工具的performance/performance_evidence、pm_profile、product_information、disclosed_holdings、registered_materials、events、sector_context按需读取；选读分区沿next_offset和deferred.path读全。reference_sections原始表沿next_offset读全；公司预期用detail_read入口。覆盖详情在read_research_context(section='market_coverage')。索引、未读页不能当作已核实或资料缺失。",
         "sector_inputs": [{**{key: value for key, value in row.items() if key not in {"holdings", "leading_companies", "source"}},
                            "source": _source_overview(row.get("source") or {})} for row in company_inputs],
         "sector_estimate_evidence": [estimate_overview(row, detail_tool="read_sector_company(instrument_id, symbol)")
@@ -242,7 +254,7 @@ def read_research_instrument(request, instrument_id: str, section: ResearchRefer
 
 def read_research_dossier(request, instrument_id: str, source_id: str | None = None, version_id: str | None = None, update_id: str | None = None,
                           section: str = "overview", offset: int = 0, limit: int = 20, path: list[str | int] | None = None) -> dict:
-    """Read the current judgment and section directory, then select working_set/research_applicability/material_index/research_plan/mandate/frameworks/available_modules/review_agenda/research_state, modules/facts/questions/catalysts/forecasts/forecast_reviews/lessons, themes/pm_views, materials/prior_sources/sources/historical_cases/versions. Read the assignment and agenda before deciding what to investigate. Select ONE source_id for an exact bound original, version_id for a past notebook/view/module/forecast or pm:<note_id>:<revision>, or update_id for a published update; selectors cannot combine with section. PM source indexes are not the originals: use that PM version's sources, never a later dossier source with the same ID. ALL selected data is paginated: follow next_offset AND every deferred.path, repeating the same section/selector until fully read. Text offsets count characters. No clipping, live substitution or model calls. AI/PM judgments remain hypotheses, not independently verified facts."""
+    """Read the current judgment and relevant section directory: research_applicability/material_index/research_plan/mandate/frameworks/research_state, modules/facts/questions/catalysts, themes/pm_views, materials/sources/versions. Automatic specialists start with read_research_section and inspect only evidence relevant to their assigned question. Select ONE source_id for an exact bound original, version_id for a past notebook/view/module/forecast or pm:<note_id>:<revision>, or update_id for a published update; selectors cannot combine with section. PM source indexes are not the originals: use that PM version's sources, never a later dossier source with the same ID. ALL selected data is paginated: follow next_offset AND every deferred.path, repeating the same section/selector until fully read. Text offsets count characters. No clipping, live substitution or model calls. AI/PM judgments remain hypotheses, not independently verified facts."""
     context = request("context")
     if context.get("risk_run"):
         raise ValueError("风控研判仅使用已绑定的风险快照")

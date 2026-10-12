@@ -370,8 +370,7 @@ def test_review_projection_keeps_acquisition_required_and_details_readable_from_
     _complete_read(review_mcp.read_review_context, section="acquisition")
     # Unrelated historical/channel details are available, not automatically mandatory.
     assert review_mcp.submit_review_receipts(receipts)["accepted"]
-    focus = packet["research_dossiers"][0]["review_agenda"]["focus_themes"][0]["current_read"]
-    current = review_mcp.read_review_context(section=focus["section"], path=focus["path"])["data"]
+    current = review_mcp.read_review_context(section="research_dossiers", path=[0, "themes", 0])["data"]
     reads = [json.loads(line) for line in (tmp_path / "reads.jsonl").read_text().splitlines()]
     assert not any(row.get("section") in {"market_coverage", "theme_history"} for row in reads)
     history_read = current["history_read"]

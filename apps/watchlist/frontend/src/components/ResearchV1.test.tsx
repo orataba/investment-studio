@@ -115,7 +115,7 @@ it('shows independent follow-up without granting readers pin controls', async ()
   api.role = 'reader'
   render(<ResearchEventCard update={event({ timeline_date: null, follow_up: 'none' })} />)
   expect(screen.getByText('日期待核实')).toBeTruthy()
-  expect(screen.getByText('不再主动跟进')).toBeTruthy()
+  expect(screen.getByText('无需跟进')).toBeTruthy()
   fireEvent.click(screen.getByText('查看影响、公开观点与依据'))
   await screen.findByText('发生了什么')
   expect(screen.queryByRole('button', { name: '固定跟进' })).toBeNull()
@@ -159,7 +159,9 @@ it('retains structured opportunities and risks in historical views without subst
   expect(screen.getByText('当时的机会')).toBeTruthy()
   expect(screen.getByText('风险 1')).toBeTruthy()
   expect(api.theme).not.toHaveBeenCalled()
-  expect(screen.getAllByText('original').length).toBeGreaterThan(0)
+  fireEvent.click(screen.getByText('机会、风险与改判条件'))
+  fireEvent.click(screen.getAllByRole('button', { name: '查看依据' })[0])
+  expect(within(screen.getByRole('dialog')).getByText('original')).toBeTruthy()
 })
 
 it('opens one event history only on request and preserves historical versions and their original source identity', async () => {
@@ -270,4 +272,15 @@ it('names linked themes from the existing index and reveals an archived target b
   fireEvent.click(paused)
   expect(archive.open).toBe(true)
   expect(api.events).toHaveBeenCalledTimes(1)
+})
+
+it('filters instrument developments by server category before pagination and keeps the assistant context on the instrument', async () => {
+  api.events.mockResolvedValue({ instrument_id: 'stock', events: [], late_arrivals: [], total: 0, next_offset: null, has_more: false })
+  const ask = vi.fn()
+  render(<ResearchRecentEvents instrumentId="stock" onAskAssistant={ask} />)
+  await waitFor(() => expect(api.events).toHaveBeenCalledOnce())
+  fireEvent.change(screen.getByLabelText('信息类别'), { target: { value: 'earnings' } })
+  await waitFor(() => expect(api.events).toHaveBeenLastCalledWith('stock', 'recent', expect.any(AbortSignal), 0, undefined, false, 'earnings'))
+  fireEvent.click(screen.getByRole('button', { name: '讨论标的动态' }))
+  expect(ask).toHaveBeenCalledWith(expect.stringContaining('财报与业绩会'), { instrument_id: 'stock' })
 })

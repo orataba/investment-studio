@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
 from studio_runtime import operation
@@ -31,6 +32,20 @@ from portfolio_app.services.research import (
 
 
 router = APIRouter()
+
+
+@router.get("/{portfolio_id}/research/allocation")
+def calculate_saved_allocation(portfolio_id: str, as_of_date: date | None = None):
+    from portfolio_app.services.research import calculate_allocation
+    try:
+        result = calculate_allocation(portfolio_id, as_of_date=as_of_date)
+    except InstrumentRegistryError as error:
+        raise HTTPException(502, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    if result is None:
+        raise HTTPException(404, "Portfolio not found")
+    return result
 
 
 @router.get("/{portfolio_id}/research/workbench", response_model=ResearchWorkbenchResponse)

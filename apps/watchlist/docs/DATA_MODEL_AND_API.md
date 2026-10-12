@@ -212,11 +212,11 @@ stale read repair 也只会写 job，不会直接在 Web 请求里补算；后�
 
 Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会分页对账源版本与本地 materialization cutoff，并通过同一条 durable、per-instrument 串行队列修复漏通知。
 
-### 4.7 Watchlist 投资研究 V1
+### 4.7 Watchlist 投资研究
 
 自动研究仅监测当前底稿、重要活动主题、持续跟踪事件和未解除风险实际引用的来源。已留存的来源目录本身不构成监测依赖；未再被当前工作集引用的背景或其他产品网页修订不会单独启动模型。真实跨产品比较引用仍保留更正、撤回传播。监测器只在当前依赖已明确时移除同类悬空 pending，保留仍被引用的失败更正和归属未知的历史项；淘汰理由记于 `scan_cursor_json.last_dependency_pruning`，不推进成功应用水位、不计入模型上下文，也不改写历史原件。扫描使用单一路径，始终返回当前到期项及检查水位；是否创建新任务仅由持久 monitor 的 pending、attempted、applied 状态决定，不再以旧运行的同日尝试时钟隐藏到期事项。
 
-研究与事件事实继续使用 `research_entry`、主题、来源与 `risk_case`。执行队列由 `research_execution` 保存，风控交付状态由 `research_risk_read_state` 按运行与 attempt 保存，新增计算原件由 `research_run_evidence` 按运行与来源保存；历史原件不改写，当前判断没有平行副本。页面按机会与风险、重要进展、重点主题、量化观察阅读；基础档案、研究指导、PM 观点及历史保留在辅助入口。数值来源的 `observation_domain=market|fundamental|unclassified` 区分市场观察与经营财务分析；浏览器量化区只显示市场观察，新提交的 `market-quantitative.figure_source_ids` 必须符合该用途。原始历史来源与其版本保持完整，不根据标题猜测分类。
+研究与事件事实继续使用 `research_entry`、主题、来源与 `risk_case`。执行队列由 `research_execution` 保存，风控交付状态由 `research_risk_read_state` 按运行与 attempt 保存，新增计算原件由 `research_run_evidence` 按运行与来源保存；历史原件不改写，当前判断没有平行副本。页面按总览、标的动态、重要研究主题、量化指标阅读；总览直接显示建议、依据、机会和风险，资料与历史按需读取。数值来源的 `observation_domain=market|fundamental|unclassified` 区分市场观察与经营财务分析；量化指标同时提供确定性市场数据和适用基本面，市场观察模块新提交的 `market-quantitative.figure_source_ids` 必须符合该用途。原始历史来源与其版本保持完整，不根据标题猜测分类。
 
 - 当前投资判断的同一版本增加 `opportunities`、`risks` 数组，每项包含稳定 `key`、标题、解释、下一观察，以及 `source_ids` / `event_keys` / `theme_ids` 引用；数值依据用 `figure_source_ids`。发布时绑定实际留存证据，历史按原版本读取。数组缺省继续保留旧判断，明确空数组才表示本轮已评估且暂无对应事项。旧记录没有数组时显示覆盖未建立，不推断“没有风险”。`coverage_status` 为 `assessed` / `limited` / `not_established`；`coverage_note` 说明限制。
 - 新重要事件须有整数 `importance_score`（1–5）和具体 `importance_reason`；旧值允许未知。评分不等于确定性、方向或风险严重度。`market_views` 保存有发布者、日期和来源的公开观点；没有样本时不生成共识。`market_reaction` 仅解释绑定的确定性计算及其限制，不写自由浮点行情。
@@ -228,6 +228,10 @@ Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会
 - 风控工具保留 48KB 返回上限；单条当前或历史记录过大时，返回同一分区原页的 `deferred` 目录，以 `page_offset` 绑定原页、`path` 定位字段、`offset` 续读该字段。原文、来源与 PM 判断不截断；全部 `next_offset` 和 `deferred.path` 分支实际交付后才通过必读检查，目录本身不能充当已读证据，未完成时返回精确 `missing_reads`。
 - 公开来源统一由 `/research/runs/{run_id}/sector-evidence` 留存；旧 `/tools` 的 `search` / `source` 与任意 `public_result` 写入口已删除。历史 `tool_evidence` 仍可读取，搜索目录不能当作原文证据。PM 讨论引用同时携带 `pm_note_id` 和 `pm_note_revision`，服务器按原版本绑定，失效引用在入队前返回 422。
 
+三个独立专员分别调用 `POST /api/research/runs/{run_id}/section-context` 和 `section-report`，上下文路径支持字符串字段及整数数组索引。`section_results` 按标的及角色保存并绑定输入截点，总览提交与最终发布均要求三份专员结果齐备。该结果不是独立事实来源，也不直接发布事件或主题。
+
+`PUT /api/research/instruments/{instrument_id}/dossier/mandate` 接受 `guidance`、四部分 `section_skills` 和 `expected_revision`。`POST .../themes/{theme_id}/notes` 保存人工记录，`DELETE .../themes/{theme_id}` 按当前 revision 删除主题及研究引用，保护 PM、事件事实与风险状态。模型不得通过专员工具编辑用户 skill 或 PM 观点。
+
 新增或扩展的读取／工具合同：
 
 | 入口 | 行为 |
@@ -238,11 +242,9 @@ Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会
 | 既有 dossier 版本／来源入口 | 保留标的与版本权限；支持精确事件版本，不把当前原文代替历史证据。 |
 | `POST /api/research/runs/{run_id}/numeric` | 支持 `action=observations|event_reaction`；新增原件按绑定运行与 source_id 写入 `research_run_evidence`，原 `computed_metrics` 历史仍可读取。可传 `benchmark_id`；事件反应须有 `event_date`，`event_timing=date_only|before_open|after_close`，默认日期粒度。计算口径见 [Return Series Contract](./RETURN_SERIES_CONTRACT.md)。 |
 
-#### 启用与回滚边界
+#### 发布与重置
 
-当前发布须完成执行队列、风控交付状态和计算原件的数据库迁移；0068 仅创建原件表，不搬移或改写历史 JSON。已有 watch 事件首次进入有权限的研究写路径时，幂等初始化自启用日开始的 30 天期限并追加管理审计；不按古老创建日立即关闭，不改变原事实日期、PM 观点和风险判断。只读页面不写初始化数据；新字段缺失统一兼容读取。
-
-正式发布仍需按 [数据库工作流](../../../docs/DATABASE_WORKFLOW.md) 停写、备份并执行仓库发布检查。回滚前停止研究／风险调度与写入并备份新增历史。页面可回退，但后端须保留 V1 的风险独立状态、未知字段兼容读取及来源版本保护，或采用修复后前滚；不能直接让旧版“跟进结束即风险结束”的写路径重新处理 V1 数据。不得删除新历史、批量清空数组、恢复过期判断或将本地研究覆盖到云端。
+发布按[数据库工作流](../../../docs/DATABASE_WORKFLOW.md)停写、备份并运行检查。经用户授权的历史生成研究清理由专用 reset 命令完成，先预览，保护交易、行情、人工资料及权限，验证核心表前后摘要一致。不得以本地整库覆盖云端。新四部分研究不依赖旧生成结果，风险独立状态、来源版本与权限合同继续有效。
 
 ## 5. 产品框架如何落地
 

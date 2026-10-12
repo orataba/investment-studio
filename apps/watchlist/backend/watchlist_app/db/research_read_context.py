@@ -1,7 +1,7 @@
 """Small, transactional read projection of retained research; never source evidence."""
 
 EXACT_FIELDS = frozenset({
-    "role", "instrument_id", "instrument_ids", "sector_run", "research_run", "risk_run", "recordkeeping_only",
+    "role", "instrument_id", "instrument_ids", "sector_run", "research_run", "risk_run", "recordkeeping_only", "scheduled",
     "cutoff", "input_snapshot_cutoff", "portfolio_id", "watchlist_id", "risk_scope", "research_actor",
     "execution", "runtime_error", "citation_correction", "organization_revision",
     "background", "author", "revision_number", "origin", "managed_by", "theme_key", "theme_status",
@@ -10,7 +10,7 @@ EXACT_FIELDS = frozenset({
     "latest_development", "next_check", "figure_source_ids", "reference", "last_reviewed_at",
     "baseline_status", "baseline_requested_at", "migration_origin", "lifecycle_owner",
     "incremental_trigger", "market_queries", "attempted_theme_baselines",
-    "research_working_sets",
+    "research_working_sets", "section_results",
 })
 
 

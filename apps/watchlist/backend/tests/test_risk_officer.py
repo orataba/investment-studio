@@ -767,6 +767,8 @@ def test_risk_reads_latest_research_coverage_and_prior_judgment_for_every_suppor
     from watchlist_app.db.models.workbench import ResearchTopic
     from watchlist_app import research_mcp
     seed(client)
+    material_risks = [{"key": "refinancing", "title": "再融资压力", "explanation": "原披露显示短期债务集中到期",
+        "next_watch": "核对授信续作公告", "source_ids": ["filing-original"]}]
     with get_session_factory()() as session:
         asset = session.get(InstrumentDetail, "risk-a")
         asset.instrument_type = asset.detail_view_type = instrument_type
@@ -776,7 +778,7 @@ def test_risk_reads_latest_research_coverage_and_prior_judgment_for_every_suppor
             status="completed", created_at=datetime(2026, 9, 8, tzinfo=UTC), context_json={"sector_run": True,
                 "instrument_ids": ["risk-a"], "cutoff": "2026-09-08T00:00:00+00:00", "reviews": {"risk-a": {
                     "status": "completed", "summary": "中期判断有条件成立", "coverage": [],
-                    "research": {"investment_view": {"direction": "中期判断有条件成立", "risk": "需求修复仍待验证", "source_ids": [],
+                    "research": {"investment_view": {"direction": "中期判断有条件成立", "risk": "需求修复仍待验证", "risks": material_risks, "source_ids": [],
                         "updated_at": "2026-09-08T00:00:00+00:00", "source_run_id": "last-published",
                         "versions": [{"risk": "旧版本，不应重复注入"}]}}}}}))
         session.add(ResearchEntry(entry_id="later-quiet-check", topic_id="retained-research", kind="analysis", title="检查",
@@ -796,7 +798,7 @@ def test_risk_reads_latest_research_coverage_and_prior_judgment_for_every_suppor
     assert tracking["current_judgment"]["summary"] == "中期判断有条件成立"
     assert tracking["current_judgment"]["view_updated_at"] == "2026-09-08T00:00:00+00:00"
     assert tracking["current_judgment"]["investment_view"] == {"direction": "中期判断有条件成立", "risk": "需求修复仍待验证",
-        "source_ids": [], "updated_at": "2026-09-08T00:00:00+00:00", "source_run_id": "last-published"}
+        "risks": material_risks, "source_ids": [], "updated_at": "2026-09-08T00:00:00+00:00", "source_run_id": "last-published"}
     assert "不是独立原始证据" in tracking["note"]
     assert any("最近一次研究未完成" in message for message in snapshot["limitations"])
     assert {case["case_id"] for case in snapshot["research"]} == {"research"}

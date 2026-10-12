@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query, Response
 from pydantic import AwareDatetime, BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -113,6 +113,7 @@ async def upload_material(instrument_id: str, file: UploadFile = File(...), titl
 
 
 from watchlist_app.services.research_themes import ThemeInput, ThemePatch, save_theme, themes_view, theme_summaries
+from watchlist_app.services.research_themes import ThemeNoteInput, ThemeRevisionConflict, add_theme_note, delete_theme
 
 
 @router.get("/research/instruments/{instrument_id}/themes")
@@ -199,3 +200,31 @@ def update_theme(instrument_id: str, theme_id: str, request: ThemePatch, session
 def members():
     from studio_identity import current_principal, team_directory
     return team_directory(current_principal())
+
+
+@router.post("/research/instruments/{instrument_id}/themes/{theme_id}/notes", status_code=201)
+def create_theme_note(instrument_id: str, theme_id: str, request: ThemeNoteInput,
+                      session: Session = Depends(get_db_session)):
+    require_instrument(session, instrument_id)
+    try:
+        result = add_theme_note(session, instrument_id, theme_id, request)
+        session.commit()
+        return result
+    except ThemeRevisionConflict as error:
+        raise HTTPException(409, str(error)) from error
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
+
+
+@router.delete("/research/instruments/{instrument_id}/themes/{theme_id}", status_code=204)
+def remove_theme(instrument_id: str, theme_id: str, expected_revision: int = Query(ge=1),
+                 session: Session = Depends(get_db_session)):
+    require_instrument(session, instrument_id)
+    try:
+        delete_theme(session, instrument_id, theme_id, expected_revision=expected_revision)
+        session.commit()
+        return Response(status_code=204)
+    except ThemeRevisionConflict as error:
+        raise HTTPException(409, str(error)) from error
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error

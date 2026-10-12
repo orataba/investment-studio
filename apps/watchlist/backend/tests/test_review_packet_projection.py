@@ -21,7 +21,7 @@ def _theme(theme_id="theme-a"):
         "research_progress": [{"source_run_id": "prior", "body": "An unresolved check", "source_ids": ["original"]}]}
 
 
-def test_theme_history_reconstructs_all_fields_and_agenda_references_exact_current_theme():
+def test_theme_history_reconstructs_all_fields_without_default_legacy_agenda():
     first, second = _theme(), {**_theme("theme-b"), "theme_key": "supply", "versions": []}
     different = {**deepcopy(first), "current_judgment": "Distinct agenda judgment"}
     dossier = {"instrument_id": "gold", "themes": [first, second],
@@ -40,13 +40,8 @@ def test_theme_history_reconstructs_all_fields_and_agenda_references_exact_curre
         assert set(history[before["theme_id"]]) == {"versions", "updates", "research_progress"}
         assert {**{key: value for key, value in after.items() if key != "history_read"},
                 **history[before["theme_id"]]} == before
-    assert {key: value for key, value in current["review_agenda"].items() if key != "focus_themes"} == {
-        key: value for key, value in original["review_agenda"].items() if key != "focus_themes"}
-    for reference, index in zip(current["review_agenda"]["focus_themes"][:2], [1, 0], strict=True):
-        assert reference == {"theme_id": original["themes"][index]["theme_id"],
-            "theme_key": original["themes"][index]["theme_key"],
-            "current_read": {"tool": "read_review_context", "section": "research_dossiers", "path": [2, "themes", index]}}
-    assert current["review_agenda"]["focus_themes"][2] == different
+    assert "review_agenda" not in current
+    assert [theme["theme_id"] for theme in current["themes"]] == ["theme-a", "theme-b"]
 
 
 def test_bound_dossier_keeps_current_evidence_once_and_addresses_original_theme_versions():
@@ -64,9 +59,12 @@ def test_bound_dossier_keeps_current_evidence_once_and_addresses_original_theme_
     assert bound["themes"][0]["versions"] == [{"revision_number": 6, "updated_at": "2026-09-20", "version_id": "theme:theme-a:6"}]
     read = bound["review_agenda"]["focus_themes"][0]["current_read"]
     assert read == {"tool": "read_research_dossier", "instrument_id": "gold", "section": "themes", "path": [0]}
-    packet, _ = review._review_dossier_outline(bound, 2)
-    assert packet["review_agenda"]["focus_themes"][0]["current_read"] == {
-        "tool": "read_review_context", "section": "research_dossiers", "path": [2, "themes", 0]}
+    packet, history = review._review_dossier_outline(bound, 2)
+    assert "review_agenda" not in packet
+    assert packet["themes"][0]["sources"] == [{"source_id": "original"}]
+    assert packet["themes"][0]["history_read"] == {
+        "tool": "read_review_context", "section": "theme_history", "path": ["gold", "theme-a"]}
+    assert history["theme-a"]["versions"] == bound["themes"][0]["versions"]
 
 
 @pytest.mark.parametrize("historical", [{}, {"updates": []}, {"versions": [], "research_progress": []}])
@@ -108,4 +106,8 @@ def test_packet_separates_full_coverage_and_history_without_changing_originals_o
     assert set(packet["theme_history"]) == {"gold"}
     assert packet["theme_history"]["gold"]["theme-a"] == {
         key: theme[key] for key in ("versions", "updates", "research_progress")}
-    assert packet["research_dossiers"][0]["review_agenda"]["focus_themes"][0]["current_read"]["path"] == [0, "themes", 0]
+    current = packet["research_dossiers"][0]
+    assert "review_agenda" not in current
+    assert current["themes"][0]["source_ids"] == theme["source_ids"]
+    assert current["themes"][0]["history_read"] == {
+        "tool": "read_review_context", "section": "theme_history", "path": ["gold", "theme-a"]}

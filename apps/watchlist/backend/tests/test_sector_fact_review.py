@@ -776,15 +776,16 @@ def test_quiet_packet_keeps_complete_dated_holdings_and_only_actually_read_origi
     assert instrument["reference_data"]["sections"] == {"profile": {"asset_type": "ETF"}}
     assert sources["instrument:bounded-run:xlk"]["snapshot_scope"] == "overview"
     assert packet["research_dossiers"][0]["themes"] == [theme]
-    assert packet["research_dossiers"][0]["notebook"]["forecast_reviews"][0] == {
-        **saved_review, "versions": [{"version_id": "old-version"}]}
+    # The default review directory no longer carries the retired forecast and
+    # lesson workspace. Exact requested historical originals are checked below.
+    assert packet["research_dossiers"][0]["notebook"] is None
     assert set(sources) == {"actually-read", "instrument:bounded-run:xlk", "sector:bounded-run:xlk"}
     encoded = json.dumps(packet)
     assert encoded.count("FULL_CURRENT_ORIGINAL") == 1
     assert encoded.count('"holding_symbol": "S83"') == 1
     for excluded in ("UNRELATED_ESTIMATE_ROW", "UNRELATED_COMPANY_ESTIMATES", "UNRELATED_ALL_COMPANY_DATA",
                      "UNRELATED_ESTIMATE_ORIGINAL", "UNREAD_HISTORICAL_ORIGINAL", "RAW_FINANCIAL_SEQUENCE",
-                     "OLD_VERSION_BODY", "OLD_FULL_NOTEBOOK", "SEARCH_SNIPPET"):
+                     "OLD_VERSION_BODY", "OLD_FULL_NOTEBOOK", "SEARCH_SNIPPET", "forecast_reviews", "old-review"):
         assert excluded not in encoded
 
 

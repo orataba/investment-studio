@@ -1,3 +1,4 @@
+from .research_sections_fixture import completed_sections
 from datetime import UTC, datetime
 
 import pytest
@@ -132,6 +133,7 @@ def test_daily_notebook_material_and_assistant_share_the_same_instrument_evidenc
         paper = {'modules': [{'key': 'fund-strategy', 'summary': '策略来自管理人说明，底层敞口仍待核实。', 'analysis': '暂没有可比估值资料。'}], 'key_drivers': [],
             'questions': [{'key': 'exposure', 'question': '底层敞口是什么？', 'assessment': '尚未披露。', 'next_check': '取得持仓说明。',
                           'status': 'open', 'theme_id': 'fund-exposure', 'source_ids': [sid]}], 'source_ids': [sid]}
+        completed_sections(run)
         sector_research.apply_result(session, run, json.dumps({'reviews': [{'instrument_id': 'sxv264', 'summary': '继续核实敞口。',
               'themes': [{'theme_key': 'fund-exposure', 'title': '底层敞口核实', 'question': '管理人的实际投资敞口是什么？',
                           'priority_reason': '未披露敞口限制策略与组合风险判断，需继续核对管理人原始说明。',

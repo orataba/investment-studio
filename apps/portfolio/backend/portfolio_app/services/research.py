@@ -2164,6 +2164,54 @@ def update_research_settings(
         )
 
 
+def calculate_allocation(portfolio_id: str, *, as_of_date: date | None = None) -> dict | None:
+    """Calculate the saved allocation mandate without writing settings or a backtest."""
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
+        return None
+    ensure_portfolio_daily_snapshots(portfolio_id)
+    with get_session_factory()() as session:
+        settings = session.get(ResearchSettingsRecordModel, portfolio_id)
+        if settings is None or not settings.planning_taxonomy_id:
+            raise ValueError("请先在组合优化页面选择配置分类并保存目标。")
+        setting_fields = ("planning_taxonomy_id", "comparator_taxonomy_node_id", "as_of_mode", "as_of_date",
+            "lookback_days", "missing_return_policy", "capital_mode", "gross_exposure", "target_volatility",
+            "max_gross_exposure", "frozen_taxonomy_node_ids_json", "top_sleeve_weight_bounds_json")
+        captured_settings = {name: deepcopy(getattr(settings, name)) for name in setting_fields}
+        taxonomy = _validate_planning_taxonomy(session, portfolio_id, settings.planning_taxonomy_id)
+        scope = _validate_research_scope(session, taxonomy=taxonomy,
+            comparator_taxonomy_node_id=settings.comparator_taxonomy_node_id)
+        day = as_of_date or _effective_research_as_of_date(settings, default_as_of_date=_default_as_of_date(portfolio))
+        configuration = capture_current_target_configuration(portfolio_id, settings.planning_taxonomy_id, session=session)
+        before = _planning_state_fingerprint(session, portfolio_id=portfolio_id,
+            planning_taxonomy_id=settings.planning_taxonomy_id, as_of_date=day, target_configuration=configuration)
+        if before is None:
+            raise ValueError("当前组合或配置目标不可用，请刷新后重新计算。")
+        risk = get_portfolio_risk_policy(portfolio_id) or {}
+        inputs = dict(planning_taxonomy_id=settings.planning_taxonomy_id, comparator_taxonomy_node_id=scope,
+            as_of_date=day, target_configuration=configuration,
+            lookback_days=int(risk.get("lookback_days") or settings.lookback_days or 90),
+            calculation_frequency="daily", capital_mode=settings.capital_mode or "unit_notional",
+            gross_exposure=_safe_float(settings.gross_exposure), target_volatility=_safe_float(settings.target_volatility),
+            max_gross_exposure=_normalize_research_max_gross_exposure(settings.capital_mode or "unit_notional", settings.max_gross_exposure),
+            missing_return_policy=risk.get("missing_return_policy") or settings.missing_return_policy or RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
+            frozen_taxonomy_node_ids=deepcopy(settings.frozen_taxonomy_node_ids_json or []),
+            top_sleeve_weight_bounds=deepcopy(settings.top_sleeve_weight_bounds_json or []), risk_model_config=deepcopy(risk))
+    solution = solve_current_target_weights(portfolio_id, **inputs)
+    with get_session_factory()() as session:
+        after = _planning_state_fingerprint(session, portfolio_id=portfolio_id,
+            planning_taxonomy_id=inputs["planning_taxonomy_id"], as_of_date=day)
+        current_settings = session.get(ResearchSettingsRecordModel, portfolio_id)
+        settings_unchanged = current_settings is not None and all(
+            getattr(current_settings, name) == value for name, value in captured_settings.items())
+    if before != after or not settings_unchanged:
+        raise ValueError("计算期间组合数据或目标已变化，请重新计算。")
+    return {"portfolio_id": portfolio_id, "as_of_date": day.isoformat(), "calculated_at": _utc_now_iso(),
+        "solver_version": RESEARCH_TARGET_SOLVER_VERSION,
+        "inputs": {**inputs, "as_of_date": day.isoformat()}, "solution": solution,
+        "scope_note": "按本次读取的已保存目标及约束计算配置，不改变目标、不生成交易、不运行历史回测。"}
+
+
 def run_portfolio_research(
     portfolio_id: str,
     *,

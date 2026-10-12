@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getResearchEvents, pinResearchEvent, type AskResearchAssistant, type ResearchEventsResponse, type ResearchUpdate } from '../lib/researchDossierApi'
+import { getResearchEvents, pinResearchEvent, type AskResearchAssistant, type ResearchEventsResponse, type ResearchEventCategory, type ResearchUpdate } from '../lib/researchDossierApi'
 import { announceResearchPublication } from '../lib/researchUpdates'
 import { useStudioAccount } from './AccountBoundary'
 import { SourceList, dateLabel } from './ResearchEvidence'
@@ -10,6 +10,8 @@ import ResearchReadingAside from './ResearchReadingAside'
 import InfoHint from '../../../../../packages/ui/src/InfoHint'
 import ResearchLoading from '../../../../../packages/ui/src/WorkspaceSkeleton'
 import { riskPendingState } from '../../../../../packages/ui/src/instrumentRisk'
+
+export const researchCategoryLabels: Record<ResearchEventCategory, string> = { news: '新闻与公告', opinion: '市场观点', earnings: '财报与业绩会', meeting: '会议纪要', other: '其他' }
 
 export function ReferencedResearchEvent({ instrumentId, eventKey }: { instrumentId: string; eventKey: string }) {
   const [state, setState] = useState<{ event?: ResearchUpdate; error?: string }>({})
@@ -90,16 +92,18 @@ export default function ResearchEventCard({ update, onAskAssistant, initiallyOpe
       {canWrite && reference.event_case_id && versionId && <button type="button" disabled={saving} onClick={() => void togglePin()}>{pinned ? '取消固定' : '固定跟进'}</button>}
       {error && <p role="alert">{error}</p>}
     </section>
-    {update.run_id && <p className="sector-research-note"><span>来源任务</span> <code translate="no">{update.run_id}</code></p>}
+
     <section><h5>来源</h5><SourceList instrumentId={reference.instrument_id} versionId={versionId} sources={sources} /></section>
   </div>
   return <article id={update.event_key ? `research-event-${encodeURIComponent(update.event_key)}` : undefined} className="research-event-card">
     <header className="research-event-title-row">
       <h4 translate="no">{update.title}</h4>
       <div className="research-event-tags">
-        <span className={`research-importance${importance === 5 ? ' major' : ''}`} aria-label={scored ? `重要性 ${importance}/5` : '重要性 未评估'}>{scored ? <span aria-hidden="true">{'★'.repeat(importance)}<span className="research-star-empty">{'☆'.repeat(5 - importance)}</span></span> : '重要性 未评估'}</span>
+        {update.event_category && <span className="research-status-tag">{researchCategoryLabels[update.event_category]}</span>}
+        {update.direction && <span className={`research-status-tag research-impact-${update.direction}`}>{{ opportunity: '利多', risk: '利空', uncertain: '影响待定' }[update.direction]}</span>}
+        <span className={`research-importance${importance === 5 ? ' major' : ''}`} aria-label={scored ? `重要性 ${importance}/5` : '重要性 未评估'}>{scored ? importance >= 5 ? '重大' : importance >= 3 ? '重要' : '一般' : '重要性 未评估'}</span>
         {update.importance_reason && <InfoHint label="重要性依据" detail={update.importance_reason} />}
-        <span className={`research-status-tag${update.follow_up === 'watch' ? ' active' : ''}`}>{update.follow_up === 'watch' ? '跟进中' : '不再主动跟进'}</span>
+        <span className={`research-status-tag${update.follow_up === 'watch' ? ' active' : ''}`}>{update.follow_up === 'watch' ? '持续跟进' : update.follow_up === 'resolved' ? '已结束' : '无需跟进'}</span>
         {update.information_type === 'rumor' && <span className="research-status-tag warning">待核实消息</span>}
         {update.information_type === 'opinion' && <span className="research-status-tag">公开观点</span>}
         {pinned && <span className="research-status-tag">已固定</span>}

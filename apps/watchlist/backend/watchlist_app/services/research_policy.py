@@ -31,7 +31,7 @@ def run_policy_projection(session, run_id, *, locking=False):
     return SimpleNamespace(status=row.status, context_json={key: getattr(row, key) for key in fields}) if row else None
 
 
-def research_capability(session, instrument_id=None):
+def research_capability(session, instrument_id=None, *, risk=False):
     from watchlist_app.services.instrument_resolution import LOCAL_DETAIL_INSTRUMENT_TYPES
     settings = get_settings()
     latest = select(InstrumentAttributeValue.instrument_id, InstrumentAttributeValue.value_json,
@@ -48,12 +48,18 @@ def research_capability(session, instrument_id=None):
                latest.c.position == 1)
         .order_by(Instrument.instrument_id)).all()
     eligible = {iid: kind for iid, kind, status in rows if status == "Invested"}
+    if not risk:
+        from watchlist_app.services.research_dossier import _registration
+        from watchlist_app.services.research_applicability import investment_research_supported
+        eligible = {iid: kind for iid, kind in eligible.items() if investment_research_supported(
+            _registration(session, session.get(InstrumentDetail, iid)))}
     rows = []
     for iid in ([instrument_id] if instrument_id else eligible):
         detail = session.get(InstrumentDetail, iid) if iid not in eligible else None
         allowed = iid in eligible
         rows.append({"instrument_id": iid, "instrument_type": eligible.get(iid) or (detail.instrument_type if detail else None),
-                     "eligible": allowed, "reason": None if allowed else "仅当前在投且有效的标的可更新共享研究。"})
+                     "eligible": allowed, "reason": None if allowed else
+                     ("仅当前在投且有效的标的可自动更新风险研判。" if risk else "共享投资研究目前覆盖在投且有效的股票及权益产品；其他资产保留风险监测和研究助手。")})
     return {"model_work": model_work_status(), "automatic_enabled": settings.research_automatic_enabled,
             "eligible_instruments": list(eligible), "instruments": rows}
 
@@ -65,14 +71,21 @@ def automatic_research_ids(session):
     return [row["instrument_id"] for row in policy["instruments"] if row["eligible"]]
 
 
-def require_instrument_research(session, ids, *, scheduled=False):
+def automatic_risk_ids(session):
+    policy = research_capability(session, risk=True)
+    if policy["model_work"]["paused"] or not policy["automatic_enabled"]:
+        return []
+    return policy["eligible_instruments"]
+
+
+def require_instrument_research(session, ids, *, scheduled=False, risk=False):
     require_model_work()
-    policy = research_capability(session)
+    policy = research_capability(session, risk=risk)
     if scheduled and not policy["automatic_enabled"]:
         raise HTTPException(409, "此环境未启用自动研究。")
     allowed = {row["instrument_id"] for row in policy["instruments"] if row["eligible"]}
     if not ids or not set(ids).issubset(allowed):
-        raise HTTPException(409, "仅允许当前在投且有效的标的更新共享研究；其他标的资料仍可阅读和维护。")
+        raise HTTPException(409, "仅当前在投且有效的标的可更新风险研判。" if risk else "共享投资研究目前覆盖在投且有效的股票及权益产品；其他资产保留风险监测和研究助手。")
 
 
 def require_run_policy(session, run):
@@ -87,7 +100,7 @@ def require_run_policy(session, run):
             scope = context.get("risk_scope") or {}
             if not scope.get("instrument_id") or scope.get("portfolio_id") or scope.get("watchlist_id"):
                 raise HTTPException(409, "自动风险研判按在投标的的实质变化排队，不重复遍历全列表和组合。")
-            require_instrument_research(session, [scope["instrument_id"]], scheduled=True)
+            require_instrument_research(session, [scope["instrument_id"]], scheduled=True, risk=True)
     except HTTPException as error:
         if error.status_code != 409:
             raise

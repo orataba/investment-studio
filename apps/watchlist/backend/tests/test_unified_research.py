@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from .research_sections_fixture import completed_sections
 from watchlist_app.db.models import InstrumentDetail
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
 from watchlist_app.db.session import get_session_factory
@@ -25,6 +26,8 @@ def run_for(session, rid, *, conversation=False, dossier=None):
             'web_evidence': [{'operation': 'fetch', 'sources': [{'source_id': 'original',
                 'url': 'https://example.com/gold', 'title': 'Gold demand', 'text': 'Reserve demand remains supported.',
                 'published_at': '2026-01-01'}]}]})
+    if not conversation:
+        completed_sections(run)
     session.add(run)
     session.commit()
     return run

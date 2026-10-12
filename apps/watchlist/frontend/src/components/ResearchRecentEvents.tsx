@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { getResearchEvents, type AskResearchAssistant, type ResearchEventsResponse, type ResearchEventScope, type ResearchUpdate } from '../lib/researchDossierApi'
+import { getResearchEvents, type AskResearchAssistant, type ResearchEventsResponse, type ResearchEventCategory, type ResearchEventScope, type ResearchUpdate } from '../lib/researchDossierApi'
 import { RESEARCH_UPDATED } from '../lib/researchUpdates'
-import ResearchEventCard from './ResearchEventCard'
+import ResearchEventCard, { researchCategoryLabels } from './ResearchEventCard'
 import ResearchLoading from '../../../../../packages/ui/src/WorkspaceSkeleton'
 import InfoHint from '../../../../../packages/ui/src/InfoHint'
 
@@ -9,13 +9,14 @@ export default function ResearchRecentEvents({ instrumentId, reviewRunId, review
   instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; themeNames?: Record<string, string>; initialScope?: ResearchEventScope; hideWhenEmpty?: boolean
 }) {
   const [scope, setScope] = useState<ResearchEventScope>(initialScope)
+  const [category, setCategory] = useState<ResearchEventCategory | ''>('')
   const [offset, setOffset] = useState(0)
   const [refresh, setRefresh] = useState(0)
-  const [snapshot, setSnapshot] = useState<{ instrumentId: string; scope: ResearchEventScope; data: ResearchEventsResponse } | null>(null)
+  const [snapshot, setSnapshot] = useState<{ instrumentId: string; scope: ResearchEventScope; category: ResearchEventCategory | ''; data: ResearchEventsResponse } | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
-  const data = snapshot?.instrumentId === instrumentId && snapshot.scope === scope ? snapshot.data : null
-  useEffect(() => { setScope(initialScope); setOffset(0) }, [instrumentId, initialScope])
+  const data = snapshot?.instrumentId === instrumentId && snapshot.scope === scope && snapshot.category === category ? snapshot.data : null
+  useEffect(() => { setScope(initialScope); setCategory(''); setOffset(0) }, [instrumentId, initialScope])
   useEffect(() => { setOffset(0) }, [reviewRunId, reviewStatus])
   useEffect(() => {
     const updated = (event: Event) => { if ((event as CustomEvent<string[]>).detail.includes(instrumentId)) { setOffset(0); setRefresh(value => value + 1) } }
@@ -25,10 +26,10 @@ export default function ResearchRecentEvents({ instrumentId, reviewRunId, review
   useEffect(() => {
     const controller = new AbortController()
     setError(''); setLoading(true)
-    void getResearchEvents(instrumentId, scope, controller.signal, offset).then(result => {
+    void (category ? getResearchEvents(instrumentId, scope, controller.signal, offset, undefined, false, category) : getResearchEvents(instrumentId, scope, controller.signal, offset)).then(result => {
       if (!controller.signal.aborted) setSnapshot(previous => {
-        const priorPage = offset && previous?.instrumentId === instrumentId && previous.scope === scope ? previous.data : null
-        return { instrumentId, scope, data: { ...result,
+        const priorPage = offset && previous?.instrumentId === instrumentId && previous.scope === scope && previous.category === category ? previous.data : null
+        return { instrumentId, scope, category, data: { ...result,
           events: priorPage ? [...new Map([...priorPage.events, ...result.events].map(event => [event.update_id, event])).values()] : result.events,
           late_arrivals: priorPage ? priorPage.late_arrivals : result.late_arrivals,
           late_arrival_count: result.late_arrival_count ?? priorPage?.late_arrival_count,
@@ -37,15 +38,16 @@ export default function ResearchRecentEvents({ instrumentId, reviewRunId, review
     }).catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '事件读取失败') })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
-  }, [instrumentId, scope, offset, refresh, reviewRunId, reviewStatus])
+  }, [instrumentId, scope, category, offset, refresh, reviewRunId, reviewStatus])
   const lateCount = data?.late_arrival_count ?? data?.late_arrivals.length ?? 0
   const groups = new Map<string, ResearchUpdate[]>()
   for (const update of data?.events || []) { const day = update.timeline_date || '日期待核实'; groups.set(day, [...(groups.get(day) || []), update]) }
   if (hideWhenEmpty && data && !data.events.length && !error && !loading && scope === initialScope) return null
-  return <section className="research-recent-events" aria-label="近期值得关注" aria-busy={loading}>
-    <div className="research-dossier-section-heading"><div className="research-section-title"><h2>近期值得关注</h2><InfoHint label="重要进展范围" detail="近期已记录的重要事项；持续跟进不受日期限制，历史按需查阅。" /></div><div className="research-event-filters" aria-label="事件范围">
+  return <section className="research-recent-events" aria-label="标的动态" aria-busy={loading}>
+    <div className="research-dossier-section-heading"><div className="research-section-title"><h2>标的动态</h2><InfoHint label="重要进展范围" detail="公司、行业与底层资产的新闻、公告、观点及会议进展；持续跟进不受日期限制。" /></div><div className="research-event-filters" aria-label="事件范围">
       {([['recent', '近 7 天'], ['watch', '仍在跟进'], ['history', '历史']] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={scope === value} onClick={() => { setScope(value); setOffset(0) }}>{label}</button>)}
     </div></div>
+    <div className="research-update-controls"><label>信息类别<select aria-label="信息类别" value={category} onChange={event => { setCategory(event.target.value as ResearchEventCategory | ''); setOffset(0) }}><option value="">全部类别</option>{Object.entries(researchCategoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>{onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(`请分析这个标的标的动态中的${category ? researchCategoryLabels[category] : '重要信息'}，核实事实、判断投资影响，并识别需要持续跟进的事项。`, { instrument_id: instrumentId })}>讨论标的动态</button>}</div>
     {error && <p role="alert">事件暂时无法读取：{error}{data && '。以下保留上次有效内容。'}</p>}
     {loading && !data && <ResearchLoading />}
     {data && !data.events.length && <p className="sector-research-note">{scope === 'recent' ? '近 7 天没有已记录的重要事件；这不代表没有风险。' : scope === 'watch' ? '暂无主动跟进的事件。' : '尚无事件记录。'}</p>}

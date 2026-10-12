@@ -43,10 +43,10 @@ it.each(['failed', 'running'])('keeps saved research readable when the latest up
   await load()
   expect(screen.getByTestId('canonical-dossier')).toBeTruthy()
   if (status === 'failed') {
-    const attempt = screen.getByRole('status')
+    const attempt = screen.getByText(review(status).summary).closest('[role="status"]') as HTMLElement
     expect(within(attempt).getByText(review(status).summary)).toBeTruthy()
     expect(attempt.querySelector('time')?.dateTime).toBe(review(status).checked_at)
-    expect(attempt.closest('details')).toBeNull()
+    expect(attempt.closest('details')?.open).toBe(false)
   }
   else expect(screen.getByRole('button', { name: '研究更新中…' }).hasAttribute('disabled')).toBe(true)
 })

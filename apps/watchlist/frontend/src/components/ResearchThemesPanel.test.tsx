@@ -7,8 +7,8 @@ import type { ResearchTheme, ResearchUpdate } from '../lib/researchDossierApi'
 import { LanguageProvider, LanguageSelector } from '../../../../../packages/ui/src/i18n'
 import { researchMessages, researchPatterns } from '../researchMessages'
 
-const api = vi.hoisted(() => ({ get: vi.fn(), detail: vi.fn(), create: vi.fn(), update: vi.fn(), source: vi.fn(), note: vi.fn() }))
-vi.mock('../lib/researchDossierApi', async importOriginal => ({ ...await importOriginal<typeof import('../lib/researchDossierApi')>(), getResearchThemes: api.get, getResearchTheme: api.detail, createResearchTheme: api.create, updateResearchTheme: api.update, getSavedResearchSource: api.source }))
+const api = vi.hoisted(() => ({ get: vi.fn(), detail: vi.fn(), create: vi.fn(), update: vi.fn(), source: vi.fn(), note: vi.fn(), manualNote: vi.fn(), remove: vi.fn() }))
+vi.mock('../lib/researchDossierApi', async importOriginal => ({ ...await importOriginal<typeof import('../lib/researchDossierApi')>(), getResearchThemes: api.get, getResearchTheme: api.detail, createResearchTheme: api.create, updateResearchTheme: api.update, getSavedResearchSource: api.source, addResearchThemeNote: api.manualNote, deleteResearchTheme: api.remove }))
 vi.mock('../lib/api', async importOriginal => ({ ...await importOriginal<typeof import('../lib/api')>(), createInstrumentResearchNote: api.note }))
 const identity = { user_id: 'pm-1', display_name: 'Shaw', mode: 'account', team_role: 'member' }
 const theme = (overrides: Partial<ResearchTheme> = {}): ResearchTheme => ({
@@ -21,7 +21,7 @@ afterEach(() => { cleanup(); window.history.replaceState(null, '', '/') })
 it('creates a title-only theme with a chosen research type and lets the backend schedule its baseline', async () => {
   api.create.mockResolvedValue(theme({ research_run_id: 'baseline-run', research_status: 'queued', research_message: '已安排主题基线研究。' }))
   render(<ResearchThemesPanel instrumentId="gold" />)
-  await screen.findByText(/尚无持续主题/)
+  await screen.findByText(/尚无重要研究主题/)
   fireEvent.click(screen.getByRole('button', { name: '添加主题' }))
   fireEvent.change(screen.getByLabelText('主题名称'), { target: { value: '利率与黄金的条件关系' } })
   fireEvent.change(screen.getByLabelText('研究类型'), { target: { value: 'quantitative' } })
@@ -42,7 +42,8 @@ it('shows synthesized priorities without surfacing old independent research ques
   expect(screen.queryByText('旧问题名称')).toBeNull()
   expect(screen.getAllByText(theme().synthesis!)).toHaveLength(1)
   expect(screen.getAllByText(theme().priority_reason!).length).toBeGreaterThan(0)
-  expect(screen.queryByText('管理主题')).toBeNull()
+  expect(screen.getByText('管理主题').closest('details')?.open).toBe(false)
+  fireEvent.click(screen.getByText('管理主题'))
   expect(screen.getByRole('button', { name: '结束主题跟踪' }).closest('.research-theme-expanded')).toBeNull()
 })
 
@@ -100,7 +101,7 @@ it('reports an unavailable research runtime without claiming a pending baseline 
   const message = '主题已保存；研究运行环境尚不可用，请稍后发起研究。'
   api.create.mockResolvedValue(theme({ research_status: 'unavailable', research_message: message }))
   render(<ResearchThemesPanel instrumentId="gold" />)
-  await screen.findByText(/尚无持续主题/)
+  await screen.findByText(/尚无重要研究主题/)
   fireEvent.click(screen.getByRole('button', { name: '添加主题' }))
   fireEvent.change(screen.getByLabelText('主题名称'), { target: { value: '新主题' } })
   api.get.mockResolvedValue({ identity, themes: [theme({ synthesis: '', baseline_status: 'pending' })] })
@@ -133,7 +134,7 @@ it('does not let a completed save for a previous instrument erase the current th
   let finish!: (value: ResearchTheme) => void
   api.create.mockReturnValue(new Promise<ResearchTheme>(resolve => { finish = resolve }))
   const { rerender } = render(<ResearchThemesPanel instrumentId="gold" />)
-  await screen.findByText(/尚无持续主题/)
+  await screen.findByText(/尚无重要研究主题/)
   fireEvent.click(screen.getByRole('button', { name: '添加主题' }))
   fireEvent.change(screen.getByLabelText('主题名称'), { target: { value: '黄金主题' } })
   fireEvent.click(screen.getByRole('button', { name: '创建主题' }))
@@ -151,6 +152,7 @@ it('closes a theme with an explicit reason while preserving its record', async (
   render(<ResearchThemesPanel instrumentId="gold" />)
   await screen.findByRole('heading', { name: theme().title })
   expect(api.detail).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByText('管理主题'))
   fireEvent.click(screen.getByRole('button', { name: '结束主题跟踪' }))
   fireEvent.change(screen.getByLabelText('结束原因'), { target: { value: '机制已不适用' } })
   fireEvent.click(screen.getByRole('button', { name: '保存并结束' }))
@@ -176,7 +178,7 @@ it('respects the active-theme limit and preserves a failed draft', async () => {
   expect(screen.getByRole('button', { name: '添加主题' }).hasAttribute('disabled')).toBe(true)
   unmount(); api.get.mockResolvedValue({ identity, themes: [] }); api.create.mockRejectedValue(new Error('主题达到上限'))
   render(<ResearchThemesPanel instrumentId="gold" />)
-  await screen.findByText(/尚无持续主题/)
+  await screen.findByText(/尚无重要研究主题/)
   fireEvent.click(screen.getByRole('button', { name: '添加主题' })); fireEvent.change(screen.getByLabelText('主题名称'), { target: { value: '新主题' } })
   fireEvent.click(screen.getByRole('button', { name: '创建主题' }))
   expect(await screen.findByRole('alert')).toHaveProperty('textContent', '主题达到上限')
@@ -187,7 +189,7 @@ it('translates the working surface while preserving original research text', asy
   window.history.replaceState(null, '', '/?lang=en')
   api.get.mockResolvedValue({ identity, themes: [theme({ title: 'Risk', synthesis: 'Research' })] })
   render(<LanguageProvider messages={researchMessages} patterns={researchPatterns}><LanguageSelector /><ResearchThemesPanel instrumentId="gold" onAskAssistant={vi.fn()} /></LanguageProvider>)
-  expect(await screen.findByRole('heading', { name: /Ongoing research themes/ })).toBeTruthy()
+  expect(await screen.findByRole('heading', { name: /Key research themes/ })).toBeTruthy()
   expect(screen.getByRole('heading', { name: 'Risk' })).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Research context and timeline' }))
   expect(await screen.findByRole('button', { name: 'Discuss theme' })).toBeTruthy()
@@ -266,6 +268,7 @@ it('pauses and restores a theme from its card without fetching detailed research
   await screen.findByRole('heading', { name: theme().title })
   expect(screen.queryByText(theme().synthesis!)).toBeNull()
   api.get.mockResolvedValue({ identity, themes: [theme({ status: 'paused' })] })
+  fireEvent.click(screen.getByText('管理主题'))
   fireEvent.click(screen.getByRole('button', { name: '暂停后续跟踪' }))
   await waitFor(() => expect(api.update).toHaveBeenCalledWith('gold', 'theme-credit', { status: 'paused' }))
   fireEvent.click(await screen.findByText('暂停或结束的主题 · 1'))
@@ -282,4 +285,37 @@ it('does not mark a selected but unreviewed theme as freshly reviewed', async ()
   await screen.findByRole('heading', { name: saved.title })
   expect(screen.getByText('本轮未复核 · 判断日期保留原记录')).toBeTruthy()
   expect(api.update).not.toHaveBeenCalled()
+})
+
+it('adds a manual record with the viewed revision and displays it in the theme timeline', async () => {
+  const original = theme()
+  api.get.mockResolvedValue({ identity, themes: [original] })
+  api.manualNote.mockImplementation(async () => {
+    const saved = { ...original, revision_number: 2, source_version_id: 'theme:theme-credit:2', manual_notes: [{ note_id: 'note-1', body: '订单数据已经披露；现金转化仍待观察。', author: 'Shaw', author_user_id: identity.user_id, created_at: '2026-10-13T08:00:00Z' }] }
+    api.get.mockResolvedValue({ identity, themes: [saved] }); return saved
+  })
+  render(<ResearchThemesPanel instrumentId="gold" />)
+  await screen.findByRole('heading', { name: original.title })
+  await openTheme(original.title)
+  fireEvent.click(screen.getByRole('button', { name: '添加人工记录' }))
+  fireEvent.change(screen.getByLabelText('事实、分析与来源'), { target: { value: '订单数据已经披露；现金转化仍待观察。' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存人工记录' }))
+  await waitFor(() => expect(api.manualNote).toHaveBeenCalledWith('gold', original.theme_id, '订单数据已经披露；现金转化仍待观察。', 1))
+  expect(await screen.findByText('订单数据已经披露；现金转化仍待观察。')).toBeTruthy()
+})
+
+it('deletes the selected theme only after confirmation and preserves it when a revision conflict is returned', async () => {
+  const original = theme()
+  api.get.mockResolvedValue({ identity, themes: [original] })
+  api.remove.mockRejectedValue(new Error('主题已更新，请刷新后重试。'))
+  render(<LanguageProvider><ResearchThemesPanel instrumentId="gold" /></LanguageProvider>)
+  fireEvent.click(await screen.findByText('管理主题'))
+  fireEvent.click(screen.getByRole('button', { name: '删除主题' }))
+  expect(api.remove).not.toHaveBeenCalled()
+  const dialog = screen.getByRole('alertdialog', { name: '删除研究主题' })
+  expect(dialog.textContent).toContain(original.title)
+  fireEvent.click(within(dialog).getByRole('button', { name: '删除主题' }))
+  await waitFor(() => expect(api.remove).toHaveBeenCalledWith('gold', original.theme_id, 1))
+  expect(await within(dialog).findByText('主题已更新，请刷新后重试。')).toBeTruthy()
+  expect(screen.getByRole('heading', { name: original.title })).toBeTruthy()
 })

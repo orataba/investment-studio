@@ -151,7 +151,8 @@ def test_large_research_entries_page_every_bound_record_within_actual_wire_limit
     monkeypatch.setattr(mcp, "request", server_projection(lambda suffix: context if suffix == "context" else pytest.fail(suffix)))
     scope = wire("read_research_context", {})
     assert scope["instrument_ids"] == ["xlk"] and scope["sections"]["catalogue"]["count"] == 249
-    assert "sources" not in scope["market_coverage"] and "sources" not in scope["market_coverage"]["export_coverage"]
+    assert "market_coverage" not in scope  # Each role starts with its own acquisition or numerical context.
+    assert scope["section_reads"] == [{"tool": "read_research_section", "instrument_id": "xlk", "section": "overview"}]
     catalogue = complete("read_research_context", {"section": "catalogue"})
     assert [row["instrument_id"] for row in catalogue] == [row["instrument_id"] for row in context["catalogue"]]
     assert all("attributes" not in row for row in catalogue)

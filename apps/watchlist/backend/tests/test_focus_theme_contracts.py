@@ -1,3 +1,4 @@
+from .research_sections_fixture import completed_sections
 from copy import deepcopy
 from datetime import UTC, datetime
 import json
@@ -79,6 +80,7 @@ def test_automatic_round_requires_each_active_theme_receipt(research_client):
         with pytest.raises(ValueError, match="未复核"):
             sector_research.validate_result(session, run, sector_research.ReviewResult.model_validate({"reviews": [{"instrument_id": "fund-us-agg"}]}))
         result = {"reviews": [{"instrument_id": "fund-us-agg", "themes": [{"theme_key": theme["theme_key"], "theme_id": theme["theme_id"]}]}]}
+        completed_sections(run)
         sector_research.apply_result(session, run, json.dumps(result))
         assert theme_index(session, "fund-us-agg")[0]["revision_number"] == 1
 

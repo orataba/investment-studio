@@ -85,14 +85,17 @@ class RunInput(BaseModel):
 @router.get("/research/instruments/{instrument_id}/events")
 def research_events(instrument_id: str, scope: Literal["recent", "watch", "history"] = "recent",
         display_timezone: str = "UTC", offset: int = Query(default=0, ge=0), limit: int = Query(default=20, ge=1, le=100),
-        event_key: str | None = None, include_history: bool = False, session: Session = Depends(get_db_session)):
+        event_key: str | None = None, include_history: bool = False,
+        event_category: Literal["news", "opinion", "earnings", "meeting", "other"] | None = None,
+        session: Session = Depends(get_db_session)):
     from zoneinfo import ZoneInfoNotFoundError
     from watchlist_app.services.research_activity import event_page
     if not service.scoped_ids(session, instrument_id=instrument_id):
         raise HTTPException(404, "标的不存在或未启用")
     try:
         return event_page(session, instrument_id, scope=scope, display_timezone=display_timezone,
-                          offset=offset, limit=limit, event_key=event_key, include_history=include_history)
+                          offset=offset, limit=limit, event_key=event_key, include_history=include_history,
+                          event_category=event_category)
     except (ValueError, ZoneInfoNotFoundError) as error:
         raise HTTPException(422, str(error)) from error
 
@@ -370,15 +373,9 @@ def stored_research_data(run_id: str, request: StoredDataRequest, session: Sessi
 def submit_draft(run_id: str, request: service.ReviewResult, session: Session = Depends(get_db_session)):
     run = current_run(session, run_id, writing=True)
     try:
+        from watchlist_app.services.research_sections import require_section_results
+        require_section_results(run)
         service.validate_result(session, run, request)
-        # Enforce the current automatic submission contract without rewriting
-        # historical runs or requiring a daily receipt from a conversation.
-        if run.context_json.get("sector_run"):
-            missing = [review.instrument_id for review in request.reviews if review.reflection is None]
-            if missing:
-                raise ValueError("自动研究每个标的都必须提交 reflection 复核记录；以下标的缺少："
-                    + "、".join(missing)
-                    + "。请补充 status=reviewed 或 insufficient_evidence，并说明实际复核结果或证据缺口后重新提交。")
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     # A private conversation may read every authorized asset, but sending a

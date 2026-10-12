@@ -48,9 +48,9 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
     {displayBody && (!compact || !themeLead) && <p className={`research-update-body${!readable && !compact && !expandedBody && displayBody.length > 220 ? ' research-update-excerpt' : ''}`} translate="no">{displayBody}</p>}
     {!readable && !compact && displayBody.length > 220 && <button className="sector-event-ask research-update-expand" type="button" aria-expanded={expandedBody} onClick={() => setExpandedBody(value => !value)}>{expandedBody ? '收起分析' : '展开分析'}</button>}
     {!timeline && Boolean(update.risk_channels?.length) && <p className="sector-research-note">影响渠道：<span translate="no">{update.risk_channels!.join("、")}</span></p>}
-    {!timeline && update.impact_analysis && <p className="research-update-impact"><strong>影响分析</strong><span translate="no">{update.impact_analysis}</span></p>}
+    {update.impact_analysis && <p className="research-update-impact"><strong>影响分析</strong><span translate="no">{update.impact_analysis}</span></p>}
     {!timeline && update.action_condition && <p className="research-update-impact"><strong>应对条件</strong><span translate="no">{update.action_condition}</span></p>}
-    {!timeline && update.next_check && <p className="research-update-next"><strong>{citationCorrected ? '原下一步观察' : '下一步观察'}</strong> <span translate="no">{update.next_check}</span></p>}
+    {update.next_check && <p className="research-update-next"><strong>{citationCorrected ? '原下一步观察' : '下一步观察'}</strong> <span translate="no">{update.next_check}</span></p>}
     {update.kind === 'question' && update.tracking_status && <p className="sector-research-note"><strong>当时跟踪安排</strong> <span>{questionTrackingLabels[update.tracking_status]}</span>{update.tracking_reason && <> · <span translate="no">{update.tracking_reason}</span></>}</p>}
     {update.kind === 'lesson' && update.status === 'withdrawn' && update.withdrawal_reason && <p className="sector-research-note" translate="no">{update.withdrawal_reason}</p>}
     {update.scheduled_at && <p className="sector-event-dates"><span>预定时间 <time dateTime={update.scheduled_at}>{dateLabel(update.scheduled_at)}</time></span></p>}

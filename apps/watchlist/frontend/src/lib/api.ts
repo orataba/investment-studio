@@ -1118,7 +1118,7 @@ export async function fetchJson<T>(
     throw new Error(await responseErrorMessage(response))
   }
 
-  return (await response.json()) as T
+  return response.status === 204 ? undefined as T : (await response.json()) as T
 }
 
 function fetchReferenceJson<T>(path: string, ttlMs: number = 5 * 60_000): Promise<T> {

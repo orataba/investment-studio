@@ -1,3 +1,4 @@
+from .research_sections_fixture import completed_sections
 """Incremental work is durable; historical breadth does not become model scope."""
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
@@ -231,6 +232,7 @@ def test_only_affected_theme_is_required_and_unselected_theme_keeps_judgment_clo
                 "selected_theme_ids": [first["theme_id"], second["theme_id"]]}}}
         with pytest.raises(ValueError, match="受影响主题"):
             sector.validate_result(session, run, sector.ReviewResult.model_validate_json(result()))
+        completed_sections(run)
         sector.apply_result(session, run, result(theme=first))
         session.commit()
         after = next(row for row in theme_index(session, "xlk") if row["theme_id"] == second["theme_id"])

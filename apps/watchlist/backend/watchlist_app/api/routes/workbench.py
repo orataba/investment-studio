@@ -2,6 +2,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import uuid4
+from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -17,6 +18,7 @@ from watchlist_app.services.price_risk import period_loss_readings, period_rule_
 
 from studio_identity import current_principal
 from watchlist_app.services.research_access import require_topic_access, require_entry_access, visible_topics, require_portfolio
+from watchlist_app.services.research_sections import SectionSubmission
 
 router = APIRouter()
 
@@ -118,7 +120,7 @@ class MessageInput(BaseModel):
 
 class ResearchToolInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    tool: Literal["instruments", "comparison", "portfolio", "market", "dossier", "risk_review"]
+    tool: Literal["instruments", "comparison", "portfolio", "allocation", "market", "dossier", "risk_review"]
     instrument_ids: list[str] = Field(default_factory=list, max_length=30)
     start_date: date | None = None
     end_date: date | None = None
@@ -128,7 +130,7 @@ class ResearchToolInput(BaseModel):
 
 
 class ResearchReadInput(BaseModel):
-    resource: Literal["context", "instrument", "dossier", "estimates", "portfolio"]
+    resource: Literal["context", "instrument", "dossier", "estimates", "portfolio", "allocation"]
     instrument_id: str | None = None
     section: str = "overview"
     source_id: str | None = None
@@ -148,12 +150,12 @@ class ResearchReadInput(BaseModel):
 def read_run_page(run_id: str, request: ResearchReadInput, session: Session = Depends(get_db_session)):
     """Project before HTTP/MCP transport; never ship a complete run to page it."""
     from urllib.parse import parse_qs, urlsplit
-    from watchlist_app.services.research_run_context import load_run_fields
+    from watchlist_app.services.research_run_context import load_run_fields, load_run_list_item
     from watchlist_app.services import research_tool_projection as projection
-    common = {"sector_run", "research_run", "risk_run", "run_id", "cutoff", "input_snapshot_cutoff", "instrument_ids", "initialization"}
+    common = {"sector_run", "research_run", "risk_run", "run_id", "cutoff", "input_snapshot_cutoff", "instrument_ids", "initialization", "execution"}
     fields = common | ({"question", "page_context", "referenced_research_update", "referenced_research_versions",
         "referenced_risk_case", "history", "conversation", "evidence", "watchlists", "limitations", "data_gaps",
-        "incremental_trigger", "research_working_sets", "analyst_focus", "user_records", "team_publication_instructions", "market_coverage", "market_queries",
+        "incremental_trigger", "research_working_sets", "section_results", "analyst_focus", "user_records", "team_publication_instructions", "market_coverage", "market_queries",
         "catalogue", "tool_evidence", "computed_metrics", "topic_id", "as_of_date", "requested_at", "selected_instrument_ids",
         "watchlist_id", "portfolio_id", "team_id", "visibility", "risk_inputs", "risk_scope", "prior_inputs"}
         if request.resource == "context" else
@@ -173,6 +175,8 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
             fields.add("initialization_candidates")
     elif request.resource == "instrument" and request.section != "overview":
         fields.discard("research_dossiers")
+    elif request.resource == "allocation":
+        fields = common | {"portfolio_id"}
     elif request.resource == "portfolio":
         fields = common | {"portfolio_id", "tool_evidence"}
     light_fields = fields & {"risk_inputs", "prior_inputs", "computed_metrics", "tool_evidence"} if request.resource == "context" else set()
@@ -219,6 +223,14 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
     try:
         if request.resource == "context":
             result = projection.read_research_context(local_read, **page)
+        elif request.resource == "allocation":
+            evidence = load_run_list_item(session, run_id, "tool_evidence", request.source_id)
+            if (context.get("risk_run") or context.get("sector_run") or not context.get("portfolio_id")
+                    or not evidence or evidence.get("tool") != "allocation"
+                    or evidence.get("result", {}).get("portfolio_id") != context["portfolio_id"]):
+                raise ValueError("请使用本组合对话中已计算配置的来源编号。")
+            from watchlist_app.services.research_portfolio_projection import read_allocation_evidence
+            result = read_allocation_evidence(evidence, **page)
         elif request.resource == "portfolio":
             from watchlist_app.services.research_portfolio_projection import read_portfolio_evidence
             if context.get("risk_run") or context.get("sector_run") or not context.get("portfolio_id"):
@@ -249,6 +261,52 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
         return checked_overview(result)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
+
+
+class SectionContextInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    instrument_id: str
+    section: Literal["overview", "recent_updates", "themes", "quantitative"]
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+    path: list[str | int] | None = None
+
+
+@router.post("/research/runs/{run_id}/section-context")
+def research_section_context(run_id: str, request: SectionContextInput,
+        session: Session = Depends(get_db_session)):
+    from watchlist_app.services.research_sections import section_context
+    from watchlist_app.services.research_run_context import load_run_fields
+    record = load_run_fields(session, run_id, {"instrument_ids", "research_dossiers", "research_working_sets",
+        "section_results", "input_snapshot_cutoff", "cutoff", "execution", "sector_run",
+        "prior_events", "incremental_trigger", "last_successful_review_cutoff",
+        "data_gaps", "market_coverage", "initialization"})
+    record.context_json["computed_metrics"] = load_run_fields(session, run_id, {"computed_metrics"}, summary_only=True).context_json.get("computed_metrics", [])
+    from watchlist_app.services.research_run_evidence import attach_computed_sources
+    context = attach_computed_sources(session, run_id, record.context_json, metadata_only=True)
+    try:
+        result = section_context(context, request.instrument_id, request.section)
+        from watchlist_app.services.research_read_projection import checked_overview, read_page
+        if request.path or request.offset:
+            return read_page(result, {"instrument_id": request.instrument_id, "section": request.section},
+                offset=request.offset, limit=request.limit, path=request.path)
+        return checked_overview(result, pageable_fields=[([key], {"tool": "read_research_section",
+            "instrument_id": request.instrument_id, "section": request.section, "path": [key]}) for key in result])
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@router.post("/research/runs/{run_id}/section-report")
+def research_section_report(run_id: str, request: SectionSubmission, session: Session = Depends(get_db_session)):
+    from watchlist_app.api.routes.sector_research import current_run
+    from watchlist_app.services.research_sections import save_section_result
+    run = current_run(session, run_id, writing=True)
+    try:
+        result = save_section_result(session, run, request)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    session.commit()
+    return result
 
 
 @router.get("/research/catalogue")
@@ -816,7 +874,7 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
     context = record.context_json
     if context.get("risk_run"):
         raise HTTPException(422, "风控研判只使用本轮已绑定的风险与持仓快照")
-    if context.get("sector_run") and request.tool in {"portfolio", "risk_review"}:
+    if context.get("sector_run") and request.tool in {"portfolio", "allocation", "risk_review"}:
         raise HTTPException(422, "标的研究只读取已绑定的标的范围；组合持仓需在关联组合的对话中读取")
     known = {x["instrument_id"] for x in context["catalogue"]}
     ids = list(dict.fromkeys([*request.instrument_ids, *([request.benchmark_id] if request.benchmark_id else [])]))
@@ -860,6 +918,20 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
         else:
             raise HTTPException(422, "当前对话尚未指定列表、组合或单个标的")
         result = review_workspace(session, **scope)
+    elif request.tool == "allocation":
+        from watchlist_app.services.research_portfolio_projection import read_allocation_evidence
+        portfolio_id = context.get("portfolio_id")
+        if not portfolio_id:
+            raise HTTPException(422, "请先关联组合，再计算其已保存配置目标。")
+        require_portfolio(portfolio_id)
+        retained = next((item for item in context.get("tool_evidence", [])
+            if item.get("tool") == "allocation" and item.get("result", {}).get("portfolio_id") == portfolio_id), None)
+        if retained:
+            return read_allocation_evidence(retained)
+        from urllib.parse import urlencode
+        day = (context.get("page_context") or {}).get("as_of_date")
+        result = external_json("portfolio", "/portfolios/" + quote(portfolio_id, safe="") +
+            "/research/allocation" + ("?" + urlencode({"as_of_date": day}) if day else ""))
     elif request.tool == "portfolio":
         from watchlist_app.services.research_portfolio_projection import read_portfolio_evidence
         retained_portfolio = next((item for item in context.get("tool_evidence", [])
@@ -897,6 +969,8 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
     session.commit()
     if request.tool == "portfolio":
         return read_portfolio_evidence(evidence)
+    if request.tool == "allocation":
+        return read_allocation_evidence(evidence)
     return evidence
 
 

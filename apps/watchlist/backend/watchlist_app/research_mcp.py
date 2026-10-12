@@ -12,6 +12,7 @@ from pydantic import AwareDatetime, Field, SkipValidation, ValidationError
 from pydantic.json_schema import GenerateJsonSchema
 from watchlist_app.mcp_json import compact_json_result
 from watchlist_app.services.sector_research import ReviewResult, draft_payload
+from watchlist_app.services.research_sections import SectionSubmission
 from watchlist_app.services.risk_officer import RiskReview
 from watchlist_app.services.risk_read_projection import (
     _risk_overview_pages, required_detail_reads,
@@ -50,6 +51,22 @@ def _submission_schema():
 class _ResearchMCPServer(MCPServer):
     async def list_tools(self):
         tools = await super().list_tools()
+        section = os.environ.get("INVESTMENT_STUDIO_RESEARCH_SECTION")
+        if os.environ.get("INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE") == "sector" and section:
+            common = {"read_research_context", "read_research_section", "read_research_instrument",
+                "read_research_dossier", "read_market_source", "read_public_source", "read_sector_source"}
+            information = {"search_market_information", "search_public_information", "search_sector_information"}
+            section_tools = {
+                "recent_updates": information | {"read_sector_company", "submit_research_section"},
+                "themes": information | {"read_sector_company", "read_quant_analysis", "submit_research_section"},
+                "quantitative": {"read_sector_company", "read_research_numbers", "read_stored_market_data",
+                    "compare_instruments", "read_quant_capability", "read_quant_inputs", "run_quant_analysis",
+                    "read_quant_analysis", "search_public_information", "submit_research_section"},
+                "overview": {"read_quant_analysis", "read_research_numbers", "submit_research_review"},
+            }
+            if section not in section_tools:
+                raise ValueError("Unknown research specialist")
+            tools = [tool for tool in tools if tool.name in common | section_tools[section]]
         for index, tool in enumerate(tools):
             if tool.name == "submit_research_review":
                 tool = tool.model_copy(deep=True)
@@ -118,6 +135,28 @@ def request(suffix, payload=None, *, timeout=150):
             "next_action": "按字段诊断和工具适用范围修正请求；不要重复发送相同参数。" if error.code == 422 else
                 "重新读取当前研究状态；已结束的研究不能继续写入。"}
         raise ValueError(json.dumps(diagnostic, ensure_ascii=False, separators=(",", ":"))) from error
+
+
+@compact_read_tool
+def read_research_section(instrument_id: str,
+                          section: Literal["overview", "recent_updates", "themes", "quantitative"],
+                          offset: int = 0, limit: int = 20, path: list[str | int] | None = None) -> dict:
+    """Read this section's editable skill, current working set and completed specialist findings.
+    Each specialist shares the same frozen evidence with the main researcher. Read originals only for
+    the claim being checked; archived history is not the daily context. Overview runs after all specialists.
+    """
+    return request("section-context", {"instrument_id": instrument_id, "section": section,
+        "offset": offset, "limit": limit, "path": path})
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                                    idempotent_hint=True, open_world_hint=False))
+def submit_research_section(result: SectionSubmission) -> dict:
+    """Specialist only: retain source-bound findings for your assigned section, then stop.
+    This is a working result for the main researcher; it does not publish a view, events or themes.
+    Report meaningful risks and specific evidence gaps. Use returned source IDs, never invented IDs.
+    """
+    return request("section-report", result.model_dump(mode="json"))
 
 
 @compact_read_tool
@@ -224,7 +263,7 @@ def submit_risk_review(result: SkipValidation[RiskReview]) -> dict:
 @compact_read_tool
 def read_research_dossier(instrument_id: str, source_id: ExactSourceId | None = None, version_id: str | None = None, update_id: str | None = None,
                           section: str = "overview", offset: int = 0, limit: int = 20, path: list[str | int] | None = None) -> dict:
-    """Read the current judgment and section directory, then select research_plan/mandate/frameworks/available_modules/review_agenda/research_state, modules/facts/questions/catalysts/forecasts/forecast_reviews/lessons, themes/pm_views, materials/prior_sources/sources/historical_cases/versions. Read the assignment and agenda before deciding what to investigate. Select ONE source_id for an exact bound original, version_id for a past notebook/view/module/forecast or pm:<note_id>:<revision>, or update_id for a published update; selectors cannot combine with section. PM source indexes are not the originals: use that PM version's sources, never a later dossier source with the same ID. ALL selected data is paginated: follow next_offset AND every deferred.path, repeating the same section/selector until fully read. Text offsets count characters. No clipping, live substitution or model calls. AI/PM judgments remain hypotheses, not independently verified facts."""
+    """Read current judgment or the selected section: mandate/research_plan/frameworks/research_state, modules/facts/questions/catalysts, themes/pm_views, materials/sources/versions. Automatic specialists start with read_research_section and inspect only evidence relevant to their assigned question. Select ONE source_id for an exact bound original, version_id for a past notebook/view/module/forecast or pm:<note_id>:<revision>, or update_id for a published update; selectors cannot combine with section. PM source indexes are not the originals: use that PM version's sources, never a later dossier source with the same ID. ALL selected data is paginated: follow next_offset AND every deferred.path, repeating the same section/selector until fully read. Text offsets count characters. No clipping, live substitution or model calls. AI/PM judgments remain hypotheses, not independently verified facts."""
     return request("read", {"resource": "dossier", "instrument_id": instrument_id, "source_id": source_id, "version_id": version_id, "update_id": update_id, "section": section, "offset": offset, "limit": limit, "path": path})
 
 
@@ -268,6 +307,23 @@ def read_portfolio_holdings(section: Literal["overview", "accounts", "currency_b
         return request("tools", {"tool": "portfolio"})
     return request("read", {"resource": "portfolio", "source_id": source_id, "section": section,
                             "offset": offset, "limit": limit, "path": path})
+
+
+@compact_read_tool
+def calculate_portfolio_allocation(source_id: str | None = None,
+        section: Literal["overview", "inputs", "solution"] = "overview", offset: int = 0,
+        limit: int = 20, path: list[str | int] | None = None) -> dict:
+    """Calculate the linked portfolio's saved allocation targets with its deterministic optimizer.
+    Does not change targets, settings or transactions and does not run a backtest. The first call
+    retains one calculation in this conversation. Read solution and inputs with the returned source_id;
+    follow pagination rather than rerunning. State calculation date, scope and actual solver constraints.
+    """
+    if source_id is None:
+        if section != "overview" or offset or path:
+            raise ValueError("继续读取配置结果需要首次计算返回的source_id。")
+        return request("tools", {"tool": "allocation"})
+    return request("read", {"resource": "allocation", "source_id": source_id, "section": section,
+        "offset": offset, "limit": limit, "path": path})
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))

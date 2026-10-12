@@ -27,11 +27,23 @@ def configured_recovery_scheduler(postgres_watchlist_env, monkeypatch):
     # Invested instrument, while the actor/attempt isolation assertions remain.
     from watchlist_app.core.settings import get_settings
     monkeypatch.setattr(get_settings(), "research_automatic_enabled", True)
+    monkeypatch.setattr("watchlist_app.services.research_schedule.automatic_research_allowed", lambda now=None: True)
 
 
 def add_instrument_detail(session, iid):
     session.add(InstrumentDetail(instrument_id=iid, instrument_type="public_fund", detail_view_type="public_fund",
         instrument_name="Recovery fixture", is_active=True, metadata_json={}))
+    session.flush()
+    from watchlist_app.db.models import InstrumentTaxonomyAssignment, InstrumentTaxonomyNode
+    from watchlist_app.reference_data.instrument_taxonomy import INSTRUMENT_TAXONOMY_CODE
+    node_id = "fund-public-equity-active"
+    if session.get(InstrumentTaxonomyNode, node_id) is None:
+        session.add(InstrumentTaxonomyNode(node_id=node_id, taxonomy_code=INSTRUMENT_TAXONOMY_CODE,
+            instrument_type="public_fund", label="主动权益", level_index=1, is_leaf=True,
+            path_labels_json=["主动权益"], path_node_ids_json=[node_id]))
+        session.flush()
+    session.add(InstrumentTaxonomyAssignment(instrument_id=iid, taxonomy_code=INSTRUMENT_TAXONOMY_CODE,
+        node_id=node_id, assigned_at=datetime.now(UTC)))
     session.flush()
 
 

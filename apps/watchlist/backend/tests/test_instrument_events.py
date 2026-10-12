@@ -1,3 +1,4 @@
+from .research_sections_fixture import completed_sections
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 import json
@@ -125,6 +126,7 @@ def test_prepare_preserves_bond_etf_evidence_and_original_event_survives_latest_
                   "text": "编制机构公告确认指数规则调整。", "published_at": "2026-06-01", "time_status": "date_only"}
         run.context_json = {**run.context_json, "web_evidence": [{"operation": "search", "sources": []},
                             {"operation": "fetch", "sources": [source]}]}
+        completed_sections(run)
         service.apply_result(session, run, reply("fund-us-agg", sources=["index-original"]))
         run.created_at = run.completed_at = datetime.now(UTC) - timedelta(days=1)
         session.commit()
@@ -139,6 +141,7 @@ def test_prepare_preserves_bond_etf_evidence_and_original_event_survives_latest_
         bound = read_dossier(session, "fund-us-agg")
         newer.context_json = {**newer.context_json, "research_dossiers": [bound],
                              "web_evidence": [{"operation": "search", "sources": []}]}
+        completed_sections(newer)
         service.apply_result(session, newer, reply("fund-us-agg", summary="本轮未核实到重大新增。",
             themes=[{"theme_id": item["theme_id"], "theme_key": item["theme_key"]} for item in bound["themes"]]))
         newer.created_at = newer.completed_at = datetime.now(UTC) - timedelta(minutes=1)
@@ -163,12 +166,12 @@ def test_prepare_preserves_bond_etf_evidence_and_original_event_survives_latest_
     assert result["events"][0]["risk_assessment"]["status"] == "pending"
 
 
-def test_chat_publishes_explicitly_authorized_research_without_pm_adoption_or_invented_fund_opportunity(client, monkeypatch):
+def test_chat_publishes_authorized_equity_research_without_overwriting_pm_view(client, monkeypatch):
     seed_instruments(client, monkeypatch)
-    seed_invested_research(monkeypatch, ["sxv264"])
+    seed_invested_research(monkeypatch, ["event-equity"])
     monkeypatch.setattr(research_runner, "harness_available", lambda: True)
     monkeypatch.setattr("watchlist_app.services.research_execution.enqueue_run", lambda principal, run_id, **kwargs: None)
-    topic = client.post("/api/research/topics", json={"title": "私募普通对话", "instrument_ids": ["sxv264"]}).json()
+    topic = client.post("/api/research/topics", json={"title": "股票普通对话", "instrument_ids": ["event-equity"]}).json()
     chat = client.post(f"/api/research/topics/{topic['topic_id']}/analysis", json={"question": "有哪些资料还需补充？"})
     assert chat.status_code == 202, chat.text
     chat_id = chat.json()["entry_id"]
@@ -176,33 +179,35 @@ def test_chat_publishes_explicitly_authorized_research_without_pm_adoption_or_in
     assert client.post(f"/api/research/runs/{chat_id}/sector-evidence", json={"operation": "search"}).status_code == 200
     with get_session_factory()() as session:
         ordinary = session.get(ResearchEntry, chat_id)
-        assert "sxv264" not in service.latest_reviews(session)
-        session.add(InstrumentResearchProfile(instrument_id="sxv264", thesis="PM原始投资逻辑", current_view="等待更多资料", revision_number=1))
-        ordinary.context_json = {**ordinary.context_json, "team_publication_instructions": {"sxv264": "请保存这轮研究进展到团队研究"}, "instrument_inputs": [{"instrument_id": "sxv264", "name": "SXV264 Total Return Fund",
-            "instrument_type": "private_fund", "holdings": None, "materials": [{"title": "月报目录"}]}],
+        assert "event-equity" not in service.latest_reviews(session)
+        session.add(InstrumentResearchProfile(instrument_id="event-equity", thesis="PM原始投资逻辑", current_view="等待更多资料", revision_number=1))
+        ordinary.context_json = {**ordinary.context_json, "team_publication_instructions": {"event-equity": "请保存这轮研究进展到团队研究"}, "instrument_inputs": [{"instrument_id": "event-equity", "name": "示例股份",
+            "instrument_type": "equity", "holdings": None, "materials": [{"title": "月报目录"}]}],
             "web_evidence": [{"operation": "search", "sources": [{"source_id": "material-directory",
                 "title": "只有目录，没有正文", "published_at": None, "time_status": "unknown"}]}]}
         with pytest.raises(ValueError, match="未取得的原始依据：material-directory"):
-            service.apply_result(session, ordinary, reply("sxv264", sources=["material-directory"], direction="opportunity", published_at=None))
-        assert session.scalar(select(RiskCase).where(RiskCase.instrument_id == "sxv264")) is None
+            completed_sections(ordinary)
+            service.apply_result(session, ordinary, reply("event-equity", sources=["material-directory"], direction="opportunity", published_at=None))
+        assert session.scalar(select(RiskCase).where(RiskCase.instrument_id == "event-equity")) is None
         session.commit()
-    draft = {"reviews": [{"instrument_id": "sxv264", "change_kind": "knowledge", "coverage": ["缺少底层敞口和材料正文"],
+    draft = {"reviews": [{"instrument_id": "event-equity", "change_kind": "knowledge", "coverage": ["缺少底层敞口和材料正文"],
         "research": {"next_research": ["补充底层敞口与原始材料后再判断。"]}, "events": []}]}
     submitted = client.post(f"/api/research/runs/{chat_id}/sector-draft", json=draft)
     assert submitted.status_code == 200, submitted.text
     assert submitted.json()["status"] == "pending_fact_review"
     with get_session_factory()() as session:
-        assert "sxv264" not in service.latest_reviews(session)
+        assert "event-equity" not in service.latest_reviews(session)
         ordinary = session.get(ResearchEntry, chat_id)
+        completed_sections(ordinary)
         service.apply_result(session, ordinary, json.dumps(draft))
         ordinary.status, ordinary.body = "draft", "缺少材料，已记录下一步研究任务。"
-        profile = session.get(InstrumentResearchProfile, "sxv264")
+        profile = session.get(InstrumentResearchProfile, "event-equity")
         assert (profile.thesis, profile.current_view, profile.revision_number) == ("PM原始投资逻辑", "等待更多资料", 1)
         from watchlist_app.db.models import InstrumentAttributeValue
-        session.add(InstrumentAttributeValue(instrument_id="sxv264", attribute_key="coverage_status",
+        session.add(InstrumentAttributeValue(instrument_id="event-equity", attribute_key="coverage_status",
             value_json="Exited", adopted_at=datetime.now(UTC)))
         session.commit()
-    result = client.get("/api/sector-research", params={"instrument_id": "sxv264"}).json()
+    result = client.get("/api/sector-research", params={"instrument_id": "event-equity"}).json()
     assert result["events"] == [] and result["sectors"][0]["latest_review"]["run_id"] == chat_id
     # A saved conversational publication remains readable without making this
     # non-Invested asset eligible for another shared model run.
@@ -210,7 +215,7 @@ def test_chat_publishes_explicitly_authorized_research_without_pm_adoption_or_in
 
 
 @pytest.mark.parametrize("iid", ["savf63", "sxv264"])
-def test_fund_run_starts_while_saved_research_and_dossier_remain_readable(client, monkeypatch, iid):
+def test_other_asset_research_is_paused_while_saved_dossier_remains_readable(client, monkeypatch, iid):
     seed_instruments(client, monkeypatch)
     seed_invested_research(monkeypatch, [iid])
     monkeypatch.setattr(routes, "harness_available", lambda: True)
@@ -226,10 +231,10 @@ def test_fund_run_starts_while_saved_research_and_dossier_remain_readable(client
                     "fundamental_view": "已有研究判断。", "sources": []}}}}))
         session.commit()
     requested = client.post("/api/sector-research/runs", json={"instrument_ids": [iid]})
-    assert requested.status_code == 202, requested.text
-    assert started == [requested.json()["run_id"]]
+    assert requested.status_code == 409, requested.text
+    assert started == []
     overview = client.get("/api/sector-research", params={"instrument_id": iid}).json()
-    assert overview["available"] and overview["research_enabled"] is True
+    assert overview["available"] and overview["research_enabled"] is False
     assert overview["sectors"][0]["last_completed_review"]["run_id"] == run_id
     dossier = client.get(f"/api/research/instruments/{iid}/dossier")
     assert dossier.status_code == 200, dossier.text

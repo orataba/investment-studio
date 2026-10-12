@@ -22,6 +22,10 @@ from .test_sector_research import seed_sector
 def invested(client, monkeypatch):
     seed_sector(client, monkeypatch)
     monkeypatch.setattr(get_settings(), "research_automatic_enabled", True)
+    # These tests exercise authorization/status policy; admission hours have
+    # explicit boundary coverage in test_research_schedule/test_research_execution.
+    from watchlist_app.services import research_schedule
+    monkeypatch.setattr(research_schedule, "automatic_research_allowed", lambda _now: True)
     with get_session_factory()() as session:
         for iid in ("xlk", "xlf"):
             session.add(InstrumentAttributeValue(instrument_id=iid, attribute_key="coverage_status",

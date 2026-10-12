@@ -956,7 +956,7 @@ export default function ResearchPage() {
                 </div>
               </div>
               <div className="research-command-actions">
-              <LoadingNotice active={actionPending === 'run'} message={zh ? '投资研究分析中…' : 'Running optimization…'} compact />
+              <LoadingNotice active={actionPending === 'run'} message={zh ? '正在计算组合优化…' : 'Running optimization…'} compact />
               <button type="button" className="toolbar-link" onClick={openSettings} disabled={Boolean(actionPending)}>{zh ? '优化参数' : 'Optimization Parameters'}</button>
               <button
                 type="button"

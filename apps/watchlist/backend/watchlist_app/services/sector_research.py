@@ -635,6 +635,7 @@ class SectorEvent(BaseModel):
     impact_analysis: str = Field(default="", max_length=3000)
     action_condition: str = Field(default="", max_length=2000)
     information_type: Literal["fact", "opinion", "rumor"]
+    event_category: Literal["news", "opinion", "earnings", "meeting", "other"] = "other"
     recording_type: Literal["new", "update", "backfill"]
     progress_kind: Literal["material", "editorial"] = "material"
     published_at: str | None = None
@@ -794,6 +795,7 @@ def event_record(case):
     return {"case_id": case.case_id, "instrument_id": case.instrument_id,
         "event_key": case.signal.removeprefix("sector:"), "title": case.title, "body": case.body,
         "direction": evidence.get("direction", "uncertain"), "information_type": evidence.get("information_type"),
+        "event_category": evidence.get("event_category") or "other",
         "confidence": evidence.get("confidence"), "next_watch": evidence.get("next_watch", ""),
         **{key: evidence.get(key) for key in ("impact_level", "urgency", "risk_channels", "impact_analysis", "action_condition")},
         **{key: evidence.get(key) for key in ("importance_score", "importance_reason", "market_reaction",
@@ -838,7 +840,7 @@ def _same_progress(case, item, sources, *, material_only=False, session=None):
     fields = ("direction", "information_type", "confidence", "occurred_at",
               "impact_level", "urgency", "impact_analysis", "action_condition")
     if not material_only:
-        fields += ("published_at", "next_watch", "follow_up_until", "follow_up_reason", "next_observation_on", "importance_score", "importance_reason")
+        fields += ("published_at", "event_category", "next_watch", "follow_up_until", "follow_up_reason", "next_observation_on", "importance_score", "importance_reason")
     # Fetch IDs and collection times change every run; the cited publication does not.
     def identities(rows):
         publications = {(row.get("document_id") or row.get("url"), row.get("version_id") or row.get("published_at"))
@@ -898,7 +900,7 @@ def _effective_event(item, case, *, checked_at=None):
     values = item.model_dump(mode="json")
     if case is not None:
         previous = event_record(case)
-        for field in ("follow_up", "analysis_depth", "theme_ids", "next_watch", "impact_level", "urgency",
+        for field in ("follow_up", "analysis_depth", "event_category", "theme_ids", "next_watch", "impact_level", "urgency",
                       "risk_channels", "impact_analysis", "action_condition", "follow_up_until", "follow_up_reason",
                       "next_observation_on", "importance_score", "importance_reason", "market_views", "market_reaction",
                       "published_at", "occurred_at"):
@@ -1396,8 +1398,10 @@ def shared_market_coverage_gaps(context, *, instrument_id=None):
 
 def apply_result(session, run, reply):
     # The independent reviewer emits one complete structured document.
+    from watchlist_app.services.research_sections import require_section_results
     parsed = ReviewResult.model_validate_json(reply)
     sources, notebook_evidence = validate_result(session, run, parsed)
+    require_section_results(run)
     context = run.context_json
     # Both entrances can update the same instrument while a model is running.
     # Publish only against the versions actually studied; preserve a stale draft for review.
@@ -1457,9 +1461,7 @@ def apply_result(session, run, reply):
         coverage = list(dict.fromkeys([*review.coverage, *acquisition_gaps,
             *initialization_coverage_notes(context, review.instrument_id),
             *shared_market_coverage_gaps(context, instrument_id=review.instrument_id)]))
-        if context.get("sector_run") and review.reflection is None:
-            coverage.append("本轮未记录对既有判断与经验的复核，复盘覆盖尚不明确。")
-        elif review.reflection and review.reflection.status == "insufficient_evidence":
+        if review.reflection and review.reflection.status == "insufficient_evidence":
             coverage.append(review.reflection.summary or "既有判断的复核证据不足，暂不形成结果结论。")
         from watchlist_app.services.research_themes import save_analyst_theme
         aliases, changed_themes, published_themes = {}, False, []
@@ -1738,6 +1740,9 @@ def _pending_research_risk_ids(session):
 
 
 def _run_daily_reviews(stop):
+    from watchlist_app.services.research_schedule import automatic_research_allowed
+    if not automatic_research_allowed(datetime.now(UTC)):
+        return
     from studio_identity import current_principal
     from watchlist_app.services.research_access import research_context_projection, research_projection_rows
     from watchlist_app.services.research_runner import same_research_initiator
@@ -1763,7 +1768,7 @@ def _run_daily_reviews(stop):
                 return "busy"
 
     def review_group_authenticated(ids, recovery_id):
-        if stop.is_set():
+        if stop.is_set() or not automatic_research_allowed(datetime.now(UTC)):
             return "blocked"
         try:
             with get_session_factory()() as session:
@@ -1784,6 +1789,8 @@ def _run_daily_reviews(stop):
             return "blocked"
 
     def assess_risk(scope, dates):
+        if not automatic_research_allowed(datetime.now(UTC)):
+            return
         try:
             with get_session_factory()() as session:
                 run, created = begin_risk_run(session, **scope, scheduled_dates=dates)
@@ -1812,6 +1819,10 @@ def _run_daily_reviews(stop):
     with ThreadPoolExecutor(max_workers=capacity, thread_name_prefix="daily-research") as pool:
         active = {}
         while not stop.is_set():
+            if not automatic_research_allowed(datetime.now(UTC)):
+                # Already submitted work keeps its own worker lease. Do not
+                # freeze fresh evidence or create another automatic task now.
+                return
             with get_session_factory()() as session:
                 recoveries = automatic_recovery_runs(session)
                 recovery_attempts = {}
@@ -1828,7 +1839,9 @@ def _run_daily_reviews(stop):
                 groups = daily_review_groups(session)
                 groups = [[iid] for iid in recoveries] + [ids for ids in groups if ids[0] not in recoveries]
                 referrals = _pending_research_risk_ids(session)
-                dates = _research_dates(session, sorted({iid for ids in groups for iid in ids} | referrals), datetime.now(UTC))
+                from watchlist_app.services.research_policy import automatic_risk_ids
+                risk_ids = [iid for iid in automatic_risk_ids(session) if _research_market(session, iid) is not None]
+                dates = _research_dates(session, sorted({iid for ids in groups for iid in ids} | referrals | set(risk_ids)), datetime.now(UTC))
                 research_dates.update(dates)
                 active_ids = {iid for ids in active.values() for iid in ids}
                 candidates = []
@@ -1843,7 +1856,7 @@ def _run_daily_reviews(stop):
                 if not research_dates and not active:
                     return
                 if risk_scopes is None:
-                    risk_scopes = [{"instrument_id": iid} for iid in active_research_ids(session)]
+                    risk_scopes = [{"instrument_id": iid} for iid in risk_ids]
             # Never queue a frozen batch behind long jobs: fill actual free slots
             # only, then reread the market clocks and persisted ordering as soon
             # as any job finishes. Newly due instruments join this same pass.

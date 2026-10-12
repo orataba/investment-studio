@@ -90,12 +90,11 @@ def test_mandates_use_actual_registration_and_asset_specific_methods(dossier_cli
     assert private["registration"]["disclosed_strategy"] is None
     alibaba = dossier_client.get(url("9988-hk")).json()["mandate"]
     gold = dossier_client.get(url("518880-sh")).json()["mandate"]
-    assert any("原已为负" in item for item in alibaba["mechanisms"])
-    assert any("股数乘发行价" in item for item in alibaba["research_approach"])
-    assert any("不能写成简单恒等关系" in item for item in gold["mechanisms"])
-    assert any("实际利率" in item for item in gold["mechanisms"])
+    assert alibaba["mechanisms"] == gold["mechanisms"] == []
     assert alibaba["module_focus"] == gold["module_focus"] == []
-    assert "不是对当前" in alibaba["background"] and "不是对当前" in gold["background"]
+    assert set(alibaba["section_skills"]) == {"overview", "recent_updates", "themes", "quantitative"}
+    assert alibaba["section_skills"] == gold["section_skills"]
+    assert "已登记资料" in alibaba["background"] and "已登记资料" in gold["background"]
     # Names and previously handpicked tickers do not establish a research scope.
     assert "commodity-supply-demand" not in {item["id"] for item in dossier_client.get(url("518880-sh")).json()["research_plan"]["modules"]}
 
@@ -409,9 +408,7 @@ def test_published_chat_research_and_forecast_history_share_dossier_without_late
 
 def test_historical_atlas_is_owned_by_each_instrument_not_a_default_xlk_template(dossier_client, tmp_path, monkeypatch):
     import json
-    from shutil import copyfile
     (tmp_path / "historical_cases").mkdir()
-    copyfile(service.DATA_ROOT / "mandate_seeds.json", tmp_path / "mandate_seeds.json")
     (tmp_path / "historical_cases" / "stock.json").write_text(json.dumps({
         "metadata": {"atlas_id": "stock-history"}, "reuse_limitations": ["背景不同不能直接类比"],
         "cases": [{"case_id": "stock-case", "source_id": "historical:stock-case", "case_title": "该公司的历史案例",

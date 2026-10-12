@@ -408,7 +408,7 @@ def test_ai_dossier_outline_indexes_old_versions_and_full_context_keeps_them(cli
     outline = dossier_outline(saved)
     assert len(json.dumps(outline, ensure_ascii=False).encode()) < 50_000
     pairs = [(saved["mandate"], outline["mandate"]), (saved["notebook"]["investment_view"], outline["notebook"]["investment_view"])]
-    pairs += [(saved["notebook"][field][0], outline["notebook"][field][0]) for field in ("forecasts", "forecast_reviews", "lessons")]
+    assert all(field not in outline["notebook"] for field in ("forecasts", "forecast_reviews", "lessons"))
     for full, short in pairs:
         assert {key: value for key, value in short.items() if key != "versions"} == {key: value for key, value in full.items() if key != "versions"}
         assert short["versions"] == [{key: version[key] for key in ("version_id", "created_at", "updated_at", "source_run_id", "author")}

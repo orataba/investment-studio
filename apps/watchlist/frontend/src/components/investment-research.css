@@ -356,22 +356,39 @@ body:has(.research-aside-backdrop) { overflow: hidden; }
 @media (max-width: 760px) { .research-focused-reader .research-judgment-layout { grid-template-columns: 1fr; } }
 
 /* The default reader follows the asset contract; old full narratives remain in the archive. */
-.research-current-sections { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 28px 36px; margin: 28px 0; }
+.research-current-sections { display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; margin: 28px 0; }
 .research-current-section { min-width: 0; scroll-margin-top: 80px; }
 .research-current-section:empty { display: none; }
 .research-current-sections .research-recent-events, .research-current-sections .research-themes { margin: 0; padding: 0; border: 0; }
-.research-section-quantitative, .research-section-strategy, .research-section-materials { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 24px; }
-.research-current-sections-private { grid-template-columns: minmax(0, 1fr); }
-.research-current-sections-private .research-current-section { grid-column: 1; }
-.research-strategy-summary > p { max-width: 80ch; font-size: 14px; line-height: 1.8; }
-.research-current-materials h2, .research-strategy-summary h2 { margin: 0 0 16px; font-size: 18px; font-weight: 500; }
-.research-material-index { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 32px; padding: 0; margin: 16px 0; list-style: none; }
-.research-material-index li { min-width: 0; }
-.research-material-index h3 { font-size: 14px; font-weight: 500; margin: 0 0 8px; }
-.research-material-index summary, .research-material-index a { font-size: 12px; color: var(--accent); }
+.research-section-quantitative, .research-section-themes { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 24px; }
 .research-theme-review-note { color: var(--muted); font-size: 11px; margin: 12px 0 0; }
-@media (max-width: 900px) { .research-current-sections { grid-template-columns: minmax(0, 1fr); } .research-section-themes { border-top: 1px solid var(--line); padding-top: 24px; } }
-@media (max-width: 640px) { .research-material-index { grid-template-columns: minmax(0, 1fr); } }
 .research-scope-notice { margin: 6px 0 16px; color: var(--muted); font-size: 12px; line-height: 1.6; max-width: 72ch; }
 .research-scope-notice p { margin: 8px 0; }
 .research-current-section:focus-visible { outline: 2px solid var(--accent); outline-offset: 5px; }
+
+/* The four research sections share one reading rhythm; operations stay secondary. */
+.research-section-overview { padding: 28px 0; border-bottom: 1px solid var(--line); }
+.research-overview-body .research-judgment-heading { margin-top: 18px; }
+.research-overview-body .research-judgment-heading h3 { font-size: 12px; color: var(--muted); font-weight: 400; }
+.research-overview-body .research-current-direction { font-size: 24px; margin: 18px 0 12px; }
+.research-current-summary-text { font-size: 18px; line-height: 1.8; white-space: pre-line; margin: 16px 0; }
+.research-lead-reasons { padding-left: 20px; line-height: 1.85; margin: 12px 0 22px; }
+.research-recommendation-unavailable { color: var(--muted); margin-top: 16px; }
+.research-update-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 20px; }
+.research-update-controls label { display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--muted); }
+.research-update-controls select { min-height: 30px; border: 1px solid var(--line); border-radius: 0; background: #fff; color: var(--ink); padding: 0 24px 0 8px; }
+.research-section-skills { display: grid; gap: 16px; }
+.research-section-skills label { display: grid; gap: 8px; }
+.research-section-skills textarea { width: 100%; box-sizing: border-box; }
+.research-price-chart { display: block; width: 100%; max-height: 340px; margin: 20px 0 10px; }
+.research-price-chart text { font-family: inherit; font-size: 11px; fill: var(--muted); }
+.research-current-numbers > .research-dossier-section-heading h3 { font-size: 15px; font-weight: 500; }
+.research-current-numbers .research-quant-metrics { margin: 24px 0 30px; }
+.research-deferred { border-top: 1px solid var(--line); padding: 28px 0; line-height: 1.8; }
+.research-deferred p { color: var(--muted); }
+
+.research-theme-management summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.research-theme-management .research-theme-actions { margin-top: 12px; }
+.research-theme-card-summary, .research-theme-card-next { max-width: 96ch; }
+
+.research-quant-history-links { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 12px 0; }

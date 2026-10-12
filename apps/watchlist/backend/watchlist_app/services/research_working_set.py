@@ -26,9 +26,9 @@ def working_notebook(notebook, selected_themes):
     value = current_state(notebook)
     if not value:
         return value
-    for key in ("changes", "forecast_reviews", "lessons", "prior_analysis"):
+    for key in ("changes", "forecasts", "forecast_reviews", "lessons", "prior_analysis"):
         value.pop(key, None)
-    for key, field, active in (("questions", "tracking_status", "active"), ("forecasts", "status", "active"), ("catalysts", "status", "scheduled")):
+    for key, field, active in (("questions", "tracking_status", "active"), ("catalysts", "status", "scheduled")):
         value[key] = [row for row in value.get(key, []) if row.get("theme_id") in selected_themes
                       and row.get(field, active) == active]
     value["modules"] = [{**{key: item for key, item in row.items() if key != "analysis"},

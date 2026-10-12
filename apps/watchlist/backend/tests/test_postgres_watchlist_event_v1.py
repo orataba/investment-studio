@@ -1,3 +1,4 @@
+from .research_sections_fixture import completed_sections
 """JSON event publication/read projection on the disposable PostgreSQL fixture."""
 import json
 from datetime import UTC, datetime
@@ -28,6 +29,7 @@ def test_pg_event_publish_and_nul_safe_projection_preserve_history_and_risk(post
         event = {"event_key": "terms-update", "action": "new", "direction": "risk", "title": "条款变化", "body": "留存条款证据待独立复核",
             "next_watch": "下一次正式条款披露", "confidence": "reported", "information_type": "fact", "recording_type": "backfill",
             "published_at": "2026-01-01", "source_ids": [source["source_id"]], "importance_score": 4, "importance_reason": "条款变化可能影响赎回安排。"}
+        completed_sections(run)
         service.apply_result(session, run, json.dumps({"reviews": [{"instrument_id": iid, "events": [event]}]}))
         session.commit()
         case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == iid))

@@ -1,27 +1,14 @@
 import type { AskResearchAssistant, ResearchDossier } from '../lib/researchDossierApi'
-import { dateLabel, SourceList } from './ResearchEvidence'
-import ResearchReadingAside from './ResearchReadingAside'
+import InvestmentResearchState from './InvestmentResearchState'
+import { SourceList } from './ResearchEvidence'
 
-/** Executive context for the same report; the full analysis follows immediately below. */
 export default function ResearchOverview({ instrumentId, dossier, onAskAssistant }: {
   instrumentId: string; dossier: ResearchDossier; onAskAssistant?: AskResearchAssistant
 }) {
   const notebook = dossier.notebook
-  if (!notebook) return null
-  const changes = notebook.changes || []
-  return <div className="research-overview-body">
-    <section className="research-overview-changes" aria-label="变化与投资影响">
-      <header className="research-section-heading"><h2>变化与投资影响</h2>{!changes.length && <span>研究修订于 {dateLabel(notebook.updated_at || notebook.checked_at)}</span>}</header>
-      {changes.length > 0 ? <div className="research-change-list">{changes.map(change => <article className="research-change" key={change.key}>
-        <header><h3 translate="no">{change.title}</h3>{change.updated_at && <time dateTime={change.updated_at}>{dateLabel(change.updated_at)}</time>}</header>
-        {(change.before || change.after) && <dl className="research-change-comparison">{change.before && <div><dt>此前认识{change.baseline_as_of && <span> · {dateLabel(change.baseline_as_of)}</span>}</dt><dd translate="no">{change.before}</dd></div>}{change.after && <div><dt>现在的变化</dt><dd translate="no">{change.after}</dd></div>}</dl>}
-        {change.mechanism && <p translate="no">{change.mechanism}</p>}
-        {change.decision_implication && <p className="research-change-implication"><strong>投资含义</strong><span translate="no">{change.decision_implication}</span></p>}
-        {change.condition && <p className="research-change-condition"><strong>继续观察</strong><span translate="no">{change.condition}</span></p>}
-        {change.source_ids.length > 0 && <ResearchReadingAside label="查看变化依据" title={change.title}><SourceList instrumentId={instrumentId} versionId={notebook.version_id} sources={(notebook.sources || []).filter(source => change.source_ids.includes(source.source_id))} /></ResearchReadingAside>}
-      </article>)}</div> : notebook.important_changes.length > 0 ? <ul className="research-change-notes">{notebook.important_changes.map((text, index) => <li key={index} translate="no">{text}</li>)}</ul> : <p className="sector-research-note">本版未记录可比较的判断变化。</p>}
-      {(changes.length > 0 || notebook.important_changes.length > 0) && onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant('请对照这份研究的前次版本，解释本次重要变化及其投资含义。区分新披露事实、首次整理与判断变化。', { instrument_id: instrumentId, notebook_version_id: notebook.version_id })}>讨论本次研究</button>}
-    </section>
-    {!notebook.investment_view && notebook.key_drivers.length > 0 && <section className="research-lead-reasons" aria-label="判断的主要理由"><h4>主要理由</h4><ol>{notebook.key_drivers.map((text, index) => <li key={index} translate="no">{text}</li>)}</ol></section>}
-  </div>
+  const hasJudgment = Boolean(notebook?.investment_view || (notebook?.decision_brief && !notebook.decision_brief.needs_review))
+  return <section className="research-overview-body" aria-label="总览">
+    <div className="research-dossier-section-heading"><h2>总览</h2>{onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant('请综合标的动态、重要研究主题、量化指标和我的投资观点，复核当前投资建议及最重要的依据。资料不足时明确无法判断。', { instrument_id: instrumentId, notebook_version_id: notebook?.version_id })}>讨论总览</button>}</div>
+    {hasJudgment && notebook ? <InvestmentResearchState instrumentId={instrumentId} notebook={notebook} sources={ids => <SourceList instrumentId={instrumentId} versionId={notebook.version_id} sources={(notebook.sources || []).filter(source => ids.includes(source.source_id))} />} onAskAssistant={onAskAssistant} /> : <div className="research-empty-judgment"><p className="research-current-direction">无法判断</p><p>尚未形成投资建议。标的动态、主题研究和量化指标完成后，总览会综合重要依据形成判断。</p></div>}
+  </section>
 }

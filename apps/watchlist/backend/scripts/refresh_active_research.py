@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build/update the current team's Proposed/Invested research through the normal publisher.
+"""Build/update the current team's eligible Invested equity research through the normal publisher.
 
 The default is a read-only scope preview. Load the target Watchlist/market/identity
 environment before running. For a controlled batch, stop the automatic research
@@ -142,7 +142,7 @@ def main():
     parser.add_argument("--execute", action="store_true", help="Run the selected real research jobs (uses configured model).")
     parser.add_argument("--output", type=Path, help="Private batch manifest outside the source tree; required to execute.")
     parser.add_argument("--resume", action="store_true", help="Recheck completed runs in --output and execute remaining current members.")
-    parser.add_argument("--instrument-id", action="append", dest="instrument_ids", help="Limit to named currently Proposed/Invested members.")
+    parser.add_argument("--instrument-id", action="append", dest="instrument_ids", help="Limit to named currently eligible Invested equity research instruments.")
     parser.add_argument("--workers", type=int, choices=range(1, 5), default=get_settings().research_worker_concurrency,
                         help="Concurrent batch dispatch/waits; actual research stays within the worker database-wide limit.")
     args = parser.parse_args()
@@ -163,7 +163,7 @@ def main():
         if selected is not None:
             unknown = set(selected) - set(ids)
             if unknown and args.instrument_ids:
-                parser.error("Requested instruments are not currently Proposed/Invested: " + ", ".join(sorted(unknown)))
+                parser.error("Requested instruments are not currently eligible Invested equity research instruments: " + ", ".join(sorted(unknown)))
             ids = sorted(set(selected) & set(ids))
         manifest = {"target": target_identity(), "team_id": service_principal("watchlist").team_id,
             "started_at": instant(), "instrument_ids": ids, "labels": {iid: labels[iid] for iid in ids}, "results": {}}

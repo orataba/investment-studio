@@ -16,6 +16,7 @@ from watchlist_app.db.models import InstrumentDetail, InstrumentManualProfile
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
 from watchlist_app.services.read_models import serialize_payload
 from watchlist_app.services.research_methods import SUPPORTED_TYPES, TYPE_LABELS, build_research_plan, method_library
+from watchlist_app.services.research_skills import SectionSkills
 
 DATA_ROOT = Path(__file__).resolve().parents[5] / "data" / "research"
 TEXT_LIMIT = 60000
@@ -77,6 +78,7 @@ class ResearchMandateInput(BaseModel):
     # contract limits new text; never truncate an existing user's instructions.
     guidance: str = Field(default="",
         description="用户自然语言研究问题、目标、约束与偏好；研究员不可修改，也不构成独立事实。")
+    section_skills: SectionSkills = Field(default_factory=SectionSkills)
     background: str = Field(min_length=1, max_length=6000,
         description="区分已登记资料、注明原始依据的事实和待验证假设；不把方法或AI判断写成已核实事实。")
     mechanisms: list[str] = Field(default_factory=list, max_length=30)
@@ -119,6 +121,7 @@ class ResearchGuidanceInput(BaseModel):
     """The sole human editing contract; analytical working notes stay separate."""
     model_config = ConfigDict(extra="forbid", strict=True)
     guidance: str = Field(max_length=TEXT_LIMIT)
+    section_skills: SectionSkills | None = None
     expected_revision: int = Field(ge=0)
 
 
@@ -212,15 +215,6 @@ def _initial_mandate(instrument: InstrumentDetail, registration: dict) -> Resear
         background="已登记资料（并非本轮原文核证）：" + "；".join(facts) + "。有原文支持的背景与工作假设待研究后分别补充。",
         focus=focus, source_plan=source_plan,
         gaps=["这是初始研究安排，尚不代表已完成专属研究。", *plan["gaps"]])
-    # Retain existing instrument-specific work for environments that have not yet
-    # persisted their mandate. Shared module prose is never copied into it.
-    supplements = json.loads((DATA_ROOT / "mandate_seeds.json").read_text(encoding="utf-8"))
-    supplement = supplements.get(instrument.instrument_id)
-    if supplement:
-        value = initial.model_dump(mode="json")
-        value.update({key: item for key, item in supplement.items() if key != "background"})
-        value["background"] += "\n" + supplement.get("background", "")
-        return ResearchMandateInput.model_validate(value)
     return initial
 
 
@@ -228,7 +222,7 @@ def effective_mandate(payload: ResearchMandateInput, previous: dict | None, *, o
     """Resolve writer-owned method choices before both validation and publication."""
     value = payload.model_dump(mode="json")
     previous = ResearchMandateInput.model_validate(previous).model_dump(mode="json") if previous else None
-    for key, default in (("guidance", ""), ("user_constraints", []), ("user_methods", []),
+    for key, default in (("guidance", ""), ("section_skills", SectionSkills().model_dump()), ("user_constraints", []), ("user_methods", []),
                          ("report_preferences", ReportPreferences().model_dump(mode="json"))):
         if origin == "research" or key not in payload.model_fields_set:
             value[key] = deepcopy((previous or {}).get(key, default))
@@ -386,6 +380,8 @@ def save_guidance(session: Session, instrument_id: str, payload: ResearchGuidanc
     value.update(guidance=payload.guidance, user_constraints=[], user_methods=[],
                  report_preferences=ReportPreferences().model_dump(mode="json"),
                  module_focus=[item for item in value["module_focus"] if item.get("selected_by") != "user"])
+    if payload.section_skills is not None:
+        value["section_skills"] = payload.section_skills.model_dump()
     return save_mandate(session, instrument_id, ResearchMandateInput.model_validate(value),
                         origin="user", expected_revision=payload.expected_revision)
 

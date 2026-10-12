@@ -70,6 +70,19 @@ def portfolio_sections(result):
             "ledger_positions": result.get("ledger_positions")}
 
 
+def read_allocation_evidence(evidence, *, section="overview", offset=0, limit=20, path=None):
+    result = evidence["result"]
+    metadata = {key: evidence[key] for key in ("source_id", "retrieved_at")}
+    sections = {"inputs": result["inputs"], "solution": result["solution"]}
+    if section == "overview":
+        return {**metadata, **{key: value for key, value in result.items() if key not in sections},
+            "sections": {key: shape(value) for key, value in sections.items()},
+            "next_read": "使用同一source_id读取solution及inputs分区，沿next_offset与deferred.path读取所需内容；不要重复计算。"}
+    if section not in sections:
+        raise ValueError("配置计算仅支持overview、inputs和solution分区")
+    return read_page(sections[section], {**metadata, "section": section}, offset=offset, limit=limit, path=path)
+
+
 def read_portfolio_evidence(evidence, *, section="overview", offset=0, limit=20, path=None):
     result = evidence["result"]
     metadata = {key: evidence[key] for key in ("source_id", "retrieved_at")}

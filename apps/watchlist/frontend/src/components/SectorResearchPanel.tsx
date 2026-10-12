@@ -117,7 +117,7 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
   const completed = sectors[0] ? completedReview(sectors[0]) : null
   const title = variant === 'summary' ? '投资研究摘要' : variant === 'status' ? '研究更新' : '投资研究'
   const status = <div className="research-report-status" aria-label="研究更新状态">
-    {data && (busy || !sectors.some(sector => sector.latest_review?.status === 'failed')) && <span className="research-status-current">{statusSummary}</span>}
+    {data && <span className="research-status-current">{statusSummary}</span>}
     {completed?.checked_at && <span>最近有效检查 <time title={completed.checked_at} dateTime={completed.checked_at}>{time(completed.checked_at)}</time></span>}
     {variant !== 'summary' && completed?.view_updated_at && <span>判断更新 <time dateTime={completed.view_updated_at}>{time(completed.view_updated_at)}</time></span>}
   </div>
@@ -137,13 +137,13 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
     {pauseReason && <p className="sector-research-limitation" role="status">{pauseReason}</p>}
     {data && !pauseReason && (!data.available || data.research_enabled === false) && <p className="sector-research-limitation">{data.message || '研究所需来源暂不可用，已保存的研究仍可查看。'}</p>}
     {error && <div role="alert"><p>研究更新状态暂时无法读取：{error}</p><p>状态查询失败不代表任务停止；刷新状态只读取原任务，不会重新提交研究。</p></div>}
+    {variant !== 'status' && <ResearchDossierPanel key={instrumentId} instrumentId={instrumentId} reviewRunId={review?.run_id} reviewStatus={review?.status} onAskAssistant={onAskAssistant} variant={variant === 'summary' ? 'summary' : 'full'} />}
+    {variant !== 'summary' && sectors.length > 0 && <details className="sector-check-coverage"><summary>研究运行记录<span>{statusSummary}{review?.checked_at && <> · 最近尝试 {time(review.checked_at)}</>}{coverage.length ? ` · ${coverage.length} 项限制` : ''}</span></summary>
     {sectors.filter(sector => sector.latest_review?.status === 'failed').map(sector => <div key={sector.instrument_id} className="sector-research-attempt sector-research-limitation" role="status">
       <span>{busy ? '上次更新未完成' : '最近一次更新未完成'} · <time dateTime={sector.latest_review!.checked_at || undefined}>{time(sector.latest_review!.checked_at)}</time></span>
       {sector.latest_review!.summary && <p>{sector.latest_review!.summary}</p>}
     </div>)}
-    {variant !== 'status' && <ResearchDossierPanel key={instrumentId} instrumentId={instrumentId} reviewRunId={review?.run_id} reviewStatus={review?.status} onAskAssistant={onAskAssistant} variant={variant === 'summary' ? 'summary' : 'full'} />}
-    {variant !== 'summary' && sectors.length > 0 && <details className="sector-check-coverage"><summary>研究运行记录<span>{statusSummary}{review?.checked_at && <> · 最近尝试 {time(review.checked_at)}</>}{coverage.length ? ` · ${coverage.length} 项限制` : ''}</span></summary>
-      {sectors.map(sector => <div key={sector.instrument_id}>{sector.latest_review && !running(sector.latest_review.status) && sector.latest_review.status !== 'failed' && <ResearchRunStatus runId={sector.latest_review.run_id} status={sector.latest_review.status} createdAt={sector.latest_review.created_at || sector.latest_review.checked_at} completedAt={sector.latest_review.completed_at} execution={sector.latest_review.execution} error={sector.latest_review.runtime_error} shared />}<p>{sector.latest_review ? statusLabels[sector.latest_review.status] || '状态待核实' : '尚未完成研究'} · {time(sector.latest_review?.checked_at)}</p>
+      {sectors.map(sector => <div key={sector.instrument_id}>{sector.latest_review && !running(sector.latest_review.status) && (paused || sector.latest_review.status !== 'failed') && <ResearchRunStatus runId={sector.latest_review.run_id} status={sector.latest_review.status} createdAt={sector.latest_review.created_at || sector.latest_review.checked_at} completedAt={sector.latest_review.completed_at} execution={sector.latest_review.execution} error={sector.latest_review.runtime_error} shared />}<p>{sector.latest_review ? statusLabels[sector.latest_review.status] || '状态待核实' : '尚未完成研究'} · {time(sector.latest_review?.checked_at)}</p>
         {sector.latest_review?.reflection && ['completed', 'limited'].includes(sector.latest_review.status) && <p><span>{sector.latest_review.reflection.status === 'reviewed' ? '已复核既有判断' : '复核证据不足'}</span> · <span translate="no">{sector.latest_review.reflection.summary}</span></p>}
       </div>)}
       {coverage.length > 0 && <ul className="sector-research-limitation">{coverage.map(gap => <li key={gap}>{gap}</li>)}</ul>}

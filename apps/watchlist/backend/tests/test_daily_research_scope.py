@@ -48,7 +48,7 @@ def test_daily_scope_includes_all_current_invested_and_reloads_changes(client, m
                 session.add(InstrumentAttributeValue(instrument_id=iid, attribute_key="coverage_status",
                     value_json=status, adopted_at=datetime.now(UTC) - timedelta(days=1)))
         session.commit()
-        assert service.daily_review_groups(session) == [[iid] for iid in ["crypto-invested", "invested", "private-invested"]]
+        assert service.daily_review_groups(session) == [[iid] for iid in ["invested"]]
 
     # Use the same endpoint as Watchlist settings; old attribute history remains saved.
     for iid, status in [("proposed", "Watch"), ("watch", "Invested"), ("invested", "Exited"), ("public-proposed", "Invested")]:
@@ -56,7 +56,7 @@ def test_daily_scope_includes_all_current_invested_and_reloads_changes(client, m
             json={"values": [{"attribute_key": "coverage_status", "value": status}]})
         assert response.status_code == 200, response.text
     with get_session_factory()() as session:
-        assert service.daily_review_groups(session) == [[iid] for iid in ["crypto-invested", "private-invested", "public-proposed", "watch"]]
+        assert service.daily_review_groups(session) == [[iid] for iid in ["watch"]]
         # Offline core construction stays available; actual dispatch still requires current Invested status.
         run, created = service.begin_run(session, ["proposed"])
         assert created and run.context_json["instrument_ids"] == ["proposed"]
@@ -116,9 +116,9 @@ def test_daily_scope_uses_registered_calendar_and_explicit_fund_nav_check_clock(
         assert service._research_market(session, "daily-private") == "fund_nav"
         assert service._research_market(session, "daily-private-us") == "us"
         morning = datetime.fromisoformat("2026-09-08T00:30:00+00:00")
-        assert service.daily_review_groups(session, now=morning) == [[iid] for iid in ["daily-cn", "daily-hk", "daily-index", "daily-private", "daily-public"]]
+        assert service.daily_review_groups(session, now=morning) == [[iid] for iid in ["daily-cn", "daily-hk", "daily-index"]]
         us_morning = datetime.fromisoformat("2026-09-08T12:30:00+00:00")
-        assert service.daily_review_groups(session, now=us_morning) == [[iid] for iid in ["daily-cn", "daily-hk", "daily-index", "daily-private", "daily-private-us", "daily-public", "daily-us"]]
+        assert service.daily_review_groups(session, now=us_morning) == [[iid] for iid in ["daily-cn", "daily-hk", "daily-index", "daily-us"]]
 
 
 def test_scheduled_us_review_deduplicates_across_beijing_midnight_and_quiet_next_us_day(client, monkeypatch):
@@ -145,7 +145,7 @@ def test_scheduled_us_review_deduplicates_across_beijing_midnight_and_quiet_next
         assert not created and next_day.entry_id == first.entry_id
 
 
-def test_crypto_uses_completed_utc_day_clock_and_keeps_weekends_in_automatic_scope(client, monkeypatch):
+def test_crypto_keeps_utc_risk_clock_but_is_outside_investment_research(client, monkeypatch):
     monkeypatch.setattr(shared_instrument_registry, "list_shared_active_instrument_ids", lambda **kwargs: ["btcusd"])
     monkeypatch.setattr(service, "latest_reviews", lambda session, **kwargs: {"btcusd": {}})
     with get_session_factory()() as session:
@@ -155,7 +155,9 @@ def test_crypto_uses_completed_utc_day_clock_and_keeps_weekends_in_automatic_sco
         before = datetime.fromisoformat("2026-09-06T00:29:00+00:00")
         after = datetime.fromisoformat("2026-09-06T00:30:00+00:00")
         assert service.daily_review_groups(session, now=before) == []
-        assert service.daily_review_groups(session, now=after) == [["btcusd"]]
+        assert service.daily_review_groups(session, now=after) == []
+        from watchlist_app.services.research_policy import automatic_risk_ids
+        assert "btcusd" in automatic_risk_ids(session)
         assert service._research_dates(session, ["btcusd"], datetime.fromisoformat("2026-09-06T16:30:00+00:00")) == {"btcusd": "2026-09-06"}
         run, created = service.begin_run(session, ["btcusd"])
         assert created and run.context_json["instrument_ids"] == ["btcusd"]

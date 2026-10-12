@@ -53,7 +53,8 @@ def external_json(service: str, path: str):
         # The risk context includes portfolio-wide valuation and covariance.
         # Its observed cold-read latency reaches 53 seconds; the delegation
         # remains valid for 120 seconds and retries are bounded by the runner.
-        timeout = 60 if service == "portfolio" and path.split("?", 1)[0].endswith("/risk-context") else 10
+        timeout = 110 if service == "portfolio" and path.split("?", 1)[0].endswith("/research/allocation") else (
+            60 if service == "portfolio" and path.split("?", 1)[0].endswith("/risk-context") else 10)
         with urlopen(Request(base + path, headers=headers), timeout=timeout) as response:
             import json
             return json.load(response)
