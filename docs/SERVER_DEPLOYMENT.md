@@ -14,7 +14,7 @@ The service installer defines nine user-systemd services:
 
 Five data schedules are installed separately. Each uses an `investment-studio-<name>.service` and `.timer` pair: `market-data-refresh` for nightly settlement; `cn-market-data-refresh`, `hk-market-data-refresh`, and `us-market-data-refresh` for closing prices; `cn-hk-reference-data-refresh` for pre-open Tushare reference acquisition. FMP references are projected by the public collection or arrival pipeline.
 
-Hong Kong and US closing-price timers probe the exchange calendar every hour. With `Restart=no`, their service start limit is disabled: `ExecCondition` probes count as starts even when the market has not closed, so a three-start/three-hour limit can block a valid closing-price run. Jobs configured to restart on failure retain their bounded restart policy.
+Hong Kong and US closing-price timers probe the exchange calendar every hour. With `Restart=no`, their service start limit is disabled: `ExecCondition` probes count as starts even when the market has not closed, so a three-start/three-hour limit can block a valid closing-price run. Jobs explicitly configured to restart on failure retain their start-rate limit, which does not cap total whole-batch retries over time.
 
 Hong Kong additionally reconciles at 23:30 on the same trading day. Its initial
 close run can precede the HKEX daily quotation used to confirm a no-trade session.
