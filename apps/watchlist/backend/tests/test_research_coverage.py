@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import UTC, datetime
 import json
 
 import pytest
@@ -8,6 +9,7 @@ from watchlist_app.db.models import InstrumentDetail
 from watchlist_app.db.models.workbench import RiskCase
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services import sector_fact_review, sector_research
+from .test_research_triggers import store
 
 
 def searched_context():
@@ -65,8 +67,8 @@ def test_channel_gap_does_not_invent_missing_windows_or_treat_empty_results_as_f
     assert sector_research.shared_market_coverage_gaps(context, instrument_id="h11001") == []
 
 
-@pytest.mark.parametrize("coverage_case", ["known_gap", "unknown_window", "unsearched"])
-def test_publication_preserves_actual_channel_limit_without_failing_quiet_reflection(client, coverage_case):
+@pytest.mark.parametrize("coverage_case", ["known_gap", "unknown_window", "unsearched", "monitor_scanned"])
+def test_publication_preserves_actual_channel_limit_without_failing_quiet_reflection(client, coverage_case, store, monkeypatch):
     with get_session_factory()() as session:
         session.add(InstrumentDetail(instrument_id="h11001", instrument_type="index", detail_view_type="index",
             instrument_name="中债指数", metadata_json={}))
@@ -75,8 +77,26 @@ def test_publication_preserves_actual_channel_limit_without_failing_quiet_reflec
         context = {**run.context_json, **searched_context()}
         if coverage_case == "unknown_window":
             context["market_coverage"].pop("latest_bundle_window_end")
-        elif coverage_case == "unsearched":
+        elif coverage_case in {"unsearched", "monitor_scanned"}:
             context["market_queries"] = []
+        if coverage_case == "monitor_scanned":
+            from watchlist_app.services import market_evidence, research_monitor
+            monkeypatch.setattr(market_evidence, "text_store", lambda: store)
+            original = store.capture_public_source({"url": "https://issuer.example/bond",
+                "title": "Bond disclosure", "text": "Bond purchase disclosure", "published_at": "2026-09-11",
+                "retrieved_at": "2026-09-11T12:00:00+00:00"}, received_at=datetime(2026, 9, 11, 12, tzinfo=UTC))
+            state, trigger = research_monitor.scan(session, "h11001", {
+                "cutoff": "2026-09-10T12:00:00+00:00", "instrument_ids": ["h11001"],
+                "market_queries": [{"instrument_id": "h11001", "query": "Bond", "entities": [],
+                    "cutoff": "2026-09-10T12:00:00+00:00"}]},
+                team_id=run.team_id, now=datetime.fromisoformat(context["cutoff"]))
+            assert trigger["reasons"][0]["sources"][0]["source_id"] == original["source_id"]
+            assert trigger["reasons"][0]["sources"][0]["matched_query"]["query"] == "Bond"
+            research_monitor.mark_attempt(state, run.entry_id)
+            context["incremental_trigger"] = {"h11001": trigger}
+            document = store.read(original["source_id"], as_of=datetime.fromisoformat(context["cutoff"]))
+            context["market_text_sources"] = [market_evidence.source_reference(market_evidence.original_source(document))]
+            frozen = deepcopy(context)
         run.context_json = context
         gaps = sector_research.shared_market_coverage_gaps(context, instrument_id="h11001")
         # A reviewer may return no acquisition gap; publication retains known
@@ -91,7 +111,13 @@ def test_publication_preserves_actual_channel_limit_without_failing_quiet_reflec
             assert session.scalar(select(RiskCase).where(RiskCase.instrument_id == "h11001")) is None
             if coverage_case == "known_gap":
                 assert saved["coverage"] == gaps and saved["status"] == "limited"
-            elif coverage_case == "unsearched":
-                assert saved["status"] == "limited" and any("未检索" in gap for gap in saved["coverage"])
+            elif coverage_case in {"unsearched", "monitor_scanned"}:
+                assert saved["status"] == "limited" and any("未追加检索" in gap for gap in saved["coverage"])
+                if coverage_case == "monitor_scanned":
+                    assert not any(gap.startswith("本轮未检索") for gap in saved["coverage"])
+                    for field in ("cutoff", "market_queries", "incremental_trigger", "market_text_sources"):
+                        assert run.context_json[field] == frozen[field]
+                    assert state.pending_changes_json == {}
+                    assert state.applied_at == datetime.fromisoformat(trigger["monitor_snapshot"]["scanned_at"])
             else:
                 assert saved["status"] == "completed" and saved["coverage"] == []

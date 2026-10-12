@@ -1450,7 +1450,7 @@ def apply_result(session, run, reply):
     generic_news = any((dossier.get("research_applicability") or {}).get("monitoring", {}).get("generic_news", True)
                        for dossier in context.get("research_dossiers", [])) or not context.get("research_dossiers")
     if context.get("sector_run") and generic_news and not context.get("market_queries") and not any(e.get("operation") == "search" for e in context.get("web_evidence", [])):
-        acquisition_gaps.append("本轮未检索共享资讯或补充来源，不能据此认定无重大新增。")
+        acquisition_gaps.append("本轮研究未追加检索共享资讯或补充来源；定向增量扫描与原件读取仅覆盖其绑定范围，不能据此认定范围外没有重大新增。")
     reviews = {}
     for review in parsed.reviews:
         from watchlist_app.services.market_evidence import initialization_coverage_notes
