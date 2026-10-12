@@ -373,6 +373,5 @@ body:has(.research-aside-backdrop) { overflow: hidden; }
 @media (max-width: 900px) { .research-current-sections { grid-template-columns: minmax(0, 1fr); } .research-section-themes { border-top: 1px solid var(--line); padding-top: 24px; } }
 @media (max-width: 640px) { .research-material-index { grid-template-columns: minmax(0, 1fr); } }
 .research-scope-notice { margin: 6px 0 16px; color: var(--muted); font-size: 12px; line-height: 1.6; max-width: 72ch; }
-.research-scope-notice summary { cursor: pointer; }
 .research-scope-notice p { margin: 8px 0; }
 .research-current-section:focus-visible { outline: 2px solid var(--accent); outline-offset: 5px; }
