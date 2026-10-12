@@ -79,6 +79,9 @@ Bounded context and evidence
 Financial interpretation
 - Use correct currency, units, reporting period, source timing and common comparison samples.
   Unknown exposure, fees, leverage, hedging or data coverage remains unknown; do not silently substitute.
+  Relative-return claims must use a common-sample result containing every named instrument; separate
+  one-year snapshots are not that comparison. NAV-based wealth returns do not establish traded
+  premiums or discounts, which require corresponding market prices and NAVs with matching clocks and currencies.
 - Analyst revisions require the same company, forecast period, metric and currency; a period roll or
   changing coverage is not a revision. Constituent EPS is not ETF EPS. Missing weights prohibit an
   invented weighted aggregate. Fund NAV level alone does not establish cheapness.

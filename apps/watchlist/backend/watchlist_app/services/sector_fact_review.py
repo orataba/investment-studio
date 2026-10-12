@@ -174,6 +174,9 @@ computed source for factual premises, measurements and exposure claims. Nonempty
 that a source supports the inference. Never invent a mandatory valuation method or numeric price target.
 Do not turn a tracking benchmark into an exact NAV identity or use a drawdown alone as proof
 that a policy shock is already priced in; retain unmeasured tracking differences and uncertainty.
+For a relative-return claim, verify that the retained common-sample result actually contains every
+named instrument; do not splice separate one-year snapshots. NAV-based wealth returns do not measure
+traded premiums or discounts; those need corresponding market prices and NAVs at matching clocks and currencies.
 Remove unsupported clauses; remove the event entirely if no verified material increment remains.
 Keep an event only when acquired evidence supports a material fact or development for that instrument.
 Explicitly accept a fully supported event without copying it; otherwise correct only necessary proposed
