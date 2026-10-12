@@ -21,6 +21,11 @@ def store(tmp_path, monkeypatch):
     value.close()
 
 
+@pytest.fixture(autouse=True)
+def no_registered_materials(monkeypatch):
+    monkeypatch.setattr("watchlist_app.services.research_dossier.material_index", lambda *args, **kwargs: [])
+
+
 def capture(store, body, *, observed=1, received=1, url="https://example.com/gold"):
     return store.capture_public_source({
         "source_id": "fixture", "url": url, "title": "Gold market disclosure", "text": body,
@@ -32,13 +37,18 @@ def session(cases=(), calendar="XNYS"):
     return SimpleNamespace(scalars=lambda statement: (row for row in cases),
         execute=lambda statement: ((row, len(row.history_json)) for row in cases if row.signal.startswith("sector:")) if statement.column_descriptions[0].get("entity") is triggers.RiskCase else (row for row in ()),
         get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="sqlite")),
-        get=lambda model, iid: SimpleNamespace(instrument_type="etf", source_settings_json={"market_calendar": calendar}, exchange_code=calendar))
+        get=lambda model, iid: SimpleNamespace(instrument_type="etf", source_settings_json={"market_calendar": calendar}, exchange_code=calendar) if model.__name__ == "Instrument" else None)
 
 
 def context(**extra):
     return {"cutoff": stamp(2).isoformat(), "instrument_ids": ["gold"], "market_queries": [
         {"instrument_id": "gold", "query": "Gold", "entities": [], "published_after": "2026-09-01T00:00:00Z"},
     ], **extra}
+
+
+def bound_dossier(instrument_id, sources):
+    return {"instrument_id": instrument_id, "prior_sources": [], "notebook": {
+        "investment_view": {"source_ids": [row["source_id"] for row in sources]}, "sources": sources}}
 
 
 def test_late_import_old_publication_triggers_once_and_preserves_monitor_scope(store):
@@ -52,7 +62,7 @@ def test_late_import_old_publication_triggers_once_and_preserves_monitor_scope(s
     assert result["coverage_cursor"]["market_queries"][0]["query"] == "Gold"
     # Failed/no-search followup still consumes the already-attempted source batch.
     followup = {"cutoff": stamp(4).isoformat(), "instrument_ids": ["gold"], "market_queries": [], "incremental_trigger": result}
-    assert triggers.research_trigger(session(), "gold", followup, now=stamp(5)) is None
+    assert triggers.research_trigger(session(), "gold", followup, now=stamp(5))["reasons"] == []
     capture(store, "Gold subsequent disclosure", observed=5, received=5, url="https://example.com/gold-2")
     assert triggers.research_trigger(session(), "gold", followup, now=stamp(6))["reasons"][0]["kind"] == "new_research_sources"
 
@@ -69,17 +79,17 @@ def test_query_coverage_clock_is_not_advanced_by_later_unrelated_web_fetch(store
     assert result["coverage_cursor"]["market_queries"][0]["cutoff"] == stamp(3, 12).isoformat()
     # If this exact version was subsequently read, it is already part of the run evidence.
     prior["market_text_sources"] = [{"source_id": source["source_id"]}]
-    assert triggers.research_trigger(session(), "gold", prior, now=stamp(3, 20)) is None
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(3, 20))["reasons"] == []
     # An attempted followup consumes the scanned arrivals, even if its model fails before searching.
     followup = context(cutoff=stamp(3, 20).isoformat(), market_queries=[], incremental_trigger=result)
-    assert triggers.research_trigger(session(), "gold", followup, now=stamp(3, 21)) is None
+    assert triggers.research_trigger(session(), "gold", followup, now=stamp(3, 21))["reasons"] == []
 
 
 def test_same_body_recapture_is_quiet_but_changed_original_triggers(store):
     first = capture(store, "Gold reserve disclosure")
     repeated = capture(store, "Gold reserve disclosure", observed=3, received=3)
     assert repeated["source_id"] == first["source_id"]
-    assert triggers.research_trigger(session(), "gold", context(), now=stamp(4)) is None
+    assert triggers.research_trigger(session(), "gold", context(), now=stamp(4))["reasons"] == []
     amended = capture(store, "Gold reserve disclosure with revised amount", observed=4, received=4)
     result = triggers.research_trigger(session(), "gold", context(), now=stamp(5))
     assert result["reasons"][0]["sources"][0]["source_id"] == amended["source_id"]
@@ -108,7 +118,8 @@ def test_read_original_revision_triggers_even_after_old_terms_and_entities_disap
                        observed_at=stamp(3).isoformat(), entities=[], event_ids=[])
         store._write_document(connection, revised, "The earlier disclosure is invalid.", stamp(3))
     assert store.search("Gold", as_of=stamp(4), include_withdrawn=True)["total"] == 0
-    prior = context(market_text_sources=[{"source_id": first["source_id"], "document_id": first["document_id"]}])
+    prior = context(market_text_sources=[{"source_id": first["source_id"], "document_id": first["document_id"]}],
+                    research_dossiers=[bound_dossier("gold", [first])])
     result = triggers.research_trigger(session(), "gold", prior, now=stamp(4))
     source, = result["reasons"][0]["sources"]
     assert source["change"] == ("withdrawn_original" if status == "withdrawn" else "revised_original")
@@ -116,26 +127,30 @@ def test_read_original_revision_triggers_even_after_old_terms_and_entities_disap
     assert source["dependency"] == "previously_read_original"
     assert store.read(first["source_id"], as_of=stamp(4))["content_text"] == "Gold reserve disclosure"
     followup = {**prior, "cutoff": stamp(4).isoformat(), "incremental_trigger": result}
-    assert triggers.research_trigger(session(), "gold", followup, now=stamp(5)) is None
+    assert triggers.research_trigger(session(), "gold", followup, now=stamp(5))["reasons"] == []
 
 
-def test_original_read_without_keyword_search_still_tracks_its_revision_without_broadcast(store):
+def test_only_current_bound_original_tracks_revision_without_query_or_scope_broadcast(store):
     first = capture(store, "Gold reserve disclosure")
     capture(store, "Gold revised reserve disclosure", observed=3, received=3)
     prior = context(market_queries=[], market_text_sources=[{"source_id": first["source_id"]}])
+    # An earlier fetch alone does not create a standing automatic monitor.
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4))["reasons"] == []
+    prior["research_dossiers"] = [bound_dossier("gold", [first])]
     assert triggers.research_trigger(session(), "gold", prior, now=stamp(4))["reasons"][0]["sources"]
     prior["instrument_ids"] = ["gold", "xlk"]
-    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4)) is None
-    prior["reviews"] = {"gold": {"reflection": {"source_ids": [first["source_id"]]}}}
     assert triggers.research_trigger(session(), "gold", prior, now=stamp(4))["reasons"][0]["sources"]
-    assert triggers.research_trigger(session(), "xlk", prior, now=stamp(4)) is None
+    assert triggers.research_trigger(session(), "xlk", prior, now=stamp(4))["reasons"] == []
+    prior["research_dossiers"] = []
+    prior["reviews"] = {"gold": {"reflection": {"source_ids": [first["source_id"]]}}}
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4))["reasons"] == []
 
 
 def test_unrelated_later_fetch_cutoff_does_not_consume_an_unread_correction(store):
     first = capture(store, "Gold reserve disclosure")
     latest = capture(store, "Gold revised reserve disclosure", observed=3, received=3)
     prior = context(cutoff=stamp(4).isoformat(), input_snapshot_cutoff=stamp(2).isoformat(),
-                    market_text_sources=[{"source_id": first["source_id"]}])
+                    market_text_sources=[{"source_id": first["source_id"]}], research_dossiers=[bound_dossier("gold", [first])])
     result = triggers.research_trigger(session(), "gold", prior, now=stamp(5))
     assert result["reasons"][0]["sources"][0]["previous_source_id"] == first["source_id"]
     prior["market_text_sources"].append({"source_id": latest["source_id"]})
@@ -144,7 +159,7 @@ def test_unrelated_later_fetch_cutoff_does_not_consume_an_unread_correction(stor
     changes = triggers.research_trigger(session(), "gold", prior, now=stamp(5))["reasons"][0]["sources"]
     assert changes[0]["previous_source_ids"] == [first["source_id"]]
     followup = {**prior, "incremental_trigger": result}
-    assert triggers.research_trigger(session(), "gold", followup, now=stamp(5)) is None
+    assert triggers.research_trigger(session(), "gold", followup, now=stamp(5))["reasons"] == []
 
 
 def test_correction_preserves_all_old_dependencies_when_another_theme_already_uses_latest(store):
@@ -185,9 +200,9 @@ def test_unscoped_batch_and_other_instrument_queries_are_not_broadcast(store):
         {"query": "Gold", "entities": []}, {"instrument_id": "xlk", "query": "Gold", "entities": []},
         {"instrument_id": "gold", "query": "", "entities": []},
     ])
-    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4)) is None
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4))["reasons"] == []
     prior["market_queries"].append({"instrument_id": "gold", "query": "Gold", "entities": []})
-    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4)) is not None
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4))["reasons"]
 
 
 @pytest.mark.parametrize("private_scope", ["personal", "portfolio", "historical_portfolio", "other_team"])
@@ -225,7 +240,7 @@ def test_automatic_monitoring_never_inherits_private_or_portfolio_query_scope(cl
 
 def test_future_import_and_ai_summary_are_not_new_original_evidence(store):
     capture(store, "Gold future disclosure", observed=3, received=5)
-    assert triggers.research_trigger(session(), "gold", context(), now=stamp(4)) is None
+    assert triggers.research_trigger(session(), "gold", context(), now=stamp(4))["reasons"] == []
     assert not triggers._readable({"content_completeness": "full_text", "content_text": "Gold AI summary", "information_type": "ai_summary"})
     assert not triggers._readable({"content_completeness": "title_only", "content_text": "Gold title"})
 
@@ -247,13 +262,13 @@ def test_numeric_daily_changes_do_not_trigger_without_domain_history_event(store
     case = SimpleNamespace(case_id="risk1", signal="period_loss", title="Loss limit", observed_on=date(2026, 9, 3),
         evidence_json={"periods": [{"period": "day", "return_pct": -4, "limit_pct": 3}]},
         history_json=[{"at": stamp(1).isoformat(), "action": "triggered", "detail": "Prior known risk"}])
-    assert triggers.research_trigger(session([case]), "gold", context(market_queries=[]), now=stamp(4)) is None
+    assert triggers.research_trigger(session([case]), "gold", context(market_queries=[]), now=stamp(4))["reasons"] == []
     case.history_json.append({"at": stamp(3).isoformat(), "action": "updated", "detail": "Week loss rule also breached"})
     result = triggers.research_trigger(session([case]), "gold", context(market_queries=[]), now=stamp(4))
     assert result["reasons"][0]["kind"] == "quantitative_risk_change"
     assert result["reasons"][0]["cases"][0]["case_id"] == "risk1"
     followup = context(cutoff=stamp(4).isoformat(), market_queries=[], incremental_trigger={"gold": result})
-    assert triggers.research_trigger(session([case]), "gold", followup, now=stamp(5)) is None
+    assert triggers.research_trigger(session([case]), "gold", followup, now=stamp(5))["reasons"] == []
 
 
 def test_explicit_schedule_crossing_is_due_not_predicted_event_confirmation(store):
@@ -261,12 +276,14 @@ def test_explicit_schedule_crossing_is_due_not_predicted_event_confirmation(stor
         "instrument_id": "gold", "notebook": {"catalysts": [{"key": "statement", "title": "Statement", "status": "scheduled",
             "scheduled_at": "2026-09-03T10:00:00-04:00"}], "forecasts": [{"key": "inflation", "claim": "Inflation slows", "horizon": "later", "review_on": "2026-09-04"}]},
     }])
-    assert triggers.research_trigger(session(), "gold", prior, now=stamp(3, 13)) is None
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(3, 13))["reasons"] == []
     result = triggers.research_trigger(session(), "gold", prior, now=stamp(3, 15))
     assert result["reasons"][0]["items"][0]["kind"] == "scheduled_event_check"
     assert "不代表事件已经发生" in result["reasons"][0]["items"][0]["note"]
     followup = {**prior, "cutoff": stamp(3, 15).isoformat(), "incremental_trigger": result}
-    assert triggers.research_trigger(session(), "gold", followup, now=stamp(3, 20)) is None
+    # The cheap scan keeps this due item until lifecycle resolution; the durable
+    # monitor, not an attempted timestamp in a run, suppresses duplicate model work.
+    assert triggers.research_trigger(session(), "gold", followup, now=stamp(3, 20))["reasons"][0]["items"] == result["reasons"][0]["items"]
     next_day = triggers.research_trigger(session(), "gold", followup, now=stamp(4, 12))
     assert next_day["reasons"][0]["items"][0]["kind"] == "forecast_review"
 
@@ -275,7 +292,7 @@ def test_natural_language_horizon_is_not_parsed_into_an_invented_deadline(store)
     prior = context(market_queries=[], research_dossiers=[{"instrument_id": "gold", "notebook": {
         "forecasts": [{"key": "view", "claim": "Gold higher", "horizon": "a few weeks", "status": "active"}],
     }}])
-    assert triggers.research_trigger(session(), "gold", prior, now=stamp(7)) is None
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(7))["reasons"] == []
 
 
 @pytest.mark.parametrize("theme_status", ["paused", "closed"])
@@ -285,7 +302,7 @@ def test_inactive_theme_forecast_does_not_restart_its_research_when_due(store, t
     dossier = {"instrument_id": "gold", "themes": [{"theme_id": "theme", "status": theme_status}],
         "notebook": {"forecasts": [forecast]}}
     prior = context(cutoff=stamp(3, 12).isoformat(), market_queries=[], research_dossiers=[dossier])
-    assert triggers.research_trigger(session(), "gold", prior, now=stamp(3, 15)) is None
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(3, 15))["reasons"] == []
 
     # The shared instrument can still require unrelated research at the same time.
     dossier["notebook"]["forecasts"].append({**forecast, "key": "global-forecast", "theme_id": None})
@@ -299,7 +316,7 @@ def test_inactive_theme_forecast_does_not_restart_its_research_when_due(store, t
 
 def test_fund_observation_date_uses_the_same_nav_check_clock_as_daily_research(store):
     fund_session = session()
-    fund_session.get = lambda model, iid: SimpleNamespace(instrument_type="private_fund", source_settings_json={}, exchange_code=None)
+    fund_session.get = lambda model, iid: SimpleNamespace(instrument_type="private_fund", source_settings_json={}, exchange_code=None) if model.__name__ == "Instrument" else None
     prior = {"cutoff": "2026-09-02T15:00:00+00:00", "instrument_ids": ["private-fund"],
         "research_dossiers": [{"instrument_id": "private-fund", "notebook": {"forecasts": [
             {"key": "review", "claim": "复核月度净值", "review_on": "2026-09-03", "status": "active"}]}}]}
@@ -375,15 +392,61 @@ def test_scheduled_run_reopens_for_same_day_source_and_does_not_retry_consumed_t
         assert following.context_json["incremental_trigger"]["trigger-gold"]["coverage_cursor"]["market_queries"][0]["cutoff"] == stamp(3, 12).isoformat()
 
 
-def test_new_theme_baseline_and_later_manual_reference_trigger_once_per_request(store):
+def test_theme_scan_retains_pending_baseline_until_current_lifecycle_changes(store):
     theme = {"theme_id": "theme-credit", "title": "信用传导", "status": "active", "baseline_status": "pending",
              "created_at": stamp(1).isoformat(), "baseline_requested_at": stamp(1).isoformat()}
     prior = context(research_dossiers=[{"instrument_id": "gold", "themes": [theme]}], attempted_theme_baselines={})
     result = triggers.research_trigger(session(), "gold", prior, now=stamp(4))
     assert result["reasons"][0]["kind"] == "theme_baseline"
     prior["attempted_theme_baselines"] = {theme["theme_id"]: theme["baseline_requested_at"]}
-    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4)) is None
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4))["reasons"] == result["reasons"]
     theme["baseline_requested_at"] = stamp(3).isoformat()
     assert triggers.research_trigger(session(), "gold", prior, now=stamp(4))["reasons"][0]["kind"] == "theme_baseline"
     theme["status"] = "paused"
-    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4)) is None
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4))["reasons"] == []
+
+
+@pytest.mark.parametrize("dependency", ["unreferenced", "notebook", "important_theme", "watched_event", "unresolved_risk"])
+@pytest.mark.parametrize("metadata_present", [True, False])
+def test_monitor_source_catalog_is_not_a_dependency_but_current_references_are(store, monkeypatch, dependency, metadata_present):
+    """A different product may be valid comparison evidence, but merely retained is not watched."""
+    from watchlist_app.services import research_dossier, research_themes, research_working_set
+    old = capture(store, "Peer fund prior facts", url="https://example.com/other-fund")
+    new = capture(store, "Peer fund corrected facts", observed=3, received=3, url="https://example.com/other-fund")
+    catalogue = [old] if metadata_present else []
+    notebook = {"version_id": "current", "sources": catalogue, "investment_view": {"source_ids": []}}
+    themes, events = [], []
+    if dependency == "notebook":
+        notebook["investment_view"]["source_ids"] = [old["source_id"]]
+    elif dependency == "important_theme":
+        themes = [{"theme_id": "important", "status": "active", "priority": "important", "source_ids": [old["source_id"]], "sources": catalogue}]
+    elif dependency in {"watched_event", "unresolved_risk"}:
+        evidence = {"source_ids": [old["source_id"]], "sources": catalogue}
+        if dependency == "unresolved_risk":
+            evidence = {"source_ids": [], "sources": [], "last_assessed_snapshot": {
+                "source_ids": [old["source_id"]], "sources": catalogue}}
+        events = [{"case_id": "event", "follow_up": "watch" if dependency == "watched_event" else "none",
+                   "trigger_active": dependency == "unresolved_risk", "evidence": evidence}]
+    monkeypatch.setattr(research_dossier, "_notebooks", lambda *args, **kwargs: (notebook, []))
+    monkeypatch.setattr(research_themes, "theme_summaries", lambda *args, **kwargs: {"themes": themes})
+    monkeypatch.setattr(research_working_set, "current_events", lambda *args: events)
+    dossier = triggers.trigger_dossier(None, "private-fund")
+    originals = triggers._read_originals({"research_dossiers": [dossier]}, "private-fund")
+    revisions = triggers._revised_originals(store, originals, None, stamp(4))
+    if dependency == "unreferenced":
+        assert dossier["notebook"]["sources"] == []
+        assert originals == {} and revisions == []
+    else:
+        assert old["source_id"] in originals
+        assert [(r["source_id"], r["previous_source_ids"]) for r in revisions] == [(new["source_id"], [old["source_id"]])]
+    # Filtering a monitor projection must not mutate the retained notebook.
+    assert notebook["sources"] == catalogue
+
+
+def test_retained_notebook_directory_does_not_reintroduce_unreferenced_originals(store):
+    old = capture(store, "Unreferenced peer fund fact", url="https://example.com/unreferenced")
+    current = capture(store, "Current comparison", url="https://example.com/comparison")
+    event = capture(store, "Unresolved risk original", url="https://example.com/risk")
+    dossier = {"instrument_id": "gold", "notebook": {"sources": [old, current],
+        "investment_view": {"source_ids": [current["source_id"]]}}, "prior_sources": [event]}
+    assert set(triggers._read_originals({"research_dossiers": [dossier]}, "gold")) == {current["source_id"], event["source_id"]}

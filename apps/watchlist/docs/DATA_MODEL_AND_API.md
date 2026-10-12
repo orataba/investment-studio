@@ -214,6 +214,8 @@ Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会
 
 ### 4.7 Watchlist 投资研究 V1
 
+自动研究仅监测当前底稿、重要活动主题、持续跟踪事件和未解除风险实际引用的来源。已留存的来源目录本身不构成监测依赖；未再被当前工作集引用的背景或其他产品网页修订不会单独启动模型。真实跨产品比较引用仍保留更正、撤回传播。监测器只在当前依赖已明确时移除同类悬空 pending，保留仍被引用的失败更正和归属未知的历史项；淘汰理由记于 `scan_cursor_json.last_dependency_pruning`，不推进成功应用水位、不计入模型上下文，也不改写历史原件。扫描使用单一路径，始终返回当前到期项及检查水位；是否创建新任务仅由持久 monitor 的 pending、attempted、applied 状态决定，不再以旧运行的同日尝试时钟隐藏到期事项。
+
 研究与事件事实继续使用 `research_entry`、主题、来源与 `risk_case`。执行队列由 `research_execution` 保存，风控交付状态由 `research_risk_read_state` 按运行与 attempt 保存，新增计算原件由 `research_run_evidence` 按运行与来源保存；历史原件不改写，当前判断没有平行副本。页面按机会与风险、重要进展、重点主题、量化观察阅读；基础档案、研究指导、PM 观点及历史保留在辅助入口。数值来源的 `observation_domain=market|fundamental|unclassified` 区分市场观察与经营财务分析；浏览器量化区只显示市场观察，新提交的 `market-quantitative.figure_source_ids` 必须符合该用途。原始历史来源与其版本保持完整，不根据标题猜测分类。
 
 - 当前投资判断的同一版本增加 `opportunities`、`risks` 数组，每项包含稳定 `key`、标题、解释、下一观察，以及 `source_ids` / `event_keys` / `theme_ids` 引用；数值依据用 `figure_source_ids`。发布时绑定实际留存证据，历史按原版本读取。数组缺省继续保留旧判断，明确空数组才表示本轮已评估且暂无对应事项。旧记录没有数组时显示覆盖未建立，不推断“没有风险”。`coverage_status` 为 `assessed` / `limited` / `not_established`；`coverage_note` 说明限制。

@@ -96,7 +96,11 @@ def trigger_dossier(session, instrument_id):
     sources = [*(notebook or {}).get("sources", []),
         *(source for theme in themes for source in theme.get("sources", [])),
         *(source for event in events for source in event["evidence"].get("sources", []))]
-    return {"instrument_id": instrument_id, "notebook": notebook,
+    if notebook:
+        # A retained source directory also contains former/background evidence.
+        # Only references supporting the current working set establish monitoring.
+        notebook["sources"] = [row for row in notebook.get("sources", []) if row.get("source_id") in wanted]
+    return {"instrument_id": instrument_id, "notebook": notebook, "source_ids": sorted(wanted),
         "themes": themes, "prior_sources": [row for row in sources if row.get("source_id") in wanted]}
 
 
@@ -114,7 +118,7 @@ def _same_original(left, right):
         "body_sha256", "status", "title", "published_at", "occurred_at", "information_type"))
 
 
-def _new_text(store, queries, consumed_at, now, read_source_ids, *, inclusive=False):
+def _new_text(store, queries, consumed_at, now, read_source_ids):
     changed = {}
     for query in queries:
         # A later web fetch advances the run cutoff, not this query's actual coverage.
@@ -128,14 +132,14 @@ def _new_text(store, queries, consumed_at, now, read_source_ids, *, inclusive=Fa
             offset = 0
             while True:
                 page = store.search(query["query"], entities=query["entities"] or None,
-                                    **{clock: since - timedelta(microseconds=1) if inclusive else since}, as_of=now, limit=100, offset=offset, include_withdrawn=True)
+                                    **{clock: since - timedelta(microseconds=1)}, as_of=now, limit=100, offset=offset, include_withdrawn=True)
                 for row in page["rows"]:
                     if row["source_id"] in changed or row["source_id"] in read_source_ids:
                         continue
                     arrived = max(_instant(row["received_at"]), _instant(row["observed_at"]))
-                    if arrived < since or (arrived == since and not inclusive):
+                    if arrived < since:
                         continue
-                    previous = store.read(row["document_id"], as_of=since - timedelta(microseconds=1) if inclusive else since)
+                    previous = store.read(row["document_id"], as_of=since - timedelta(microseconds=1))
                     withdrawn = row.get("status") in {"withdrawn", "superseded"}
                     if (withdrawn and not previous) or (not withdrawn and not _readable(row)):
                         continue
@@ -156,29 +160,24 @@ def _new_text(store, queries, consumed_at, now, read_source_ids, *, inclusive=Fa
 
 
 def _read_originals(context, instrument_id):
-    """A cited document remains a dependency after its title/entities are corrected."""
-    from watchlist_app.services.research_notebook import notebook_source_ids
-    review = (context.get("reviews") or {}).get(instrument_id) or {}
-    cited = notebook_source_ids(review.get("research") or {})
-    cited.update((review.get("reflection") or {}).get("source_ids", []))
-    for row in [*review.get("events", []), *review.get("themes", [])]:
-        cited.update(row.get("source_ids", []))
-    sources = []
+    """Current bound references remain dependencies after title/entity corrections."""
+    from watchlist_app.services.research_working_set import source_ids
+    sources, referenced = [], set()
     for dossier in context.get("research_dossiers", []):
         if dossier.get("instrument_id") != instrument_id:
             continue
-        originals = [*dossier.get("prior_sources", []), *(dossier.get("notebook") or {}).get("sources", [])]
+        referenced.update(source_ids(dossier))
+        notebook = dossier.get("notebook") or {}
+        current_refs = source_ids(notebook)
+        # prior_sources is the explicitly bound theme/event/notebook working set;
+        # an older notebook's source catalogue alone is not a live dependency.
+        originals = [*dossier.get("prior_sources", []),
+                     *(row for row in notebook.get("sources", []) if row.get("source_id") in current_refs)]
         sources.extend(originals)
-        cited.update(row.get("source_id") for row in originals)
-    sources.extend((review.get("research") or {}).get("sources", []))
-    for row in [*context.get("market_text_sources", []),
-                *(row for capture in context.get("web_evidence", []) if capture.get("operation") == "fetch"
-                  for row in capture.get("sources", []))]:
-        if (context.get("instrument_ids") == [instrument_id] or row.get("instrument_id") == instrument_id
-                or row.get("source_id") in cited):
-            sources.append(row)
-    return {row["source_id"]: row for row in sources
-            if str(row.get("source_id", "")).startswith("text:")}
+    # A known immutable reference can outlive its optional catalogue metadata.
+    # Resolve that exact ID in TextStore; missing metadata never proves unreferenced.
+    return {**{source_id: {"source_id": source_id} for source_id in referenced if source_id.startswith("text:")},
+            **{row["source_id"]: row for row in sources if str(row.get("source_id", "")).startswith("text:")}}
 
 
 def _revised_originals(store, sources, consumed_at, now):
@@ -228,23 +227,19 @@ def _risk_changes(session, instrument_id, since, now):
     return changes
 
 
-def _due_items(session, instrument_id, context, since, now, *, all_due=False):
+def _due_items(session, instrument_id, context, now):
     from watchlist_app.services.sector_research import _research_market, RESEARCH_TIMEZONES
     market = _research_market(session, instrument_id)
     zone = ZoneInfo(RESEARCH_TIMEZONES[market]) if market else None
-    review = (context.get("reviews") or {}).get(instrument_id) or {}
     dossier = next((item for item in context.get("research_dossiers", []) if item.get("instrument_id") == instrument_id), {})
-    notebook = review.get("research") or dossier.get("notebook") or {}
+    notebook = dossier.get("notebook") or {}
     inactive_themes = {theme["theme_id"] for theme in dossier.get("themes", []) if theme.get("status") != "active"}
     due = []
-    attempted = _previous_trigger(context, instrument_id).get("coverage_cursor", {}).get("due_event_versions", {})
-    attempted_at = _attempted_at(_previous_trigger(context, instrument_id).get("coverage_cursor", {}))
-    attempted_today = bool(attempted_at and _instant(attempted_at).astimezone(zone or UTC).date() == now.astimezone(zone or UTC).date())
     today = now.astimezone(zone or UTC).date().isoformat()
     from watchlist_app.services.research_working_set import current_events
     for event in current_events(session, instrument_id):
         if (event["follow_up"] != "watch" or not event.get("follow_up_until")
-                or event["follow_up_until"] > today or (not all_due and attempted_today and attempted.get(event["case_id"]) == event["event_version_id"])):
+                or event["follow_up_until"] > today):
             continue
         due.append({"kind": "event_follow_up_due", "key": event["event_key"], "case_id": event["case_id"],
             "event_version_id": event["event_version_id"], "due_at": event["follow_up_until"], "title": event["title"],
@@ -261,9 +256,9 @@ def _due_items(session, instrument_id, context, since, now, *, all_due=False):
                 continue
             if len(str(value)) == 10:
                 # Do not invent a source timezone or an intraday release time from a date.
-                crossed = zone is not None and date.fromisoformat(str(value)) <= now.astimezone(zone).date() and (all_due or since.astimezone(zone).date() < date.fromisoformat(str(value)))
+                crossed = zone is not None and date.fromisoformat(str(value)) <= now.astimezone(zone).date()
             else:
-                crossed = _instant(value) <= now and (all_due or since < _instant(value))
+                crossed = _instant(value) <= now
             if crossed:
                 due.append({"kind": kind, "key": item["key"], "due_at": str(value),
                             "version_id": item.get("version_id"),
@@ -273,19 +268,15 @@ def _due_items(session, instrument_id, context, since, now, *, all_due=False):
     return due
 
 
-def research_trigger(session, instrument_id, prior_context, *, now, include_quiet=False):
-    """Return a reason and consumed information cursor, without writing or launching work.
+def research_trigger(session, instrument_id, prior_context, *, now):
+    """Scan current inputs, returning a cursor even when there is no new work.
 
-    Save the result as context.incremental_trigger (or map it by instrument_id for a batch).
-    This is an attempt cursor, not a successful coverage receipt. A failed run is
-    recovered separately with a bounded retry; it must not create another fresh
-    job for the same information on every scheduler pass.
+    ResearchMonitorState owns pending/attempted/applied deduplication. This scan
+    does not equate a successful source check with an applied model result.
     """
     now = _instant(now)
     previous = _previous_trigger(prior_context, instrument_id).get("coverage_cursor", {})
     since = max(_instant(prior_context["cutoff"]), _instant(_attempted_at(previous) or prior_context["cutoff"]))
-    if since >= now and not include_quiet:
-        return None
     from investment_studio_instrument_core.db_models import Instrument
     instrument = session.get(Instrument, instrument_id)
     private = instrument is not None and instrument.instrument_type == "private_fund"
@@ -303,9 +294,8 @@ def research_trigger(session, instrument_id, prior_context, *, now, include_quie
                            for capture in context.get("web_evidence", [])
                            for row in capture.get("sources", []) if row.get("source_id"))
     read_source_ids.update(previous.get("boundary_source_ids", []))
-    documents = _new_text(text_store(), queries, max(consumed, key=_instant) if consumed else None, now, read_source_ids, inclusive=include_quiet) if queries else []
-    originals = (_read_originals({"research_dossiers": prior_context.get("research_dossiers", [])}, instrument_id) if include_quiet else
-                 {**_read_originals(monitoring, instrument_id), **_read_originals(prior_context, instrument_id)})
+    documents = _new_text(text_store(), queries, max(consumed, key=_instant) if consumed else None, now, read_source_ids) if queries else []
+    originals = _read_originals({"research_dossiers": prior_context.get("research_dossiers", [])}, instrument_id)
     if originals:
         # The run cutoff can advance through an unrelated fetch after this source
         # was read. Only a prior dependency scan advances this cursor; reading
@@ -314,40 +304,37 @@ def research_trigger(session, instrument_id, prior_context, *, now, include_quie
         revisions = _revised_originals(text_store(), originals, dependency_cursor, now)
         documents = list({row["source_id"]: row for row in [*documents, *revisions]}.values())
     risk_changes = _risk_changes(session, instrument_id, since, now)
-    due = _due_items(session, instrument_id, prior_context, since, now, all_due=include_quiet)
+    due = _due_items(session, instrument_id, prior_context, now)
     materials, registered_materials = [], previous.get("registered_materials")
     product_material = previous.get("product_material")
-    if include_quiet:
-        from watchlist_app.services.research_dossier import material_index
-        from watchlist_app.services.research_identity import research_identity
-        catalogue = material_index(session, instrument_id, actor=research_identity())
-        for row in catalogue:
-            if row.get("entry_id") and (stamp := row.get("updated_at") or row.get("recorded_at")) and since < _instant(stamp) <= now:
-                materials.append(row)
-        current_documents = [row for row in catalogue if not row.get("entry_id")]
-        if registered_materials is not None and current_documents != registered_materials:
-            materials.append({"key": "registered_material_directory", "title": "登记材料目录发生变化",
-                              "version_id": sha256(json.dumps(current_documents, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
-                              "documents": current_documents})
-        registered_materials = current_documents
-        from watchlist_app.db.models import InstrumentManualProfile
-        manual = session.get(InstrumentManualProfile, instrument_id)
-        current_product = {name: getattr(manual, field) if manual else None for name, field in (
-            ("people", "people_payload_json"), ("strategy", "strategy_payload_json"),
-            ("terms_and_fees", "price_payload_json"), ("nav_settings", "nav_settings_json"))}
-        if product_material is not None and current_product != product_material:
-            materials.append({"key": "product_material", "title": "登记的管理人、策略或产品机制发生变化",
-                "version_id": sha256(json.dumps(current_product, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
-                "changed_fields": [key for key, value in current_product.items() if value != product_material.get(key)],
-                "previous": product_material, "current": current_product,
-                "note": "人工登记资料变化是待核实输入，不代表已有独立事实确认。"})
-        product_material = current_product
-    attempted = prior_context.get("attempted_theme_baselines", {})
+    from watchlist_app.services.research_dossier import material_index
+    from watchlist_app.services.research_identity import research_identity
+    catalogue = material_index(session, instrument_id, actor=research_identity())
+    for row in catalogue:
+        if row.get("entry_id") and (stamp := row.get("updated_at") or row.get("recorded_at")) and since < _instant(stamp) <= now:
+            materials.append(row)
+    current_documents = [row for row in catalogue if not row.get("entry_id")]
+    if registered_materials is not None and current_documents != registered_materials:
+        materials.append({"key": "registered_material_directory", "title": "登记材料目录发生变化",
+                          "version_id": sha256(json.dumps(current_documents, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
+                          "documents": current_documents})
+    registered_materials = current_documents
+    from watchlist_app.db.models import InstrumentManualProfile
+    manual = session.get(InstrumentManualProfile, instrument_id)
+    current_product = {name: getattr(manual, field) if manual else None for name, field in (
+        ("people", "people_payload_json"), ("strategy", "strategy_payload_json"),
+        ("terms_and_fees", "price_payload_json"), ("nav_settings", "nav_settings_json"))}
+    if product_material is not None and current_product != product_material:
+        materials.append({"key": "product_material", "title": "登记的管理人、策略或产品机制发生变化",
+            "version_id": sha256(json.dumps(current_product, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
+            "changed_fields": [key for key, value in current_product.items() if value != product_material.get(key)],
+            "previous": product_material, "current": current_product,
+            "note": "人工登记资料变化是待核实输入，不代表已有独立事实确认。"})
+    product_material = current_product
     dossier = next((row for row in prior_context.get("research_dossiers", []) if row["instrument_id"] == instrument_id), {})
     pending_themes = [{"theme_id": row["theme_id"], "title": row["title"], "reference": row.get("reference"),
                        "baseline_requested_at": row.get("baseline_requested_at") or row.get("created_at")}
-        for row in dossier.get("themes", []) if row["status"] == "active" and row.get("baseline_status") == "pending"
-        and (include_quiet or attempted.get(row["theme_id"]) != (row.get("baseline_requested_at") or row.get("created_at")))]
+        for row in dossier.get("themes", []) if row["status"] == "active" and row.get("baseline_status") == "pending"]
     reasons = []
     if pending_themes:
         reasons.append({"kind": "theme_baseline", "reason": "新建重点主题需要主动补充研究基线。", "themes": pending_themes})
@@ -359,14 +346,11 @@ def research_trigger(session, instrument_id, prior_context, *, now, include_quie
         reasons.append({"kind": "material_arrival", "reason": "授权材料或登记资料有新增、修订；按实际内容核查其研究影响。", "materials": materials})
     if due:
         reasons.append({"kind": "research_check_due", "reason": "已绑定的研究观察到达检查时间。", "items": due})
-    if not reasons and not include_quiet:
-        return None
     return {"instrument_id": instrument_id, "reasons": reasons, "coverage_cursor": {
         "attempted_at": now.isoformat(), "last_successful_review_cutoff": prior_context.get("last_successful_review_cutoff"),
         "previous_cutoff": since.isoformat(), "market_queries": queries,
-        "due_event_versions": {row["case_id"]: row["event_version_id"] for row in due if row.get("case_id")},
-        **({"registered_materials": registered_materials} if include_quiet else {}),
-        **({"product_material": product_material} if include_quiet else {}),
+        "registered_materials": registered_materials,
+        "product_material": product_material,
         "boundary_source_ids": [row["source_id"] for row in documents
             if max(_instant(row["received_at"]), _instant(row["observed_at"])) == now],
     }}

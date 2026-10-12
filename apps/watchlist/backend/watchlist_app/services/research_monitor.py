@@ -33,7 +33,7 @@ def pending_trigger(state, instrument_id, *, now):
             reason.setdefault(field, []).append(deepcopy(item["value"]))
     return {"instrument_id": instrument_id, "reasons": list(reasons.values()),
             "coverage_cursor": {**{key: deepcopy(value) for key, value in state.scan_cursor_json.items()
-                if key != "applied_due_changes"}, "attempted_at": now.isoformat()},
+                if key not in {"applied_due_changes", "last_dependency_pruning"}}, "attempted_at": now.isoformat()},
             "monitor_snapshot": {"revision": state.revision, "scanned_at": state.scanned_at.isoformat(),
                                  "changes": deepcopy(state.pending_changes_json)}}
 
@@ -59,7 +59,7 @@ def scan(session, instrument_id, prior_context, *, team_id, now):
         context["incremental_trigger"] = {instrument_id: {**previous, "coverage_cursor": {
             **state.scan_cursor_json, "attempted_at": state.scanned_at.replace(tzinfo=state.scanned_at.tzinfo or UTC).isoformat()}}}
     # Nothing is mutated until every channel has completed successfully.
-    trigger = research_trigger(session, instrument_id, context, now=now, include_quiet=True)
+    trigger = research_trigger(session, instrument_id, context, now=now)
     changes = change_items(trigger)
     if inherit_failed_attempt:
         # A manually requested baseline can fail before it binds any sources or
@@ -98,12 +98,35 @@ def scan(session, instrument_id, prior_context, *, team_id, now):
                 value = {**value, "value": {**value["value"], "previous_source_ids": sorted(dependencies)}}
         if key not in applied_due:
             pending[key] = value
+    # The caller supplies a fresh current dossier under the publication lock.
+    # Retained but no-longer-referenced originals must not remain payable work.
+    # Missing legacy scope/meaning is not evidence that a dependency has ended.
+    dossier = next((row for row in context.get("research_dossiers", []) if row.get("instrument_id") == instrument_id), None)
+    pruning = state.scan_cursor_json.get("last_dependency_pruning")
+    if dossier is not None and "notebook" in dossier and "prior_sources" in dossier:
+        from watchlist_app.services.research_triggers import _read_originals
+        current_sources = set(_read_originals({"research_dossiers": [dossier]}, instrument_id))
+        retired = []
+        for key, item in list(pending.items()):
+            value = item["value"]
+            if item["kind"] != "new_research_sources" or value.get("dependency") != "previously_read_original":
+                continue
+            predecessors = {source for source in [value.get("previous_source_id"), *value.get("previous_source_ids", [])] if source}
+            if not predecessors or ({value.get("source_id"), *predecessors} & current_sources):
+                continue
+            pending.pop(key)
+            retired.append({"change_key": key, "source_id": value.get("source_id"), "previous_source_ids": sorted(predecessors)})
+        if retired:
+            # A bounded last-pruning receipt, not a successful research watermark
+            # or an ever-growing history in future model input.
+            pruning = {"at": now.isoformat(), "reason": "no_current_research_reference", "changes": retired}
     if pending != state.pending_changes_json:
         added_or_changed = any(state.pending_changes_json.get(key) != value for key, value in pending.items())
         state.pending_changes_json = pending
         state.revision += int(added_or_changed)
     state.scanned_at = now
-    state.scan_cursor_json = {**trigger["coverage_cursor"], "applied_due_changes": sorted(applied_due)}
+    state.scan_cursor_json = {**trigger["coverage_cursor"], "applied_due_changes": sorted(applied_due),
+                              **({"last_dependency_pruning": pruning} if pruning else {})}
     if not pending or state.revision <= state.attempted_revision:
         return state, None
     return state, pending_trigger(state, instrument_id, now=now)

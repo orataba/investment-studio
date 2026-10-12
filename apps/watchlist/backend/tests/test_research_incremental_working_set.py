@@ -153,7 +153,7 @@ def test_private_fund_does_not_recover_generic_news_queries(client, monkeypatch,
         registry.exchange_code = None
         session.commit()
         monkeypatch.setattr(research_triggers, "_monitoring_context", lambda *args: pytest.fail("private fund must not scan generic-news history"))
-        result = research_triggers.research_trigger(session, "xlk", {"cutoff": NOW.isoformat(), "instrument_ids": ["xlk"]}, now=NOW + timedelta(days=1), include_quiet=True)
+        result = research_triggers.research_trigger(session, "xlk", {"cutoff": NOW.isoformat(), "instrument_ids": ["xlk"]}, now=NOW + timedelta(days=1))
         assert result["coverage_cursor"]["market_queries"] == [] and not result["reasons"]
 
 
@@ -287,15 +287,15 @@ def test_registered_terms_change_is_material_but_refresh_clock_is_not(client, mo
         profile = InstrumentManualProfile(instrument_id="xlk", price_payload_json={"redemption": "monthly"}, updated_at=NOW)
         session.add(profile); session.commit()
         context = {"cutoff": NOW.isoformat(), "instrument_ids": ["xlk"]}
-        first = research_triggers.research_trigger(session, "xlk", context, now=NOW + timedelta(days=1), include_quiet=True)
+        first = research_triggers.research_trigger(session, "xlk", context, now=NOW + timedelta(days=1))
         assert first["reasons"] == []
         context["incremental_trigger"] = {"xlk": first}
         profile.updated_at = NOW + timedelta(days=1); session.commit()
-        quiet = research_triggers.research_trigger(session, "xlk", context, now=NOW + timedelta(days=2), include_quiet=True)
+        quiet = research_triggers.research_trigger(session, "xlk", context, now=NOW + timedelta(days=2))
         assert quiet["reasons"] == []
         context["incremental_trigger"] = {"xlk": quiet}
         profile.price_payload_json = {"redemption": "quarterly"}; session.commit()
-        changed = research_triggers.research_trigger(session, "xlk", context, now=NOW + timedelta(days=3), include_quiet=True)
+        changed = research_triggers.research_trigger(session, "xlk", context, now=NOW + timedelta(days=3))
         material = changed["reasons"][0]["materials"][0]
         assert material["key"] == "product_material" and material["changed_fields"] == ["terms_and_fees"]
         assert material["previous"]["terms_and_fees"] == {"redemption": "monthly"}
@@ -377,3 +377,52 @@ def test_shared_working_set_projection_does_not_grant_other_run_or_private_histo
             topic.portfolio_id = "restricted-portfolio"
             session.flush()
             assert latest_working_set(session, "xlk", actor=research_identity()) is None
+
+
+def test_monitor_retires_only_proven_dangling_pending_dependencies_without_applying_them(client, monkeypatch):
+    seed_sector(client, monkeypatch)
+    from watchlist_app.services import research_triggers
+    monkeypatch.setattr(research_triggers, "research_trigger", lambda *a, **k: {"reasons": [], "coverage_cursor": {}})
+    def revision(source, **extra):
+        return {"source_id": "text:" + source + "-new", "previous_source_id": "text:" + source, "version_id": source + "-new",
+                "dependency": "previously_read_original", **extra}
+    pending = monitor.change_items({"reasons": [{"kind": "new_research_sources", "sources": [
+        revision("dangling"), revision("current"),
+        revision("multiple", previous_source_id="text:other-old", previous_source_ids=["text:other-old", "text:current"]),
+        {"source_id": "query-discovery", "version_id": "query-v1", "matched_query": {"query": "bound topic"}},
+        {"source_id": "unknown-legacy", "version_id": "legacy"}]}]})
+    context = {"research_dossiers": [{"instrument_id": "xlk", "prior_sources": [], "notebook": {
+        "investment_view": {"source_ids": ["text:current"]},
+        # Missing optional metadata does not remove the actual current reference.
+        "sources": [{"source_id": "text:dangling"}]}}]}
+    with get_session_factory()() as session:
+        state = ResearchMonitorState(team_id="default", instrument_id="xlk", scanned_at=NOW,
+            scan_cursor_json={}, pending_changes_json=pending, revision=1, attempted_revision=1)
+        session.add(state); session.commit()
+        state, trigger = monitor.scan(session, "xlk", context, team_id="default", now=NOW + timedelta(days=1))
+        assert trigger is None and state.applied_at is None and state.revision == state.attempted_revision == 1
+        assert {row["value"]["source_id"] for row in state.pending_changes_json.values()} == {"text:current-new", "text:multiple-new", "query-discovery", "unknown-legacy"}
+        session.commit(); session.expire_all()
+        retained = session.get(ResearchMonitorState, ("default", "xlk"))
+        retirement = retained.scan_cursor_json["last_dependency_pruning"]
+        assert retirement["reason"] == "no_current_research_reference"
+        assert [row["source_id"] for row in retirement["changes"]] == ["text:dangling-new"]
+        assert "last_dependency_pruning" not in monitor.pending_trigger(retained, "xlk", now=NOW)["coverage_cursor"]
+
+
+@pytest.mark.parametrize("known_current_scope", [True, False])
+def test_unattempted_dangling_pending_cannot_start_research_but_unknown_scope_is_not_guessed(client, monkeypatch, known_current_scope):
+    seed_sector(client, monkeypatch)
+    from watchlist_app.services import research_triggers
+    monkeypatch.setattr(research_triggers, "research_trigger", lambda *a, **k: {"reasons": [], "coverage_cursor": {}})
+    pending = monitor.change_items({"reasons": [{"kind": "new_research_sources", "sources": [
+        {"source_id": "text:new", "previous_source_id": "text:old", "version_id": "new", "dependency": "previously_read_original"}]}]})
+    context = {"research_dossiers": [{"instrument_id": "xlk", "notebook": {"sources": [{"source_id": "text:old"}]}, "prior_sources": []}]} if known_current_scope else {}
+    with get_session_factory()() as session:
+        state = ResearchMonitorState(team_id="default", instrument_id="xlk", scanned_at=NOW,
+            scan_cursor_json={}, pending_changes_json=pending, revision=1, attempted_revision=0)
+        session.add(state); session.commit()
+        state, trigger = monitor.scan(session, "xlk", context, team_id="default", now=NOW + timedelta(days=1))
+        assert (trigger is None) is known_current_scope
+        assert bool(state.pending_changes_json) is not known_current_scope
+        assert state.applied_at is None and state.attempted_revision == 0

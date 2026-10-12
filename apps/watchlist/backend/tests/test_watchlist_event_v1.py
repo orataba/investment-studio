@@ -96,10 +96,10 @@ def test_overdue_event_remains_due_after_unavailable_check_and_retries(client, m
         session.flush()
         now = datetime.now(UTC)
         # A recent attempt/cursor does not make an older overdue item disappear.
-        due = _due_items(session, "xlk", run.context_json, now - timedelta(seconds=1), now)
+        due = _due_items(session, "xlk", run.context_json, now)
         assert due[0]["case_id"] == case.case_id
         run.status = "failed"
-        assert _due_items(session, "xlk", run.context_json, now, now + timedelta(seconds=1))
+        assert _due_items(session, "xlk", run.context_json, now + timedelta(seconds=1))
         assert case.evidence_json["follow_up"] == "watch"
         page = event_page(session, "xlk", scope="watch", now=now)
         assert page["events"][0]["follow_up_review_status"] == "due"
@@ -311,7 +311,7 @@ def test_summary_links_freeze_event_sources_and_refuse_stale_event_version(clien
             service.apply_result(session, follow, json.dumps(summary_only))
 
 
-def test_failed_due_attempt_cursor_does_not_consume_next_calendar_day(client, monkeypatch):
+def test_failed_attempt_never_hides_due_event_from_durable_monitor(client, monkeypatch):
     from watchlist_app.services.research_triggers import _due_items
     seed_sector(client, monkeypatch)
     with get_session_factory()() as session:
@@ -322,10 +322,10 @@ def test_failed_due_attempt_cursor_does_not_consume_next_calendar_day(client, mo
         now = datetime.now(UTC)
         context = {**run.context_json, "incremental_trigger": {"instrument_id": "xlk", "coverage_cursor": {
             "attempted_at": now.isoformat(), "due_event_versions": {case.case_id: service.event_record(case)["event_version_id"]}}}}
-        # Retry recovery owns repeated attempts within a day; the cursor cannot
-        # permanently mark expiry as successfully covered after a failed run.
-        assert not _due_items(session, "xlk", context, now, now)
-        assert _due_items(session, "xlk", context, now, now + timedelta(days=1))
+        # Current pending/applied monitor state owns repeated-attempt suppression.
+        # A legacy run cursor must never hide an unresolved due item from its scan.
+        assert _due_items(session, "xlk", context, now)
+        assert _due_items(session, "xlk", context, now + timedelta(days=1))
         assert case.evidence_json["follow_up"] == "watch"
 
 
