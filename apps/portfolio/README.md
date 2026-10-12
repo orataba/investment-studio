@@ -145,6 +145,8 @@ Portfolio 后端通过 `packages/identity` 向 Home 解析真实身份，不接�
 
 Portfolio Research 默认启用，沿用逐组合授权；部署仍可显式设置 `INVESTMENT_STUDIO_PORTFOLIO_RESEARCH_ENABLED=false` 关闭整个入口及 API。研究运算按显式请求运行，保存目标会使既有结果标记过期，新的求解需点击运行；求解与历史模拟分别记录运行耗时和失败类型，产物保留数据截止日和当前目标快照标识。
 
+持仓 CSV / Excel 保持 Securities、FCN、Options、Cash & Settlement 独立分节。开头元数据定义分节布局、报告币、日期、空值及比例标度；比例数值列带 `(fraction)`，0.05 表示 5%，带 `%` 的票息文本已经缩放。空白或 N/A 不代表零。未指定列币种的金额采用行内 Currency，证券/现金不合成同一表头。
+
 页面研究助手传递当前 `holding_id / as_of_date / account_id`，其中持仓引用可为本地 FCN、Option 或现金头寸，不能当作共享证券 ID。历史风险上下文通过 `risk-context?as_of_date=...` 读取当日持仓；账户或单持仓作为焦点附在全组合上下文上，不重定义组合净值分母。保存的当前目标和重算模型仍按其非 PIT 边界披露。
 
 私人助手优先读取完整简明账户事实，包括同一有效日的可读名称、币种、带符号现金余额、待结算额与逐项缺失标记。账户账本独立于估值读取，缺价或 FX 不完整不能把已知余额变成缺失或零。组合净值及风险状态保持原计算口径；长历史按同一运行留存来源分页读取，续读不重新取数。工具、权限和已完成运行的证据合同见 [Investment Research System](../../docs/INVESTMENT_RESEARCH_SYSTEM.md)。

@@ -1040,8 +1040,9 @@ def _validate_research_links(session, run, review, themes):
     context = run.context_json
     dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
     notes = {item["note_id"]: item for item in dossier.get("pm_views", [])}
-    event_keys = {item.event_key for item in review.events} | {item.signal.removeprefix("sector:") for item in
+    existing_events = {item.signal.removeprefix("sector:"): item for item in
         session.scalars(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id, RiskCase.signal.like("sector:%")))}
+    event_keys = {item.event_key for item in review.events} | existing_events.keys()
     activity = None
 
     def validate_reference(update_id, *, field):
@@ -1125,10 +1126,12 @@ def _validate_research_links(session, run, review, themes):
                         raise ValueError("研究判断的主题与投资经理原观点不一致")
                     check_theme(note_theme, field=f"{location}.pm_note_id={row['pm_note_id']}@{row['pm_note_revision']}",
                                 retained_reference=True)
+    effective_events = {}
+    checked_at = _event_check_time(session, review.instrument_id, datetime.fromisoformat(context["cutoff"])) if review.events else None
     for item in review.events:
-        case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id,
-                                                     RiskCase.signal == f"sector:{item.event_key}"))
-        effective = _effective_event(item, case, checked_at=_event_check_time(session, review.instrument_id, datetime.fromisoformat(context["cutoff"])))
+        case = existing_events.get(item.event_key)
+        effective = _effective_event(item, case, checked_at=checked_at)
+        effective_events[item.event_key] = effective
         if len(effective.theme_ids) != len(set(effective.theme_ids)):
             raise ValueError("同一事件的关注主题引用重复")
         prior_theme_ids = set(event_record(case)["theme_ids"]) if case else set()
@@ -1142,6 +1145,7 @@ def _validate_research_links(session, run, review, themes):
             original = validate_reference(update_id, field="reviews[].reflection.reviewed_update_ids")
             check_theme(original["reference"].get("theme_id"),
                         field=f"reflection.reviewed_update_ids={update_id}", retained_reference=True)
+    return existing_events, effective_events
 
 
 def _resolve_theme_aliases(review, aliases):
@@ -1249,7 +1253,7 @@ def validate_result(session, run, parsed: ReviewResult):
             for source_id in update.figure_source_ids:
                 if notebook_evidence[source_id].get("source_type") not in {"computed_metric", "sector_snapshot", "analyst_estimate_changes"}:
                     raise ValueError("主题图表必须绑定真实留存的数值来源")
-        _validate_research_links(session, run, review, themes)
+        existing_events, effective_events = _validate_research_links(session, run, review, themes)
         if review.research is not None:
             dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
             validate_notebook(review.research, review.instrument_id, notebook_evidence,
@@ -1261,13 +1265,9 @@ def validate_result(session, run, parsed: ReviewResult):
             if key in seen:
                 raise ValueError("同一事件在本轮重复出现")
             seen.add(key)
-            existing = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id,
-                RiskCase.signal == f"sector:{item.event_key}"))
-            effective = _effective_event(item, existing, checked_at=_event_check_time(session, review.instrument_id, cutoff))
+            existing = existing_events.get(item.event_key)
+            effective = effective_events[item.event_key]
             validate_event_source_consistency(item, sources, cutoff, review.instrument_id)
-            existing = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id,
-                RiskCase.signal == f"sector:{item.event_key}"))
-            effective = _effective_event(item, existing, checked_at=_event_check_time(session, review.instrument_id, cutoff))
             item_source_ids = list(dict.fromkeys([*effective.source_ids,
                 *(sid for view in effective.market_views for sid in view.source_ids),
                 *(effective.market_reaction.figure_source_ids if effective.market_reaction else [])]))
@@ -1310,13 +1310,10 @@ def validate_result(session, run, parsed: ReviewResult):
                 if _same_progress(existing, effective, item_sources, material_only=True, session=session) or _previously_recorded_progress(existing, effective, item_sources, session=session):
                     raise ValueError("重新开始主动跟进需要新实质进展，重复旧材料不能重新激活")
             if existing is None:
-                for other in session.scalars(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id,
-                        RiskCase.signal.like("sector:%"))):
+                for other in existing_events.values():
                     if _same_progress(other, effective, item_sources, material_only=True, session=session):
                         raise ValueError(f"同一事项已留存，请沿用事件标识 {other.signal.removeprefix('sector:')}")
-            if item.action != "new" and session.scalar(select(RiskCase).where(
-                RiskCase.instrument_id == review.instrument_id, RiskCase.signal == f"sector:{item.event_key}"
-            )) is None:
+            if item.action != "new" and existing is None:
                 raise ValueError("更新或解除的事件没有原跟进记录")
     return sources, notebook_evidence
 

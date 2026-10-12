@@ -74,3 +74,8 @@ it('preserves text and distinct clocks without inventing a time for date-only or
   expect(screen.getByText('来源提供的节选，未包含完整正文。')).toBeTruthy()
   expect(container.querySelector('a')).toBeNull()
 })
+
+it.each([['USD per share', 'USD / 股'], ['HKD per share', 'HKD / 股'], ['index points', '指数点']])('shows retained price unit %s on the original source', (unit, label) => {
+  page({ source_id: 'price', source_type: 'numeric', close: 123.4, unit })
+  expect(screen.getByText(label)).toBeTruthy()
+})

@@ -1,3 +1,11 @@
+export function quoteUnit(source: { unit?: unknown; currency?: unknown }, chinese: boolean) {
+  if (typeof source.unit === 'string' && source.unit) {
+    if (!chinese) return source.unit
+    return source.unit.replace('index points', '指数点').replace(' per share', ' / 股').replace(' per troy ounce', ' / 金衡盎司').replace(' per BTC', ' / BTC')
+  }
+  return typeof source.currency === 'string' && source.currency ? source.currency : chinese ? '单位未留存' : 'Unit not retained'
+}
+
 export function EvidenceTime({ value, timezone = 'Asia/Shanghai' }: { value?: string; timezone?: string }) {
   if (!value) return <>—</>
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return <time dateTime={value}>{value}</time>

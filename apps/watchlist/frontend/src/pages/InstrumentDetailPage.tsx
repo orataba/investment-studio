@@ -1,3 +1,4 @@
+import ResearchPresentation from '../components/ResearchPresentation'
 import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
 import { LanguageSelector } from '../../../../../packages/ui/src/i18n'
 import { useEffect, useState } from 'react'
@@ -93,11 +94,11 @@ export default function InstrumentDetailPage() {
     instrument.detail_subject_id
   ) {
     return (
-      <ListedInstrumentDetailPage
+      <ResearchPresentation><ListedInstrumentDetailPage
         key={instrument.detail_subject_id}
         instrument={instrument}
         watchlistContext={watchlistContext}
-      />
+      /></ResearchPresentation>
     )
   }
 
@@ -107,11 +108,11 @@ export default function InstrumentDetailPage() {
     instrument.detail_subject_id
   ) {
     return (
-      <PublicFundDetailPage
+      <ResearchPresentation><PublicFundDetailPage
         fundId={instrument.detail_subject_id}
         watchlistContext={watchlistContext}
         corporateActions={instrument.corporate_actions}
-      />
+      /></ResearchPresentation>
     )
   }
 
@@ -121,11 +122,11 @@ export default function InstrumentDetailPage() {
     instrument.detail_subject_id
   ) {
     return (
-      <PrivateFundDetailPage
+      <ResearchPresentation><PrivateFundDetailPage
         fundId={instrument.detail_subject_id}
         watchlistContext={watchlistContext}
         corporateActions={instrument.corporate_actions}
-      />
+      /></ResearchPresentation>
     )
   }
 

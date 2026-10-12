@@ -79,6 +79,9 @@ const AUDIT_FIELD_LABELS: Record<string, string> = {
   transaction_type: 'Type',
   trade_date: 'Trade date',
   trade_time: 'Trade time',
+  trade_timezone: 'Trade timezone',
+  trade_time_is_estimated: 'Estimated trade time',
+  fee_components: 'Fee components',
   settlement_date: 'Settlement date',
   position_effective_date: 'Position effective date',
   entitlement_date: 'Entitlement date',
@@ -106,7 +109,7 @@ const AUDIT_IGNORED_FIELDS = new Set([
   'row_version',
 ])
 
-export function transactionChangedFields(
+export function transactionFieldChanges(
   change: Pick<PortfolioTransactionChangeLogRecord, 'change_type' | 'before' | 'after'>,
 ) {
   const before = change.before ?? {}
@@ -123,5 +126,20 @@ export function transactionChangedFields(
         change.change_type !== 'update' ||
         JSON.stringify(before[key]) !== JSON.stringify(after[key]),
     )
-    .map((key) => AUDIT_FIELD_LABELS[key] ?? transactionActivityLabel(key))
+    .map((key) => ({ key, label: AUDIT_FIELD_LABELS[key] ?? transactionActivityLabel(key),
+      before: before[key], after: after[key],
+      beforeRecorded: Object.prototype.hasOwnProperty.call(before, key),
+      afterRecorded: Object.prototype.hasOwnProperty.call(after, key),
+    }))
+}
+
+export function transactionChangedFields(change: Pick<PortfolioTransactionChangeLogRecord, 'change_type' | 'before' | 'after'>) {
+  return transactionFieldChanges(change).map(field => field.label)
+}
+
+export function transactionAuditValue(value: unknown, recorded: boolean) {
+  if (!recorded) return 'Not recorded'
+  if (value === null) return 'Empty (null)'
+  if (value === '') return 'Empty text'
+  return typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)
 }

@@ -529,6 +529,23 @@ describe('Transactions rendered page contract', () => {
     })
   })
 
+  it('shows audit old/new values, author and explicit UTC time without inventing historical values', async () => {
+    const workspace = await apiMocks.getPortfolioTransactionsWorkspace()
+    workspace.change_log = [{ ...workspace.change_log[0], change_type: 'update', actor_name: 'Alice', actor_user_id: 'alice',
+      changed_at: '2026-07-28T09:35:00+08:00', before: { note: null, gross_amount: '250.00' },
+      after: { note: '', gross_amount: '251.25', trade_timezone: 'Asia/Shanghai' } }]
+    apiMocks.getPortfolioTransactionsWorkspace.mockResolvedValue(workspace)
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions?transaction_id=txn-1', '/portfolios/:portfolioId/transactions')
+    const inspector = await screen.findByRole('complementary', { name: 'Selected transaction details' })
+    await userEvent.click(within(inspector).getByRole('tab', { name: 'History 1' }))
+    expect(within(inspector).getByText('Alice · alice')).toBeInTheDocument()
+    expect(within(inspector).getByText(/01:35:00 UTC/)).toBeInTheDocument()
+    expect(within(inspector).getByRole('columnheader', { name: 'Previous value' })).toBeInTheDocument()
+    for (const value of ['250.00', '251.25', 'Empty (null)', 'Empty text', 'Not recorded', 'Asia/Shanghai']) {
+      expect(within(inspector).getByText(value)).toBeInTheDocument()
+    }
+  })
+
   it('keeps the complete default inspector without repeating its workspace read and reloads changed scope', async () => {
     const workspace = await apiMocks.getPortfolioTransactionsWorkspace()
     apiMocks.getPortfolioTransactionsWorkspace.mockReset().mockImplementation(async (portfolioId) => ({ ...workspace, portfolio_id: portfolioId }))

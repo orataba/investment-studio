@@ -76,7 +76,9 @@ def _concentration_page(portfolio, data, *, cutoff, offset, source_offset):
 
 def project_portfolio_risk(context, section: PortfolioRiskSection, holding_id: str | None = None, offset: int = 0, source_offset: int | None = None, path=None, limit=20) -> dict:
     """Read ONE bound portfolio module. targets_by_taxonomy reads ALL classifications. concentration is PAGINATED: start offset=0, follow next_offset until null for every scope/taxonomy (at most 20 rows/page). Also follow each source_continuations entry using its offset and source_offset until empty; large group sources are separately paged, row source_ids may be partial. Browser grouping never filters monitoring. tail_risk includes historical VaR/ES, actual sample/tail mass and excluded exposures; exclusions are not zero risk. Only derivatives accepts holding_id; without it, read its contract index/resources. offset/source_offset are only for concentration. Dates, coverage and source_ids are authoritative. No live fetch or new assessment."""
-    if not context.get("risk_run") or context["risk_inputs"]["scope"]["kind"] != "portfolio":
+    if not context.get("risk_run"):
+        raise ValueError('普通对话不属于本次风控范围；read_portfolio_risk仅用于自动风控任务；关联组合的私人对话请先read_portfolio_holdings概览，再用同一source_id读取section="risk"。')
+    if context["risk_inputs"]["scope"]["kind"] != "portfolio":
         raise ValueError("只能读取本次风控范围内的组合。")
     portfolio = (context["risk_inputs"].get("portfolio") or {}).get("risk_context") or {}
     if portfolio.get("portfolio_id") != context["risk_inputs"]["scope"]["id"]:

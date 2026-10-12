@@ -458,6 +458,18 @@ INVESTMENT_STUDIO_HOME_AUTH_COOKIE_DOMAIN=yunguyungu.com
 INVESTMENT_STUDIO_HOME_APP_URLS={"watchlist":"https://watchlist.yunguyungu.com","portfolio":"https://portfolio.yunguyungu.com","regime":"https://regime.yunguyungu.com","briefing":"https://briefing.yunguyungu.com"}
 ```
 
+Home reads bounded risk summaries directly from Watchlist with the existing
+signed-in session. In Watchlist's external environment, include the exact Home
+origin `https://yunguyungu.com` in
+`INVESTMENT_STUDIO_WATCHLIST_CORS_ORIGINS`, preserving that deployment's other
+explicitly trusted origins. An omitted variable uses local defaults, not the
+production Home domain. Local defaults and the managed macOS launcher allow
+`http://127.0.0.1:5172` and `http://localhost:5172` alongside Watchlist's own
+frontend. Portfolio and Briefing do not supply this Home overview and need no
+added Home origin. Do not reflect arbitrary origins or use a wildcard. This CORS permission
+does not bypass session, team, portfolio or task scope checks; cookie-authenticated
+writes retain the identity layer's exact-origin CSRF validation.
+
 The former single-username, password-file and signed-cookie secret settings are
 not runtime authentication fallbacks. Initialize the first owner through the Home
 CLI using an explicitly supplied private password hash. The approved owner is
@@ -820,7 +832,7 @@ keep credentials in private client storage, outside commands and logs.
 
 Four Studio APIs emit structured `http_request` JSON records to their service
 journals: request ID, route template, status, total duration, response bytes,
-SQL count/time and identity/authorization spans. `X-Request-ID` correlates API,
+SQL count/time and identity/authorization spans (including Briefing). Failure diagnostics include bounded exception cause class names, without messages, so dependency timeouts can be separated from rejected credentials. `X-Request-ID` correlates API,
 web proxy and Nginx records; `Server-Timing` exposes time to response headers
 and SQL time in browser developer tools. Full response duration also includes
 streaming/background completion and can differ from the header timing.

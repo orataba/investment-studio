@@ -50,6 +50,19 @@ const baseMessages: LanguageMessages = {
     English: 'English',
     'Simplified Chinese': '简体中文',
     Home: '首页',
+    'Growth of 100': '以 100 为起点的累计净值',
+    'Follow latest date': '跟随最新日期',
+    'Return measurement period': '收益计算期间',
+    'Previous value': '修改前值',
+    'New value': '修改后值',
+    'Actor not recorded': '旧版本未记录操作人',
+    'Not recorded': '旧版本未记录',
+    'Empty (null)': '空值（null）',
+    'Empty text': '空文本',
+    'Not applicable (created)': '不适用（新增）',
+    'Not applicable (deleted)': '不适用（删除）',
+    'No field values recorded in this historical version.': '此历史版本未记录字段值。',
+    'Trade timezone': '交易时区',
     Watchlist: '关注列表',
     'Investment Studio': 'Investment Studio',
     'Market Briefing': '市场简报',
@@ -442,6 +455,8 @@ const baseMessages: LanguageMessages = {
 
 const basePatterns: LanguagePatternMessages = {
   'zh-Hans': [
+    { match: /^Base 100 at (\d{4}-\d{2}-\d{2})$/, replace: (day) => `基期 ${day}：100` },
+    { match: /^Base 100 before (\d{4}-\d{2}-\d{2}) return$/, replace: (day) => `基期：${day} 当日收益计入前为 100` },
     { match: /^Open (.+)$/, replace: (name) => `打开 ${name}` },
     { match: /^(.+) Watchlists · (.+) Securities$/, replace: (watchlists, securities) => `${watchlists} 个关注列表 · ${securities} 只证券` },
     { match: /^Created watchlist "(.+)"\.$/, replace: (name) => `已创建关注列表“${name}”。` },
@@ -739,6 +754,25 @@ function resolveTranslation(
   language: SupportedLanguage,
   messages: LanguageMessages,
   patterns: LanguagePatternMessages,
+  resolved = new Map<string, string>(),
+): string {
+  // Compound explanations try several separators. Reuse overlapping subparts
+  // within this one translation, including unchanged text; otherwise unknown
+  // nested labels repeatedly expand the same suffix exponentially. No user text
+  // remains cached after this call or crosses a language/dictionary boundary.
+  const cached = resolved.get(source)
+  if (cached !== undefined) return cached
+  const result = resolveTranslationUncached(source, language, messages, patterns, resolved)
+  resolved.set(source, result)
+  return result
+}
+
+function resolveTranslationUncached(
+  source: string,
+  language: SupportedLanguage,
+  messages: LanguageMessages,
+  patterns: LanguagePatternMessages,
+  resolved: Map<string, string>,
 ): string {
   source = systemSourceAliases[source] || source
   const direct = messages[language]?.[source] || messages[language]?.[source.toLowerCase()]
@@ -761,7 +795,7 @@ function resolveTranslation(
   // Translate fixed UI fragments while retaining the values between them.
   const fragment = source.match(/^([;|·]\s*)?(.+?)(\s*[:：(·])?$/)
   if (fragment && (fragment[1] || fragment[3])) {
-    const inner = resolveTranslation(fragment[2], language, messages, patterns)
+    const inner = resolveTranslation(fragment[2], language, messages, patterns, resolved)
     if (inner !== fragment[2]) return `${fragment[1] || ''}${inner}${fragment[3] || ''}`
   }
   // Keep a labeled explanation intact so its full-message translation can match.
@@ -769,15 +803,15 @@ function resolveTranslation(
     if (separator === ': ') {
       const labeledValue = source.match(/^(.+?): (.+)$/)
       if (labeledValue) {
-        const label = resolveTranslation(labeledValue[1], language, messages, patterns)
-        const value = resolveTranslation(labeledValue[2], language, messages, patterns)
+        const label = resolveTranslation(labeledValue[1], language, messages, patterns, resolved)
+        const value = resolveTranslation(labeledValue[2], language, messages, patterns, resolved)
         if (label !== labeledValue[1] || value !== labeledValue[2]) return `${label}${language === 'en' ? ': ' : '：'}${value}`
       }
       continue
     }
     if (source.includes(separator)) {
       const parts = source.split(separator)
-      const translated = parts.map((part) => resolveTranslation(part, language, messages, patterns))
+      const translated = parts.map((part) => resolveTranslation(part, language, messages, patterns, resolved))
       if (parts.some((part, index) => part !== translated[index])) {
         const joiner = language === 'zh-Hans' && separator === '; ' ? '；'
           : language === 'zh-Hans' && separator === '. ' ? '。' : separator
@@ -786,7 +820,7 @@ function resolveTranslation(
     }
   }
   if (source.endsWith('.')) {
-    const sentence = resolveTranslation(source.slice(0, -1), language, messages, patterns)
+    const sentence = resolveTranslation(source.slice(0, -1), language, messages, patterns, resolved)
     if (sentence !== source.slice(0, -1)) return `${sentence}${language === 'en' ? '.' : '。'}`
   }
 

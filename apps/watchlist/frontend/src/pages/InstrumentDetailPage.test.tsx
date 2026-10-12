@@ -3,6 +3,7 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 import InstrumentDetailPage from './InstrumentDetailPage'
+import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 
 const api = vi.hoisted(() => ({ resolve: vi.fn(), watchlist: vi.fn() }))
 vi.mock('../lib/api', () => ({ resolveInstrumentDetail: api.resolve, getWatchlistDetail: api.watchlist }))
@@ -14,9 +15,9 @@ afterEach(() => { cleanup(); vi.clearAllMocks() })
 it('renders a resolved instrument while the optional breadcrumb remains pending', async () => {
   api.resolve.mockResolvedValue({ instrument_name: 'Technology', instrument_type: 'etf', detail_supported: true, detail_subject_id: 'xlk' })
   api.watchlist.mockReturnValue(new Promise(() => {}))
-  render(<MemoryRouter initialEntries={['/instruments/xlk?watchlist=slow-list&tab=investment-research']}>
+  render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/instruments/xlk?watchlist=slow-list&tab=investment-research']}>
     <Routes><Route path="/instruments/:instrumentId" element={<InstrumentDetailPage />} /></Routes>
-  </MemoryRouter>)
+  </MemoryRouter></LanguageProvider>)
   expect(await screen.findByText('Technology workspace')).toBeTruthy()
   expect(screen.queryByText('Loading')).toBeNull()
   expect(api.resolve).toHaveBeenCalledWith('xlk')

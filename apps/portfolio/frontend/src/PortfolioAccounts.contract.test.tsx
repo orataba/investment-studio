@@ -100,14 +100,23 @@ describe('Portfolio account boundaries', () => {
 
   it('ignores an older login response after a newer check has revoked access', async () => {
     let finishOld = () => {}
-    bootstrap.mockImplementationOnce(() => new Promise(resolve => {
+    bootstrap.mockResolvedValueOnce(response()).mockImplementationOnce(() => new Promise(resolve => {
       finishOld = () => resolve(response({ user_id: 'alice', display_name: '甲经理', can_create: true }))
-    })).mockRejectedValueOnce(new Error('会话已撤销'))
+    })).mockRejectedValueOnce(Object.assign(new Error('会话已撤销'), { status: 403 }))
     render(<Boundary><div>旧账号的工作区</div></Boundary>)
+    await screen.findByText('旧账号的工作区')
     fireEvent(window, new Event('focus'))
+    const oldSignal = bootstrap.mock.calls[1][1]
+    fireEvent(window, new Event('focus'))
+    expect(bootstrap).toHaveBeenCalledTimes(2)
+    expect(oldSignal?.aborted).toBe(false)
+    fireEvent(window, new Event('studio-auth-changed'))
+    expect(oldSignal?.aborted).toBe(true)
+    expect(screen.queryByText('旧账号的工作区')).not.toBeInTheDocument()
     expect(await screen.findByRole('alert')).toHaveTextContent('会话已撤销')
     await act(async () => finishOld())
     expect(screen.queryByText('旧账号的工作区')).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('会话已撤销')
   })
 
   it('grants an explicitly selected member a role and displays manager handover conflicts', async () => {

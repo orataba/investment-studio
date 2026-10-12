@@ -38,7 +38,13 @@ def emit(event: str, **fields) -> None:
 
 def _error_fields(error: BaseException) -> dict:
     # Exception messages (e.g. SQL bind parameters) can contain private inputs.
-    return {"error_type": type(error).__name__, "frames": [
+    causes, seen = [], {id(error)}
+    cause = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+    while cause is not None and id(cause) not in seen and len(causes) < 5:
+        seen.add(id(cause))
+        causes.append(type(cause).__name__)
+        cause = cause.__cause__ or (None if cause.__suppress_context__ else cause.__context__)
+    return {"error_type": type(error).__name__, "cause_types": causes, "frames": [
         {"file": frame.filename.rsplit("/", 1)[-1], "line": frame.lineno, "function": frame.name}
         for frame in traceback.extract_tb(error.__traceback__)[-12:]
     ]}

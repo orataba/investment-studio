@@ -699,7 +699,7 @@ describe('Performance rendered page contract', () => {
     )
 
     const controls = await screen.findByLabelText('Performance period controls')
-    for (const label of ['Latest', 'Reset', 'MTD', 'QTD', 'YTD', '1Y', 'SI']) {
+    for (const label of ['Reset', 'MTD', 'QTD', 'YTD', '1Y', 'SI']) {
       expect(within(controls).getByRole('button', { name: label })).toBeInTheDocument()
     }
 
@@ -902,7 +902,7 @@ describe('Performance rendered page contract', () => {
     )
 
     const controls = await screen.findByLabelText('Performance period controls')
-    await user.click(within(controls).getByRole('button', { name: 'Latest' }))
+    await user.click(within(controls).getByRole('checkbox', { name: 'Follow latest date' }))
     await waitFor(() =>
       expect(apiMocks.getPortfolioPerformance).toHaveBeenLastCalledWith('3', {
         start_date: '2026-01-01',

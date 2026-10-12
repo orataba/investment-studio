@@ -120,6 +120,12 @@ def test_tool_pages_keep_one_source_account_scope_and_complete_histories(client,
     risk = wire("read_portfolio_holdings", source_id=source_id, section="risk")["data"]
     assert risk["forward_risk"] == workspace["forward_risk"]
     assert risk["risk_context"] is None and "只在原风险页面读取" in risk["scope_note"]
+    rejected = client.post(f"/api/research/runs/{run_id}/risk-portfolio", json={"section": "tail_risk"})
+    assert rejected.status_code == 422
+    assert "read_portfolio_holdings" in rejected.json()["detail"] and 'section="risk"' in rejected.json()["detail"]
+    overview_context = client.post(f"/api/research/runs/{run_id}/read", json={"resource": "context"})
+    assert overview_context.status_code == 200
+    assert "read_portfolio_holdings" in overview_context.json()["next_read"]
     assert wire("read_portfolio_holdings")["source_id"] == source_id
     recovered, offset = [], 0
     while offset is not None:

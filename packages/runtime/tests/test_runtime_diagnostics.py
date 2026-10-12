@@ -102,3 +102,17 @@ def test_asgi_server_exception_log_cannot_reveal_the_original_error():
     rendered = ''.join(traceback.format_exception(caught.value))
     assert 'provider-token-private-value' not in rendered
     assert caught.value.__suppress_context__
+
+
+def test_error_causes_keep_timeout_category_without_credential_payload():
+    from studio_runtime import _error_fields
+    try:
+        try:
+            raise TimeoutError('private upstream URL and token')
+        except TimeoutError as cause:
+            raise RuntimeError('private identity response') from cause
+    except RuntimeError as error:
+        fields = _error_fields(error)
+    assert fields['cause_types'] == ['TimeoutError']
+    assert fields['error_type'] == 'RuntimeError'
+    assert 'private' not in json.dumps(fields)

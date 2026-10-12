@@ -14,6 +14,7 @@ from pathlib import Path,PurePosixPath
 from .replication import digest,export_bundle,import_bundle
 from .schema import batches
 from .store import NumericStore,serializable
+from .directory_index import read_index
 from sqlalchemy import select
 
 SSH=["-o","BatchMode=yes","-o","StrictHostKeyChecking=yes"]
@@ -93,13 +94,10 @@ def pull_numeric_directory(settings,*,host: str,remote_dir: str,timeout: int=360
             ready_ids={r[0] for r in conn.execute(select(batches.c.id).where(batches.c.status=="ready"))}
     finally:store.close()
     with tempfile.TemporaryDirectory(prefix="catchup-",dir=incoming) as temporary:
-        index_path=Path(temporary)/"index.json";_copy(host,remote_dir+"/index.json",index_path,min(timeout,60))
-        index=json.loads(index_path.read_text())
-        if index.get("format")!="investment-studio-numeric-index" or index.get("version")!=1:raise ValueError("Unsupported numeric directory index")
+        index,index_receipt=read_index(host=host,remote_dir=remote_dir,incoming=incoming,
+                                      temporary=Path(temporary),timeout=timeout)
         for item in index["bundles"]:
             name=item["name"]
-            if not re.fullmatch(r"[A-Za-z0-9_.-]+\.zip",name):raise ValueError("Invalid numeric bundle filename")
-            if not re.fullmatch(r"[a-f0-9]{64}",item["sha256"]):raise ValueError("Invalid numeric bundle checksum")
             if name in seen and seen[name]!=item["sha256"]:
                 raise ValueError("Published numeric bundle changed identity")
             missing=sorted(set(item['batch_ids'])-ready_ids)
@@ -118,6 +116,7 @@ def pull_numeric_directory(settings,*,host: str,remote_dir: str,timeout: int=360
                     ),
                     'bundle':name,'missing_batch_ids':missing,
                     'new_bundles':len(receipts),'receipts':receipts,'already_present':already_present,
+                    'index':index_receipt,
                 }
             # Delivery receipts can outlive a restored database. Only the
             # committed ready batches establish that no import is needed.
@@ -136,7 +135,8 @@ def pull_numeric_directory(settings,*,host: str,remote_dir: str,timeout: int=360
             seen[name]=item["sha256"]
             _atomic_json(state_path,state)
             path.unlink()
-    return {"status":"caught_up","new_bundles":len(receipts),"receipts":receipts,"already_present":already_present}
+    return {"status":"caught_up","new_bundles":len(receipts),"receipts":receipts,"already_present":already_present,
+            "index":index_receipt}
 
 
 def pull_text_directory(settings,*,host: str,remote_dir: str)->dict:

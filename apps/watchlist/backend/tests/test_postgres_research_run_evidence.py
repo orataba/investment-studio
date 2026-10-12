@@ -127,3 +127,36 @@ def test_figure_sql_projection_never_decodes_large_input_trees(postgres_watchlis
                 assert figure["methodology"] == {"description": "Observed endpoints"}
     finally:
         engine.dispose()
+
+
+def test_bound_answer_citations_do_not_decode_context(postgres_watchlist_env):
+    from watchlist_app.services.research_citations import citation_receipts, read_citation
+    context = {"cutoff": "2026-10-01T00:00:00Z", "execution": {"stage": "review", "attempt": 1},
+        "instrument_inputs": [{"source_id": "instrument:citations:fixture", "instrument_id": "fixture", "name": "Frozen fixture"}],
+        "computed_metrics": [{"source_id": "computed:citations", "source_type": "computed_metric", "data": {"value": 7}}],
+        "research_dossiers": [{"instrument_id": "fixture", "notebook": {"investment_view": {
+            "version_id": "original:investment-view", "summary": "Frozen judgment", "versions": None}}}],
+        "web_evidence": None, "market_text_sources": None, "financial_sources": [],
+        "large_original": "DO_NOT_HYDRATE_FULL_RUN" * 100000 + "\x00"}
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="citation-topic", title="Topic", visibility="team"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="citations", topic_id="citation-topic", kind="analysis",
+            status="running", title="Citations", context_json=context))
+        session.commit()
+    def deserialize(value):
+        if isinstance(value, bytes):
+            value = value.decode()
+        assert "DO_NOT_HYDRATE_FULL_RUN" not in value
+        return json.loads(value)
+    engine = create_engine(get_engine().url, json_deserializer=deserialize,
+        connect_args={"options": "-c search_path=watchlist,instrument_data,public"})
+    try:
+        with principal_context(Principal("reader", "Reader", "default")), Session(engine) as session:
+            ids = ["instrument:citations:fixture", "computed:citations", "research:original:investment-view"]
+            result = citation_receipts(session, "citations", " ".join(f"[{sid}]" for sid in [*ids, "text:absent"]), [])
+            assert [row["source_id"] for row in result] == ids
+            original = read_citation(session, "citations", ids[2], cutoff=context["cutoff"])
+            assert original["result"]["retained_source"]["summary"] == "Frozen judgment"
+    finally:
+        engine.dispose()

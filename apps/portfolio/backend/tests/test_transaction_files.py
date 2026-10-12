@@ -77,11 +77,22 @@ def test_transaction_xlsx_is_typed_safe_and_round_trip_importable() -> None:
 @pytest.mark.parametrize("file_format", ["csv", "xlsx"])
 @pytest.mark.parametrize("estimated", [False, True])
 def test_file_round_trip_preserves_known_versus_estimated_trade_time(file_format, estimated):
-    record = {**_deposit_record("trade-time-roundtrip"), "trade_time": "12:00", "trade_time_is_estimated": estimated}
+    record = {**_deposit_record("trade-time-roundtrip"), "trade_time": "12:00", "trade_timezone": "Asia/Shanghai", "trade_time_is_estimated": estimated}
     csv_content = render_transaction_csv([record]) if file_format == "csv" else transaction_xlsx_to_csv(render_transaction_xlsx([record]))
+    exported = list(csv.DictReader(StringIO(csv_content.lstrip("\ufeff"))))[0]
+    assert exported["trade_timezone"] == "Asia/Shanghai"
     _, rows = parse_transaction_csv(csv_content)
     assert rows[0].errors == ()
     assert rows[0].transaction.trade_time == (None if estimated else "12:00")
+
+
+def test_import_refuses_silent_clock_change_and_accepts_older_files_without_timezone():
+    record = {**_deposit_record("clock"), "trade_time": "12:00", "trade_timezone": "America/New_York"}
+    _, rows = parse_transaction_csv(render_transaction_csv([record]))
+    assert rows[0].transaction is None
+    assert "trade_timezone must match" in rows[0].errors[0]
+    _, rows = parse_transaction_csv("asset_type,transaction_action,trade_date,trade_time,account_id,gross_amount,currency\ncash,deposit,2026-05-25,12:00,cash-usd-main,1,USD\n")
+    assert rows[0].errors == ()
 
 
 def test_transaction_xlsx_rejects_formula_cells() -> None:

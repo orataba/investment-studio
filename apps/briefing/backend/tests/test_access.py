@@ -78,6 +78,33 @@ def test_member_and_report_scoped_service_cannot_escape_scope(fixture):
     assert client.get("/api/briefing/reports/draft/context", headers=headers("task")).status_code == 401
 
 
+def test_list_and_poll_use_small_projection_and_preserve_access(fixture):
+    from sqlalchemy import event
+    client, factory, _ = fixture
+    with factory() as session:
+        report = session.get(Report, "public")
+        report.input_json = {**report.input_json, "source_count": 432, "large_snapshot": "x" * 100_000}
+        session.commit()
+
+    def reject_full_report(target, context):
+        raise AssertionError("List/status must not hydrate retained report bodies")
+
+    event.listen(Report, "load", reject_full_report)
+    try:
+        public = client.get("/api/briefing/reports/public/status").json()
+        assert public["source_count"] == 432
+        assert public["edition_role"] == "publisher"
+        assert "input_json" not in public and "team_id" not in public
+        rows = client.get("/api/briefing/reports", headers={"Authorization": "Bearer member"}).json()["rows"]
+        assert len(rows) == 3 and all("result_json" not in row for row in rows)
+        assert client.get("/api/briefing/reports/draft/status", headers={"Authorization": "Bearer task"}).status_code == 200
+        for actor in ["foreign", "task"]:
+            assert client.get("/api/briefing/reports/public/status", headers={"Authorization": f"Bearer {actor}"}).status_code == 404
+        assert client.get("/api/briefing/reports/preview/status").status_code == 404
+    finally:
+        event.remove(Report, "load", reject_full_report)
+
+
 def test_login_failure_is_readable_from_trusted_frontend(fixture):
     client, _, _ = fixture
     response = client.get("/api/briefing/reports/public/context", headers={"Origin": "http://127.0.0.1:5175"})

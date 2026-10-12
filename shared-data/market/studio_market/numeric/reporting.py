@@ -29,6 +29,19 @@ MARKET_CALENDARS = {**{symbol: "XNYS" for family, _, symbol, _ in MARKETS if fam
                     "000985.CSI": "XSHG", "HSCI.HI": "XHKG", "BTCUSD": "24/7"}
 
 
+def benchmark_quote_metadata(symbol: str) -> dict:
+    """Units of the fixed report benchmarks, not a guess for arbitrary securities."""
+    if symbol in {row[2] for row in MARKETS if row[0] == "us_eod_daily"}:
+        return {"currency": "USD", "unit": "USD per share"}
+    if symbol in {"000985.CSI", "HSCI.HI", "DX-Y.NYB"}:
+        return {"unit": "index points"}
+    if symbol == "XAUUSD":
+        return {"currency": "USD", "unit": "USD per troy ounce"}
+    if symbol == "BTCUSD":
+        return {"currency": "USD", "unit": "USD per BTC"}
+    return {}
+
+
 def select_report_price_window(rows, *, report_kind, period_start, period_end, cutoff, calendar_name):
     """Select confirmed closed sessions, never the last two arbitrary quotes."""
     if report_kind not in {"daily", "weekly"}:
@@ -96,7 +109,7 @@ def _build_report_snapshot(store,*,report_kind,period_start,period_end,cutoff):
         field="close"
         first=base[field];last=final[field]
         ids=[base["source_id"],final["source_id"]]
-        market_rows.append({"symbol":symbol,"label":label,"start_date":base["date"],"end_date":final["date"],"start_close":first,"end_close":last,"return_pct":(last/first-1)*100,"price_field":field,"return_basis":"split_adjusted_price" if dataset=="us_eod_daily" else "unadjusted_price","source_ids":ids})
+        market_rows.append({"symbol":symbol,"label":label,**benchmark_quote_metadata(symbol),"start_date":base["date"],"end_date":final["date"],"start_close":first,"end_close":last,"return_pct":(last/first-1)*100,"price_field":field,"return_basis":"split_adjusted_price" if dataset=="us_eod_daily" else "unadjusted_price","source_ids":ids})
         sources.extend([base,final])
     rows=store.query("macro_series",symbols=[r[0] for r in MACRO],start=start.isoformat(),end=end.isoformat(),as_of=cutoff,limit=100000)["rows"]
     for symbol,label in MACRO:

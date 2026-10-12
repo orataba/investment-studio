@@ -90,7 +90,7 @@ case "$SERVICE" in
     export INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL="$DATABASE_URL"
     export INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA=watchlist
     export INVESTMENT_STUDIO_WATCHLIST_FRONTEND_URL=http://127.0.0.1:5173
-    export INVESTMENT_STUDIO_WATCHLIST_CORS_ORIGINS='["http://127.0.0.1:5173","http://localhost:5173"]'
+    export INVESTMENT_STUDIO_WATCHLIST_CORS_ORIGINS='["http://127.0.0.1:5173","http://localhost:5173","http://127.0.0.1:5172","http://localhost:5172"]'
     export INVESTMENT_STUDIO_WATCHLIST_DOCUMENT_STORAGE_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/investment-studio/watchlist-documents"
     export INVESTMENT_STUDIO_SECRET_ROOT="$EXTERNAL_ENV_ROOT"
     cd "$PROJECT_ROOT/apps/watchlist/backend"

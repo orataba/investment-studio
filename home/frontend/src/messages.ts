@@ -3,6 +3,22 @@ import type { LanguageMessages } from '../../../packages/ui/src/i18n'
 // Account and identity copy belongs to Home; user names and team names remain
 // original content and never enter the translation dictionary.
 export const homeMessages: LanguageMessages = { 'zh-Hans': {
+  'Important risks': '重要风险',
+  'Only major or urgent risks confirmed by the latest risk review and still requiring attention.': '只列出经当前版本风控研判确认、仍待关注的重大或紧急风险。',
+  'Risk status unavailable.': '风险提示暂不可用。',
+  'No published major or urgent items requiring attention.': '暂无已发布、仍待关注的重大或紧急事项。',
+  'Reviewed': '复核时间',
+  'Evidence confidence': '证据可信度',
+  'Evidence as of': '资料检查时点',
+  'Not assessed': '未评估',
+  'confirmed': '已确认',
+  'reported': '据报道',
+  'unverified': '未核实',
+  'Previous risks': '上一页',
+  'Next risks': '下一页',
+  'Unable to confirm your account. Please retry.': '暂时无法确认账号，请重试。',
+  'Loading…': '读取中…',
+
   'Account sections': '账号设置栏目',
   'Security': '安全',
   'Saved.': '已保存。',

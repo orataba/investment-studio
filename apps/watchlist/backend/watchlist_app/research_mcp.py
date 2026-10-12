@@ -173,7 +173,7 @@ def read_risk_evidence(snapshot: Literal["current", "previous"] = "current",
 def read_portfolio_risk(section: PortfolioRiskSection, holding_id: str | None = None,
                         offset: int = 0, source_offset: int | None = None,
                         path: list[str | int] | None = None, limit: int = 20) -> dict:
-    """Read one frozen portfolio risk module. Concentration uses offset and source_continuations; other large modules advertise path/offset pagination. Follow the returned selectors for the same section/holding. Preserve VaR/ES coverage, excluded exposures and actual common samples; missing risk is not zero. No live refresh."""
+    """AUTOMATIC RISK RUN ONLY (risk_run=true). For an ordinary linked portfolio conversation use read_portfolio_holdings overview, then its same source_id with section="risk"; this tool cannot read conversation risk. Read one frozen portfolio risk module. Concentration uses offset and source_continuations; other large modules advertise path/offset pagination. Follow the returned selectors for the same section/holding. Preserve VaR/ES coverage, excluded exposures and actual common samples; missing risk is not zero. No live refresh."""
     return request("risk-portfolio", {"section": section, "holding_id": holding_id,
         "offset": offset, "source_offset": source_offset, "path": path, "limit": limit})
 

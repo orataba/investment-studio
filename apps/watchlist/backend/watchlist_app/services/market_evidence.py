@@ -134,26 +134,42 @@ def source_reference(source: dict) -> dict:
     return {key: value for key, value in source.items() if key not in {"text", "content_text", "raw_path"}}
 
 
-def hydrate_source(source: dict, *, cutoff: datetime | None = None, bound_source=False) -> dict:
-    if source.get("retained_reference") and "data" not in source:
-        from watchlist_app.services.research_run_evidence import resolve_reference
-        source = resolve_reference(source, bound_source=bound_source)
-    if not source.get("document_id") or source.get("text"):
-        return source
-    document = text_store().read(source["document_id"], version_id=source["version_id"], as_of=cutoff)
-    if document is None:
-        raise ValueError("引用的原文版本在本次截止时间不可用。")
-    return {**source, **original_source(document)}
+class SourceHydrator:
+    """Resolve repeated originals once within one authorized evidence build.
+
+    The caller keeps this object within its current request/transaction. Keys
+    preserve original version and ownership; source_id alone is not an identity.
+    Per-reference metadata is merged separately from the shared document body.
+    """
+
+    def __init__(self, *, cutoff: datetime | None = None, session=None):
+        self.cutoff, self.session = cutoff, session
+        self._computed = {}
+        self._documents = {}
+
+    def __call__(self, source: dict, *, bound_source=False) -> dict:
+        if source.get("retained_reference") and "data" not in source:
+            from watchlist_app.services.research_run_evidence import resolve_reference
+            locator = source["retained_reference"]
+            key = (locator["run_id"], tuple(locator["path"]), locator.get("version_id"),
+                   source.get("source_id"), source.get("instrument_id"), bound_source)
+            if key not in self._computed:
+                self._computed[key] = resolve_reference(source, session=self.session, bound_source=bound_source)
+            source = dict(self._computed[key])
+        if not source.get("document_id") or source.get("text"):
+            return source
+        key = (source["document_id"], source["version_id"])
+        if key not in self._documents:
+            document = text_store().read(key[0], version_id=key[1], as_of=self.cutoff)
+            if document is None:
+                raise ValueError("引用的原文版本在本次截止时间不可用。")
+            self._documents[key] = original_source(document)
+        return {**source, **self._documents[key]}
+
+
+def hydrate_source(source: dict, *, cutoff: datetime | None = None, bound_source=False, session=None) -> dict:
+    return SourceHydrator(cutoff=cutoff, session=session)(source, bound_source=bound_source)
 
 
 def capture_source(source: dict) -> dict:
     return original_source(text_store().capture_public_source(source))
-
-
-def retained_sources(context: dict) -> dict[str, dict]:
-    cutoff = datetime.fromisoformat(context["cutoff"])
-    result = {}
-    for reference in context.get("market_text_sources", []):
-        source = hydrate_source(reference, cutoff=cutoff)
-        result[source["source_id"]] = source
-    return result

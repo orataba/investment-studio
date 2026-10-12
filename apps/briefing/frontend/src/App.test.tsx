@@ -26,7 +26,7 @@ it('opens the industry directory without reading reports or team research and li
   page(<App />)
   expect(screen.getByRole('tab', { name: 'Industry research' }).getAttribute('aria-selected')).toBe('true')
   expect(screen.getByRole('heading', { name: 'U.S. technology' })).toBeTruthy()
-  expect(screen.getByRole('link', { name: 'Read research report' }).getAttribute('href')).toBe('https://watchlist.example.com/instruments/xlk?tab=investment-research&mode=report&lang=en')
+  expect(screen.getByRole('link', { name: 'Read research report' }).getAttribute('href')).toBe('https://watchlist.example.com/instruments/xlk?tab=investment-research&mode=report&from=briefing&lang=en')
   expect(screen.queryByRole('heading', { name: 'Editions' })).toBeNull()
   expect(screen.queryByRole('button', { name: 'Generate edition' })).toBeNull()
   expect(fetch).not.toHaveBeenCalled()
@@ -49,7 +49,7 @@ it('keeps industry navigation selected after an earlier report read completes an
   expect(window.location.search).toBe('?lang=zh-Hans&type=industry')
   expect(screen.queryByRole('heading', { name: '央行继续观察就业' })).toBeNull()
   expect(screen.queryByRole('button', { name: '生成本期' })).toBeNull()
-  expect(screen.getByRole('link', { name: '阅读研究报告' }).getAttribute('href')).toContain(':5173/instruments/xlk?tab=investment-research&mode=report&lang=zh-Hans')
+  expect(screen.getByRole('link', { name: '阅读研究报告' }).getAttribute('href')).toContain(':5173/instruments/xlk?tab=investment-research&mode=report&from=briefing&lang=zh-Hans')
   const industryAddress = window.location.href
   window.history.replaceState(null, '', dailyAddress)
   fireEvent.popState(window)

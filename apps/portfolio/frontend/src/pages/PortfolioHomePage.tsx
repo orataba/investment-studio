@@ -3026,7 +3026,21 @@ export default function PortfolioHomePage() {
 
     const rows: TableCell[][] = [
       [`Holdings as of ${workspace.as_of_date}`, workspace.portfolio_name, workspace.base_currency],
+      ['Export format', 'portfolio_holdings_sectioned_v1'],
+      ['Reporting currency', workspace.base_currency],
+      ['Numeric ratios', 'Fraction: 0.05 = 5%; percentage text such as 12% is already scaled.'],
+      ['Return basis', 'Instrument returns use the registered analytical series below; unrealized returns use position cost basis. They are distinct measures.'],
+      ['Amounts', 'Column currency when shown; otherwise the row Currency. Prices are per unit; quantities are unscaled.'],
+      ['Dates', 'ISO YYYY-MM-DD; dates are valuation/market session labels, not timestamps.'],
+      ['Missing values', 'Blank or N/A means unavailable or not applicable; neither means zero.'],
+      ['Section layout', 'Blank row, section title, section header, data rows. Subtotal rows are labelled; sections keep independent schemas.'],
     ]
+    const fractionKeys = new Set<HoldingsColumnKey>([
+      'weight', 'unrealized_return', 'unrealized_return_base', 'instrument_return_1w', 'instrument_return_1m',
+      'instrument_return_3m', 'instrument_return_6m', 'instrument_return_mtd', 'instrument_return_ytd', 'instrument_return_1y',
+      'instrument_current_drawdown', 'instrument_max_drawdown', 'instrument_holding_max_drawdown',
+      'instrument_volatility_1m', 'instrument_volatility_3m', 'instrument_volatility_6m', 'instrument_volatility_1y', 'forward_risk_share',
+    ])
     const appendSection = (title: string, header: TableCell[], dataRows: TableCell[][]) => {
       if (!dataRows.length) {
         return
@@ -3045,13 +3059,15 @@ export default function PortfolioHomePage() {
         .filter((index) => index >= 0)
       appendSection(
         title,
-        visibleIndexes.map((index) => completeHeader[index]),
+        visibleIndexes.map((index) => ['Current Weight', 'Forward RC', 'Moneyness'].includes(String(completeHeader[index]))
+          ? `${completeHeader[index]} (fraction)` : completeHeader[index]),
         completeRows.map((row) => visibleIndexes.map((index) => row[index])),
       )
     }
     const securityHeader = [
       ...(renderedHoldingsGroupBy !== 'none' ? ['Security Group'] : []),
-      ...visibleColumns.map((column) => column.label),
+      ...visibleColumns.map((column) => fractionKeys.has(column.key) ? `${column.label} (fraction)` : column.label),
+      'Analytical Return Kind', 'Analytical Quote Basis', 'Analytical Currency',
     ]
     const securityDataRows: TableCell[][] = []
     const appendSecurityRow = (row: PortfolioHoldingRow, groupLabel: string | null) => {
@@ -3060,6 +3076,9 @@ export default function PortfolioHomePage() {
         ...visibleColumns.map((column) =>
           holdingColumnExportValue(column.key, row, columnContext),
         ),
+        row.instrument_return_series_all?.return_kind ?? null,
+        row.instrument_return_series_all?.quote_basis ?? null,
+        row.instrument_return_series_all?.currency ?? null,
       ])
     }
     const appendSecuritySubtotal = (
@@ -3074,6 +3093,7 @@ export default function PortfolioHomePage() {
             ? `${label} (${workspace.base_currency})`
             : holdingColumnSubtotalExportValue(column.key, subtotalRows, { ...columnContext, riskMetrics }),
         ),
+        null, null, null,
       ])
     }
     if (renderedHoldingsGroupBy === 'none') {

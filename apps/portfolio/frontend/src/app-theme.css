@@ -976,3 +976,20 @@
   .performance-calculation-table .performance-table-context > span { display: block; }
   .performance-calculation-table .performance-table-context time { display: inline-block; white-space: nowrap; }
 }
+
+.transaction-audit-changes { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 0.78rem; }
+.transaction-audit-changes th, .transaction-audit-changes td { text-align: left; vertical-align: top; padding: 0.5rem 0.3rem; border-bottom: 1px solid var(--border-subtle, #e3e6e5); overflow-wrap: anywhere; }
+.transaction-audit-changes pre { margin: 0; white-space: pre-wrap; font: inherit; }
+.transaction-audit-actor { font-size: 0.78rem; color: var(--text-secondary, #59615f); }
+
+.risk-page-heading h1 { font-size: 1.35rem; margin: 0 0 0.65rem; font-weight: 600; }
+.risk-page-heading nav { display: flex; flex-wrap: wrap; gap: 0.55rem 1rem; font-size: 0.82rem; }
+.risk-page-surface h2 { margin: 0; scroll-margin-top: 7rem; }
+.risk-page-heading { scroll-margin-top: 7rem; }
+.risk-back-to-top { align-self: flex-start; font-size: 0.82rem; }
+.performance-period-presets { display: flex; flex-wrap: wrap; gap: 0.3rem; padding-left: 0.75rem; margin-left: 0.3rem; border-left: 1px solid var(--border-subtle, #d8dfdc); }
+.portfolio-chart-base-date { color: var(--portfolio-muted); font-size: 0.75rem; }
+.portfolio-headline { column-gap: 24px; row-gap: 8px; }
+.portfolio-nav-value, .portfolio-change-value { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.portfolio-header-row { border-bottom: 0; }
+.performance-follow-latest { display: inline-flex; align-items: center; gap: 0.45rem; font-size: 0.8rem; white-space: nowrap; }

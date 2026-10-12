@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     alembic_database_url: str | None = None
     database_schema: str | None = "watchlist"
     sql_echo: bool = False
-    cors_origins: list[str] = ["http://127.0.0.1:5173", "http://localhost:5173"]
+    cors_origins: list[str] = ["http://127.0.0.1:5173", "http://localhost:5173",
+                              "http://127.0.0.1:5172", "http://localhost:5172"]
     recalc_worker_enabled: bool = True
     research_worker_enabled: bool = True
     research_worker_concurrency: int = Field(default=1, ge=1, le=4)

@@ -33,6 +33,9 @@ def failure_summary(exc):
     kind=type(exc).__name__
     status=getattr(exc,'status',None) or getattr(exc,'code',None) or getattr(getattr(exc,'response',None),'status_code',None)
     result={'error_type':kind,'error':kind}
+    from .directory_index import NumericIndexTransferError
+    if isinstance(exc, NumericIndexTransferError):
+        result.update(exc.details)
     if isinstance(status,int):result.update(http_status=status,error=f'{kind}: HTTP {status}')
     if isinstance(exc,(FmpResponseError,FmpTransportError,PublicHttpError,CnFuturesError,MarketCalendarUnavailable)):result['error']=str(exc)
     if isinstance(exc, (us_market.PriceHistoryUnavailable, PriceIdentityUnavailable)):

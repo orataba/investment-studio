@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import plistlib
 import shutil
+import shlex
+import subprocess
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -12,6 +14,7 @@ import pytest
 from studio_market.config import MarketSettings
 from studio_market.numeric.store import NumericStore
 from studio_market.numeric import delivery
+from studio_market.numeric import directory_index
 from studio_market import pipeline
 from studio_market.numeric.collect import Collector,closed_symbol_date,failure_summary
 from studio_market.numeric.providers.http_client import PublicResponse
@@ -22,6 +25,17 @@ def make_store(tmp_path,name):
     store=NumericStore(MarketSettings(f"sqlite:///{tmp_path/(name+'.db')}",tmp_path/name))
     store.create_schema_for_testing()
     return store
+
+
+def local_index_ssh(monkeypatch, remote):
+    """Exercise the real stdlib index protocol, without SSH or a provider."""
+    run = subprocess.run
+    def execute(command, **kwargs):
+        assert command[0] == 'ssh'
+        remote_command = shlex.split(command[-1])
+        remote_command[3] = str(remote / 'index.json')
+        return run(remote_command, **kwargs)
+    monkeypatch.setattr(directory_index.subprocess, 'run', execute)
 
 
 def test_public_directory_retains_distinct_share_classes(tmp_path):
@@ -193,6 +207,7 @@ def test_directory_catches_up_all_missed_bundles_and_resumes_after_failure(tmp_p
         delivery.publish_pending(source.settings)
     assert delivery.publish_pending(source.settings)['status']=='no_new_batches'
     remote=source.settings.data_root/'numeric/outbox'
+    local_index_ssh(monkeypatch, remote)
     index=json.loads((remote/'index.json').read_text())
     assert len(index['bundles'])==2
     copied=[]
@@ -213,18 +228,25 @@ def test_directory_catches_up_all_missed_bundles_and_resumes_after_failure(tmp_p
     copied.clear()
     result=delivery.pull_numeric_directory(target.settings,host='trusted-host',remote_dir='/outbox')
     assert result['new_bundles']==0 and len(result['already_present'])==2
-    assert copied==['index.json']
+    assert copied==[]
     # A database restored to an earlier point can retain newer transfer receipts.
     # Reuse the on-disk receipt with an empty database and recover both bundles.
     restored=make_store(tmp_path,'restored')
     restored.settings.data_root.mkdir(parents=True,exist_ok=True)
     shutil.copyfile(target.settings.data_root/'delivery-status.json',
                     restored.settings.data_root/'delivery-status.json')
+    # A matching index cache is only transport state, never proof that a
+    # restored database owns any of the actual batch facts.
+    restored_incoming = restored.settings.data_root/'numeric/incoming'
+    restored_incoming.mkdir(parents=True)
+    for cached in (target.settings.data_root/'numeric/incoming').glob('.index-*.json'):
+        shutil.copyfile(cached, restored_incoming/cached.name)
     copied.clear()
     result=delivery.pull_numeric_directory(restored.settings,host='trusted-host',remote_dir='/outbox')
     assert result['new_bundles']==2
+    assert result['index']['status']=='unchanged'
     assert restored.latest('analyst_price_targets')['rows'][0]['last_month_avg_price_target']==20
-    assert copied==['index.json',*[item['name'] for item in index['bundles']]]
+    assert copied==[item['name'] for item in index['bundles']]
     restored.close()
     source.close();target.close()
 
@@ -268,6 +290,7 @@ def test_publisher_retains_retired_batch_identity_without_regenerating_payload(r
 @pytest.mark.parametrize('seen_receipt',[False,True])
 def test_caught_up_replica_skips_retired_payload(tmp_path,monkeypatch,retired_numeric_bootstrap,seen_receipt):
     _,remote,item,recovery=retired_numeric_bootstrap
+    local_index_ssh(monkeypatch, remote)
     target=make_store(tmp_path,'caught-up')
     try:
         delivery.import_bundle(target.settings,recovery)
@@ -282,7 +305,7 @@ def test_caught_up_replica_skips_retired_payload(tmp_path,monkeypatch,retired_nu
         monkeypatch.setattr(delivery,'_copy',copy)
         result=delivery.pull_numeric_directory(target.settings,host='trusted-host',remote_dir='/outbox')
         assert result['status']=='caught_up' and result['new_bundles']==0
-        assert copied==['index.json']
+        assert copied==[]
         assert json.loads(state_path.read_text())['numeric'][origin][item['name']]==item['sha256']
         assert target.latest('analyst_price_targets')['rows'][0]['last_month_avg_price_target']==20
     finally:
@@ -294,6 +317,7 @@ def test_missing_retired_batch_exposes_bootstrap_guidance_even_with_receipt(
     tmp_path,monkeypatch,retired_numeric_bootstrap,seen_receipt,
 ):
     source,remote,item,_=retired_numeric_bootstrap
+    local_index_ssh(monkeypatch, remote)
     target=make_store(tmp_path,'partly-restored')
     try:
         partial=tmp_path/'partial-bootstrap.zip'
@@ -323,7 +347,7 @@ def test_missing_retired_batch_exposes_bootstrap_guidance_even_with_receipt(
         assert 'export-bundle' in failure['error'] and 'import-bundle' in failure['error']
         assert 'own checksum' in failure['error'] and 'rerun sync' in failure['error']
         assert failure['new_bundles']==0 and failure['receipts']==[]
-        assert copied==['index.json']
+        assert copied==[]
         assert (state_path.read_bytes() if state_path.exists() else None)==before
         saved=json.loads((target.settings.data_root/'pipeline-status.json').read_text())
         assert saved['sync']['stages'][0]['result']==failure

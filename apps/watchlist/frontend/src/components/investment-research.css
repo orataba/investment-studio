@@ -373,3 +373,16 @@ body:has(.research-aside-backdrop) { overflow: hidden; }
   .research-monitoring-grid .research-event-day-entries { padding-left: 15px; }
   .research-monitoring-grid .research-event-day-entries > .research-event-card::before { left: -20px; }
 }
+
+.research-focused-reader { max-width: 1160px; margin: 0 auto; }
+.research-reader-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 0 18px; margin-bottom: 18px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.research-reader-toolbar a { color: var(--accent); }
+.research-focused-reader .instrument-detail-tabs-row,
+.research-focused-reader .listed-hero-side,
+.research-focused-reader .sector-research-actions,
+.research-focused-reader .research-guidance-bar .research-support-link { display: none; }
+.research-focused-reader .research-current-direction { font-size: 19px; line-height: 1.85; }
+.research-focused-reader .research-judgment-layout { grid-template-columns: minmax(0, 5fr) minmax(0, 3fr); gap: 32px; }
+.research-focused-reader .research-monitoring-grid { grid-template-columns: minmax(0, 1fr); }
+.research-focused-reader .research-monitoring-grid .research-report-tracking { padding: 24px 0; border-left: 0; border-top: 1px solid var(--line); }
+@media (max-width: 760px) { .research-focused-reader .research-judgment-layout { grid-template-columns: 1fr; } }

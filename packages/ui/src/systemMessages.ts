@@ -1,5 +1,17 @@
 // System UI copy only. User content must be marked translate="no".
 export const systemMessages: Record<string, string> = {
+  "The read timed out. Please retry. Background tasks are not stopped.": "读取超时，请重试。后台任务不会因此停止。",
+  "Jump to field": "跳转字段",
+  "Jump to evidence field": "跳转证据字段",
+  "Choose a field": "选择字段",
+  "Find in original": "查找原文",
+  "Find next": "查找下一处",
+  "No matching content": "未找到匹配内容",
+  "Retained source cited in the answer": "正文引用的留存来源",
+  "Evidence recorded at": "资料记录时间",
+  "This source was bound to the answer and cited in its text; citation alone does not establish complete reading or verification.": "此来源与本次回答绑定并被正文引用；引用本身不证明已完整查阅或核验。",
+  "Tool read receipts and retained sources cited in the answer are listed separately below. A directory, binding, or citation does not establish verification; conclusions without linked sources remain limited. Expand a snapshot to read its retained original.": "以下分别列出本次回答的工具查阅记录与正文引用的留存来源。目录、绑定或引用本身不代表已核实；未关联来源的结论仍有证据限制。展开某条快照可读取当时留存的完整内容。",
+
   "Modeled net variance is zero; proportional risk contributions are undefined. Financing, credit and liquidity risks are not measured by this offset.": "已建模净方差为零，比例风险贡献无定义。此抵销不衡量融资、信用和流动性风险。",
   "Confirmed terms and audit evidence": "已确认条款与审计依据",
   "Identify the confirmed source and why these terms need correction.": "请说明已确认的资料来源，以及需要修订这些条款的原因。",

@@ -475,7 +475,7 @@ function seriesLabel(mode: ChartSeriesMode) {
 }
 
 function chartUnitLabel(mode: ChartSeriesMode, axisUnit: ReturnType<typeof getYAxisUnit>) {
-  return mode === 'portfolio_value' ? axisUnit.label : 'Index'
+  return mode === 'portfolio_value' ? axisUnit.label : 'Growth of 100'
 }
 
 export default function PerformanceNavChart({
@@ -835,6 +835,11 @@ export default function PerformanceNavChart({
           </div>
           <div className="portfolio-nav-chart-series-meta">
             <span className="portfolio-nav-chart-currency">{chartUnit}</span>
+            {effectiveSeriesMode === 'twr_index' && visibleStartDate ? (
+              <span className="portfolio-chart-base-date">
+                {includesFundedStart ? `Base 100 before ${visibleStartDate} return` : `Base 100 at ${visibleStartDate}`}
+              </span>
+            ) : null}
             <div className="portfolio-nav-chart-menu" ref={settingsMenuRef}>
               <button
                 type="button"

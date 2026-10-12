@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import contextmanager
 from datetime import datetime
 
 import pytest
@@ -128,12 +129,53 @@ def test_completed_empty_financial_coverage_is_projected_without_failed_refresh(
     assert "未提供年度利润表" in result["results"][0]["message"]
 
 
+def test_reference_batch_shares_reader_and_releases_it_after_independent_failure(monkeypatch):
+    instruments = [_instrument("etf", source_profile="fmp", identifier=symbol)
+                   for symbol in ("SPY", "SPMO", "QQQ")]
+    for item, symbol in zip(instruments, ("SPY", "SPMO", "QQQ")):
+        item["instrument_id"] = symbol
+    # Explicit Tushare routing wins even if an old FMP identifier is retained.
+    tushare = _instrument("etf", source_profile="tushare", identifier="510300.SH")
+    tushare["identifiers"].append({"identifier_type": "provider_symbol", "identifier_value": "fmp:510300.SS"})
+    instruments.insert(0, tushare)
+    monkeypatch.setattr(instrument_reference, "list_instruments", lambda **_: instruments)
+    monkeypatch.setattr(instrument_reference.MarketSettings, "from_environment", lambda: "settings")
+    events, stores = [], []
+    class Store:
+        def __init__(self, settings):
+            assert settings == "settings"
+            stores.append(self)
+        @contextmanager
+        def query_session(self):
+            events.append("enter")
+            try:
+                yield self
+            finally:
+                events.append("exit")
+        def close(self):
+            events.append("close")
+    monkeypatch.setattr(instrument_reference, "NumericStore", Store)
+    def refresh(instrument_id, *, public_store=None):
+        if instrument_id == tushare["instrument_id"]:
+            assert public_store is None and stores == []
+        else:
+            assert public_store is stores[0] and events == ["enter"]
+        if instrument_id == "SPMO":
+            raise ValueError("Incomplete source snapshot")
+        return {"provider": "fmp", "section_errors": {}, "source": {}}
+    monkeypatch.setattr(instrument_reference, "refresh_instrument_reference_data", refresh)
+    result = instrument_reference.refresh_reference_data_batch()
+    assert [row["status"] for row in result["results"]] == ["refreshed", "refreshed", "failed", "refreshed"]
+    assert result["refreshed_count"] == 3
+    assert len(stores) == 1 and events == ["enter", "exit", "close"]
+
+
 @pytest.mark.parametrize("kind,symbol", [("equity", "AAPL"), ("etf", "510300.SS"), ("index", "^GSPC")])
 def test_fmp_reference_reads_shared_versions_without_refreshing_the_clock(monkeypatch, kind, symbol):
     monkeypatch.setattr(instrument_reference, "get_instrument", lambda _: _instrument(kind, source_profile="fmp", identifier=symbol))
     monkeypatch.setattr(instrument_reference.MarketSettings, "from_environment", lambda: "settings")
     calls = []
-    def read(settings, provider_symbol, instrument_type):
+    def read(settings, provider_symbol, instrument_type, *, store=None):
         calls.append((settings, provider_symbol, instrument_type))
         return {"sections": {"saved": [{"value": 10}]}, "section_errors": {}, "observed_at": "2026-09-01T08:00:00Z",
                 "source": {"storage": "studio_market", "section_sources": {"saved": [{"source_id": "numeric:batch:0"}]}}}

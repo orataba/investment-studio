@@ -576,13 +576,13 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
     available = research_sources(context, run_id)
     from watchlist_app.services.sector_research import event_evidence_sources
     event_sources = event_evidence_sources(context, run_id, notebook_evidence=available)
-    from watchlist_app.services.market_evidence import retained_sources
     # Actual reads in this run are evidence for receipt claims too. Historical
     # hydrated archives and all-company estimates are not automatically in scope.
     sources = {s["source_id"]: s for capture in context.get("web_evidence", [])
                if capture.get("operation") == "fetch"
                for s in capture.get("sources", []) if s.get("text")}
-    sources.update(retained_sources(context))
+    sources.update({reference["source_id"]: available[reference["source_id"]]
+                    for reference in context.get("market_text_sources", [])})
     # Financial pages are complete original rows actually read in this run; the
     # page-level snapshot carries its statement identities and information clocks.
     for source in context.get("financial_sources", []):
@@ -909,12 +909,13 @@ def review_output(output: str, *, context: dict | None = None) -> dict:
     _api_request(run_id, "sector-evidence", {"operation": "review", "review": {"draft": draft}})
     context = _review_computed_context(context, draft, run_id)
     cutoff = datetime.fromisoformat(context["cutoff"])
+    available = research_sources(context, run_id)
     sources = {source["source_id"]: source for capture in context.get("web_evidence", [])
                if capture.get("operation") == "fetch" for source in capture.get("sources", [])}
     sources.update(retained_estimate_sources(context))
-    from watchlist_app.services.market_evidence import retained_sources
-    sources.update(retained_sources(context))
-    sources.update({sid: source for sid, source in research_sources(context, run_id).items() if source.get("source_type") == "computed_metric"})
+    sources.update({reference["source_id"]: available[reference["source_id"]]
+                    for reference in context.get("market_text_sources", [])})
+    sources.update({sid: source for sid, source in available.items() if source.get("source_type") == "computed_metric"})
     filtered, exclusions = [], []
     for row in draft["reviews"]:
         dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == row["instrument_id"]), {})

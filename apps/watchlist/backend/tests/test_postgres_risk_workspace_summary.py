@@ -16,6 +16,28 @@ from .test_price_risk import series
 pytestmark = pytest.mark.postgresql_integration
 
 
+def test_home_alerts_project_large_nul_evidence_without_reading_private_run(postgres_watchlist_env):
+    from studio_identity import Principal, principal_context
+    from watchlist_app.services.risk_alerts import important_risk_alerts
+    from .test_risk_alerts import seed_alerts
+    with get_session_factory()() as session:
+        seed_alerts(session, postgres_watchlist_env["instrument_id"])
+    def deserialize(value):
+        assert "UNSELECTED" not in value and "DO_NOT_READ_PRIVATE" not in value
+        return json.loads(value)
+    engine = create_engine(get_engine().url, json_deserializer=deserialize,
+        connect_args={"options": "-c search_path=watchlist,instrument_data,public -c default_transaction_read_only=on"})
+    try:
+        with principal_context(Principal("reader", "Reader", "default")), Session(engine) as session:
+            result = important_risk_alerts(session, limit=3, offset=1)
+            assert result["total"] == 4 and not result["has_more"]
+            assert [row["case_id"] for row in result["alerts"]] == ["urgent", "major", "opportunity-active"]
+            assert result["alerts"][0]["as_of"] == "2026-10-11T21:00:00Z"
+            assert not session.identity_map
+    finally:
+        engine.dispose()
+
+
 def test_review_status_reads_projected_report_without_failed_run_evidence(postgres_watchlist_env, monkeypatch):
     from datetime import UTC, datetime, timedelta
     from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic

@@ -80,7 +80,8 @@ import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMen
 import {
   countActiveTransactionFilters,
   transactionActivityLabel,
-  transactionChangedFields,
+  transactionFieldChanges,
+  transactionAuditValue,
   transactionDateLabels,
 } from '../lib/transactionPresentation'
 import {
@@ -1051,8 +1052,9 @@ function auditTimestampLabel(value: string) {
     return value
   }
   return new Intl.DateTimeFormat('en-GB', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
+    year: 'numeric', month: 'short', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    timeZone: 'UTC', timeZoneName: 'short',
   }).format(parsed)
 }
 
@@ -1081,6 +1083,8 @@ export default function TransactionsPage() {
   const canEditPortfolio = Boolean(usePortfolioAccess()?.can_edit)
   const { portfolioId = '' } = useParams()
   const { language, t } = useLanguage()
+  const auditValue = (value: unknown, recorded: boolean) => !recorded || value === null || value === ''
+    ? t(transactionAuditValue(value, recorded)) : transactionAuditValue(value, recorded)
   const fcnLabel = (en: string, zh: string) => language === 'zh-Hans' ? zh : en
   const currentPortfolioIdRef = useRef(portfolioId)
   const [searchParams, setSearchParams] = useSearchParams()
@@ -5052,7 +5056,7 @@ export default function TransactionsPage() {
                   {inspectorTab === 'history' ? (
                     <div className="transaction-inspector-list" role="tabpanel">
                       {[...selectedTransactionChangeLog].reverse().map((change) => {
-                        const changedFields = transactionChangedFields(change)
+                        const changedFields = transactionFieldChanges(change)
                         return (
                           <article key={change.change_id} className="transaction-inspector-card">
                             <div className="transaction-inspector-card-head">
@@ -5062,11 +5066,15 @@ export default function TransactionsPage() {
                               </div>
                               <span>Version {change.row_version}</span>
                             </div>
-                            {changedFields.length ? (
-                              <div className="transaction-impact-tags">
-                                {changedFields.map((field) => <span key={field}>{field}</span>)}
-                              </div>
-                            ) : null}
+                            <p className="transaction-audit-actor" translate="no">{change.actor_name || change.actor_user_id || t('Actor not recorded')}{change.actor_name && change.actor_user_id ? ` · ${change.actor_user_id}` : ''}</p>
+                            {changedFields.length ? <table className="transaction-audit-changes">
+                              <thead><tr><th>Field</th><th>Previous value</th><th>New value</th></tr></thead>
+                              <tbody>{changedFields.map(field => <tr key={field.key}>
+                                <th scope="row">{field.label}</th>
+                                <td><pre translate="no">{change.change_type === 'create' ? t('Not applicable (created)') : auditValue(field.before, field.beforeRecorded)}</pre></td>
+                                <td><pre translate="no">{change.change_type === 'delete' ? t('Not applicable (deleted)') : auditValue(field.after, field.afterRecorded)}</pre></td>
+                              </tr>)}</tbody>
+                            </table> : <p>No field values recorded in this historical version.</p>}
                             {change.request_idempotency_key ? (
                               <div className="transaction-audit-request">
                                 Request {change.request_idempotency_key}

@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from watchlist_app.services.research_dossier import ResearchMandateInput
-from watchlist_app.services.market_evidence import hydrate_source, retained_sources, source_reference
+from watchlist_app.services.market_evidence import SourceHydrator, hydrate_source, source_reference
 
 
 class ResearchCatalyst(BaseModel):
@@ -540,12 +540,13 @@ def research_sources(context: dict, run_id: str, *, session=None) -> dict[str, d
     """Only original evidence is reusable; methods and AI summaries are not sources."""
     sources = {}
     cutoff = datetime.fromisoformat(context["cutoff"])
+    hydrate = SourceHydrator(cutoff=cutoff, session=session)
     for dossier in context.get("research_dossiers", []):
         iid = dossier["instrument_id"]
         for source in [*dossier.get("prior_sources", []), *(dossier.get("notebook") or {}).get("sources", []),
                        *(source for theme in dossier.get("themes", []) for source in theme.get("sources", [])),
                        *(source for view in dossier.get("pm_views", []) for source in view.get("sources", []))]:
-            source = hydrate_source(source, cutoff=cutoff, bound_source=True)
+            source = hydrate(source, bound_source=True)
             if _original_source(source, iid, cutoff):
                 sources[source["source_id"]] = source
         for material in dossier.get("materials", []):
@@ -579,11 +580,13 @@ def research_sources(context: dict, run_id: str, *, session=None) -> dict[str, d
     for capture in context.get("web_evidence", []):
         if capture.get("operation") in {"fetch", "author_import"}:
             for source in capture.get("sources", []):
-                source = hydrate_source(source, cutoff=cutoff, bound_source=True)
+                source = hydrate(source, bound_source=True)
                 original = {**source, "source_run_id": run_id, "source_type": "public_source"}
                 if _original_source(original, source.get("instrument_id"), cutoff):
                     sources[source["source_id"]] = original
-    sources.update(retained_sources(context))
+    for reference in context.get("market_text_sources", []):
+        source = hydrate(reference)
+        sources[source["source_id"]] = source
     for source in context.get("financial_sources", []):
         if _original_source(source, source.get("instrument_id"), cutoff):
             sources[source["source_id"]] = source
@@ -592,7 +595,7 @@ def research_sources(context: dict, run_id: str, *, session=None) -> dict[str, d
         from watchlist_app.services.research_run_evidence import retained_computed_sources
         computed = [*computed, *retained_computed_sources(session, run_id)]
     for source in computed:
-        source = hydrate_source(source, cutoff=cutoff, bound_source=True)
+        source = hydrate(source, bound_source=True)
         if _original_source(source, source.get("instrument_id"), cutoff):
             if session is not None or context.get("retained_run_id") == run_id:
                 source = {**source, "retained_reference": source.get("retained_reference") or {

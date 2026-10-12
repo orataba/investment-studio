@@ -73,11 +73,16 @@ type Conversation = { topic: Topic; entries: Entry[] }
 type Evidence = {
   source_id: string
   tool: string
-  retrieved_at: string
+  retrieved_at?: string | null
+  as_of?: string | null
+  recorded_at?: string | null
   result?: Record<string, unknown>
   request?: Record<string, unknown>
   source_ids?: string[]
   result_storage?: string
+  citation_only?: boolean
+  title?: string
+  source_type?: string
 }
 type UserRecord = { kind: 'theme' | 'investment_view' | 'research_publication'; instrument_id: string; id: string; title?: string }
 type PublicSource = { source_id?: string; title?: string; url?: string; published_at?: string | null }
@@ -100,7 +105,7 @@ const stamp = researchStamp
 function publicHref(value?: string) {
   try { const url = new URL(value || ''); return ['http:', 'https:'].includes(url.protocol) ? url.href : undefined } catch { return undefined }
 }
-function evidenceId(runId: string, sourceId: string) { return `assistant-evidence-${runId}-${sourceId}` }
+function evidenceId(runId: string, sourceId: string) { return `assistant-evidence-${runId}-${encodeURIComponent(sourceId).replace(/[!'()*]/g, value => `%${value.charCodeAt(0).toString(16)}`)}` }
 function linkedAnswer(entry: Entry, evidence: Evidence[]) {
   let body = entry.body
   for (const item of evidence) body = body.split(`[${item.source_id}]`).join(`[${item.source_id}](#${evidenceId(entry.entry_id, item.source_id)})`)
@@ -112,8 +117,22 @@ const evidencePageCharacters = 24_000
 function EvidenceSnapshot({ request, result, sourceId }: { request?: Record<string, unknown>; result: Record<string, unknown>; sourceId: string }) {
   const text = useMemo(() => JSON.stringify({ request, result }, null, 2), [request, result])
   const [page, setPage] = useState(0)
+  const [query, setQuery] = useState('')
+  const [match, setMatch] = useState<number | null>(null)
   const pageCount = Math.ceil(text.length / evidencePageCharacters)
   const currentPage = Math.min(page, pageCount - 1)
+  const fields = useMemo(() => {
+    const start = text.indexOf('\n  "result": {')
+    return Object.keys(result).map(key => ({ key, offset: text.indexOf(`\n    ${JSON.stringify(key)}:`, start) })).filter(field => field.offset >= 0)
+  }, [result, text])
+  function search() {
+    if (!query) return
+    const start = match === null ? 0 : match + query.length
+    const next = text.indexOf(query, start)
+    const found = next >= 0 ? next : text.indexOf(query)
+    setMatch(found)
+    if (found >= 0) setPage(Math.floor(found / evidencePageCharacters))
+  }
   function download() {
     const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }))
     const link = document.createElement('a')
@@ -123,6 +142,10 @@ function EvidenceSnapshot({ request, result, sourceId }: { request?: Record<stri
     setTimeout(() => URL.revokeObjectURL(url), 0)
   }
   return <>
+    <div className="research-evidence-navigation">
+      <label>跳转字段 <select aria-label="跳转证据字段" defaultValue="" onChange={event => { if (event.target.value) setPage(Math.floor(Number(event.target.value) / evidencePageCharacters)) }}><option value="">选择字段</option>{fields.map(field => <option key={field.key} value={field.offset} translate="no">{field.key}</option>)}</select></label>
+      <form onSubmit={event => { event.preventDefault(); search() }}><label>查找原文 <input value={query} onChange={event => { setQuery(event.target.value); setMatch(null) }} /></label><button type="submit" disabled={!query}>查找下一处</button>{match === -1 && <span role="status">未找到匹配内容</span>}</form>
+    </div>
     {pageCount > 1 && <div className="research-evidence-pages">
       <p>原件较大，以下分段显示；完整内容保留在下载文件中。</p>
       <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>上一段</button>
@@ -154,11 +177,19 @@ function EvidenceItem({ item, entry, read }: { item: Evidence; entry: Entry; rea
     }
   }
   const failed = result?.available === false
+  const original = item.citation_only && result?.retained_source && typeof result.retained_source === 'object' ? result.retained_source as Record<string, unknown> : result
   const sources = failed ? [] : item.tool === 'search' && Array.isArray(result?.sources)
-    ? result.sources as PublicSource[] : item.tool === 'source' && result ? [result as PublicSource] : []
+    ? result.sources as PublicSource[] : item.tool === 'source' && original ? [original as PublicSource] : []
   const coverage = Array.isArray(result?.coverage) ? result.coverage as string[] : []
   return <div id={evidenceId(entry.entry_id, item.source_id)} tabIndex={-1}>
-    <p><strong>{toolLabels[item.tool] || item.tool}{failed ? ' · 读取未完成' : ''}</strong> · <span>获取时间</span> {stamp(item.retrieved_at)}</p>
+    <p><strong>{item.citation_only ? '正文引用的留存来源' : toolLabels[item.tool] || item.tool}{failed ? ' · 读取未完成' : ''}</strong>{!item.citation_only && <> · <span>获取时间</span> {stamp(item.retrieved_at)}</>}</p>
+    {item.citation_only && <>
+      {item.as_of && <p><span>资料截至</span> {stamp(item.as_of)}</p>}
+      {item.recorded_at && <p><span>资料记录时间</span> {stamp(item.recorded_at)}</p>}
+      {item.retrieved_at && <p><span>获取时间</span> {stamp(item.retrieved_at)}</p>}
+    </>}
+    {item.title && <p translate="no">{item.title}</p>}
+    {item.citation_only && <p>此来源与本次回答绑定并被正文引用；引用本身不证明已完整查阅或核验。</p>}
     <p><span>来源编号</span> <code translate="no">{item.source_id}</code>{item.tool === 'portfolio' && <> · <span>组合编号</span> <code translate="no">{String(result?.portfolio_id || entry.context_json.portfolio_id || '—')}</code> · <span>估值日期</span> <span translate="no">{String(result?.as_of_date || (result?.summary as Record<string, unknown> | undefined)?.as_of_date || (entry.context_json.page_context as Record<string, unknown> | undefined)?.as_of_date || '—')}</span></>}</p>
     {typeof result?.reason === 'string' && <p>{result.reason}</p>}{typeof result?.limitation === 'string' && <p>{result.limitation}</p>}
     {sources.map((source, index) => {
@@ -175,7 +206,7 @@ function EvidenceItem({ item, entry, read }: { item: Evidence; entry: Entry; rea
 }
 function EvidenceDetails({ evidence, entry, read }: { evidence: Evidence[]; entry: Entry; read: ResearchAssistantProps['read'] }) {
   return <details className="assistant-evidence"><summary>查阅依据（{evidence.length}）</summary>
-    <p>以下是本次回答实际查阅并保留的证据。目录、历史对话和未检索的扩展范围不代表已核实；未关联来源的结论仍有证据限制。展开某条快照可读取当时留存的完整内容。</p>
+    <p>以下分别列出本次回答的工具查阅记录与正文引用的留存来源。目录、绑定或引用本身不代表已核实；未关联来源的结论仍有证据限制。展开某条快照可读取当时留存的完整内容。</p>
     {evidence.map(item => <EvidenceItem key={item.source_id} item={item} entry={entry} read={read} />)}
   </details>
 }
@@ -611,9 +642,12 @@ export default function ResearchAssistant({
                     const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>('a[href^="#assistant-evidence-"]')
                     if (!anchor) return
                     const target = document.getElementById(anchor.hash.slice(1))
+                    if (!target) return
+                    event.preventDefault()
                     let parent = target?.parentElement
                     while (parent) { if (parent instanceof HTMLDetailsElement) parent.open = true; parent = parent.parentElement }
                     target?.focus()
+                    target.scrollIntoView?.({ block: 'start' })
                   }}>
                     {renderMarkdown(linkedAnswer(entry, evidence))}
                   </div>

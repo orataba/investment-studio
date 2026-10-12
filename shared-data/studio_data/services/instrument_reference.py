@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import ExitStack
 from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
@@ -8,6 +9,7 @@ from studio_data.core.settings import get_settings
 from studio_data.services import datahub_client
 from studio_market.config import MarketSettings
 from studio_market.numeric.registered import read_reference_data
+from studio_market.numeric.store import NumericStore
 from studio_data.services.instrument_store import get_instrument, list_instruments
 from studio_data.contracts import StudioInstrumentReferenceData
 from investment_studio_instrument_core.db_models import InstrumentReferenceObservation, InstrumentReferenceSnapshot
@@ -179,7 +181,7 @@ def _tushare_reference(
     return sections, errors
 
 
-def get_instrument_reference_data(instrument_id: str) -> dict[str, object] | None:
+def get_instrument_reference_data(instrument_id: str, *, public_store: NumericStore | None = None) -> dict[str, object] | None:
     instrument = get_instrument(instrument_id)
     if instrument is None:
         return None
@@ -218,7 +220,8 @@ def get_instrument_reference_data(instrument_id: str) -> dict[str, object] | Non
             prefix="fmp:",
         )
         if provider_symbol:
-            public = read_reference_data(MarketSettings.from_environment(), provider_symbol, instrument_type)
+            public = read_reference_data(public_store.settings if public_store else MarketSettings.from_environment(),
+                                         provider_symbol, instrument_type, store=public_store)
             sections, errors = public["sections"], public["section_errors"]
             fetched_at = public["observed_at"]
             source.update(public["source"])
@@ -241,9 +244,10 @@ def get_instrument_reference_data(instrument_id: str) -> dict[str, object] | Non
     }
 
 
-def refresh_instrument_reference_data(instrument_id: str) -> dict[str, object] | None:
+def refresh_instrument_reference_data(instrument_id: str, *, public_store: NumericStore | None = None) -> dict[str, object] | None:
     """Atomically retain changed source observations and update the app view."""
-    record = get_instrument_reference_data(instrument_id)
+    record = (get_instrument_reference_data(instrument_id, public_store=public_store)
+              if public_store else get_instrument_reference_data(instrument_id))
     if record is None:
         return None
     record = StudioInstrumentReferenceData.model_validate(record).model_dump(mode="json")
@@ -277,24 +281,35 @@ def refresh_reference_data_batch(*, instrument_ids: list[str] | None = None) -> 
     """Refresh registered app views from source observations; leave prices/NAV untouched."""
     selected = set(instrument_ids) if instrument_ids is not None else None
     results = []
-    for instrument in list_instruments(include_inactive=False):
-        instrument_id = str(instrument["instrument_id"])
-        if instrument["instrument_type"] not in REFERENCE_INSTRUMENT_TYPES:
-            continue
-        if selected is not None and instrument_id not in selected:
-            continue
-        try:
-            record = refresh_instrument_reference_data(instrument_id)
-            errors = record.get("section_errors", {}) if record else {"reference": "Instrument not found"}
-            status = "failed" if errors else "refreshed"
-            if record and record["provider"] == "manual":
-                status = "skipped"
-            coverage = dict(record.get("source", {}).get("section_coverage", {})) if record else {}
-            unavailable = [f"{section}: {value['reason']}" for section, value in coverage.items() if value.get("status") == "unavailable"]
-            message = str(errors) if errors else "; ".join(["Reference snapshot projected", *unavailable])
-            results.append({"instrument_id": instrument_id, "status": status, "message": message})
-        except Exception as error:
-            results.append({"instrument_id": instrument_id, "status": "failed", "message": str(error)})
+    with ExitStack() as resources:
+        public_store = None
+        for instrument in list_instruments(include_inactive=False):
+            instrument_id = str(instrument["instrument_id"])
+            if instrument["instrument_type"] not in REFERENCE_INSTRUMENT_TYPES:
+                continue
+            if selected is not None and instrument_id not in selected:
+                continue
+            try:
+                source_profile = str((instrument.get("source_settings") or {}).get("source_api_profile") or "").strip().lower()
+                is_fmp = source_profile not in {"tushare", "tushare_pro", "tushare-pro"} and (
+                    source_profile == "fmp" or _identifier(instrument, identifier_type="provider_symbol", prefix="fmp:"))
+                if is_fmp and public_store is None:
+                    candidate = NumericStore(MarketSettings.from_environment())
+                    resources.callback(candidate.close)
+                    resources.enter_context(candidate.query_session())
+                    public_store = candidate
+                record = (refresh_instrument_reference_data(instrument_id, public_store=public_store)
+                          if is_fmp else refresh_instrument_reference_data(instrument_id))
+                errors = record.get("section_errors", {}) if record else {"reference": "Instrument not found"}
+                status = "failed" if errors else "refreshed"
+                if record and record["provider"] == "manual":
+                    status = "skipped"
+                coverage = dict(record.get("source", {}).get("section_coverage", {})) if record else {}
+                unavailable = [f"{section}: {value['reason']}" for section, value in coverage.items() if value.get("status") == "unavailable"]
+                message = str(errors) if errors else "; ".join(["Reference snapshot projected", *unavailable])
+                results.append({"instrument_id": instrument_id, "status": status, "message": message})
+            except Exception as error:
+                results.append({"instrument_id": instrument_id, "status": "failed", "message": str(error)})
     return {"results": results, "refreshed_count": sum(item["status"] == "refreshed" for item in results)}
 
 

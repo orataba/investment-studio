@@ -81,6 +81,17 @@ no current projection or cache replaces historical evidence. Complete forecast a
 ETF-holdings queries retain their full Parquet schema union, including nullable
 fields originating in older captures.
 
+Registered reference views read company/ETF profiles and provider supplements
+through the existing current projection; a historical cutoff still falls back to
+PIT history when required. Complete forecasts and ETF holdings select the eligible
+snapshot files before scanning rows. One serial reference batch shares a DuckDB
+connection and the full historical schema for each unchanged file collection,
+including fields from other scopes and historical type promotion. It does not
+cache fact rows or persist another invalidation layer. Each query reselects its
+complete snapshots; changed file collections rebind their schema. Version queries
+continue to read all eligible versions. Reference-only projection preserves source
+clocks and does not count as a price update or trigger NAV recalculation.
+
 Forecasts are complete captures grouped by company and annual/quarter frequency.
 The frequency capture becomes available only after its last required year
 response. A→B→A remains three observations. An empty complete capture removes old
@@ -106,6 +117,11 @@ adjustment obligation defers the symbol's new bulk daily prices to its full
 rebuild. A newly changed raw overlap publishes its evidence and durable rebuild
 request without publishing partial adjusted prices. Missing adjusted prices,
 retained dates, or all history remain explicit source coverage failures.
+An empty price response does not establish endpoint incompatibility, delisting,
+or a non-trading session. Full revisions with no history remain pending and retain
+their failed attempt/raw evidence; profile activity flags alone cannot complete
+them or substitute another listing's prices. This differs from a completed empty
+optional reference section, whose unavailable coverage can be projected explicitly.
 
 Price query provenance includes each controlled symbol's reviewed identity,
 identity source ID and complete base capture ID. These describe the exact read's
@@ -288,6 +304,20 @@ objects, batch/file/capture catalog records and original clocks/source IDs; no
 application schemas. Local `sync` follows the entire authenticated directory index
 and imports every missing archive, preserving completed receipts if a later
 transfer fails. Exact repeated imports are idempotent.
+
+Numeric directory reads use the same trusted SSH host and its standard-library
+`python3` to hash one open `index.json`. An unchanged index sends only a hash/size
+confirmation; a changed index streams gzip. The receiver verifies the complete
+decoded size and SHA-256 before atomically caching those bytes by remote origin.
+There is no second publication index or remote application-version dependency.
+Connection establishment is bounded at 10 seconds; the index transfer uses at
+most 300 seconds, with a 64 MiB decoded metadata limit. Archive transfer budgets
+and archive integrity checks are unchanged. Failures record elapsed time, received
+bytes and whether the remote header arrived, without logging commands or secrets.
+An unreachable or invalid response never falls back to a stale cached index.
+Even after an unchanged confirmation, every entry is checked against actual local
+ready batches. Cached metadata and delivery receipts do not prove that a restored
+database contains the data. Missing retired payloads still require a recovery bundle.
 
 Raw-response paths contain the SHA-256 of the uncompressed response body. New
 captures use zero gzip mtime and the platform-neutral OS header byte. When an

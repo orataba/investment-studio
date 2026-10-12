@@ -231,3 +231,8 @@
 .assistant-evidence [id]:target, .assistant-evidence [id]:focus { outline: 2px solid var(--accent, #4374a5); outline-offset: .25rem; }
 .research-evidence-pages { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 .research-evidence-pages > p { flex-basis: 100%; }
+
+.assistant-evidence [id] { scroll-margin-top: 100px; }
+.research-evidence-navigation { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; align-items: center; }
+.research-evidence-navigation form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.research-evidence-navigation input, .research-evidence-navigation select { max-width: 240px; padding: 5px 7px; border: 1px solid var(--studio-line, #dce1e5); background: #fff; color: inherit; font: inherit; }

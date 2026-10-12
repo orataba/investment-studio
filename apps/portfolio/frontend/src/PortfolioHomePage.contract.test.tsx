@@ -1641,6 +1641,8 @@ describe('Holdings rendered page contract', () => {
     expect(tableExportMocks.downloadTable).toHaveBeenCalledTimes(1)
     const rows = tableExportMocks.downloadTable.mock.calls[0][1] as Array<Array<string | number | null>>
     expect(rows[0][0]).toBe('Holdings as of 2026-07-15')
+    expect(rows.find((row) => row[0] === 'Numeric ratios')?.[1]).toContain('0.05 = 5%')
+    expect(rows.find((row) => row[0] === 'Missing values')?.[1]).toContain('neither means zero')
     expect(rows.some((row) => row[0] === 'Securities')).toBe(true)
     expect(rows.some((row) => row[0] === 'FCN')).toBe(true)
     expect(rows.some((row) => row[0] === 'Options')).toBe(true)
@@ -1662,9 +1664,10 @@ describe('Holdings rendered page contract', () => {
         .getAllByRole('columnheader')
         .map((header) => header.textContent)
 
-    expect(exportedHeader('FCN')).toEqual(renderedHeader('FCN holdings'))
-    expect(exportedHeader('Options')).toEqual(renderedHeader('Option holdings'))
-    expect(exportedHeader('Cash & Settlement')).toEqual(renderedHeader('Cash and settlement holdings'))
+    const withUnits = (headers: Array<string | null>) => headers.map(header => ['Current Weight', 'Forward RC', 'Moneyness'].includes(header ?? '') ? `${header} (fraction)` : header)
+    expect(exportedHeader('FCN')).toEqual(withUnits(renderedHeader('FCN holdings')))
+    expect(exportedHeader('Options')).toEqual(withUnits(renderedHeader('Option holdings')))
+    expect(exportedHeader('Cash & Settlement')).toEqual(withUnits(renderedHeader('Cash and settlement holdings')))
 
     for (const section of [
       'FCN',
@@ -1809,10 +1812,10 @@ describe('Holdings rendered page contract', () => {
     await user.click(screen.getByRole('button', { name: 'Download' }))
     await user.click(screen.getByRole('menuitem', { name: 'CSV' }))
     const exportedRows = tableExportMocks.downloadTable.mock.calls[0][1] as Array<Array<string | number | null>>
-    const header = exportedRows.find((row) => row.includes('Current DD'))!
+    const header = exportedRows.find((row) => row.includes('Current DD (fraction)'))!
     const subtotal = exportedRows.find((row) => row.includes('Securities Subtotal (USD)'))!
-    expect(subtotal[header.indexOf('Current DD')]).toBeCloseTo(-0.16)
-    expect(subtotal[header.indexOf('Max DD')]).toBeCloseTo(-0.2)
+    expect(subtotal[header.indexOf('Current DD (fraction)')]).toBeCloseTo(-0.16)
+    expect(subtotal[header.indexOf('Max DD (fraction)')]).toBeCloseTo(-0.2)
     expect(readPoints).toHaveBeenCalledTimes(6)
   })
 })

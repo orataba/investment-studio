@@ -2432,6 +2432,8 @@ export type PortfolioOptionAction =
   | 'buy_to_close'
 
 export type PortfolioTransactionChangeLogRecord = {
+  actor_user_id?: string | null
+  actor_name?: string | null
   change_id: string
   portfolio_id: string
   transaction_id: string

@@ -30,7 +30,7 @@ Watchlist/Portfolio 共用 `investment_studio` 数据库，包含：
 
 Regime 的独立 `market_data` 数据库保存模型私有输入与运行事实，区别于 Studio 的同名 schema。
 两者不共用业务事务；Regime 来源适配器读取共享 `studio_market` 数据后物化自己的输入。
-云端是公开数据和 Studio 业务数据的权威来源；本机每周接收完整快照，期间独立运行。人员与历史署名随数据同步，运行凭据及本机免登录配置独立。同步与恢复见 [本机服务](LOCAL_MACOS_SERVICE.md#每周从云端同步)。
+云端负责公共资料采集，本机可只接收公共行情与文本，保留独立业务数据。明确启用整库同步时，云端才作为该同步的业务权威，本机接收完整快照；人员与历史署名随快照同步，运行凭据及本机免登录配置仍独立。不能把公共资料接收或版本发布当作整库覆盖授权。同步与恢复见 [本机服务](LOCAL_MACOS_SERVICE.md#每周从云端同步)。
 外部 Market Intelligence 只提供文本／事件包。其他项目的数据库和源代码不是运行依赖。
 
 ## 文件与运行归属
@@ -63,7 +63,8 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 
 ### Home
 
-- 只处理登录、会话、业务入口地址和自身健康检查
+- 后端只处理登录、会话、业务入口地址和自身健康检查
+- 首页保留四个工作区入口，仅在下方读取 Watchlist 的重要风险轻量投影；不建立中央任务或风险库、不跨模块直读数据库。重大或紧急的筛选语义、权限、当前风险状态与对象路由仍归业务模块
 - 只读写 `identity` 账号、团队与凭证；不导入 `studio_data` 或 `instrument-core`，不读取业务账本或供应商密钥
 - `home.env` 与后台维护的 `data.env` 分开
 - `home/apps.json` 定义导航项，`INVESTMENT_STUDIO_HOME_APP_URLS` 只覆盖运行地址；导航目录不承担服务发现或数据状态管理
@@ -102,7 +103,7 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 
 - 直接读写 `portfolio`
 - 直接读取 `instrument_data`
-- 在所属应用的 schema 内维护 ledger、lots、performance、risk、taxonomy、target set、research；云端权威数据每周覆盖同步至本机，本机修改不回传
+- 在所属应用的 schema 内维护 ledger、lots、performance、risk、taxonomy、target set、research；只有明确启用整库同步才以云端快照覆盖本机，本机修改不回传；仅公共资料接收不覆盖这些业务表
 - Portfolio 管理分类和目标只有当前配置；自动版本用于审计与失效，修改后重述历史派生分析。Research 将当前配置冻结到每次运行，已保存结果不随以后修改漂移；金融事实与来源保留各自日期
 - 在所属应用的 schema 内维护 FCN/期权不可变合约及事件交易；只有合约的 underlying / deliverable 引用 Instrument Data 市场资产
 - 风险面板经 Watchlist API 读取和更新跟进记录及范围内风控研判；研判读取 Portfolio 实际持仓，市值敞口不等于风险贡献。组合风险、风险预算和研究求解仍由 Portfolio 独立计算；该连接失败不影响账本和绩效计算

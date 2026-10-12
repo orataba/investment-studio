@@ -5,7 +5,7 @@ import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 import AccountBoundary, { accountStorageKey } from './AccountBoundary'
 
 beforeEach(() => { window.history.replaceState(null, '', '/watchlists/test?lang=zh-Hans') })
-afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers() })
 
 it('opens local owner content directly and labels unrestricted local access without account links', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ user_id: 'shaw', display_name: 'Shaw', team_id: 'default', team_role: 'admin', local_unrestricted: true }) }))
@@ -31,7 +31,7 @@ it('keeps the latest account when an older identity request finishes after a swi
     .mockResolvedValueOnce({ ok: true, json: async () => ({ user_id: 'bob', display_name: 'Bob', team_id: 'default', team_role: 'reader' }) })
   vi.stubGlobal('fetch', fetch)
   render(<LanguageProvider enableDomTranslation={false}><AccountBoundary><p>研究记录</p></AccountBoundary></LanguageProvider>)
-  await act(async () => { window.dispatchEvent(new Event('focus')) })
+  await act(async () => { window.dispatchEvent(new Event('studio:unauthorized')) })
   expect((await screen.findByText('Bob')).parentElement).toBeTruthy()
   await act(async () => {
     finishOld({ ok: true, json: async () => ({ user_id: 'alice', display_name: 'Alice', team_id: 'default', team_role: 'admin' }) })
@@ -77,4 +77,21 @@ it('localizes recovery and retains the deep link and diagnostic id when retrying
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
   await screen.findByText('Target watchlist')
   expect(window.location.search).toBe('?view=custom&lang=en')
+})
+
+it('bounds a stalled account read and makes retry perform a fresh request', async () => {
+  vi.useFakeTimers()
+  let aborted = false
+  const fetcher = vi.fn().mockImplementationOnce((_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener('abort', () => { aborted = true; reject(new DOMException('aborted', 'AbortError')) })
+  })).mockResolvedValueOnce({ ok: true, json: async () => ({ user_id: 'alice', display_name: 'Alice', team_id: 'default', team_role: 'admin' }) })
+  vi.stubGlobal('fetch', fetcher)
+  render(<LanguageProvider enableDomTranslation={false}><AccountBoundary><p>Recovered workspace</p></AccountBoundary></LanguageProvider>)
+  await act(async () => { await vi.advanceTimersByTimeAsync(29_000); window.dispatchEvent(new Event('focus')) })
+  expect(fetcher).toHaveBeenCalledTimes(1)
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+  expect(aborted).toBe(true)
+  expect(screen.getByRole('alert').textContent).toContain('读取超时')
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重试' })) })
+  expect(screen.getByText('Recovered workspace')).toBeTruthy()
 })

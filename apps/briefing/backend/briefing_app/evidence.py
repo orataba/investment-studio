@@ -163,6 +163,8 @@ def related_equity_snapshot(store, documents: list[dict], *, report_type: str,
                 "asset_type": "equity", "entity_ids": candidate["entity_ids"],
                 "related_document_source_ids": candidate["related_document_source_ids"],
                 "identity_source_ids": [profile["source_id"]]}
+            if profile.get("currency"):
+                metadata.update(currency=profile["currency"], unit=f"{profile['currency']} per share")
             result["sources"].append(profile)
             calendar = {"NASDAQ": "XNAS", "NYSE": "XNYS", "AMEX": "XASE", "HKSE": "XHKG",
                         "SHH": "XSHG", "SHZ": "XSHG"}.get(str(profile.get("exchange") or "").upper())
@@ -231,13 +233,29 @@ def build_input(report_type: str, cutoff: datetime, settings) -> dict:
             "prepared_at": datetime.now(UTC).isoformat()}
 
 
+def with_quote_metadata(snapshot: dict, source: dict) -> dict:
+    """Presentation metadata comes from the fixed benchmark contract or the
+    already-bound listing profile, never today's profile or reporting currency."""
+    from studio_market.numeric.reporting import benchmark_quote_metadata
+    row = next((row for row in snapshot.get("market_rows", [])
+                if source.get("source_id") in row.get("source_ids", [])), source)
+    metadata = benchmark_quote_metadata(row.get("symbol", ""))
+    identities = set(row.get("identity_source_ids", []))
+    profile = next((item for item in snapshot.get("sources", [])
+                    if item.get("source_id") in identities and item.get("currency")), None)
+    if profile:
+        metadata = {"currency": profile["currency"], "unit": f"{profile['currency']} per share"}
+    metadata.update({key: row[key] for key in ("currency", "unit") if row.get(key)})
+    return {**metadata, **source}
+
+
 def read_bound_source(snapshot: dict, source_id: str, settings=None) -> dict:
     """Resolve a preserved text version; report storage owns only its reference."""
     source = next((row for row in snapshot.get("sources", []) if row["source_id"] == source_id), None)
     if source is None:
         raise LookupError("这份证据不属于当前报告版本")
     if source["source_type"] != "public_document":
-        return source
+        return with_quote_metadata(snapshot, source)
     from briefing_app.settings import get_settings
     from studio_market.config import MarketSettings
     from studio_market.text import TextStore

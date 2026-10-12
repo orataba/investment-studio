@@ -501,3 +501,29 @@ def test_mcp_stdio_submission_without_database_credentials(client, submission):
         assert run.context_json["submitted_draft"]["reviews"][0]["summary"] == draft["reviews"][0]["summary"]
         assert run.status == "queued" and run.context_json["reviews"] == {}
         assert session.scalars(select(RiskCase)).all() == []
+
+
+def test_event_validation_reads_each_existing_event_once_and_market_clock_once(submission, monkeypatch):
+    from sqlalchemy import event
+    from watchlist_app.db.session import get_engine
+    rid, draft = submission
+    item = draft["reviews"][0]["events"][0]
+    draft["reviews"][0]["events"] = [{**item, "event_key": f"investment-{index}"} for index in range(5)]
+    sql, clocks = [], []
+    original_clock = service._event_check_time
+    def clock(session, instrument_id, cutoff):
+        clocks.append(instrument_id)
+        return original_clock(session, instrument_id, cutoff)
+    monkeypatch.setattr(service, "_event_check_time", clock)
+    def record(_connection, _cursor, statement, *_args):
+        if statement.lstrip().upper().startswith("SELECT"):
+            sql.append(statement)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, rid)
+        event.listen(get_engine(), "before_cursor_execute", record)
+        try:
+            service.validate_result(session, run, service.ReviewResult.model_validate(draft))
+        finally:
+            event.remove(get_engine(), "before_cursor_execute", record)
+    assert len([query for query in sql if "FROM risk_case" in query]) == 1
+    assert clocks == ["xlk"]

@@ -87,3 +87,17 @@ it('translates a labeled multi-sentence explanation without losing its full-mess
     expect(screen.getByRole('tooltip')).toHaveTextContent(detail)
   })
 })
+
+
+it('renders repeated compound diagnostics without exponential separator recursion', async () => {
+  window.localStorage.setItem(LANGUAGE_STORAGE_KEY, 'en')
+  const explanation = Array.from({ length: 24 }, (_, index) =>
+    `2024-${String(index % 12 + 1).padStart(2, '0')}-01: Root / Example sleeve solve failed: Root / Example sleeve / Neutral solve failed: example-fund does not have usable market history for the requested period.`
+  ).join(' ')
+  render(<LanguageProvider><p title={explanation}>{explanation}</p></LanguageProvider>)
+  expect(screen.getByTitle(explanation)).toHaveTextContent(explanation)
+  // The previous overlapping recursive suffixes blocked the event loop for
+  // over a minute on this saved-run shape, even without changing any text.
+  await waitFor(() => expect(screen.getByTitle(explanation)).toBeVisible())
+  window.localStorage.removeItem(LANGUAGE_STORAGE_KEY)
+})

@@ -739,13 +739,15 @@ function downloadWatchlistRows(
   columns: string[],
   rows: Array<Record<string, unknown>>,
   format: TableExportFormat,
+  fields: FieldRegistryRecord[],
 ) {
+  const exportedColumns = columns.filter(column => !isChartFieldKey(column))
   downloadTable(
     filenameBase,
     [
-      columns,
+      exportedColumns.map(column => isReturnMetricField(column) || fields.find(field => field.field_key === column)?.formatter_code === 'percent' ? `${column} (%)` : column),
       ...rows.map((row) =>
-        columns.map((column) => watchlistExportCell(row[column] ?? row[column.replace(/^attr\./, '')])),
+        exportedColumns.map((column) => watchlistExportCell(row[column] ?? row[column.replace(/^attr\./, '')])),
       ),
     ],
     format,
@@ -2459,16 +2461,20 @@ export default function WatchlistsPage() {
     setError(null)
     setNotice(null)
     try {
-      const exportRows = await loadAllScreenerRows(baseScreenerPayload)
+      const exportRows = await loadAllScreenerRows({
+        ...baseScreenerPayload,
+        selected_fields: [...new Set([...baseScreenerPayload.selected_fields, 'currency'])],
+      })
       const includesEndpointSensitiveMetrics = visibleColumns.some(isMetricAsOfSensitiveField)
       const semanticColumns = includesEndpointSensitiveMetrics
         ? ['metric_as_of_date', 'metric_return_kind', 'metric_quote_basis', 'metric_series_type']
         : []
       downloadWatchlistRows(
         `watchlist-${fileNameSlug(activeWatchlist?.name || watchlistDetail?.name || watchlistId)}-${fileNameSlug(activeView?.name || 'default')}`,
-        [...new Set(['instrument_id', ...visibleColumns, ...semanticColumns])],
+        [...new Set(['instrument_id', 'currency', ...visibleColumns, ...semanticColumns])],
         exportRows,
         format,
+        fieldRegistry,
       )
       setNotice(`Exported ${exportRows.length} rows from the current watchlist view.`)
     } catch (exportError) {

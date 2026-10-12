@@ -2,7 +2,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import uuid4
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
@@ -335,6 +335,7 @@ def topic_detail(topic_id: str, session: Session = Depends(get_db_session)):
     from sqlalchemy import JSON, case, true
     from watchlist_app.services.research_access import research_context_projection, research_projection_rows
     from watchlist_app.services.research_run_evidence import attach_computed_sources
+    from watchlist_app.services.research_citations import citation_receipts
     fields = {name: JSON for name in ("research_publication", "user_records", "execution", "runtime_error",
         "portfolio_id", "instrument_ids", "cutoff", "page_context")}
     relation, values = research_context_projection(session, fields)
@@ -362,6 +363,7 @@ def topic_detail(topic_id: str, session: Session = Depends(get_db_session)):
         if row.kind == "analysis":
             context["tool_evidence"] = attach_computed_sources(session, row.entry_id,
                 {"tool_evidence": receipts.get(row.entry_id, [])}, metadata_only=True).get("tool_evidence", [])
+            context["tool_evidence"] = citation_receipts(session, row.entry_id, row.body, context["tool_evidence"])
         entries.append({**{column.name: getattr(row, column.name) for column in columns}, "context_json": context})
     return serialize_payload({"topic": dump(record), "entries": entries})
 
@@ -371,13 +373,20 @@ def run_evidence(run_id: str, source_id: str, session: Session = Depends(get_db_
     """Return one exact, authorized receipt and its retained result on demand."""
     from watchlist_app.services.research_run_context import load_run_fields, load_run_list_item
     from watchlist_app.services.research_run_evidence import computed_evidence_receipt, read_computed_source
-    load_run_fields(session, run_id, set())  # Original topic/portfolio and run-identity checks.
+    run = load_run_fields(session, run_id, {"cutoff"})  # Original topic/portfolio and run-identity checks.
     receipt = load_run_list_item(session, run_id, "tool_evidence", source_id)
     if receipt is None:
         source = read_computed_source(session, run_id, source_id)
         receipt = computed_evidence_receipt(source) if source is not None else None
         if receipt is None:
-            raise HTTPException(404, "本轮没有这条已留存的查阅记录")
+            from watchlist_app.services.research_citations import read_citation
+            try:
+                citation = read_citation(session, run_id, source_id, cutoff=run.context_json.get("cutoff"))
+            except ValueError as error:
+                raise HTTPException(404, str(error)) from error
+            if citation is not None:
+                return citation
+            raise HTTPException(404, "本轮没有这条已留存的查阅记录或引用资料")
         return {**receipt, "result": {"retained_snapshot": [source]}}
     if receipt.get("result") is not None:
         return receipt
@@ -892,6 +901,13 @@ class RiskFollowUp(BaseModel):
     note: str = ""
     follow_up_date: date | None = None
     clear_manual_trigger: bool = False
+
+
+@router.get("/risk/alerts")
+def risk_alerts(limit: int = Query(default=3, ge=1, le=10), offset: int = Query(default=0, ge=0),
+                session: Session = Depends(get_db_session)):
+    from watchlist_app.services.risk_alerts import important_risk_alerts
+    return important_risk_alerts(session, limit=limit, offset=offset)
 
 
 @router.get("/risk")

@@ -308,7 +308,9 @@ def run_analysis(run_id: str, token: str | None = None, issuer=None, *, attempt:
     finally:
         for issued_token in dict.fromkeys(reversed(tokens)):
             try:
-                revoke_delegation(issued_token, issuer)
+                # A delegated queue issuer may grant stage credentials through
+                # the backend, but Home only allows a delegation to revoke itself.
+                revoke_delegation(issued_token)
             except IdentityError:
                 pass  # Credentials also expire server-side; never publish on an auth failure.
 

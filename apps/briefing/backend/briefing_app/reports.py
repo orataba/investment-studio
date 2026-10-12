@@ -7,7 +7,7 @@ from studio_market.numeric.reporting import PRICE_WINDOW_METHOD_VERSION
 
 from briefing_app.contracts import MacroRelease, ReportDraft
 from briefing_app.db import Report
-from briefing_app.evidence import report_window, read_bound_source
+from briefing_app.evidence import report_window, read_bound_source, with_quote_metadata
 
 
 def begin_report(session, report_type: str, cutoff: datetime, timezone: str, *, edition_role: str, principal=None) -> tuple[Report, bool]:
@@ -134,14 +134,34 @@ def _validate_macro_release(item: MacroRelease, snapshot: dict, sources: dict):
         raise ValueError(f"{item.title}：宏观发布须有本期原文依据；存量行情或本机补录的历史材料不能充当新发布")
 
 
+SUMMARY_FIELDS = ("report_id", "report_type", "report_date", "version", "status", "cutoff",
+                  "created_at", "completed_at", "error")
+
+
+def summary_statement():
+    """List and polling reads never hydrate the retained input or report bodies."""
+    return select(*(getattr(Report, key) for key in SUMMARY_FIELDS), Report.team_id,
+                  Report.input_json["source_count"].as_integer().label("source_count"),
+                  Report.input_json["edition_role"].as_string().label("edition_role"))
+
+
+def projected_report_summary(row) -> dict:
+    return _summary(dict(row._mapping))
+
+
+def _summary(values: dict) -> dict:
+    title = "投研日报" if values["report_type"] == "daily" else "投研周报"
+    return {**{key: values[key] for key in SUMMARY_FIELDS},
+            "title": f"{title} | {values['report_date']}",
+            "cutoff": values["cutoff"].isoformat(), "created_at": values["created_at"].isoformat(),
+            "completed_at": values["completed_at"].isoformat() if values["completed_at"] else None,
+            "source_count": values.get("source_count") or 0, "edition_role": values.get("edition_role") or "preview"}
+
+
 def report_summary(report: Report) -> dict:
-    title = "投研日报" if report.report_type == "daily" else "投研周报"
-    return {"report_id": report.report_id, "report_type": report.report_type, "report_date": report.report_date,
-            "title": f"{title} | {report.report_date}", "version": report.version, "status": report.status,
-            "cutoff": report.cutoff.isoformat(), "created_at": report.created_at.isoformat(),
-            "completed_at": report.completed_at.isoformat() if report.completed_at else None,
-            "error": report.error, "source_count": report.input_json.get("source_count", 0),
-            "edition_role": report.input_json.get("edition_role", "preview")}
+    return _summary({**{key: getattr(report, key) for key in SUMMARY_FIELDS},
+                     "source_count": report.input_json.get("source_count", 0),
+                     "edition_role": report.input_json.get("edition_role", "preview")})
 
 
 def report_detail(report: Report) -> dict:
@@ -151,7 +171,7 @@ def report_detail(report: Report) -> dict:
         numeric_coverage.append({"dataset": "historical_report", "status": "historical_price_window_unverified"})
     return {**report_summary(report), "window": {key: snapshot.get(key) for key in
             ("period_start", "period_end", "timezone", "period_label")},
-            "market_rows": snapshot.get("market_rows", []), "macro_rows": snapshot.get("macro_rows", []),
+            "market_rows": [with_quote_metadata(snapshot, row) for row in snapshot.get("market_rows", [])], "macro_rows": snapshot.get("macro_rows", []),
             "coverage": {"text": snapshot.get("text_coverage", {}), "numeric": numeric_coverage, "documents": snapshot.get("document_counts", {})},
             "sources": [{key: source.get(key) for key in ("source_id", "source_type", "title", "source_name", "url",
                         "published_at", "occurred_at", "observed_at", "received_at", "content_completeness", "symbol", "date")}

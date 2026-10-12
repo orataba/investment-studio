@@ -5,6 +5,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Req
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 from studio_identity import IdentityError, current_principal, principal_context, resolve_request, issue_delegation, cookie_name, local_mode
+from studio_runtime import operation
 from briefing_app.access import can_generate, is_published, require_report_access
 import re
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 from briefing_app.contracts import GenerateRequest, ReportDraft
 from briefing_app.db import Report, get_session
 from briefing_app.evidence import current_source_index, read_bound_source
-from briefing_app.reports import begin_report, report_detail, report_summary, validate_draft
+from briefing_app.reports import begin_report, report_detail, report_summary, validate_draft, summary_statement, projected_report_summary
 from briefing_app.runner import harness_available, interrupt_incomplete_runs, run_report
 from briefing_app.settings import get_settings
 
@@ -45,7 +46,8 @@ def create_app(settings=None):
         try:
             if public and not has_credential and not local_mode():
                 return await call_next(request)
-            principal = await run_in_threadpool(resolve_request, request, "briefing", allowed_origins=settings.cors_origins)
+            with operation("identity"):
+                principal = await run_in_threadpool(resolve_request, request, "briefing", allowed_origins=settings.cors_origins)
             request.state.principal = principal
             with principal_context(principal):
                 response = await call_next(request)
@@ -96,8 +98,8 @@ def create_app(settings=None):
                 filters.append(Report.report_id == principal.resource_scope["id"])
             if principal.kind == "service" and not set(principal.scopes) & {"briefing:read", "briefing:publish"}:
                 raise HTTPException(403, "此服务身份没有报告权限")
-        rows = session.scalars(select(Report).where(*filters).order_by(Report.report_date.desc(), Report.created_at.desc()).offset(offset).limit(limit))
-        return {"rows": [report_summary(row) for row in rows], "total": session.scalar(select(func.count()).select_from(Report).where(*filters)),
+        rows = session.execute(summary_statement().where(*filters).order_by(Report.report_date.desc(), Report.created_at.desc()).offset(offset).limit(limit))
+        return {"rows": [projected_report_summary(row) for row in rows], "total": session.scalar(select(func.count()).select_from(Report).where(*filters)),
                 "limit": limit, "offset": offset}
 
     @app.post("/api/briefing/reports", status_code=202)
@@ -143,7 +145,12 @@ def create_app(settings=None):
 
     @app.get("/api/briefing/reports/{report_id}/status")
     def report_status(report_id: str, request: Request, session: Session = Depends(get_session)):
-        return report_summary(get_report(report_id, session, public=request.state.principal is None))
+        row = session.execute(summary_statement().where(Report.report_id == report_id)).first()
+        if row is None or (request.state.principal is None and (row.status != "completed" or row.edition_role != "publisher")):
+            raise HTTPException(404, "报告不存在")
+        if request.state.principal is not None:
+            require_report_access(row)
+        return projected_report_summary(row)
 
     @app.get("/api/briefing/reports/{report_id}/sources/{source_id:path}")
     def source(report_id: str, source_id: str, session: Session = Depends(get_session)):

@@ -1,7 +1,7 @@
 import InfoHint from '../../../../packages/ui/src/InfoHint'
 import { useLanguage } from '../../../../packages/ui/src/i18n'
 import type { Source } from './types'
-import { EvidenceTime, ExternalLinkIcon } from './reading'
+import { EvidenceTime, ExternalLinkIcon, quoteUnit } from './reading'
 
 export const safeUrl = (value?: string) => {
   try { const url = new URL(value || ''); return ['https:', 'http:'].includes(url.protocol) ? url.href : undefined } catch { return undefined }
@@ -33,12 +33,14 @@ export function SourceEvidence({ source, onClose, onSource, canReadSources = tru
   const document = source.source_type === 'public_document'
   const sourceIds = Array.isArray(source.source_ids) ? source.source_ids.filter((id): id is string => typeof id === 'string') : []
   const fields: [string, unknown][] = market ? [
+    [copy('价格单位', 'Price unit'), quoteUnit(source, language === 'zh-Hans')],
     [copy('起始日', 'Start date'), source.start_date], [copy('起始收盘价', 'Starting close'), source.start_close],
     [copy('截至日', 'End date'), source.end_date], [copy('截至收盘价', 'Ending close'), source.end_close],
     [copy('区间涨跌', 'Price change'), typeof source.return_pct === 'number' ? `${source.return_pct > 0 ? '+' : ''}${source.return_pct.toFixed(2)}%` : null],
   ] : macro || numeric ? [
     [copy('数据日期', 'Observation date'), source.date],
     ...(source.value != null ? [[copy('数值', 'Value'), source.value], [copy('单位', 'Unit'), unit]] as [string, unknown][] : [
+      [copy('价格单位', 'Price unit'), quoteUnit(source, language === 'zh-Hans')],
       [copy('开盘价', 'Open'), source.open], [copy('最高价', 'High'), source.high], [copy('最低价', 'Low'), source.low], [copy('收盘价', 'Close'), source.close],
       ...(source.adjusted_close != null ? [[copy('复权收盘价', 'Adjusted close'), source.adjusted_close]] as [string, unknown][] : []),
       ...(source.volume != null ? [[copy('成交量', 'Volume'), source.volume]] as [string, unknown][] : []),

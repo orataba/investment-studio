@@ -1,16 +1,24 @@
 # Investment Studio Home
 
-这是账号与导航主页，提供 Watchlist、Portfolio、Regime、Briefing 四个业务 App 的入口。云端使用真实账号登录；显式启用的本机模式免登录并具有全部业务权限。
+这是账号与工作区导航主页，提供 Watchlist、Portfolio、Regime、Briefing 四个业务 App 的入口。云端使用真实账号登录；显式启用的本机模式免登录并具有全部业务权限。
 
-- `frontend/`：登录、账号设置、团队成员管理和主页导航。
+- `frontend/`：登录、账号设置、团队成员管理、主页重要风险提示和导航。
 - `backend/home_api/`：账号、团队、可撤销会话与服务身份；入口地址和主页自身健康状态。
-- 只拥有 PostgreSQL 的 `identity` schema，不读取业务账本、研究记录或持仓，不持有 FMP/DataHub/邮箱密钥。
+- 后端只拥有 PostgreSQL 的 `identity` schema，不读取业务账本、研究记录或持仓，不持有 FMP/DataHub/邮箱密钥。
 - 私密配置来自仓库外 `home.env`，前缀为 `INVESTMENT_STUDIO_HOME_`。
 - `apps.json` 是唯一导航清单。增删卡片不需要修改 React；云端地址通过 `INVESTMENT_STUDIO_HOME_APP_URLS` JSON 对象按 app_id 覆盖。
 
 所有数据接入、解析、导入、人工修正和定时更新都属于独立的 [Data](../shared-data/README.md)，不经由主页执行。公共数值与文本由 [Market Data Pipeline](../docs/MARKET_DATA_PIPELINE.md) 管理；Regime 的模型代码与运行数据库由子模块独立维护。
 
 本地服务与部署见 [Local Service](../docs/LOCAL_MACOS_SERVICE.md) 和 [Server Deployment](../docs/SERVER_DEPLOYMENT.md)。
+
+## 首页重要风险
+
+四个工作区入口保留为首页主体，下方只呈现紧凑的重要风险链接，每页最多三条，跳到事项所属标的或组合。详情、证据与处置仍留在业务工作区。无匹配事项时低调显示“暂无已发布、仍待关注的重大或紧急事项”，不等同于没有风险。
+
+前端以当前会话只读 Watchlist `/api/risk/alerts`，重用现有风险记录，不新增风险库或触发研究。仅选当前版本已被风控确认 active、仍待处理的风险事件，且影响为 major 或复核时效为 immediate；普通价格复核线、覆盖提示、任务失败及一般跟踪事项不进入首页。字段未评估时不推定重大。
+
+业务 API 保留身份与权限校验，仅向明确配置的 Home origin 开放带会话的读取。加载失败独立显示并可重试，不被解释为零风险。读取有 30 秒上限，切换身份重建提示，不跨用户缓存业务结果。
 
 ## 账号初始化与切换
 

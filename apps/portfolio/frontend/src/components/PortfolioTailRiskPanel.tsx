@@ -14,7 +14,10 @@ const messages: Record<string, [string, string]> = {
   partial_market_risk_coverage: ['仅覆盖已建模的市场敞口；未覆盖资产并非零风险。', 'Only modeled market exposures are covered. Excluded assets are not zero risk.'],
   non_daily_or_unverified_intervals_removed: ['存在非日频或不可用收益区间；不会删除区间后重算风险。', 'Non-daily or unavailable intervals are present; risk is not recomputed after deleting them.'],
   incompatible_daily_scenario_intervals: ['各来源的实际单交易日区间不一致；当前精确区间情景法无法比较，暂不计算 VaR / ES。已确认休市不记为缺失报价。', 'Sources have incompatible observed one-session intervals. This exact-interval scenario method cannot compare them; VaR / ES are unavailable. Confirmed holidays are not missing prices.'],
-  missing_daily_return_intervals: ['实际样本内部或尾部存在缺失／不可用区间，VaR / ES 不可用。', 'Missing or unavailable intervals within or after the actual sample prevent VaR / ES.'],
+  missing_daily_return_intervals: ['实际样本内部或尾部缺少应有日频区间，VaR / ES 不可用。', 'Expected daily intervals are missing within or after the actual sample; VaR / ES are unavailable.'],
+  rejected_daily_return_intervals: ['请求窗口含有不可用收益或跨多交易日区间，未进入情景分布；这与下方缺失区间计数不同，VaR / ES 不可用。', 'The requested window contains unavailable returns or multi-session intervals excluded from the scenario distribution. These differ from missing-interval counts below; VaR / ES are unavailable.'],
+  unavailable_return: ['收益不可用', 'Unavailable return'],
+  non_daily_return_interval: ['非单交易日区间', 'Not a one-session interval'],
   unverified_daily_calendar: ['日频交易日历未核实，风险估计不可用。', 'The daily trading calendar is unverified; risk is unavailable.'],
   common_period_intersection: ['仅使用所有建模敞口起止日期均一致的共同情景。', 'Only scenarios with identical start and end dates across modeled exposures are used.'],
   requested_history_partially_covered: ['实际共同样本仅覆盖所选回看的一部分，不能视为所选年限的完整历史。', 'The common sample covers only part of the requested lookback, not the full selected number of years.'],
@@ -51,7 +54,7 @@ export default function PortfolioTailRiskPanel({ portfolioId, asOfDate }: {
   const number = (value: number | null | undefined, digits = 2) => value == null ? '—'
     : value.toLocaleString(zh ? 'zh-CN' : 'en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits })
   const percent = (value: number | null | undefined) => value == null ? '—' : `${number(value * 100)}%`
-  const prominentLimitations = new Set(['invalid_portfolio_nav', 'no_modeled_market_exposure', 'no_common_daily_periods', 'less_than_one_tail_observation', 'partial_market_risk_coverage', 'missing_daily_return_intervals', 'requested_history_calendar_unverified', 'incompatible_daily_scenario_intervals'])
+  const prominentLimitations = new Set(['invalid_portfolio_nav', 'no_modeled_market_exposure', 'no_common_daily_periods', 'less_than_one_tail_observation', 'partial_market_risk_coverage', 'missing_daily_return_intervals', 'rejected_daily_return_intervals', 'requested_history_calendar_unverified', 'incompatible_daily_scenario_intervals'])
   const historyWarning = data?.history_coverage_status === 'partial'
     ? 'requested_history_partially_covered'
     : data?.history_coverage_status === 'unverified' ? 'requested_history_calendar_unverified' : null
@@ -73,12 +76,12 @@ export default function PortfolioTailRiskPanel({ portfolioId, asOfDate }: {
     ...(data?.limitations.filter((code) => !prominentLimitations.has(code) && code !== historyWarning && code !== 'scenario_history_ends_before_as_of').map(label) ?? []),
   ]
   const tailPrecision = zh
-    ? `尾部等效样本数 = 情景数 × (1 − 置信度)。它不是独立尾部事件数，数值可用也不代表统计精度充分。单条情景的最大权重指其在 ES 中的概率权重，不是损益贡献上限。`
-    : 'Tail mass = scenario count × (1 − confidence). It is not an independent tail-event count, and an available estimate does not establish statistical precision. Maximum single-scenario weight refers to probability weight in ES, not its share of monetary loss.'
+    ? `尾部等效样本数 = 可用情景数 × (1 − 置信度)。它不是独立尾部事件数，数值可用也不代表统计精度充分。单条情景的最大权重指其在 ES 中的概率权重，不是损益贡献上限。`
+    : 'Tail mass = eligible scenario count × (1 − confidence). It is not an independent tail-event count, and an available estimate does not establish statistical precision. Maximum single-scenario weight refers to probability weight in ES, not its share of monetary loss.'
 
   return <section className="portfolio-section-block portfolio-tail-risk" aria-labelledby="portfolio-tail-risk-title" aria-busy={pending}>
     <header className="portfolio-tail-risk-heading">
-      <h2 id="portfolio-tail-risk-title">{zh ? '历史情景损失' : 'Historical scenario losses'}<InfoHint label={zh ? '历史情景方法' : 'Historical scenario method'} detail={method} /></h2>
+      <h2 id="portfolio-tail-risk-title" tabIndex={-1}>{zh ? '历史情景损失' : 'Historical scenario losses'}<InfoHint label={zh ? '历史情景方法' : 'Historical scenario method'} detail={method} /></h2>
       <div className="portfolio-tail-risk-controls">
         <label>{zh ? '置信度' : 'Confidence'}
           <select value={confidence} onChange={(event) => setConfidence(Number(event.target.value))}>
@@ -103,12 +106,13 @@ export default function PortfolioTailRiskPanel({ portfolioId, asOfDate }: {
       </div>
       <div className="portfolio-tail-risk-history">
         <span>{zh ? '回看区间' : 'Requested'} <strong>{data.window_start_date} → {data.window_end_date}</strong></span>
-        <span>{zh ? '实际样本' : 'Actual sample'} <strong>{data.first_scenario_start_date ?? '—'} → {data.last_scenario_end_date ?? '—'}</strong></span>
-        <span>{zh ? '情景数 / 尾部等效数' : 'Scenarios / Tail mass'} <strong>{number(data.observation_count, 0)} / {number(data.tail_effective_observations)}</strong><InfoHint label={zh ? '尾部样本口径' : 'Tail sample basis'} detail={tailPrecision} /></span>
+        <span>{zh ? '候选区间' : 'Candidate interval'} <strong>{data.first_scenario_start_date ?? '—'} → {data.last_scenario_end_date ?? '—'}</strong></span>
+        <span>{zh ? '候选 / 可用情景 / 尾部等效数' : 'Candidate / Eligible scenarios / Tail mass'} <strong>{number(data.candidate_observation_count, 0)} / {number(data.observation_count, 0)} / {number(data.tail_effective_observations)}</strong><InfoHint label={zh ? '尾部样本口径' : 'Tail sample basis'} detail={tailPrecision} /></span>
       </div>
-      <p className="portfolio-tail-risk-precision">{zh
+      {data.status === 'unavailable' && <p role="status">{zh ? 'VaR / ES 不可用，不代表零风险。' : 'VaR / ES are unavailable; this does not mean zero risk.'}</p>}
+      {data.tail_observation_count != null && <p className="portfolio-tail-risk-precision">{zh
         ? `最差 ${number(data.tail_observation_count, 0)} 条情景 · 单条情景在 ES 中的最大概率权重 ${percent(data.tail_max_observation_weight)}`
-        : `Worst ${number(data.tail_observation_count, 0)} scenarios · Maximum single-scenario probability weight in ES ${percent(data.tail_max_observation_weight)}`}</p>
+        : `Worst ${number(data.tail_observation_count, 0)} scenarios · Maximum single-scenario probability weight in ES ${percent(data.tail_max_observation_weight)}`}</p>}
       {historyWarning && <div className="portfolio-tail-risk-warning" role="status">
         <p>{zh ? data.history_coverage_status === 'partial' ? '历史样本未覆盖完整回看区间。' : '交易日历尚未核实，无法确认历史覆盖是否完整。' : data.history_coverage_status === 'partial' ? 'Historical sample covers only part of the requested window.' : 'The trading calendar is unverified; full-window coverage cannot be established.'}<InfoHint kind="attention" label={zh ? '历史覆盖限制' : 'Historical coverage limitation'} detail={label(historyWarning)} /></p>
         {data.history_coverage_status === 'partial' && <p className="portfolio-tail-risk-missing">{zh
@@ -116,6 +120,13 @@ export default function PortfolioTailRiskPanel({ portfolioId, asOfDate }: {
           : `${number(data.expected_common_observation_count, 0)} expected · ${number(data.uncovered_leading_observation_count, 0)} uncovered before the sample · ${number(data.missing_internal_observation_count, 0)} missing within it · ${number(data.uncovered_trailing_observation_count, 0)} uncovered after it`}<InfoHint label={zh ? '历史缺口口径' : 'History gap basis'} detail={zh ? '按所有已建模资产和所需汇率的共同交易日历计算。样本前未覆盖可能来自标的成立较晚或来源历史较短，不代表成立前缺失净值。' : 'Counts use the common trading calendar of modeled assets and required FX. Leading absence may reflect younger instruments or shorter source history; it does not imply missing prices before inception.'} /></p>}
       </div>}
       {!!data.missing_intervals?.length && <details className="portfolio-tail-risk-warning"><summary>{zh ? '缺失收益区间' : 'Missing return intervals'} ({data.missing_intervals.length})</summary><ul>{data.missing_intervals.map(p => <li key={`${p.start_date}:${p.end_date}`}>{p.start_date} → {p.end_date}</li>)}</ul></details>}
+      {data.rows.some(row => row.rejected_intervals?.length || row.fx_rejected_intervals?.length) && <details className="portfolio-tail-risk-warning">
+        <summary>{zh ? '未获资格的收益区间（与缺失计数分开）' : 'Ineligible return intervals (separate from missing counts)'}</summary>
+        <ul>{data.rows.flatMap(row => [
+          ...(row.rejected_intervals ?? []).map(p => ({ ...p, basis: zh ? '证券' : 'Security' })),
+          ...(row.fx_rejected_intervals ?? []).map(p => ({ ...p, basis: 'FX' })),
+        ].map(p => <li key={`${row.holding_id}:${p.basis}:${p.start_date}:${p.end_date}`}><span translate="no">{row.name}</span> · {p.basis} · {p.start_date} → {p.end_date} · {label(p.reason)}</li>))}</ul>
+      </details>}
       {data.limitations.some((code) => prominentLimitations.has(code)) && <ul className="portfolio-tail-risk-limitations">{data.limitations.filter((code) => prominentLimitations.has(code)).map((code) => <li key={code}>{label(code)}</li>)}</ul>}
       <p className="portfolio-tail-risk-coverage">
         <span>{zh ? '已建模账面总额 / NAV' : 'Modeled Gross Carrying Amount / NAV'}: <strong>{percent(data.modeled_gross_nav_fraction)}</strong></span>

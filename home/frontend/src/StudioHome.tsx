@@ -6,6 +6,8 @@ import { appPath } from './appPath'
 import { accountRequest } from './accountApi'
 import NoticeToast from '../../../packages/ui/src/NoticeToast'
 import '../../../packages/ui/src/notice-toast.css'
+import { readWithDeadline } from '../../../packages/ui/src/readDeadline'
+import ImportantRisks from './ImportantRisks'
 
 export type StudioApp = {
   app_id: string
@@ -47,26 +49,72 @@ export default function StudioHome() {
   const [error, setError] = useState('')
   const [logoutError, setLogoutError] = useState('')
   const [signingOut, setSigningOut] = useState(false)
-  const [account, setAccount] = useState<{ display_name: string, local_unrestricted?: boolean } | null>(null)
+  const [account, setAccount] = useState<{ user_id: string; team_id: string; display_name: string; local_unrestricted?: boolean } | null>(null)
+  const [accountError, setAccountError] = useState('')
+  const [accountChecking, setAccountChecking] = useState(true)
+  const [accountRevision, setAccountRevision] = useState(0)
+
+  useEffect(() => {
+    let pending = false
+    let disposed = false
+    let requestId = 0
+    let controller: AbortController | null = null
+    async function confirmAccount(force = false) {
+      if (pending && !force) return
+      controller?.abort()
+      controller = new AbortController()
+      const signal = controller.signal
+      const request = ++requestId
+      pending = true
+      setAccountChecking(true)
+      setAccountError('')
+      try {
+        const value = await readWithDeadline(async readSignal => {
+          const response = await fetch('/api/auth/session', { signal: readSignal, credentials: 'same-origin', cache: 'no-store' })
+          if (response.status === 401 || response.status === 403) return null
+          if (!response.ok) throw new Error('Unable to confirm your account. Please retry.')
+          return response.json()
+        }, signal)
+        if (!disposed && !signal.aborted && request === requestId) setAccount(value)
+      } catch (reason) {
+        if (!disposed && !signal.aborted && request === requestId) {
+          setAccount(null)
+          setAccountError(reason instanceof Error ? reason.message : String(reason))
+        }
+      } finally {
+        if (!disposed && request === requestId) { pending = false; setAccountChecking(false) }
+      }
+    }
+    const onFocus = () => void confirmAccount()
+    const onVisible = () => { if (document.visibilityState === 'visible') void confirmAccount() }
+    const onUnauthorized = () => { setAccount(null); void confirmAccount(true) }
+    void confirmAccount()
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('studio:unauthorized', onUnauthorized)
+    return () => {
+      disposed = true
+      controller?.abort()
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('studio:unauthorized', onUnauthorized)
+    }
+  }, [accountRevision])
 
   useEffect(() => {
     const controller = new AbortController()
-    fetch('/api/auth/session', { signal: controller.signal, credentials: 'same-origin' })
-      .then(response => response.ok ? response.json() : null)
-      .then(setAccount).catch(() => undefined)
-    fetch('/api/apps', { signal: controller.signal })
-      .then(async (response): Promise<{ apps: StudioApp[] }> => {
-        if (!response.ok) throw new Error('Unable to load workspaces. Please refresh the page.')
-        return response.json()
-      })
-      .then((response) => setApps(response.apps))
-      .catch((reason: unknown) => {
-        if (!controller.signal.aborted) {
-          setError(reason instanceof Error ? reason.message : 'Unable to load workspaces.')
-        }
-      })
+    setError('')
+    readWithDeadline(async (signal): Promise<{ apps: StudioApp[] }> => {
+      const response = await fetch('/api/apps', { signal })
+      if (!response.ok) throw new Error('Unable to load workspaces. Please refresh the page.')
+      return response.json()
+    }, controller.signal).then(response => {
+      if (!controller.signal.aborted) setApps(response.apps)
+    }).catch((reason: unknown) => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Unable to load workspaces.')
+    })
     return () => controller.abort()
-  }, [])
+  }, [accountRevision])
 
   async function logout() {
     if (signingOut) return
@@ -89,22 +137,24 @@ export default function StudioHome() {
         <a className="home-brand" href={appPath('/')}><strong>Investment Studio</strong></a>
         <div className="home-actions">
           <LanguageSelector />
-          {account ? <>
+          {accountChecking ? <span>{t('Loading…')}</span> : account ? <>
             <a href={appPath('/account')}><span translate="no">{account.display_name}</span> · {t("Account and team")}</a>
             {account.local_unrestricted ? <span>{t("Local unrestricted access")}</span> : <button className="home-logout" type="button" onClick={logout} disabled={signingOut}>{signingOut ? t('Signing out…') : t('Sign out')}</button>}
-          </> : <a href={appPath('/login')}>{t("Sign in")}</a>}
+          </> : accountError ? null : <a href={appPath('/login')}>{t("Sign in")}</a>}
         </div>
       </header>
       <section className="home-intro">
         <span>Workspace</span>
-        <h1>Choose where to work.</h1>
-        <p>Research markets, monitor assets, and manage your portfolios.</p>
+        <h1>{t('Choose where to work.')}</h1>
+        <p>{t('Research markets, monitor assets, and manage your portfolios.')}</p>
       </section>
+      {accountError && <p role="alert">{t(accountError)} <button type="button" onClick={() => setAccountRevision(value => value + 1)}>{t('Retry')}</button></p>}
       {error ? null : apps === null ? (
         <div className="home-links-skeleton" role="status" aria-label={t('Loading')}>{[0, 1, 2, 3].map(key => <span key={key} />)}</div>
       ) : apps.length === 0 ? (
         <p>No workspaces are configured.</p>
       ) : <StudioLinks apps={apps} />}
+      {!accountChecking && account && apps && <ImportantRisks key={`${account.user_id}:${account.team_id}`} apps={apps} />}
     </main>
   )
 }

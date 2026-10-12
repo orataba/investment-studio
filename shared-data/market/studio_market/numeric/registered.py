@@ -127,16 +127,23 @@ def _view(row: dict, aliases: dict | None = None) -> dict:
     return {key if key in clocks else aliases.get(key, _camel(key)): value for key, value in row.items() if key not in excluded and not key.startswith("_")}
 
 
-def read_reference_data(settings: MarketSettings, symbol: str, instrument_type: str, *, as_of: datetime | None = None) -> dict:
+def read_reference_data(settings: MarketSettings, symbol: str, instrument_type: str, *, as_of: datetime | None = None,
+                        store: NumericStore | None = None) -> dict:
     """Project shared observations without contacting a provider or moving clocks."""
     symbol = symbol.strip().upper()
     if instrument_type not in SUPPLEMENTS:
         raise ValueError(f"No public FMP reference projection for {instrument_type}")
-    store = NumericStore(settings)
+    owns_store = store is None
+    store = store or NumericStore(settings)
     sections, errors, lineage, coverage = {}, {}, {}, {}
     try:
         def rows(dataset, section, *, limit=1000):
-            result = store.query(dataset, symbols=[symbol], as_of=as_of, limit=limit)["rows"]
+            # These datasets have one current winner per exact fact key. The
+            # store retains the historical path when the requested PIT cutoff
+            # predates a current winner; projecting today's profile must not
+            # reopen every saved profile/supplement file for every instrument.
+            read = store.latest if dataset in {"company_profiles", "etf_info"} else store.query
+            result = read(dataset, symbols=[symbol], as_of=as_of, limit=limit)["rows"]
             lineage[section] = [{key: row[key] for key in ("source_id", "observed_at", "available_at") if key in row} for row in result]
             return result
 
@@ -193,7 +200,7 @@ def read_reference_data(settings: MarketSettings, symbol: str, instrument_type: 
                     lineage["holdings"] = [{"observed_at": row["observed_at"], "batch_id": row["batch_id"]} for row in observations]
                 else:
                     errors["holdings"] = "共享数据尚无已保存的持仓披露快照"
-        supplements = {row["section"]: row for row in store.query("provider_reference", symbols=[symbol], as_of=as_of)["rows"]}
+        supplements = {row["section"]: row for row in store.latest("provider_reference", symbols=[symbol], as_of=as_of)["rows"]}
         for section, _ in SUPPLEMENTS[instrument_type]:
             row = supplements.get(section)
             if row is None:
@@ -205,4 +212,5 @@ def read_reference_data(settings: MarketSettings, symbol: str, instrument_type: 
         return {"sections": sections, "section_errors": errors, "observed_at": max(clocks).astimezone(UTC).isoformat() if clocks else None,
                 "source": {"storage": "studio_market", "section_sources": lineage, "section_coverage": coverage}}
     finally:
-        store.close()
+        if owns_store:
+            store.close()

@@ -119,3 +119,65 @@ def test_quant_receipt_rechecks_portfolio_access_and_cannot_select_another_run(a
     grants["alice"].clear()
     assert client.get(path, params={"source_id": "computed:owned"}).status_code == 404
     assert client.get(f"/api/research/topics/{topic_id}").status_code == 404
+
+
+def test_answer_citations_resolve_only_bound_originals_without_claiming_tool_delivery(accounts, monkeypatch):
+    from sqlalchemy import event
+    from watchlist_app.db.session import get_engine
+    from watchlist_app.services import market_evidence
+    client, principals, _ = accounts
+    as_user(client, "alice")
+    topic_id = create_topic(client, instrument_ids=["fund-us-agg"])
+    ids = ["instrument:citation-run:fund-us-agg", "computed:ordinary", "text:bound", "research:old:investment-view"]
+    source = {"source_id": ids[1], "source_type": "computed_metric", "instrument_id": "fund-us-agg",
+              "title": "Frozen numbers", "data": {"observed_value": 4.2}}
+    huge = "UNRELATED_ORIGINAL_NOT_FOR_POLLING" * 20000
+    context = {"research_actor": principals["alice"].to_dict(), "execution": {"attempt": 1},
+        "cutoff": "2026-10-01T00:00:00Z", "instrument_ids": ["fund-us-agg"],
+        "instrument_inputs": [{"source_id": ids[0], "instrument_id": "fund-us-agg", "name": "Frozen instrument", "original": huge}],
+        "market_text_sources": [{"source_id": ids[2], "document_id": "bound", "version_id": "original-version", "title": "Original article"}],
+        "research_dossiers": [{"instrument_id": "fund-us-agg", "notebook": {"investment_view": {
+            "version_id": "old:investment-view", "summary": "Original judgment", "versions": None}}}],
+        "unrelated_original": huge}
+    with get_session_factory()() as session:
+        run = ResearchEntry(entry_id="citation-run", topic_id=topic_id, title="Question", kind="analysis", status="running",
+            body=" ".join(f"[{sid}]" for sid in [*ids, "text:not-bound"]), context_json=deepcopy(context))
+        session.add(run)
+        session.flush()
+        with principal_context(replace(principals["alice"], resource_scope={"kind": "run", "id": run.entry_id, "attempt": "1"})):
+            retain_computed_source(session, run, source)
+        session.commit()
+    # No ORM load of the enclosing original is needed for polling or selected reads.
+    def reject_full_entry(state):
+        if state.is_select:
+            assert not any(description.get("expr") is ResearchEntry for description in state.statement.column_descriptions)
+    from sqlalchemy.orm import Session
+    event.listen(Session, "do_orm_execute", reject_full_entry)
+    try:
+        response = client.get(f"/api/research/topics/{topic_id}")
+        assert response.status_code == 200, response.text
+        receipts = response.json()["entries"][0]["context_json"]["tool_evidence"]
+        assert [row["source_id"] for row in receipts] == ids
+        assert all(row["citation_only"] and row["tool"] == "source" for row in receipts)
+        assert huge not in response.text and "Original judgment" not in response.text
+        assert len(response.content) < 6000
+        path = "/api/research/runs/citation-run/evidence"
+        assert client.get(path, params={"source_id": ids[0]}).json()["result"]["retained_source"]["original"] == huge
+        assert client.get(path, params={"source_id": ids[1]}).json()["result"]["retained_source"]["data"] == source["data"]
+        assert client.get(path, params={"source_id": ids[3]}).json()["result"]["retained_source"]["summary"] == "Original judgment"
+        reads = []
+        class TextStore:
+            def read(self, document_id, *, version_id, as_of):
+                reads.append((document_id, version_id, as_of.isoformat()))
+                return {"exact": True}
+        monkeypatch.setattr(market_evidence, "text_store", TextStore)
+        monkeypatch.setattr(market_evidence, "original_source", lambda doc: {"source_id": ids[2], "text": "Original text"})
+        assert client.get(path, params={"source_id": ids[2]}).json()["result"]["retained_source"]["text"] == "Original text"
+        assert reads == [("bound", "original-version", "2026-10-01T00:00:00+00:00")]
+        assert client.get(path, params={"source_id": "text:not-bound"}).status_code == 404
+        assert len(reads) == 1  # Unknown ID never hits the global store.
+        assert as_user(client, "bob").get(path, params={"source_id": ids[0]}).status_code == 404
+    finally:
+        event.remove(Session, "do_orm_execute", reject_full_entry)
+    with get_session_factory()() as session:
+        assert session.get(ResearchEntry, "citation-run").context_json == context

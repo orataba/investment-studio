@@ -2223,6 +2223,16 @@ export default function RiskPage() {
       busy={workspaceLoading || benchmarkLoading}
     >
       <section className="portfolio-detail-surface risk-page-surface">
+        <header className="risk-page-heading" id="risk-top"><h1>{zh ? '组合风险' : 'Portfolio risk'}</h1>
+          <nav aria-label={zh ? '本页目录' : 'On this page'}>{[
+            ['current-holdings-risk', zh ? '当前持仓风险' : 'Current holdings risk'],
+            ['concentration-title', zh ? '集中度' : 'Concentration'],
+            ['rolling-risk', zh ? '滚动风险' : 'Rolling risk'],
+            ['correlation-risk', zh ? '相关性' : 'Correlation'],
+            ['portfolio-tail-risk-title', zh ? '历史情景损失' : 'Historical scenarios'],
+            ...(targetTaxonomy ? [['current-drift', zh ? '当前偏移' : 'Current drift']] : []),
+          ].map(([id, title]) => <a key={id} href={`#${id}`}>{title}</a>)}</nav>
+        </header>
         <NoticeToast notice={workspaceError ? { id: 0, tone: 'error', message: workspaceError } : null} onDismiss={() => setWorkspaceError(null)} />
         <NoticeToast notice={workspaceSupportError ? { id: 0, tone: 'error', message: workspaceSupportError } : null} onDismiss={() => setWorkspaceSupportError(null)} />
 
@@ -2239,10 +2249,10 @@ export default function RiskPage() {
             <section className="portfolio-section-block" aria-label="Risk health">
               <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar">
                 <div>
-                  <div className="panel-title portfolio-title-with-hint">
+                  <h2 id="current-holdings-risk" tabIndex={-1} className="panel-title portfolio-title-with-hint">
                     <span>{zh ? '当前持仓风险' : 'Current Holdings Risk'}</span>
                     <QualityWarningsNotice warnings={holdingsWorkspace.quality_warnings} />
-                  </div>
+                  </h2>
                   <div
                     className="portfolio-detail-meta"
                     title={riskHealthDetail}
@@ -2398,7 +2408,7 @@ export default function RiskPage() {
               <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar risk-rolling-toolbar">
                 <div className="risk-toolbar-primary risk-rolling-toolbar-primary">
                   <div>
-                    <div className="panel-title">Rolling Risk</div>
+                    <h2 id="rolling-risk" tabIndex={-1} className="panel-title">Rolling Risk</h2>
                     <div className="portfolio-detail-meta">{rollingBasis === 'realized'
                       ? (zh ? '按实际持仓与资金变动计算的组合市场风险' : 'Portfolio market risk from actual holdings and cash flows')
                       : (zh ? '以当前权重回看历史，不是组合实际业绩' : 'Historical returns at current weights; not actual portfolio performance')}</div>
@@ -2483,7 +2493,7 @@ export default function RiskPage() {
               <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar risk-matrix-toolbar">
                 <div className="risk-toolbar-primary risk-matrix-toolbar-primary">
                   <div>
-                    <div className="panel-title">Correlation Matrix</div>
+                    <h2 id="correlation-risk" tabIndex={-1} className="panel-title">Correlation Matrix</h2>
                     <div className="portfolio-detail-meta">{selectedMatrixScopeDescription}</div>
                   </div>
                   <label className="risk-scope-select">
@@ -2541,11 +2551,11 @@ export default function RiskPage() {
               <section className="portfolio-section-block" aria-label="Current drift">
                 <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar">
                   <div>
-                    <div className="panel-title portfolio-title-with-hint"><span>Current Drift</span>
+                    <h2 id="current-drift" tabIndex={-1} className="panel-title portfolio-title-with-hint"><span>Current Drift</span>
                       <InfoHint label={zh ? '目标偏移风险口径' : 'Target drift risk basis'} detail={zh
                         ? '各分类沿用同一当前风险模型；切换分类只改变汇总方式。即使当前未持有，已设置的目标仍会显示。'
                         : 'Risk contributions use the same production model for all taxonomies. Switching taxonomy regroups those contributions. Configured targets remain visible even without current holdings.'} />
-                    </div>
+                    </h2>
                     <div
                       className="portfolio-detail-meta"
                       title={`${portfolioRiskFrequency.statusLabel}; ${productionRiskMeta}`}
@@ -2593,6 +2603,7 @@ export default function RiskPage() {
                 </HorizontalTableScroll></details>
               ) : null}
             <RiskSourceCoverage workspace={holdingsWorkspace} />
+            <a className="risk-back-to-top" href="#risk-top">{zh ? '返回顶部' : 'Back to top'}</a>
           </div>
         ) : null}
       </section>

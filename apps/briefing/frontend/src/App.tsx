@@ -11,7 +11,7 @@ import { resolveWorkspaceUrl, withLanguage } from '../../../../packages/ui/src/n
 import type { CitedItem, ReportDetail, ReportSummary, ReportType, Source } from './types'
 import { safeUrl, SourceEvidence } from './SourceEvidence'
 import GenerateEditionForm from './GenerateEditionForm'
-import { EvidenceTime, ExternalLinkIcon, navigateToSection } from './reading'
+import { EvidenceTime, ExternalLinkIcon, navigateToSection, quoteUnit } from './reading'
 
 const api = (import.meta.env.VITE_API_BASE_URL || '/api/briefing').replace(/\/$/, '')
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -46,7 +46,7 @@ function IndustryResearch() {
   const { language } = useLanguage()
   const watchlistUrl = resolveWorkspaceUrl(import.meta.env.VITE_WATCHLIST_URL, 'watchlist')
   // This is the registered shared identity, also resolved by the destination page.
-  const reportUrl = withLanguage(`${watchlistUrl}/instruments/xlk?tab=investment-research&mode=report`, language)
+  const reportUrl = withLanguage(`${watchlistUrl}/instruments/xlk?tab=investment-research&mode=report&from=briefing`, language)
   return <section className="industry-research" aria-label={copy('行业研究', 'Industry research')}>
     <article className="industry-entry">
       <div className="industry-entry-summary">
@@ -119,6 +119,7 @@ export function CoverageSummary({ detail }: { detail: ReportDetail }) {
 
 export function ReportBody({ detail, onSource, canReadSources = true }: { detail: ReportDetail; onSource: (source: string) => void; canReadSources?: boolean }) {
   const copy = useCopy()
+  const { language } = useLanguage()
   const sectionTitles = { takeaway_section: copy('重点信息', 'Key developments'), topic_recommendations: copy('本周话题推荐', 'Weekly topics'), opportunity_leads: copy('新机会线索', 'Research leads'), macro_data_calendar: detail.report_type === 'weekly' ? copy('本周重要宏观发布', 'Important releases this week') : copy('本期重要宏观发布', 'Important releases this period') }
   const groupTitle = (title: string) => ({ 宏观: copy('宏观', 'Macro'), 微观: copy('微观', 'Companies and industries') }[title] || title)
   const sourceMap = new Map(detail.sources.map(source => [source.source_id, source]))
@@ -182,7 +183,7 @@ export function ReportBody({ detail, onSource, canReadSources = true }: { detail
       <h2>{sectionTitles[section.kind]}</h2>
       {section.kind === 'macro_data_calendar' && <><p className="table-note">{copy('— 表示来源未提供；不代表 0 或不适用。', '— means not provided by the source; it does not mean zero or not applicable.')}</p><HorizontalTableScroll className="table-scroll"><table className="macro-release-table"><thead><tr>
         <th>{copy('发布日期', 'Release date')}</th><th>{copy('地区 / 类别', 'Region / category')}</th><th>{copy('指标 / 事件', 'Indicator / event')}</th><th>{copy('公布值 / 决议', 'Actual / decision')}</th><th>{copy('预期', 'Expected')}</th><th>{copy('前值', 'Previous')}</th><th>{copy('来源', 'Sources')}</th>
-      </tr></thead><tbody>{section.rows?.map(row => <tr key={`${row.date}-${row.region}-${row.title}`}>
+      </tr></thead><tbody>{[...(section.rows || [])].sort((left, right) => left.date.localeCompare(right.date)).map(row => <tr key={`${row.date}-${row.region}-${row.title}`}>
         <td>{row.date}</td><td translate="no">{row.region}<small>{row.category}</small></td><td translate="no">{row.title}</td><td className={valueClass(row.actual)} translate="no">{row.actual || '—'}</td><td className={valueClass(row.expected)} translate="no">{row.expected || '—'}</td><td className={valueClass(row.previous)} translate="no">{row.previous || '—'}</td><td>{renderSources(row)}</td>
       </tr>)}</tbody></table></HorizontalTableScroll></>}
       {section.groups?.map(group => <div className="report-group" key={group.title}>
@@ -194,7 +195,7 @@ export function ReportBody({ detail, onSource, canReadSources = true }: { detail
     {displayedMarketRows.length > 0 && <section className="report-section" id="market-performance">
       <div className="section-heading"><h2>{copy('市场表现', 'Market performance')}</h2><InfoHint label={copy('市场表现口径', 'Market performance basis')} detail={copy('各市场按实际收盘日计算价格涨跌，不含分红；点击资产可查看价格口径。', 'Price changes use each market’s actual closing dates and exclude dividends. Select an asset for its price basis.')} /></div>
       <HorizontalTableScroll className="table-scroll"><table><thead><tr><th>{copy('资产', 'Asset')}</th><th>{copy('起始日', 'Start')}</th><th>{copy('截至日', 'As of')}</th><th className="number">{copy('收盘', 'Close')}</th><th className="number">{detail.report_type === 'weekly' ? copy('本周涨跌', 'Week to date') : copy('日涨跌', 'Daily change')}</th></tr></thead><tbody>
-        {displayedMarketRows.map(({ row, index }) => <tr key={row.symbol}><td><button className="table-source" onClick={() => onSource(`market-row:${index}`)}>{row.label}</button><small>{row.symbol}</small></td><td>{row.start_date}</td><td>{row.end_date}</td><td className="number">{row.end_close.toLocaleString(undefined, { maximumFractionDigits: 4 })}</td><td className={`number ${row.return_pct < 0 ? 'negative' : 'positive'}`}>{signed(row.return_pct)}</td></tr>)}
+        {displayedMarketRows.map(({ row, index }) => <tr key={row.symbol}><td><button className="table-source" onClick={() => onSource(`market-row:${index}`)}>{row.label}</button><small>{row.symbol}</small></td><td>{row.start_date}</td><td>{row.end_date}</td><td className="number">{row.end_close.toLocaleString(undefined, { maximumFractionDigits: 4 })}<small>{quoteUnit(row, language === 'zh-Hans')}</small></td><td className={`number ${row.return_pct < 0 ? 'negative' : 'positive'}`}>{signed(row.return_pct)}</td></tr>)}
       </tbody></table></HorizontalTableScroll>
     </section>}
     {displayedMacroRows.length > 0 && <section className="report-section" id="macro-indicators"><h2>{copy('相关宏观指标', 'Related macro indicators')}</h2><HorizontalTableScroll className="table-scroll"><table><thead><tr><th>{copy('指标', 'Indicator')}</th><th>{copy('数据日期', 'Observation date')}</th><th className="number">{copy('数值', 'Value')}</th></tr></thead><tbody>{displayedMacroRows.map(({ row, index }) => <tr key={`${row.symbol}-${row.date}`}><td><button className="table-source" onClick={() => onSource(`macro-row:${index}`)}>{row.label}</button></td><td>{row.date}</td><td className="number">{row.value} {row.unit && (units[row.unit] || row.unit)}</td></tr>)}</tbody></table></HorizontalTableScroll></section>}
@@ -399,7 +400,7 @@ export default function App() {
     }}>
       <div ref={sourceRef} role="dialog" aria-modal="true" tabIndex={-1} className="source-panel" aria-label={copy('来源原文', 'Source evidence')} aria-busy={!source && !sourceError}>
         <div className="source-panel-title"><h2 id="source-heading" tabIndex={-1} translate="no">{String(source?.title || source?.label || source?.symbol || copy('来源原文', 'Source evidence'))}</h2><button onClick={closeSource} aria-label={copy('关闭来源', 'Close source')}>{copy('关闭', 'Close')}</button></div>
-        {comparison && <section className="comparison-context" aria-label={copy('价格比较', 'Price comparison')}><strong translate="no">{String(comparison.label)} · {String(comparison.symbol)}</strong><p>{String(comparison.start_date)} · {String(comparison.start_close)} → {String(comparison.end_date)} · {String(comparison.end_close)}<b className={Number(comparison.return_pct) < 0 ? 'negative' : 'positive'}>{signed(Number(comparison.return_pct))}</b></p><div className="source-links"><button aria-current={source === comparison ? 'page' : undefined} onClick={() => { setSourceId(''); setSourceError(''); setSource(comparison) }}>{copy('价格摘要', 'Price summary')}</button>{canReadSources && (comparison.source_ids as string[]).map((id, index) => <button key={`${id}-${index}`} aria-current={sourceId === id ? 'page' : undefined} onClick={() => showSource(id, true)}>{index === 0 ? copy('期初来源', 'Starting source') : copy('期末来源', 'Ending source')}</button>)}</div></section>}
+        {comparison && <section className="comparison-context" aria-label={copy('价格比较', 'Price comparison')}><strong translate="no">{String(comparison.label)} · {String(comparison.symbol)} · {quoteUnit(comparison, language === 'zh-Hans')}</strong><p>{String(comparison.start_date)} · {String(comparison.start_close)} → {String(comparison.end_date)} · {String(comparison.end_close)}<b className={Number(comparison.return_pct) < 0 ? 'negative' : 'positive'}>{signed(Number(comparison.return_pct))}</b></p><div className="source-links"><button aria-current={source === comparison ? 'page' : undefined} onClick={() => { setSourceId(''); setSourceError(''); setSource(comparison) }}>{copy('价格摘要', 'Price summary')}</button>{canReadSources && (comparison.source_ids as string[]).map((id, index) => <button key={`${id}-${index}`} aria-current={sourceId === id ? 'page' : undefined} onClick={() => showSource(id, true)}>{index === 0 ? copy('期初来源', 'Starting source') : copy('期末来源', 'Ending source')}</button>)}</div></section>}
         {source ? <SourceEvidence source={source} onClose={closeSource} onSource={id => showSource(id, true)} canReadSources={canReadSources} showHeading={false} showSourceLinks={!comparison} timezone={detail?.window.timezone} /> : sourceError ? <div className="error" role="alert"><p>{sourceError}</p><button onClick={() => setSourceRevision(value => value + 1)}>{copy('重试', 'Retry')}</button></div> : <LoadingNotice active message={copy('加载中', 'Loading')} />}
       </div>
     </div>}

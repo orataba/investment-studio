@@ -8,8 +8,8 @@ afterEach(() => vi.unstubAllGlobals())
 it('loads the authorized receipt on expansion and pages its complete original without refetching', async () => {
   const sourceId = 'computed:portfolio/a b?currency=HKD&snapshot=原件+#1'
   const topic = { topic_id: 'topic-1', title: 'Saved research', instrument_ids: [], portfolio_id: null, status: 'active', updated_at: '2026-10-02T00:00:00Z' }
-  const receipt = { source_id: sourceId, tool: 'comparison', retrieved_at: '2026-10-02T00:00:00Z', request: { instrument_ids: ['asset-1'] }, result_storage: 'computed_metrics' }
-  const result = { text: 'first segment ' + 'x'.repeat(26000) + ' retained final fact' }
+  const receipt = { source_id: sourceId, tool: 'comparison', retrieved_at: '2026-10-02T00:00:00Z', request: { limit: 1000, instrument_ids: ['asset-1'] }, result_storage: 'computed_metrics' }
+  const result = { text: 'first segment ' + 'x'.repeat(26000) + ' retained final fact', limit: 1000 }
   const evidenceUrl = `/api/research-assistant/runs/run-1/evidence?source_id=${encodeURIComponent(sourceId)}`
   const responses: Record<string, unknown> = {
     '/api/research-assistant/topics': [topic],
@@ -32,7 +32,10 @@ it('loads the authorized receipt on expansion and pages its complete original wi
   fireEvent.click(screen.getByText('当时证据快照'))
   await waitFor(() => expect(screen.getByText(/first segment/)).toBeInTheDocument())
   expect(screen.queryByText(/retained final fact/)).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: '下一段' }))
+  const selector = screen.getByRole('combobox', { name: '跳转证据字段' })
+  const limit = Array.from(selector.querySelectorAll('option')).find(option => option.textContent === 'limit')!
+  expect(Number(limit.value)).toBeGreaterThan(24000)
+  fireEvent.change(selector, { target: { value: limit.value } })
   expect(screen.getByText(/retained final fact/)).toBeInTheDocument()
   expect(screen.getByRole('button', { name: '下一段' })).toBeDisabled()
   expect(screen.getByRole('button', { name: '下载完整证据' })).toBeInTheDocument()

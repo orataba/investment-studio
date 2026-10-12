@@ -4,10 +4,23 @@ import {
   countActiveTransactionFilters,
   transactionActivityLabel,
   transactionChangedFields,
+  transactionFieldChanges,
+  transactionAuditValue,
   transactionDateLabels,
 } from './lib/transactionPresentation'
 
 describe('transaction presentation', () => {
+  it('retains exact old/new values and distinguishes absent, null and empty audit fields', () => {
+    const fields = transactionFieldChanges({ change_type: 'update',
+      before: { gross_amount: '250.00', note: null, fee_components: [{ amount: '1.20' }] },
+      after: { gross_amount: '250.10', note: '', fee_components: [{ amount: '1.25' }], trade_timezone: 'Asia/Shanghai' },
+    })
+    expect(fields[0]).toMatchObject({ label: 'Gross amount', before: '250.00', after: '250.10' })
+    expect(transactionAuditValue(fields[1].before, fields[1].beforeRecorded)).toBe('Empty (null)')
+    expect(transactionAuditValue(fields[1].after, fields[1].afterRecorded)).toBe('Empty text')
+    expect(transactionAuditValue(fields[2].after, true)).toContain('1.25')
+    expect(transactionAuditValue(fields[3].before, fields[3].beforeRecorded)).toBe('Not recorded')
+  })
   it('counts only populated URL filters', () => {
     expect(
       countActiveTransactionFilters({

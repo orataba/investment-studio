@@ -5,6 +5,7 @@ import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import { withLanguage } from '../../../../../packages/ui/src/navigation'
 import { API_BASE_URL } from '../lib/api'
 import NoticeToast, { LoadingNotice } from '../../../../../packages/ui/src/NoticeToast'
+import { readWithDeadline } from '../../../../../packages/ui/src/readDeadline'
 
 export type StudioAccount = { user_id: string; display_name: string; team_id: string; team_role: 'admin' | 'member' | 'reader'; local_unrestricted?: boolean }
 const AccountContext = createContext<StudioAccount | null>(null)
@@ -27,33 +28,42 @@ export default function AccountBoundary({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false
     let latestRequest = 0
-    async function refresh() {
+    let controller: AbortController | undefined
+    let pending = false
+    async function refresh(event?: Event) {
+      if (event?.type === 'focus' && pending) return
+      pending = true
       const request = ++latestRequest
+      controller?.abort()
+      controller = new AbortController()
+      const signal = controller.signal
       setNeedsLogin(false)
       setChecking(true)
       try {
-        const response = await fetch(`${API_BASE_URL}/api/identity`, { credentials: 'include', cache: 'no-store' })
-        if (cancelled || request !== latestRequest) return
-        setRequestId(response.headers?.get('X-Request-ID') || null)
-        if (!response.ok) {
+        const next = await readWithDeadline(async (readSignal) => {
+          const response = await fetch(`${API_BASE_URL}/api/identity`, { credentials: 'include', cache: 'no-store', signal: readSignal })
           if (cancelled || request !== latestRequest) return
-          const unauthorized = response.status === 401 || response.status === 403
-          setNeedsLogin(unauthorized)
-          if (unauthorized) { activeAccountId = ''; setAccount(null) }
-          throw new Error(response.status === 401 ? '请登录 Investment Studio' : '暂时无法确认账号权限')
-        }
-        const next = await response.json() as StudioAccount
-        if (cancelled || request !== latestRequest) return
+          setRequestId(response.headers?.get('X-Request-ID') || null)
+          if (!response.ok) {
+            if (cancelled || request !== latestRequest) return
+            const unauthorized = response.status === 401 || response.status === 403
+            setNeedsLogin(unauthorized)
+            if (unauthorized) { activeAccountId = ''; setAccount(null) }
+            throw new Error(response.status === 401 ? '请登录 Investment Studio' : '暂时无法确认账号权限')
+          }
+          return await response.json() as StudioAccount
+        }, signal)
+        if (!next || cancelled || request !== latestRequest) return
         activeAccountId = next.user_id
         setAccount(next); setError('')
       } catch (reason) {
         if (!cancelled && request === latestRequest) setError(reason instanceof Error ? reason.message : '账号校验失败')
-      } finally { if (!cancelled && request === latestRequest) setChecking(false) }
+      } finally { if (!cancelled && request === latestRequest) { pending = false; setChecking(false) } }
     }
     void refresh()
     window.addEventListener('focus', refresh)
     window.addEventListener('studio:unauthorized', refresh)
-    return () => { cancelled = true; window.removeEventListener('focus', refresh); window.removeEventListener('studio:unauthorized', refresh) }
+    return () => { cancelled = true; controller?.abort(); window.removeEventListener('focus', refresh); window.removeEventListener('studio:unauthorized', refresh) }
   }, [retryToken])
   const home = resolveWorkspaceUrl(undefined, 'home')
   const retry = () => setRetryToken(value => value + 1)
@@ -65,6 +75,6 @@ export default function AccountBoundary({ children }: { children: ReactNode }) {
   return <AccountContext.Provider value={account}>
     <NoticeToast notice={error ? { id: retryToken, tone: 'error', message: <RequestRecovery embedded error={error} onRetry={retry} busy={checking} requestId={requestId} /> } : null} durationMs={0} onDismiss={() => setError('')} />
     <div className="studio-account-bar"><span><span translate="no">{account.display_name}</span> · {t(account.local_unrestricted ? '本机全权限' : account.team_role === 'reader' ? '团队只读' : '团队协作')}</span>{!account.local_unrestricted && <a href={withLanguage(`${home}/account`, language)}>{t('账号设置')}</a>}</div>
-    <div key={`${account.user_id}:${account.team_role}:${account.local_unrestricted}`}>{children}</div>
+    <div key={`${account.user_id}:${account.team_id}:${account.team_role}:${account.local_unrestricted}`}>{children}</div>
   </AccountContext.Provider>
 }

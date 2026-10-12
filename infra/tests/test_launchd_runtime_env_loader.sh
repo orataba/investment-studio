@@ -23,7 +23,7 @@ chmod 600 "$ENV_ROOT/home.env"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
-  'printf "%s\n" "${INVESTMENT_STUDIO_HOME_AUTH_USERNAME:-}" "${INVESTMENT_STUDIO_HOME_AUTH_COOKIE_NAME:-}" "${INVESTMENT_STUDIO_HOME_AUTH_SESSION_SECRET_FILE:-}" "${INVESTMENT_STUDIO_DATA_DATABASE_URL:-}" "${INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA:-}" "${INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA:-}" "$*" > "$CAPTURE_PATH"' \
+  'printf "%s\n" "${INVESTMENT_STUDIO_HOME_AUTH_USERNAME:-}" "${INVESTMENT_STUDIO_HOME_AUTH_COOKIE_NAME:-}" "${INVESTMENT_STUDIO_HOME_AUTH_SESSION_SECRET_FILE:-}" "${INVESTMENT_STUDIO_DATA_DATABASE_URL:-}" "${INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA:-}" "${INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA:-}" "$*" "${INVESTMENT_STUDIO_WATCHLIST_CORS_ORIGINS:-}" "${INVESTMENT_STUDIO_PORTFOLIO_CORS_ORIGINS:-}" "${INVESTMENT_STUDIO_BRIEFING_CORS_ORIGINS:-}" > "$CAPTURE_PATH"' \
   > "$MOCK_BIN/python"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
@@ -79,6 +79,25 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL="postgresql://explicit/local" \
   "$REPOSITORY_ROOT/infra/launchd/run_local_service.sh" \
   research-worker "$REPOSITORY_ROOT" "$MOCK_BIN/python" "$MOCK_BIN/node" "$ENV_ROOT"
 [[ "$(sed -n '7p' "$CAPTURE_PATH")" == "-m watchlist_app.research_worker" ]]
+
+# Managed API environments keep the same explicit origins as app defaults.
+: > "$ENV_ROOT/briefing.env"
+chmod 600 "$ENV_ROOT/briefing.env"
+for app in watchlist portfolio briefing; do
+  INVESTMENT_STUDIO_LOCAL_DATABASE_URL="postgresql://explicit/local" \
+    "$REPOSITORY_ROOT/infra/launchd/run_local_service.sh" \
+    "$app-api" "$REPOSITORY_ROOT" "$MOCK_BIN/python" "$MOCK_BIN/node" "$ENV_ROOT"
+  case "$app" in
+    watchlist) line=8; port=5173 ;;
+    portfolio) line=9; port=5174 ;;
+    briefing) line=10; port=5175 ;;
+  esac
+  if [[ "$app" != watchlist ]]; then
+    [[ "$(sed -n "${line}p" "$CAPTURE_PATH")" == "[\"http://127.0.0.1:$port\",\"http://localhost:$port\"]" ]]
+  else
+    [[ "$(sed -n "${line}p" "$CAPTURE_PATH")" == "[\"http://127.0.0.1:$port\",\"http://localhost:$port\",\"http://127.0.0.1:5172\",\"http://localhost:5172\"]" ]]
+  fi
+done
 
 chmod 644 "$ENV_ROOT/home.env"
 set +e

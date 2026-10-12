@@ -46,6 +46,66 @@ def test_unclassified_metadata_does_not_invent_persisted_domain():
     assert "observation_domain" not in reference
 
 
+def test_repeated_notebook_sources_resolve_once_per_evidence_build(stored_run):
+    from watchlist_app.services.research_notebook import research_sources
+    reference = evidence.computed_reference(source(), run_id="evidence-run")
+    counts = []
+    for repetitions in (1, 20):
+        context = {"cutoff": CUTOFF, "research_dossiers": [{"instrument_id": IID,
+            "prior_sources": [deepcopy(reference)] * repetitions,
+            "notebook": {"sources": [deepcopy(reference)] * repetitions},
+            "themes": [{"sources": [deepcopy(reference)] * repetitions}]}]}
+        with get_session_factory()() as session:
+            statements = []
+            event.listen(session, "do_orm_execute", lambda state: statements.append(state.statement))
+            result = research_sources(context, "evidence-run", session=session)
+            counts.append(len(statements))
+            assert result["computed:old"]["data"] == {"value": 10}
+            assert result["computed:old"]["as_of"] == CUTOFF
+            assert "data" not in context["research_dossiers"][0]["prior_sources"][0]
+    assert counts[0] == counts[1], f"Duplicate original references must not multiply SQL: {counts}"
+
+
+def test_evidence_build_does_not_merge_different_source_owners_or_versions(stored_run):
+    from watchlist_app.services.market_evidence import SourceHydrator
+    ref = evidence.computed_reference(source(), run_id="evidence-run")
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "evidence-run")
+        run.context_json = {**run.context_json, "referenced_research_versions": [
+            {"version_id": "earlier", "instrument_id": IID, "information_cutoff": CUTOFF,
+             "sources": [source(value=3)]}]}
+        session.commit()
+        hydrate = SourceHydrator(session=session)
+        assert hydrate(ref, bound_source=True)["data"]["value"] == 10
+        historical = {**ref, "retained_reference": {"run_id": "evidence-run",
+            "path": ["referenced_research_versions", "*", "sources", "*"], "version_id": "earlier"}}
+        assert hydrate(historical, bound_source=True)["data"]["value"] == 3
+        with pytest.raises(ValueError, match="标的归属不一致"):
+            hydrate({**ref, "instrument_id": "another-instrument"}, bound_source=True)
+        with pytest.raises(ValueError, match="不存在"):
+            hydrate({**historical, "retained_reference": {**historical["retained_reference"], "version_id": "missing"}}, bound_source=True)
+
+
+def test_bound_source_reuse_does_not_grant_private_topic_access(stored_run):
+    from watchlist_app.services.market_evidence import SourceHydrator
+    actor = replace(current_principal(), local_unrestricted=False)
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="private-evidence-owner", title="Private", visibility="private",
+            created_by_user_id="another-user", team_id=actor.team_id))
+        session.flush()
+        session.add(ResearchEntry(entry_id="private-evidence-original", topic_id="private-evidence-owner",
+            team_id=actor.team_id, kind="analysis", title="Original", status="completed",
+            context_json={"computed_metrics": [source()]}))
+        session.commit()
+        ref = evidence.computed_reference(source(), run_id="private-evidence-original")
+        with principal_context(actor):
+            hydrate = SourceHydrator(session=session)
+            assert hydrate(ref, bound_source=True)["data"] == {"value": 10}
+            with pytest.raises(HTTPException) as denied:
+                hydrate(ref)
+            assert denied.value.status_code == 404
+
+
 @pytest.mark.parametrize("retained", [False, True])
 def test_display_projection_keeps_results_and_clocks_without_inputs(stored_run, retained):
     original = source("computed:figure", data={"analysis_kind": "watchlist_observations",

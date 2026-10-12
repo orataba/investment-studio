@@ -195,6 +195,7 @@ function InvestmentViewsWorkspace({ portfolioId, instrumentId }: { portfolioId: 
       {current ? <>{noteContent(current.note, true)}<small>{text('Selected by', '选定人')} {current.selected_by_name} · {new Date(current.selected_at).toLocaleString()}</small></>
         : <p className="investment-views-muted">{loading ? text('Loading…', '正在读取…')
           : !data ? text('The current overall view is unavailable until the timeline is loaded.', '需成功读取时间线后才能确认当前总体观点。')
+          : !instrumentId && !data.notes.some(note => !note.instrument_ids.length) ? text('Record a portfolio-wide judgment first, then select its version as the current overall view.', '先记录一条组合整体判断，再将其具体版本设为当前总体观点。')
           : text('No overall view selected. Choose a specific version of a portfolio-wide judgment.', '尚未选定。请从组合整体判断中明确选择一个版本。')}</p>}
     </section>
     {draft && <form className="investment-view-form" onSubmit={(event) => void save(event)}>

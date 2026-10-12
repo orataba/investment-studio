@@ -8,6 +8,7 @@ from io import StringIO
 from typing import Iterable
 
 from pydantic import ValidationError
+from portfolio_app.core.settings import get_settings
 
 from portfolio_app.api.contracts import (
     DerivativeContractCreate,
@@ -37,6 +38,7 @@ IMPORT_COLUMNS = (
     "transaction_action",
     "trade_date",
     "trade_time",
+    "trade_timezone",
     "settlement_date",
     "position_effective_date",
     "entitlement_date",
@@ -331,6 +333,12 @@ def parse_transaction_csv(
             normalized = _desanitize_cell(str(raw_row.get(column) or "").strip())
             values[column] = normalized if normalized else None
         try:
+            # Files disclose their clock explicitly, but do not introduce a second
+            # transaction-entry timezone. Refuse a different clock instead of
+            # silently reinterpreting the same HH:MM on import.
+            timezone = values.pop("trade_timezone", None)
+            if timezone and timezone != get_settings().default_trade_timezone:
+                raise ValueError(f"trade_timezone must match the transaction-entry timezone ({get_settings().default_trade_timezone}). Convert and verify the trade date/time before import.")
             if values.get("lot_selections_json"):
                 values["lot_selections"] = json.loads(str(values["lot_selections_json"]))
             values.pop("lot_selections_json", None)
@@ -447,6 +455,7 @@ def _internal_transfer_command(
     matching_columns = (
         "trade_date",
         "trade_time",
+        "trade_timezone",
         "settlement_date",
         "instrument_id",
         "quantity",

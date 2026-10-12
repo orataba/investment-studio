@@ -8,7 +8,7 @@ from copy import deepcopy
 import json
 
 from fastapi import HTTPException
-from sqlalchemy import JSON, select, true, type_coerce, func
+from sqlalchemy import JSON, case, cast, literal, select, true, type_coerce, func
 
 from watchlist_app.db.models.workbench import ResearchEntry
 from watchlist_app.db.models.research_run_evidence import ResearchRunEvidence
@@ -44,7 +44,7 @@ def locked_computation_run(session, run_id):
     return run
 
 
-def _array_query(session, run_id, path, *, source_id=None, metadata_only=False, filters=(), filters_at=(), projection=None):
+def _array_query(session, run_id, path, *, source_id=None, source_ids=None, metadata_only=False, metadata_keys=INDEX_KEYS, filters=(), filters_at=(), projection=None):
     """Project allowed containers in SQL, including legacy originals, not their enclosing tree."""
     from watchlist_app.services.research_access import _postgres_projection_context
     postgres = session.get_bind().dialect.name == "postgresql"
@@ -53,7 +53,8 @@ def _array_query(session, run_id, path, *, source_id=None, metadata_only=False, 
     conditions = []
     for index, component in enumerate(path):
         if component == "*":
-            rows = (func.json_array_elements(value) if postgres else func.json_each(value)).table_valued("value")
+            array = case((func.json_typeof(value) == "array", value), else_=cast(literal("[]"), JSON)) if postgres else value
+            rows = (func.json_array_elements(array) if postgres else func.json_each(array)).table_valued("value")
             rows = rows.lateral(f"evidence_{index}") if postgres else rows.alias(f"evidence_{index}")
             joins.append(rows)
             value = type_coerce(rows.c.value, JSON)
@@ -64,7 +65,7 @@ def _array_query(session, run_id, path, *, source_id=None, metadata_only=False, 
                 conditions.append((value[key].as_integer() if type(expected) is int else value[key].as_string()) == expected)
     columns = [value.label("source")]
     if metadata_only:
-        columns = [value[key].label(key) for key in INDEX_KEYS]
+        columns = [value[key].label(key) for key in metadata_keys]
     elif projection is not None:
         from watchlist_app.services.research_figure_projection import sql_columns
         columns = sql_columns(session, value, projection)
@@ -74,13 +75,16 @@ def _array_query(session, run_id, path, *, source_id=None, metadata_only=False, 
     query = query.where(ResearchEntry.entry_id == run_id, *conditions)
     if source_id is not None:
         query = query.where(value["source_id"].as_string() == source_id)
+    if source_ids is not None:
+        query = query.where(value["source_id"].as_string().in_(source_ids))
     for key, expected in filters:
-        query = query.where(value[key].as_string() == expected)
+        column = value[key].as_string()
+        query = query.where(column.in_(expected) if isinstance(expected, (list, tuple, set)) else column == expected)
     return query
 
 
-def _rows(session, run_id, path, *, source_id=None, metadata_only=False, filters_at=(), filters=(), projection=None):
-    query = _array_query(session, run_id, path, source_id=source_id, metadata_only=metadata_only, filters_at=filters_at, filters=filters, projection=projection)
+def _rows(session, run_id, path, *, source_id=None, source_ids=None, metadata_only=False, metadata_keys=INDEX_KEYS, filters_at=(), filters=(), projection=None):
+    query = _array_query(session, run_id, path, source_id=source_id, source_ids=source_ids, metadata_only=metadata_only, metadata_keys=metadata_keys, filters_at=filters_at, filters=filters, projection=projection)
     postgres = session.get_bind().dialect.name == "postgresql"
     if postgres:
         from watchlist_app.services.research_access import _postgres_projection_context
@@ -100,11 +104,14 @@ def _rows(session, run_id, path, *, source_id=None, metadata_only=False, filters
                 if depth == index:
                     values = [value for value in values if isinstance(value, dict) and value.get(key) == expected]
         values = [value for value in values if isinstance(value, dict) and (source_id is None or value.get("source_id") == source_id)]
-        values = [value for value in values if all(value.get(key) == expected for key, expected in filters)]
+        if source_ids is not None:
+            values = [value for value in values if value.get("source_id") in source_ids]
+        values = [value for value in values if all(value.get(key) in expected if isinstance(expected, (list, tuple, set))
+                  else value.get(key) == expected for key, expected in filters)]
         if projection is not None:
             from watchlist_app.services.research_figure_projection import project_source
             return [project_source(value, projection) for value in values]
-        return [{key: value[key] for key in INDEX_KEYS if key in value} for value in values] if metadata_only else values
+        return [{key: value[key] for key in metadata_keys if key in value} for value in values] if metadata_only else values
     if projection is not None:
         from watchlist_app.services.research_figure_projection import from_sql_row
         return [from_sql_row(row._mapping, projection) for row in rows]

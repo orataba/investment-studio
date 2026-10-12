@@ -92,7 +92,9 @@ def test_exact_common_start_and_end_dates_prevent_cross_interval_alignment():
     b = points([-0.02] * 40)
     b[10]["start_date"] = (date.fromisoformat(b[10]["start_date"]) - timedelta(days=1)).isoformat()
     result = calculate(workspace([holding(returns=a), holding("b", returns=b)]))
-    assert result["observation_count"] == 39
+    assert result["candidate_observation_count"] == 39
+    assert result["observation_count"] == 0
+    assert result["tail_effective_observations"] is None
     assert result["status"] == "unavailable"
     assert result["var_amount"] is None
     assert "missing_daily_return_intervals" in result["limitations"]
@@ -143,7 +145,9 @@ def test_verified_calendar_retains_weekend_session_but_rejects_missing_session(m
               {"start_date": sessions[1], "date": sessions[3], "value": -.08}]
     result = calculate(workspace([holding(returns=sample)]), confidence=.5,
         instrument_details={"a": {"source_settings": {"expected_frequency": "daily", "market_calendar": "TEST"}}})
-    assert result["observation_count"] == 1
+    assert result["candidate_observation_count"] == 1
+    assert result["observation_count"] == 0
+    assert result["tail_effective_observations"] is None
     assert result["rows"][0]["rejected_period_count"] == 1
 
 
@@ -171,7 +175,9 @@ def test_missing_fx_boundary_removes_real_periods_and_never_carries_last_rate():
     details, fx = fx_inputs(missing_day=20)
     result = calculate(workspace([holding(value=1000, currency="USD")]),
         instrument_details=details, fx_payload=fx)
-    assert result["observation_count"] == 38
+    assert result["candidate_observation_count"] == 38
+    assert result["observation_count"] == 0
+    assert result["tail_effective_observations"] is None
     assert result["status"] == "unavailable"
     assert result["var_amount"] is None
     assert "missing_daily_return_intervals" in result["limitations"]
@@ -263,7 +269,8 @@ def test_reader_reuses_security_returns_and_loads_only_full_fx_history(monkeypat
     assert actual == expected
     assert metadata_reads == [{"a", "weekly"}]
     assert history_reads == [{"fx-usd-cny"}]
-    assert actual["observation_count"] == (40 if missing_fx_day is None else 38)
+    assert actual["candidate_observation_count"] == (40 if missing_fx_day is None else 38)
+    assert actual["observation_count"] == (40 if missing_fx_day is None else 0)
     assert actual["rows"][1]["reason"] == "non_daily_source"
 
 
@@ -282,7 +289,9 @@ def test_rows_share_one_fx_history_resolution_without_filling_missing_boundaries
         holding("cash", 200, currency="USD", holding_category="cash_and_settlement"),
     ]), instrument_details=details, fx_payload=fx)
     assert resolved == ["fx-usd-cny"]
-    assert result["observation_count"] == 38
+    assert result["candidate_observation_count"] == 38
+    assert result["observation_count"] == 0
+    assert result["tail_effective_observations"] is None
     assert all(row["observation_count"] == 38 for row in result["rows"])
     result["rows"][0]["fx_instrument_ids"].clear()
     assert result["rows"][1]["fx_instrument_ids"] == ["fx-usd-cny"]
@@ -348,7 +357,9 @@ def test_history_coverage_separates_leading_internal_and_trailing_absence(monkey
     del sample[20]
     result = calculate(workspace([holding(returns=sample)]),
                                                lookback_days=60, instrument_details={"a": detail})
-    assert result["observation_count"] == 39
+    assert result["candidate_observation_count"] == 39
+    assert result["observation_count"] == 0
+    assert result["tail_effective_observations"] is None
     assert result["expected_common_observation_count"] == 60
     assert result["uncovered_observation_count"] == 21
     assert result["uncovered_leading_observation_count"] == 10
@@ -368,7 +379,9 @@ def test_coverage_uses_common_market_sessions_without_inventing_holiday_gaps(mon
         rows.append(holding(iid, returns=sample))
         details[iid] = {"source_settings": {"expected_frequency": "daily", "market_calendar": iid}}
     result = calculate(workspace(rows), confidence=.5, lookback_days=7, instrument_details=details)
-    assert result["observation_count"] == result["expected_common_observation_count"] == 3
+    assert result["candidate_observation_count"] == result["expected_common_observation_count"] == 3
+    assert result["observation_count"] == 0
+    assert result["tail_effective_observations"] is None
     assert result["history_coverage_status"] == "complete"
     assert result["uncovered_observation_count"] == 0
 
@@ -380,7 +393,9 @@ def test_security_fx_alignment_losses_are_disclosed_even_for_one_security(monkey
     details["fx-usd-cny"]["source_settings"] = detail["source_settings"]
     result = calculate(workspace([holding(value=1000, currency="USD")]),
                                                lookback_days=40, instrument_details=details, fx_payload=fx)
-    assert result["observation_count"] == 38
+    assert result["candidate_observation_count"] == 38
+    assert result["observation_count"] == 0
+    assert result["tail_effective_observations"] is None
     assert result["var_amount"] is None and result["status"] == "unavailable"
     assert result["history_coverage_status"] == "partial"
     assert result["missing_internal_observation_count"] == 2
@@ -390,6 +405,19 @@ def test_security_fx_alignment_losses_are_disclosed_even_for_one_security(monkey
     assert result["rows"][0]["last_scenario_end_date"] == AS_OF.isoformat()
     assert "unmatched_security_fx_periods_removed" in result["limitations"]
     assert "unverified_fx_intervals_removed" in result["limitations"]
+
+
+def test_foreign_cash_rejected_fx_is_not_also_labelled_security_history(monkeypatch):
+    detail = verified_calendar_days(monkeypatch)
+    details, fx = fx_inputs(missing_day=20)
+    details["fx-usd-cny"]["source_settings"] = detail["source_settings"]
+    result = calculate(workspace([holding(value=1000, currency="USD", holding_kind="cash")]),
+                       lookback_days=40, instrument_details=details, fx_payload=fx)
+    row = result["rows"][0]
+    assert row["rejected_period_count"] == 0
+    assert row["fx_rejected_period_count"] == 1
+    assert row["fx_rejected_intervals"][0]["reason"] == "non_daily_return_interval"
+    assert result["status"] == "unavailable"
 
 
 @pytest.mark.parametrize(("left_calendar", "right_calendar", "explicit_calendar", "expected_status", "expected_count"), [
@@ -489,3 +517,28 @@ def test_different_proved_calendars_are_incomparable_not_missing_quotes():
     assert result['missing_internal_observation_count'] == 0
     assert result['missing_intervals'] == []
     assert result['incompatible_intervals']
+
+
+@pytest.mark.parametrize("rejection", ["unavailable_return", "non_daily_return_interval"])
+def test_blocked_leading_return_is_not_reported_as_a_missing_internal_interval(rejection):
+    sample = points([-.01] * 42)
+    first = sample[0]
+    if rejection == "unavailable_return":
+        first.update(value=None, status="unavailable")
+    else:
+        first["start_date"] = (date.fromisoformat(first["start_date"]) - timedelta(days=1)).isoformat()
+    result = calculate(workspace([holding(returns=sample)]))
+    assert result["candidate_observation_count"] == 41
+    assert result["observation_count"] == 0
+    assert result["tail_effective_observations"] is None
+    assert result["tail_observation_count"] is None
+    assert result["status"] == "unavailable"
+    assert result["missing_internal_observation_count"] == 0
+    assert result["uncovered_trailing_observation_count"] == 0
+    assert "missing_daily_return_intervals" not in result["limitations"]
+    assert "rejected_daily_return_intervals" in result["limitations"]
+    assert result["rows"][0]["rejected_intervals"] == [{
+        "start_date": first["start_date"], "end_date": first["date"], "reason": rejection,
+    }]
+    assert result["sources"][0]["candidate_observation_count"] == 41
+    assert result["sources"][0]["observation_count"] == 0

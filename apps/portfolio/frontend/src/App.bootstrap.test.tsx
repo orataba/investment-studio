@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { LanguageProvider } from '../../../../packages/ui/src/i18n'
 
@@ -15,8 +15,25 @@ function initial(access: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => { mocks.bootstrap.mockReset(); mocks.clearCache.mockClear() })
+afterEach(() => vi.useRealTimers())
 
 describe('Portfolio startup', () => {
+  it('coalesces focus checks and retains the original 30-second interactive deadline', async () => {
+    vi.useFakeTimers()
+    mocks.bootstrap.mockImplementation((_id, signal: AbortSignal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    }))
+    render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/portfolios/a/risk']}><App /></MemoryRouter></LanguageProvider>)
+    await act(async () => vi.advanceTimersByTimeAsync(15_000))
+    act(() => window.dispatchEvent(new Event('focus')))
+    expect(mocks.bootstrap).toHaveBeenCalledTimes(1)
+    await act(async () => vi.advanceTimersByTimeAsync(15_000))
+    expect(screen.getByRole('alert')).toHaveTextContent('Account verification timed out')
+    expect(screen.queryByText('Authorized portfolio risk')).not.toBeInTheDocument()
+    act(() => window.dispatchEvent(new Event('focus')))
+    expect(mocks.bootstrap).toHaveBeenCalledTimes(2)
+  })
+
   it('downloads the current route while one identity request is pending, without mounting private content', async () => {
     let finish!: (value: ReturnType<typeof initial>) => void
     mocks.bootstrap.mockImplementation(() => new Promise(resolve => { finish = resolve }))

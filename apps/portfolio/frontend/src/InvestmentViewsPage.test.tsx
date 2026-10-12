@@ -61,6 +61,12 @@ describe('Portfolio investment judgments', () => {
     expect(mocks.selectInvestmentStance).not.toHaveBeenCalled()
   })
 
+  it('explains the write-first step when there is no overall judgment to select', async () => {
+    show()
+    expect(await screen.findByText('Record a portfolio-wide judgment first, then select its version as the current overall view.')).toBeInTheDocument()
+    expect(mocks.selectInvestmentStance).not.toHaveBeenCalled()
+  })
+
   it('viewer can read and inspect revisions but cannot write', async () => {
     mocks.access.mockReturnValue({ portfolio_id: 'p1', can_edit: false })
     mocks.getInvestmentViews.mockResolvedValue(timeline([note({ can_edit: false })]))

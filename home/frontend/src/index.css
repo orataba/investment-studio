@@ -432,3 +432,17 @@ textarea {
 .account-table-wrap select { min-width: 174px; }
 .account-table-wrap th:nth-child(3), .account-table-wrap td:nth-child(3) { white-space: nowrap; }
 .account-ownership { border-top: 1px solid var(--studio-line); padding-top: 24px; scroll-margin-top: 20px; }
+
+.home-important-risks { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px 24px; margin-top: 30px; padding: 18px 0; border-top: 1px solid var(--studio-line); font-size: 12px; color: var(--studio-muted); }
+.home-important-risks h2 { margin: 2px 0; font-size: 12px; font-weight: 500; color: var(--studio-ink); }
+.home-risk-content { min-width: 0; line-height: 1.7; }
+.home-risk-content ul { list-style: none; margin: 0; padding: 0; }
+.home-risk-content li + li { margin-top: 8px; }
+.home-risk-content li a { display: flex; align-items: baseline; gap: 12px; }
+.home-risk-object { flex: 0 0 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-risk-title { color: var(--studio-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-risk-content a:hover .home-risk-title { color: var(--studio-accent); }
+.home-risk-content a:focus-visible, .home-risk-content button:focus-visible { outline: 2px solid var(--studio-accent); outline-offset: 3px; }
+.home-risk-content button { padding: 0; border: 0; background: transparent; color: var(--studio-muted); font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.home-risk-pages { display: flex; align-items: center; gap: 16px; margin-top: 10px; font-size: 11px; }
+@media (max-width: 760px) { .home-important-risks { grid-template-columns: 1fr; gap: 8px; margin-top: 24px; } .home-risk-object { flex-basis: 75px; } }

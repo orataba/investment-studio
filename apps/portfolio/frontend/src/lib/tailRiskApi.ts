@@ -1,6 +1,7 @@
 import { requestPortfolioResource } from './api'
 
 export type PortfolioTailRiskRow = {
+  source_currency?: string
   holding_id: string
   instrument_id: string | null
   name: string
@@ -10,6 +11,8 @@ export type PortfolioTailRiskRow = {
   reason: string | null
   observation_count: number
   rejected_period_count: number
+  rejected_intervals?: Array<{ start_date: string; end_date: string; reason: string }>
+  fx_rejected_intervals?: Array<{ start_date: string; end_date: string; reason: string }>
   calendar_basis: string | null
   fx_instrument_ids: string[]
   fx_rejected_period_count: number
@@ -44,8 +47,9 @@ export type PortfolioTailRisk = {
   first_scenario_start_date: string | null
   last_scenario_end_date: string | null
   observation_count: number
-  tail_effective_observations: number
-  tail_observation_count: number
+  candidate_observation_count: number
+  tail_effective_observations: number | null
+  tail_observation_count: number | null
   tail_max_observation_weight: number | null
   var_amount: number | null
   var_nav_fraction: number | null

@@ -390,7 +390,7 @@ def test_execution_revalidates_original_issuer_after_preparation_outlasts_first_
     monkeypatch.setattr(sector_research, "prepare_run", lambda *_: prepared.append(True))
     monkeypatch.setattr(runner, "resolve_token", resolve)
     monkeypatch.setattr(runner, "issue_delegation", issue)
-    monkeypatch.setattr(runner, "revoke_delegation", lambda token, principal: revoked.append((token, principal)))
+    monkeypatch.setattr(runner, "revoke_delegation", lambda token: revoked.append(token))
     monkeypatch.setattr(runner.subprocess, "Popen", launch)
     runner.run_analysis(run_id, "initial-grant", issuer, attempt=1)
     with get_session_factory()() as session:
@@ -403,8 +403,7 @@ def test_execution_revalidates_original_issuer_after_preparation_outlasts_first_
         else:
             assert run.status == "draft" and run.body == "原样本讨论完成" and spawned
         assert "original-session" not in json.dumps(run.context_json) + run.body
-    assert {token for token, _ in revoked} == ({"initial-grant"} if issuer_revoked else {"initial-grant", "execution-grant"})
-    assert all(principal is issuer for _, principal in revoked)
+    assert set(revoked) == ({"initial-grant"} if issuer_revoked else {"initial-grant", "execution-grant"})
 
 
 @pytest.mark.parametrize("review_timeout", [False, True])
@@ -504,7 +503,7 @@ def test_review_renews_original_issuer_grant_without_reusing_expired_generation_
     monkeypatch.setattr(sector_research, "apply_result", lambda session, run, result: setattr(run, "status", "completed"))
     monkeypatch.setattr(runner, "issue_delegation", issue)
     monkeypatch.setattr(runner, "resolve_token", resolve)
-    monkeypatch.setattr(runner, "revoke_delegation", lambda token, principal: revoked.append(token))
+    monkeypatch.setattr(runner, "revoke_delegation", lambda token: revoked.append(token))
     monkeypatch.setattr(runner.subprocess, "Popen", launch)
     runner.run_analysis(run_id, "initial-grant", issuer, attempt=1)
     assert launched == issued == (["generation-grant"] if review_authority_revoked else ["generation-grant", "review-grant"])

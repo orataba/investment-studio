@@ -47,7 +47,7 @@ def _daily_periods(points, *, detail, start_date, end_date):
     calendar_basis = f"market_calendar:{calendar}" if session_pairs is not None else None
     if session_pairs is None:
         return {}, {"reason": "unverified_daily_calendar", "rejected_period_count": 0, "calendar_basis": None}, None
-    periods, rejected, seen_ends = {}, 0, set()
+    periods, rejected, seen_ends = {}, [], set()
     for point in points:
         if not isinstance(point, dict):
             return {}, {"reason": "invalid_return_period", "rejected_period_count": len(points), "calendar_basis": calendar_basis}, session_pairs
@@ -59,18 +59,19 @@ def _daily_periods(points, *, detail, start_date, end_date):
             continue
         value = _number(point.get("value"))
         if value is None and point.get("status") == "unavailable":
-            rejected += 1
+            rejected.append({"start_date": start.isoformat(), "end_date": end.isoformat(), "reason": "unavailable_return"})
             continue
         if start >= end or value is None or value < -1 or end in seen_ends:
             return {}, {"reason": "invalid_return_period", "rejected_period_count": len(points), "calendar_basis": calendar_basis}, session_pairs
         seen_ends.add(end)
         one_day = (start, end) in session_pairs
         if not one_day:
-            rejected += 1
+            rejected.append({"start_date": start.isoformat(), "end_date": end.isoformat(), "reason": "non_daily_return_interval"})
             continue
         periods[(start, end)] = value
     return periods, {"reason": None if periods else "no_verified_daily_returns",
-                     "rejected_period_count": rejected, "calendar_basis": calendar_basis}, session_pairs
+                     "rejected_period_count": len(rejected), "rejected_intervals": rejected,
+                     "calendar_basis": calendar_basis}, session_pairs
 
 
 def _fx_rate_series(currency, base_currency, *, direct, details, as_of_date):
@@ -226,6 +227,7 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
             source_ids, fx_returns, fx_metadata, fx_expected = fx_periods_by_currency[currency]
             row["fx_instrument_ids"] = list(source_ids)
             row["fx_rejected_period_count"] = fx_metadata["rejected_period_count"]
+            row["fx_rejected_intervals"] = fx_metadata.get("rejected_intervals", [])
             row["unmatched_fx_period_count"] = len(local.keys() - fx_returns.keys()) if local is not None else 0
             if not fx_returns:
                 row["reason"] = ("unverified_daily_calendar" if fx_metadata.get("reason") == "unverified_daily_calendar"
@@ -238,7 +240,10 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
                 row.update(quote_basis="spot", return_kind="price_return", return_measure="simple",
                            currency=base_currency, source_currency=currency)
                 expected = fx_expected
-                row.update(fx_metadata)
+                # A monetary holding has FX intervals only. Do not duplicate its
+                # rejected FX observations as rejected security returns.
+                row.update({key: value for key, value in fx_metadata.items()
+                            if key not in {"rejected_period_count", "rejected_intervals"}})
             else:
                 expected = expected & fx_expected if expected is not None and fx_expected is not None else None
                 local = {period: (1 + local[period]) * (1 + fx_returns[period]) - 1
@@ -280,9 +285,14 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
               if not blocked else [])
     distribution = empirical_tail(losses, confidence)
     if blocked:
-        distribution["observation_count"] = len(common)
-    if missing_history or rejected_history:
+        # Candidate intersections are diagnostic only: none entered the loss
+        # distribution. An unavailable tail has no measured probability mass.
+        distribution.update(tail_effective_observations=None, tail_observation_count=None,
+                            tail_max_observation_weight=None)
+    if missing_history:
         issues.append("missing_daily_return_intervals")
+    if rejected_history:
+        issues.append("rejected_daily_return_intervals")
     if calendar_unverified:
         issues.append("requested_history_calendar_unverified")
     if incompatible:
@@ -329,6 +339,7 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
         **history,
         "first_scenario_start_date": ordered_periods[0][0].isoformat() if ordered_periods else None,
         "last_scenario_end_date": latest.isoformat() if latest else None,
+        "candidate_observation_count": len(common),
         "observation_count": distribution["observation_count"],
         "tail_effective_observations": distribution["tail_effective_observations"],
         "tail_observation_count": distribution["tail_observation_count"],
@@ -353,6 +364,7 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
             "confidence": confidence, "lookback_days": lookback_days,
             "scenario_start_date": ordered_periods[0][0].isoformat() if ordered_periods else None,
             "scenario_end_date": latest.isoformat() if latest else None,
+            "candidate_observation_count": len(common),
             "observation_count": distribution["observation_count"],
             "tail_effective_observations": distribution["tail_effective_observations"],
             "coverage_status": "partial" if excluded else "complete",
@@ -362,7 +374,7 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
             "detail_path": f"/portfolios/{quote(str(workspace.get('portfolio_id') or ''), safe='')}/risk",
         }],
         "interpretation": "Observed market shocks applied to current signed exposures; equal scenario probabilities; no square-root-of-time scaling. Positive values are losses. Negative VaR/ES remain signed gains, not clipped losses.",
-        "precision_note": "Empirical tail mass is N × (1 − confidence), not independent evidence count. One observation has probability weight up to 1 / tail mass in the ES average, not a bound on its monetary contribution. Dependence, missing sessions and a changing regime limit precision; a numeric result is not a claim of adequate tail coverage.",
+        "precision_note": "Candidate intervals are diagnostic; observation_count counts only scenarios admitted to the loss distribution. Blocked estimates have no tail mass. Empirical tail mass is N × (1 − confidence), not independent evidence count. One observation has probability weight up to 1 / tail mass in the ES average, not a bound on its monetary contribution. Dependence, missing sessions and a changing regime limit precision; a numeric result is not a claim of adequate tail coverage.",
         "scope_note": "FCN and Option daily fair values are not modeled. Excluded assets are not zero-risk assets. Percentages use full portfolio NAV, not renormalized modeled capital. Current holdings replay confirmed simple-return intervals and synchronized FX changes; historical operational returns are not inputs.",
     }
 

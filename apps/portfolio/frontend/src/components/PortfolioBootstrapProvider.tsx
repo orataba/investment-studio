@@ -24,15 +24,18 @@ export default function PortfolioBootstrapProvider({ portfolioId, children }: { 
     let requestNumber = 0
     let confirmed: PortfolioBootstrap | null = null
     let controller: AbortController | null = null
+    let checking = false
     clearPortfolioApiCache()
     setNotice(null)
     setState({ data: null, error: null, portfolioId })
-    async function check(invalidate = false) {
+    async function check(invalidate = false, replacePending = false) {
+      if (checking && !invalidate && !replacePending) return
+      checking = true
       const number = ++requestNumber
       controller?.abort()
       const requestController = new AbortController()
       controller = requestController
-      const timeout = window.setTimeout(() => requestController.abort(), 120_000)
+      const timeout = window.setTimeout(() => requestController.abort(), 30_000)
       if (invalidate) {
         confirmed = null
         clearPortfolioApiCache()
@@ -53,7 +56,7 @@ export default function PortfolioBootstrapProvider({ portfolioId, children }: { 
           const status = (reason as { status?: number } | null)?.status
           const transient = reason instanceof TypeError || requestController.signal.aborted || (typeof status === 'number' && status >= 500)
           if (confirmed && transient) {
-            setNotice({ id: Date.now(), message: <RequestRecovery embedded error="账号服务暂时无法连接，已保留当前页面和未保存内容。" onRetry={() => { void check() }} />, tone: 'error' })
+            setNotice({ id: Date.now(), message: <RequestRecovery embedded error="账号服务暂时无法连接，已保留当前页面和未保存内容。" onRetry={() => { void check(false, true) }} />, tone: 'error' })
             return
           }
           confirmed = null
@@ -61,7 +64,7 @@ export default function PortfolioBootstrapProvider({ portfolioId, children }: { 
           setState({ data: null, portfolioId, error: requestController.signal.aborted
             ? '账号校验等待超时，请稍后刷新。' : reason instanceof Error ? reason.message : '请先登录' })
         }
-      } finally { window.clearTimeout(timeout) }
+      } finally { window.clearTimeout(timeout); if (number === requestNumber) checking = false }
     }
     const onFocus = () => { void check() }
     const onAuthChanged = () => { void check(true) }

@@ -67,9 +67,9 @@ export default function ConcentrationPanel({ portfolioId, asOfDate, onAsOfDateCh
   return <section id="concentration" className="portfolio-section-block concentration-panel" aria-label={text('Concentration', '集中度')}>
     <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar">
       <div>
-        <div className="panel-title portfolio-title-with-hint"><span>{text('Concentration', '集中度')}</span>
+        <h2 id="concentration-title" tabIndex={-1} className="panel-title portfolio-title-with-hint"><span>{text('Concentration', '集中度')}</span>
           <InfoHint label={text('Concentration basis', '集中度口径')} detail={[text('Exposure ratio is exposure amount / portfolio NAV. Direct securities use absolute market values across accounts. FCNs use remaining nominal principal, allocated once across linked securities for taxonomy grouping. Equal allocation is a management convention, not equal risk. Cash and settlements are excluded from the numerator. Option exposure is not modeled by this projection and must not be read as zero; NAV retains its carrying amount. With incomplete data, ≥ marks the known lower bound. These ratios are not current carrying-value weights, risk contributions or potential stock delivery exposures.', '敞口比例 = 敞口金额 / 组合净资产（NAV）。直接证券按账户汇总绝对市值；FCN 按剩余名义本金，在挂钩标的之间分配后归入分类，不重复计算本金。等分属于管理约定，不代表风险均分。现金和待结算不计入分子。期权敞口未纳入本项集中度计算，不能视为零；组合净资产仍包含期权的账面金额。数据不完整时，≥ 表示已知敞口的下限。这些比例不是账面金额对应的当前权重、风险贡献或潜在接票股票敞口。'), ...coverage.map((note) => concentrationMessage(note, zh))]} />
-        </div>
+        </h2>
         <div className="portfolio-detail-meta">{data ? `${data.as_of_date} · NAV ${formatCurrency(data.nav, data.base_currency)}${data.settings_effective_from ? ` · ${text('Limits effective', '限额生效')} ${data.settings_effective_from}` : ''}` : text('Principal allocation / portfolio NAV', '敞口金额 / 组合净资产')}</div>
       </div>
       <div className="concentration-toolbar-actions">

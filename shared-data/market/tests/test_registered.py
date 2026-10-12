@@ -61,6 +61,28 @@ def test_etf_projection_keeps_disclosed_holdings_dates_and_empty_snapshots(store
     assert registered.read_reference_data(store.settings, "SPY", "etf", as_of=stamp(1))["sections"]["holdings"]
 
 
+def test_reference_current_reads_keep_pit_and_never_scan_profile_or_supplement_history_when_current(store, monkeypatch):
+    save(store, 'etf_info', [{'symbol': 'SPY', 'name': 'Before'}])
+    save(store, 'provider_reference', [{'symbol': 'SPY', 'section': section, 'payload_json': '[]'}
+                                      for section in ('sector_weights', 'country_weights')])
+    save(store, 'etf_info', [{'symbol': 'SPY', 'name': 'After'}], day=3)
+    paths = store._paths
+    calls = []
+    def counted(dataset, *args, **kwargs):
+        calls.append(dataset)
+        return paths(dataset, *args, **kwargs)
+    monkeypatch.setattr(store, '_paths', counted)
+    with store.query_session():
+        current = registered.read_reference_data(store.settings, 'SPY', 'etf', store=store)
+        assert current['sections']['fund_info']['name'] == 'After'
+        assert 'etf_info' not in calls and 'provider_reference' not in calls
+        prior = registered.read_reference_data(store.settings, 'SPY', 'etf', store=store, as_of=stamp(2))
+        assert prior['sections']['fund_info']['name'] == 'Before'
+        assert 'etf_info' in calls
+        assert current['observed_at'] == stamp(3).isoformat()
+        assert prior['observed_at'] == stamp(1).isoformat()
+
+
 def test_registered_collection_routes_asset_types_and_does_not_repeat_covered_us(store, monkeypatch):
     save(store, "security_directory", [{"symbol": "AAPL"}, {"symbol": "SPY"}])
     save(store, "company_profiles", [{"symbol": "AAPL", "company_name": "Apple"}])

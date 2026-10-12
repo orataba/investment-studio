@@ -1055,8 +1055,8 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           </div>
           {chartView === 'price' && <div className="listed-segmented-control" aria-label="Price adjustment">
             <button type="button" className={mode === 'raw' ? 'active' : ''} onClick={() => setMode('raw')}>{zh ? '未复权' : 'Raw'}</button>
-            <button type="button" className={mode === 'front' ? 'active' : ''} disabled={!qfqAvailable} title={barsResponse?.unavailable_price_mode_reasons?.front} onClick={() => setMode('front')}>{zh ? '前复权' : 'QFQ'}</button>
-            <button type="button" className={mode === 'back' ? 'active' : ''} disabled={!hfqAvailable} title={barsResponse?.unavailable_price_mode_reasons?.back} onClick={() => setMode('back')}>{zh ? '后复权' : 'HFQ'}</button>
+            <button type="button" className={mode === 'front' ? 'active' : ''} disabled={!qfqAvailable} title={barsResponse?.unavailable_price_mode_reasons?.front || (zh ? '前复权：以当前价格为基准调整历史展示价格，不等同于含分红总回报序列。' : 'Forward adjusted: historical display prices adjusted to the current price basis; not a dividend total-return series.')} onClick={() => setMode('front')}>{zh ? '前复权' : 'QFQ'}</button>
+            <button type="button" className={mode === 'back' ? 'active' : ''} disabled={!hfqAvailable} title={barsResponse?.unavailable_price_mode_reasons?.back || (zh ? '后复权：以历史价格为基准调整后续展示价格，不等同于含分红总回报序列。' : 'Backward adjusted: subsequent display prices adjusted to a historical price basis; not a dividend total-return series.')} onClick={() => setMode('back')}>{zh ? '后复权' : 'HFQ'}</button>
           </div>}
           <div className="listed-segmented-control" aria-label="Date range">
             {RANGE_OPTIONS.map((option) => (
@@ -1137,7 +1137,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             <span className="context-chip">{(usesCanonicalPriceSeries ? chart?.currency : barsResponse?.currency) || latest?.currency || (quotePending ? loadingLabel : '—')}</span>
             {usesCanonicalPriceSeries ? <span className="context-chip">{indexSemanticsLabel}</span> : null}
             {sourceRefreshFailed ? <span className="context-chip listed-source-failed-chip">Source update failed</span> : null}
-            {!isIndex && summary?.freshness.data_freshness_status ? <span className="context-chip">{formatLabel(summary.freshness.data_freshness_status)}</span> : null}
+            {!isIndex && summary?.freshness.data_freshness_status ? <span className="context-chip">{zh ? '行情' : 'Price data'} · {formatLabel(summary.freshness.data_freshness_status)}</span> : null}
             {typeof displayedCoverageStatus === 'string' && displayedCoverageStatus ? (
               <span className="context-chip">{formatLabel(displayedCoverageStatus)}</span>
             ) : null}

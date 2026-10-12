@@ -150,3 +150,19 @@ def test_related_company_requires_observed_classification(equity_evidence):
         period_end=date(2026, 9, 8), cutoff=datetime(2026, 9, 8, 0, 30, tzinfo=UTC))
     assert "AAPL" not in {row["symbol"] for row in result["market_rows"]}
     assert next(row for row in result["coverage"] if row["symbol"] == "AAPL")["status"] == "security_type_unverified"
+
+
+def test_price_unit_uses_bound_listing_currency_not_current_or_reporting_currency():
+    from briefing_app.evidence import with_quote_metadata, read_bound_source
+    market = {'symbol': '0700.HK', 'source_ids': ['numeric:price'], 'identity_source_ids': ['numeric:profile']}
+    snapshot = {'market_rows': [market], 'sources': [
+        {'source_id': 'numeric:price', 'source_type': 'numeric', 'close': 210},
+        {'source_id': 'numeric:profile', 'currency': 'HKD', 'reported_currency': 'CNY'},
+    ]}
+    assert with_quote_metadata(snapshot, market)['unit'] == 'HKD per share'
+    source = read_bound_source(snapshot, 'numeric:price')
+    assert source['currency'] == 'HKD' and source['close'] == 210
+    assert 'currency' not in snapshot['sources'][0]  # A read does not rewrite retained evidence.
+    assert with_quote_metadata({}, {'symbol': 'SPY'})['unit'] == 'USD per share'
+    assert with_quote_metadata({}, {'symbol': 'HSCI.HI'}) == {'symbol': 'HSCI.HI', 'unit': 'index points'}
+    assert with_quote_metadata({}, {'symbol': 'UNKNOWN'}) == {'symbol': 'UNKNOWN'}

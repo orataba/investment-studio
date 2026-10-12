@@ -5,6 +5,7 @@ import math
 import os
 from decimal import Decimal
 from collections.abc import Iterable, Mapping
+from contextlib import contextmanager
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -93,6 +94,7 @@ def _availability(row: Mapping, spec: Dataset, observed: datetime) -> tuple[date
 class NumericStore:
     def __init__(self, settings: MarketSettings, *, engine=None):
         self.settings = settings
+        self._history_session = None
         self.engine = engine or create_engine(settings.database_url.replace("postgresql://","postgresql+psycopg://",1), pool_pre_ping=True)
         if self.engine.dialect.name == "sqlite":
             self.engine = self.engine.execution_options(schema_translate_map={"market_data": None})
@@ -104,6 +106,55 @@ class NumericStore:
 
     def close(self):
         self.engine.dispose()
+
+    @contextmanager
+    def query_session(self):
+        """Share schema metadata within one serial batch read, never fact rows.
+
+        Every query still selects current complete snapshots and applies its
+        own symbol, PIT and ranking filters. A changed file list refreshes the
+        union schema; at most one schema per dataset survives until exit.
+        """
+        if self._history_session is not None:
+            raise RuntimeError('A numerical query session is already active')
+        with duckdb.connect(':memory:') as db:
+            self._history_session = (db, {})
+            try:
+                yield self
+            finally:
+                self._history_session = None
+
+    @contextmanager
+    def _query_facts(self, dataset, paths, selected_paths=None):
+        owns_connection = self._history_session is None
+        db, schemas = ((duckdb.connect(':memory:'), {}) if owns_connection else self._history_session)
+        try:
+            if selected_paths is None:
+                relation = db.from_parquet(paths, union_by_name=True)
+            else:
+                # Complete snapshots do not need to scan older/unrelated rows,
+                # but their response schema still includes historical nullable
+                # fields. Read that union once per immutable file collection.
+                identity = tuple(paths)
+                previous = schemas.get(dataset)
+                if previous is None or previous[0] != identity:
+                    union = db.from_parquet(paths, union_by_name=True)
+                    columns = list(zip(union.columns, union.types))
+                    schemas[dataset] = (identity, columns)
+                columns = schemas[dataset][1]
+                selected = db.from_parquet(selected_paths, union_by_name=True)
+                present = set(selected.columns)
+                expressions = []
+                for name, kind in columns:
+                    quoted = '"' + name.replace('"', '""') + '"'
+                    value = quoted if name in present else 'NULL'
+                    expressions.append(f'CAST({value} AS {kind}) AS {quoted}')
+                relation = selected.project(', '.join(expressions))
+            relation.create_view('facts', replace=True)
+            yield db
+        finally:
+            if owns_connection:
+                db.close()
 
     @staticmethod
     def _register_dataset(conn, spec):
@@ -327,6 +378,12 @@ class NumericStore:
         if symbols is not None and identities and set(symbols) <= identities.keys():
             eligible = {row["allowed_batch_id"] for row in allowed}
             selected_batches = sorted(eligible if batch_ids is None else eligible.intersection(batch_ids))
+        chosen = None
+        if not versions and dataset in ("analyst_estimates", "etf_holdings"):
+            chosen = self._snapshot_rows(dataset, symbols, cutoff, limit=1, at=observed_at,
+                                         batch_id=batch_id, batch_ids=batch_ids)
+            if not chosen:
+                return result
         paths=self._paths(dataset,start,end,batch_id,selected_batches,symbols=symbols)
         if not paths:
             return result
@@ -353,16 +410,18 @@ class NumericStore:
         sql="SELECT * FROM facts"+where+qualify
         if _latest and get_dataset(dataset).current_keys:
             sql="SELECT * FROM ("+sql+") QUALIFY row_number() OVER (PARTITION BY _current_key ORDER BY date DESC NULLS LAST, observed_at DESC, batch_id DESC, row_index DESC)=1"
-        with duckdb.connect(":memory:") as db:
-            relation=db.from_parquet(paths,union_by_name=True)
-            relation.create_view("facts")
+        snapshot_paths = None
+        if chosen is not None:
+            snapshot_paths = self._paths(dataset, start, end, batch_id,
+                                         list({row["batch_id"] for row in chosen}), symbols=symbols)
+            if not snapshot_paths:
+                return result
+        with self._query_facts(dataset, paths, snapshot_paths) as db:
             if identities:
                 db.register("price_read_batches", pa.Table.from_pylist(allowed, schema=pa.schema([
                     ("allowed_symbol", pa.string()), ("allowed_batch_id", pa.string()),
                     ("history_start", pa.date32()), ("history_end", pa.date32())])))
-            if not versions and dataset in ("analyst_estimates","etf_holdings"):
-                chosen=self._snapshot_rows(dataset,symbols,cutoff,limit=1,at=observed_at,batch_id=batch_id,batch_ids=batch_ids)
-                if not chosen:return result
+            if chosen is not None:
                 db.register("chosen_snapshots",pa.Table.from_pylist([{ "chosen_scope_key":r["scope_key"],"chosen_snapshot_at":instant(r["snapshot_at"]),"chosen_batch_id":r["batch_id"]} for r in chosen]))
                 sql=sql.replace("FROM facts","FROM facts JOIN chosen_snapshots c ON facts._snapshot_key=c.scope_key AND facts.snapshot_at=c.snapshot_at AND facts.batch_id=c.batch_id").replace("SELECT * FROM facts", "SELECT facts.* FROM facts")
                 # The chosen table only carries uniquely prefixed join columns.

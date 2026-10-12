@@ -1,4 +1,4 @@
-
+import { readWithDeadline } from '../../../../../packages/ui/src/readDeadline'
 export type WatchlistRecord = {
   watchlist_id: string
   name: string
@@ -1127,7 +1127,7 @@ function fetchReferenceJson<T>(path: string, ttlMs: number = 5 * 60_000): Promis
   if (cached && cached.expiresAt > now) {
     return cached.promise as Promise<T>
   }
-  const promise = fetchJson<T>(path).catch((error) => {
+  const promise = readWithDeadline(signal => fetchJson<T>(path, { signal })).catch((error) => {
     if (referenceGetCache.get(path)?.promise === promise) {
       referenceGetCache.delete(path)
     }
@@ -1225,7 +1225,7 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
 }
 
 export function getWatchlists(signal?: AbortSignal) {
-  return fetchJson<WatchlistRecord[]>('/api/watchlists', { signal })
+  return readWithDeadline(readSignal => fetchJson<WatchlistRecord[]>('/api/watchlists', { signal: readSignal }), signal)
 }
 
 export function getMonitoringDashboard() {

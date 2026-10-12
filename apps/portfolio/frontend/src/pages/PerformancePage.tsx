@@ -274,9 +274,6 @@ const SIGNED_CALCULATION_COLUMN_KEYS = new Set<CalculationColumnKey>([
   'period_return',
   'return_contribution',
   'arithmetic_return_contribution',
-  'own_corr',
-  'beta',
-  'risk_contribution',
 ])
 
 const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
@@ -2891,21 +2888,17 @@ function PerformancePage() {
             </button>
           </form>
           <div className="performance-window-actions" aria-label="Performance period controls">
-            <button
-              type="button"
-              className={`performance-window-action${!appliedEndDate ? ' performance-window-action-active' : ''}`}
-              aria-pressed={!appliedEndDate}
-              disabled={waitingForDefaultEndDate}
-              onClick={() =>
+            <label className="performance-follow-latest">
+              <input type="checkbox" checked={!appliedEndDate} disabled={waitingForDefaultEndDate}
+              onChange={(event) =>
                 updateWindowParams(
                   appliedSinceInception ? null : effectiveStartDate || null,
-                  null,
+                  event.target.checked ? null : effectiveEndDate,
                   appliedSinceInception ? 'since_inception' : 'dates',
                 )
-              }
-            >
-              Latest
-            </button>
+              } />
+              Follow latest date
+            </label>
             <button
               type="button"
               className="performance-window-action"
@@ -2913,6 +2906,7 @@ function PerformancePage() {
             >
               Reset
             </button>
+            <div className="performance-period-presets" role="group" aria-label="Return measurement period">
             {PERFORMANCE_PERIOD_PRESETS.map((preset) => (
               <button
                 key={preset.key}
@@ -2927,6 +2921,7 @@ function PerformancePage() {
                 {preset.label}
               </button>
             ))}
+            </div>
           </div>
           <BenchmarkSearchBox
             className="performance-benchmark-search"

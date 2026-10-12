@@ -84,7 +84,22 @@ def test_lazy_fx_matches_full_catalog_and_strict_history(monkeypatch, currency, 
     if change == "valid":
         assert actual["observation_count"] == 40
     elif change == "missing_boundary":
-        assert actual["observation_count"] == 38
+        # All three FX paths preserve the same diagnostic candidates, but the
+        # missing boundary blocks the distribution rather than dropping shocks.
+        assert actual["candidate_observation_count"] == 38
+        assert actual["observation_count"] == 0
+        assert actual["status"] == "unavailable"
+        assert actual["var_amount"] is actual["expected_shortfall_amount"] is None
+        assert actual["tail_effective_observations"] is None
+        assert actual["missing_internal_observation_count"] == 2
+        assert actual["missing_return_dates"] == [
+            (AS_OF - timedelta(days=i)).isoformat() for i in (20, 19)
+        ]
+        assert actual["rows"][0]["fx_rejected_intervals"] == [{
+            "start_date": (AS_OF - timedelta(days=21)).isoformat(),
+            "end_date": (AS_OF - timedelta(days=19)).isoformat(),
+            "reason": "non_daily_return_interval",
+        }]
     else:
         assert actual["status"] == "unavailable"
         assert actual["rows"][0]["reason"] == "missing_aligned_fx_returns"

@@ -164,6 +164,38 @@ it('keeps a large original out of the DOM while allowing every section and a com
   vi.unstubAllGlobals()
 })
 
+it('preserves each cited original clock and opens punctuation-safe evidence without inventing retrieval times', async () => {
+  const sourceId = 'computed:原件/a_(1)?x=2+#3'
+  const evidence = [
+    { source_id: sourceId, tool: 'source', citation_only: true, as_of: '2026-09-01T01:00:00Z', title: 'Frozen numerical source' },
+    { source_id: 'research:judgment', tool: 'source', citation_only: true, recorded_at: '2026-09-02T02:00:00Z', title: 'Frozen judgment' },
+    { source_id: 'text:original', tool: 'source', citation_only: true, as_of: '2026-09-03T03:00:00Z', recorded_at: '2026-09-04T04:00:00Z', retrieved_at: '2026-09-05T05:00:00Z', title: 'Original document' },
+    { source_id: 'search:receipt', tool: 'search', retrieved_at: '2026-09-06T06:00:00Z' },
+  ]
+  entries = [{ ...answer, body: `Retained number [${sourceId}]`, context_json: { tool_evidence: evidence } }]
+  render(<MemoryRouter initialEntries={['/watchlists/3?topic=chat-1']}><ResearchPage watchlistId="3" /></MemoryRouter>)
+  const link = await screen.findByRole('link', { name: sourceId })
+  fireEvent.click(link)
+  const numerical = document.getElementById(link.getAttribute('href')!.slice(1))!
+  expect(numerical.closest('details')?.open).toBe(true)
+  expect(numerical).toBe(document.activeElement)
+  expect(within(numerical).getByText('资料截至').parentElement?.textContent).toContain('2026-09-01 01:00:00 UTC')
+  expect(within(numerical).queryByText('获取时间')).toBeNull()
+  expect(within(numerical).queryByText('资料记录时间')).toBeNull()
+  const judgment = document.getElementById('assistant-evidence-reply-1-research%3Ajudgment')!
+  expect(within(judgment).getByText('资料记录时间').parentElement?.textContent).toContain('2026-09-02 02:00:00 UTC')
+  expect(within(judgment).queryByText('获取时间')).toBeNull()
+  expect(within(judgment).queryByText('资料截至')).toBeNull()
+  const original = document.getElementById('assistant-evidence-reply-1-text%3Aoriginal')!
+  for (const [label, timestamp] of [['资料截至', '2026-09-03 03:00:00 UTC'], ['资料记录时间', '2026-09-04 04:00:00 UTC'], ['获取时间', '2026-09-05 05:00:00 UTC']]) {
+    expect(within(original).getByText(label).parentElement?.textContent).toContain(timestamp)
+  }
+  const tool = document.getElementById('assistant-evidence-reply-1-search%3Areceipt')!
+  expect(within(tool).getByText('获取时间').parentElement?.textContent).toContain('2026-09-06 06:00:00 UTC')
+  expect(screen.queryByText('留存时间')).toBeNull()
+  expect(mocks.read.mock.calls.some(([path]) => String(path).includes('/evidence?'))).toBe(false)
+})
+
 it.each([
   { event_case_id: 'event-1', event_version_id: 'event-1:2' },
   { risk_case_id: 'drawdown-1', risk_case_updated_at: '2026-09-12T08:00:00Z' },
@@ -472,13 +504,13 @@ it('loads exact retained evidence only when its snapshot is opened and preserves
   render(<MemoryRouter initialEntries={['/watchlists/3?topic=chat-1']}><ResearchPage watchlistId="3" /></MemoryRouter>)
   const link = await screen.findByRole('link', { name: 'instrument:receipt' })
   fireEvent.click(link)
-  expect(document.getElementById('assistant-evidence-reply-1-instrument:receipt')?.closest('details')?.open).toBe(true)
+  expect(document.getElementById(link.getAttribute('href')!.slice(1))?.closest('details')?.open).toBe(true)
   expect(mocks.read.mock.calls.some(([path]) => String(path).includes('/evidence?'))).toBe(false)
   expect(screen.queryByText(/original evidence/)).toBeNull()
-  expect(screen.getByRole('link', { name: 'computed:python' }).getAttribute('href')).toBe('#assistant-evidence-reply-1-computed:python')
+  expect(screen.getByRole('link', { name: 'computed:python' }).getAttribute('href')).toBe('#assistant-evidence-reply-1-computed%3Apython')
   expect(screen.getByText('Python 量化计算')).toBeTruthy()
   for (const id of Object.keys(results)) {
-    fireEvent.click(within(document.getElementById(`assistant-evidence-reply-1-${id}`)!).getByText('当时证据快照'))
+    fireEvent.click(within(document.getElementById(`assistant-evidence-reply-1-${encodeURIComponent(id)}`)!).getByText('当时证据快照'))
   }
   expect(await screen.findByText(/original evidence/)).toBeTruthy()
   expect(await screen.findByText(/Actually requested original/)).toBeTruthy()
@@ -487,7 +519,7 @@ it('loads exact retained evidence only when its snapshot is opened and preserves
   expect(screen.getByText('估值日期').parentElement?.textContent).toContain('2026-09-04')
   expect(screen.getAllByText('获取时间', { selector: 'span' })).toHaveLength(5)
   expect(screen.queryByText(/Unread material must not masquerade/)).toBeNull()
-  const summary = within(document.getElementById('assistant-evidence-reply-1-comparison:receipt')!).getByText('当时证据快照')
+  const summary = within(document.getElementById('assistant-evidence-reply-1-comparison%3Areceipt')!).getByText('当时证据快照')
   fireEvent.click(summary)
   fireEvent.click(summary)
   await waitFor(() => expect(mocks.read.mock.calls.filter(([path]) => String(path).includes('/evidence?'))).toHaveLength(5))

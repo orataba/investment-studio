@@ -18,7 +18,7 @@ function result(overrides: Partial<PortfolioTailRisk> = {}): PortfolioTailRisk {
     missing_internal_observation_count: 0, uncovered_trailing_observation_count: 0,
     actual_history_days: 829, history_span_fraction: 829 / 1095,
     first_scenario_start_date: '2024-06-01', last_scenario_end_date: '2026-09-08',
-    observation_count: 500, tail_effective_observations: 25, tail_observation_count: 25,
+    candidate_observation_count: 500, observation_count: 500, tail_effective_observations: 25, tail_observation_count: 25,
     tail_max_observation_weight: .04, var_amount: 20000, var_nav_fraction: .02,
     expected_shortfall_amount: 30000, expected_shortfall_nav_fraction: .03,
     modeled_gross_exposure: 600000, excluded_gross_exposure: 400000,
@@ -46,7 +46,7 @@ it('shows NAV-denominated paired losses, sample mass, and exclusions without dec
   fireEvent.click(method)
   expect(screen.getByRole('tooltip')).toHaveTextContent('not realized portfolio performance')
   fireEvent.keyDown(method, { key: 'Escape' })
-  expect(screen.getByText('500 / 25.00')).toBeInTheDocument()
+  expect(screen.getByText('500 / 500 / 25.00')).toBeInTheDocument()
   expect(screen.getByText(/Excluded assets are not zero risk/)).toBeInTheDocument()
   expect(screen.getByText('FCN / Option daily fair values are not modeled')).toBeInTheDocument()
   expect(screen.getByText(/Modeled Gross Carrying Amount \/ NAV:/)).toHaveTextContent('60.00%')
@@ -74,13 +74,13 @@ it('clears numbers for a newly selected confidence until that response arrives',
 
 it('does not display unresolved tail estimates as zero and translates the reason', async () => {
   mocks.language = 'zh-Hans'
-  mocks.getPortfolioTailRisk.mockResolvedValue(result({ status: 'unavailable', observation_count: 90,
+  mocks.getPortfolioTailRisk.mockResolvedValue(result({ status: 'unavailable', candidate_observation_count: 90, observation_count: 90,
     confidence: .99, tail_effective_observations: .9, var_amount: null, var_nav_fraction: null,
     expected_shortfall_amount: null, expected_shortfall_nav_fraction: null,
     limitations: ['less_than_one_tail_observation'] }))
   render(<PortfolioTailRiskPanel portfolioId="p" />)
   expect(await screen.findByText('所选置信度的尾部不足一个观察样本，暂不显示 VaR / ES。')).toBeInTheDocument()
-  expect(screen.getByText('90 / 0.90')).toBeInTheDocument()
+  expect(screen.getByText('90 / 90 / 0.90')).toBeInTheDocument()
   expect(screen.queryByText('0.00%')).not.toBeInTheDocument()
   expect(screen.getByText('固定票息票据与期权未纳入日公允价值模型')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: /^账面总额口径:/ })).toHaveTextContent('?')
@@ -114,7 +114,7 @@ it('keeps the requested years separate from a short actual sample and exposes ta
   const short = result({
     as_of_date: '2026-09-10', window_start_date: '2023-09-11', window_end_date: '2026-09-10',
     first_scenario_start_date: '2026-06-30', last_scenario_end_date: '2026-09-10',
-    observation_count: 52, tail_effective_observations: 2.6, tail_observation_count: 3,
+    candidate_observation_count: 52, observation_count: 52, tail_effective_observations: 2.6, tail_observation_count: 3,
     tail_max_observation_weight: 1 / 2.6, actual_history_days: 72, history_span_fraction: 72 / 1095,
     expected_common_observation_count: 750, uncovered_observation_count: 698,
     uncovered_leading_observation_count: 698,
@@ -123,7 +123,7 @@ it('keeps the requested years separate from a short actual sample and exposes ta
     ...short, lookback_days: 365, window_start_date: '2025-09-10',
   })
   render(<PortfolioTailRiskPanel portfolioId="p" />)
-  expect(await screen.findByText('52 / 2.60')).toBeInTheDocument()
+  expect(await screen.findByText('52 / 52 / 2.60')).toBeInTheDocument()
   expect(screen.getByRole('heading', { name: /Historical scenario losses/ })).toBeInTheDocument()
   expect(screen.getByText('2023-09-11 → 2026-09-10')).toBeInTheDocument()
   expect(screen.getByText('2026-06-30 → 2026-09-10')).toBeInTheDocument()
@@ -134,7 +134,7 @@ it('keeps the requested years separate from a short actual sample and exposes ta
   expect(screen.getByText(/698 uncovered before the sample · 0 missing within it/)).toBeInTheDocument()
   fireEvent.change(screen.getByRole('combobox', { name: 'Lookback limit' }), { target: { value: '365' } })
   expect(await screen.findByText('2025-09-10 → 2026-09-10')).toBeInTheDocument()
-  expect(screen.getByText('52 / 2.60')).toBeInTheDocument()
+  expect(screen.getByText('52 / 52 / 2.60')).toBeInTheDocument()
   expect(screen.getByText('2026-06-30 → 2026-09-10')).toBeInTheDocument()
   expect(mocks.getPortfolioTailRisk).toHaveBeenLastCalledWith('p', { asOfDate: undefined, confidence: .95, lookbackDays: 365 })
 })
@@ -155,7 +155,20 @@ it('withholds numbers for missing scenarios and exposes their actual interval da
     var_nav_fraction: null, expected_shortfall_amount: null, expected_shortfall_nav_fraction: null,
     limitations: ['missing_daily_return_intervals'], missing_intervals: [{ start_date: '2026-09-07', end_date: '2026-09-08' }] }))
   render(<PortfolioTailRiskPanel portfolioId="p" />)
-  expect(await screen.findByText(/Missing or unavailable intervals within or after/)).toBeTruthy()
+  expect(await screen.findByText(/Expected daily intervals are missing within or after/)).toBeTruthy()
   expect(screen.getByText('2026-09-07 → 2026-09-08')).toBeTruthy()
   expect(screen.queryByText('2.00%')).toBeNull()
+})
+
+
+it('separates blocked candidate scenarios from eligible samples and unavailable tail mass', async () => {
+  mocks.getPortfolioTailRisk.mockResolvedValue(result({ status: 'unavailable', candidate_observation_count: 41,
+    observation_count: 0, tail_effective_observations: null, tail_observation_count: null,
+    var_amount: null, var_nav_fraction: null, expected_shortfall_amount: null, expected_shortfall_nav_fraction: null,
+    missing_internal_observation_count: 0, uncovered_trailing_observation_count: 0,
+    limitations: ['rejected_daily_return_intervals'] }))
+  render(<PortfolioTailRiskPanel portfolioId="p" />)
+  expect(await screen.findByText('41 / 0 / —')).toBeInTheDocument()
+  expect(screen.getByText(/These differ from missing-interval counts/)).toBeInTheDocument()
+  expect(screen.getByText(/does not mean zero risk/)).toBeInTheDocument()
 })
