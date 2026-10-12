@@ -509,7 +509,7 @@ def test_unchecked_news_cannot_be_reported_as_complete_coverage(client, monkeypa
         service.apply_result(session, run, result())
         review = run.context_json["reviews"]["xlk"]
         assert review["status"] == "limited"
-        assert any("未检索" in gap for gap in review["coverage"])
+        assert any("未追加检索" in gap and "范围外" in gap for gap in review["coverage"])
 
 
 def test_prepare_context_retains_scoped_sector_inputs(client, monkeypatch):
