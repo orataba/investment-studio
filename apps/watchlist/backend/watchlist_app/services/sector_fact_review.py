@@ -657,6 +657,8 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
                                               *(dossier.get("notebook") or {}).get("sources", []),
                          *(source for field in ("themes", "pm_views") for value in dossier.get(field, [])
                            for source in value.get("sources", []))]}
+        dossier_ids.update(source["source_id"] for item in (context.get("research_historical_reads") or {}).values()
+                           if item.get("instrument_id") == iid for source in item.get("sources", []))
         for source_id in sorted(references):
             if source_id in sources:
                 continue

@@ -709,6 +709,10 @@ def run_context(run_id: str, originals: bool = False, session: Session = Depends
                     for source in item["sources"]]} if "sources" in item else item for item in dossier[field]]
                    for field in ("themes", "pm_views") if field in dossier}})
         context["research_dossiers"] = dossiers
+        if context.get("research_historical_reads"):
+            context["research_historical_reads"] = {key: {**item,
+                "sources": [original(source) for source in item.get("sources", [])]}
+                for key, item in context["research_historical_reads"].items()}
     elif context.get("research_dossiers"):
         context["research_dossiers"] = [dossier_outline(d) for d in context["research_dossiers"]]
     return context

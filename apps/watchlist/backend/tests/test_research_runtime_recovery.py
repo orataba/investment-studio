@@ -24,6 +24,44 @@ def save_run(context, *, status="failed", completed=None):
         session.commit()
 
 
+def test_review_historical_calculations_resolve_only_cited_originals_through_api(client, monkeypatch):
+    from watchlist_app.services import research_run_evidence, sector_fact_review
+
+    def reference(source_id):
+        return {"source_id": source_id, "source_type": "computed_metric", "instrument_id": "xlk",
+            "as_of": "2026-09-20T00:00:00Z", "methodology": "Retained calculation",
+            "retained_reference": {"run_id": "earlier", "path": ["computed_metrics", "*"]}}
+
+    context = {"research_run": True, "cutoff": "2026-09-23T00:00:00Z", "instrument_ids": ["xlk"],
+        "research_dossiers": [{"instrument_id": "xlk", "notebook": None}],
+        "research_historical_reads": {"xlk:earlier:investment-view": {"instrument_id": "xlk",
+            "sources": [reference("computed:cited"), reference("computed:unrelated")]}}}
+    save_run(context)
+    response = client.get("/api/research/runs/recovery/context?originals=true")
+    assert response.status_code == 200, response.text
+    projected = response.json()
+    original = {**reference("computed:cited"), "data": {"value": 7}}
+    api_reads = []
+
+    def read_source(run_id, suffix, payload=None):
+        api_reads.append((run_id, suffix))
+        assert suffix == "dossier/xlk?source_id=computed%3Acited"
+        return original
+
+    monkeypatch.setattr(sector_fact_review, "_api_request", read_source)
+    monkeypatch.setattr(research_run_evidence, "resolve_reference",
+        lambda *args, **kwargs: pytest.fail("The reviewer must not open a database for historical originals"))
+    proposal = [{"instrument_id": "xlk", "events": [], "research": {
+        "decision_brief": {"recommendation": "Maintain", "source_ids": ["computed:cited"]}}}]
+    packet = sector_fact_review._evidence_packet(projected, proposal, "recovery")
+    assert api_reads == [("recovery", "dossier/xlk?source_id=computed%3Acited")]
+    assert packet["sources"] == [original]
+    historical = projected["research_historical_reads"]["xlk:earlier:investment-view"]
+    assert all("retained_reference" not in source and "data" not in source for source in historical["sources"])
+    with get_session_factory()() as session:
+        assert session.get(ResearchEntry, "recovery").context_json["research_historical_reads"] == context["research_historical_reads"]
+
+
 def test_retry_preserves_failure_history_and_original_cutoff_and_requires_backoff(client):
     stamp = datetime.now(UTC)
     context = {"sector_run": True, "cutoff": "2026-09-23T00:00:00Z", "input_snapshot_cutoff": "2026-09-23T00:00:00Z",
