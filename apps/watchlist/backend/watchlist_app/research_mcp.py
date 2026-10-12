@@ -68,6 +68,12 @@ class _ResearchMCPServer(MCPServer):
                 raise ValueError("Unknown research specialist")
             tools = [tool for tool in tools if tool.name in common | section_tools[section]]
         for index, tool in enumerate(tools):
+            if (tool.name == "read_research_section" and
+                    os.environ.get("INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE") == "sector" and
+                    section in {"recent_updates", "themes", "quantitative"}):
+                tool = tool.model_copy(deep=True)
+                tool.input_schema["properties"]["section"]["enum"] = [section]
+                tools[index] = tool
             if tool.name == "submit_research_review":
                 tool = tool.model_copy(deep=True)
                 schema = _submission_schema()
@@ -142,8 +148,9 @@ def read_research_section(instrument_id: str,
                           section: Literal["overview", "recent_updates", "themes", "quantitative"],
                           offset: int = 0, limit: int = 20, path: list[str | int] | None = None) -> dict:
     """Read this section's editable skill, current working set and completed specialist findings.
-    Each specialist shares the same frozen evidence with the main researcher. Read originals only for
-    the claim being checked; archived history is not the daily context. Overview runs after all specialists.
+    A specialist reads only its assigned section; the overview receives their completed findings.
+    Retained originals remain available by exact source_id or the relevant data section for a concrete
+    claim. Archived history is not the daily context. Overview runs after all specialists.
     """
     return request("section-context", {"instrument_id": instrument_id, "section": section,
         "offset": offset, "limit": limit, "path": path})
@@ -155,6 +162,9 @@ def submit_research_section(result: SectionSubmission) -> dict:
     """Specialist only: retain source-bound findings for your assigned section, then stop.
     This is a working result for the main researcher; it does not publish a view, events or themes.
     Report meaningful risks and specific evidence gaps. Use returned source IDs, never invented IDs.
+    events and themes use the final publication schemas and source/action checks. Only recent_updates
+    submits events; only themes submits themes. Keep both arrays directly under result. Theme figure
+    references must be retained numeric sources; article references belong in source_ids.
     """
     return request("section-report", result.model_dump(mode="json"))
 

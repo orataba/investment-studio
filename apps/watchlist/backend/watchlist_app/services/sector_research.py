@@ -611,7 +611,7 @@ class EventMarketReaction(BaseModel):
 class SectorEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
     event_key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
-    action: Literal["new", "updated", "resolved"]
+    action: Literal["new", "updated", "resolved"] = Field(description="new creates an event identity; updated/resolved require an existing retained event_key read in this run. A theme or an earlier news article is not an existing event record.")
     direction: Literal["risk", "opportunity", "uncertain"]
     title: str = Field(min_length=1, max_length=250)
     body: str = Field(min_length=1, max_length=5000)
@@ -1257,6 +1257,77 @@ def event_evidence_sources(context, run_id, *, notebook_evidence=None):
     return sources
 
 
+def validate_review_updates(session, run, review, notebook_evidence, sources):
+    """Shared specialist/final event and theme contracts, without publication obligations."""
+    cutoff = datetime.fromisoformat(run.context_json["cutoff"])
+    themes = _theme_scope(session, run, review)
+    for update in review.themes:
+        validate_notebook(ResearchNotebook(source_ids=[*update.source_ids, *update.figure_source_ids]), review.instrument_id, notebook_evidence)
+        for source_id in update.figure_source_ids:
+            if notebook_evidence[source_id].get("source_type") not in {"computed_metric", "sector_snapshot", "analyst_estimate_changes"}:
+                raise ValueError("主题图表必须绑定真实留存的数值来源")
+    existing_events, effective_events, event_candidates = _validate_research_links(session, run, review, themes)
+    seen = set()
+    for item in review.events:
+        key = (review.instrument_id, item.event_key)
+        if key in seen:
+            raise ValueError("同一事件在本轮重复出现")
+        seen.add(key)
+        existing = existing_events.get(item.event_key)
+        effective = effective_events[item.event_key]
+        validate_event_source_consistency(item, sources, cutoff, review.instrument_id)
+        item_source_ids = list(dict.fromkeys([*effective.source_ids,
+            *(sid for view in effective.market_views for sid in view.source_ids),
+            *(effective.market_reaction.figure_source_ids if effective.market_reaction else [])]))
+        retained = {**notebook_evidence, **sources}
+        # Sparse edits keep the already verified nested references.
+        retained.update({source["source_id"]: source for source in (existing.evidence_json or {}).get("sources", [])
+                         if source.get("source_id") and source["source_id"] not in retained} if existing else {})
+        if any(sid not in retained for sid in item_source_ids):
+            raise ValueError("事件引用了未取得的来源")
+        item_sources = [retained[sid] for sid in item_source_ids]
+        if effective.market_reaction is not None:
+            reaction = effective.market_reaction
+            if reaction.status in {"available", "partial"} and not reaction.figure_source_ids:
+                raise ValueError("市场反应必须引用留存的事件窗口计算")
+            for sid in reaction.figure_source_ids:
+                previous_sources = {source["source_id"]: source for source in (existing.evidence_json or {}).get("sources", [])
+                                    if source.get("source_id")} if existing else {}
+                source = _event_computed_original(notebook_evidence.get(sid) or previous_sources.get(sid) or {}, session=session)
+                data = source.get("data") or {}
+                if (source.get("source_type") != "computed_metric" or source.get("instrument_id") != review.instrument_id
+                        or data.get("analysis_kind") != "event_market_reaction"):
+                    raise ValueError("市场反应必须引用当前标的留存的事件窗口计算")
+                if data.get("status") != reaction.status:
+                    raise ValueError(f"events[event_key={item.event_key}].market_reaction.status: "
+                        f"市场反应可用状态必须与留存计算一致；提交 {reaction.status}，"
+                        f"来源 {sid} 的留存状态为 {data.get('status')}。")
+                factual_time = effective.occurred_at or effective.published_at
+                if existing:
+                    previous = existing.evidence_json or {}
+                    if _same_progress(existing, effective, item_sources, material_only=True, session=session):
+                        factual_time = previous.get("development_at") or previous.get("occurred_at") or previous.get("published_at")
+                    elif (effective.recording_type == "update" and effective.occurred_at == previous.get("occurred_at")
+                            and effective.published_at != previous.get("published_at")):
+                        factual_time = effective.published_at or effective.occurred_at
+                fact_date = (factual_time if factual_time and len(factual_time) == 10 else
+                    _event_check_time(session, review.instrument_id, datetime.fromisoformat(factual_time)).date().isoformat() if factual_time else "")
+                if data.get("event_date") and fact_date and str(data["event_date"]) != fact_date:
+                    raise ValueError("市场反应窗口与事件日期不一致")
+        if existing is not None and _event_follow_up(existing.evidence_json or {}) != "watch" and effective.follow_up == "watch":
+            if _same_progress(existing, effective, item_sources, material_only=True, session=session) or _previously_recorded_progress(existing, effective, item_sources, session=session):
+                raise ValueError("重新开始主动跟进需要新实质进展，重复旧材料不能重新激活")
+        if existing is None:
+            for other in event_candidates:
+                if effective.progress_kind != "editorial" and " ".join(other.body.split()) != " ".join(effective.body.split()):
+                    continue
+                if _same_progress(other, effective, item_sources, material_only=True, session=session):
+                    raise ValueError(f"同一事项已留存，请沿用事件标识 {other.signal.removeprefix('sector:')}")
+        if item.action != "new" and existing is None:
+            raise ValueError("更新或解除的事件没有原跟进记录")
+    return themes, existing_events
+
+
 def validate_result(session, run, parsed: ReviewResult):
     """Check the full draft against retained evidence without publishing research or events."""
     context = run.context_json
@@ -1275,10 +1346,9 @@ def validate_result(session, run, parsed: ReviewResult):
     notebook_evidence = research_sources(context, run.entry_id, session=session)
     sources = event_evidence_sources(context, run.entry_id, notebook_evidence=notebook_evidence)
     cutoff = datetime.fromisoformat(context["cutoff"])
-    seen = set()
     # Validate the full reply before changing any persistent event.
     for review in parsed.reviews:
-        themes = _theme_scope(session, run, review)
+        themes, existing_events = validate_review_updates(session, run, review, notebook_evidence, sources)
         if context.get("sector_run"):
             dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
             checked_ids = {themes[update.theme_key]["theme_id"] for update in review.themes}
@@ -1288,12 +1358,6 @@ def validate_result(session, run, parsed: ReviewResult):
             missing = sorted(required - checked_ids)
             if missing:
                 raise ValueError("本轮须复核已绑定受影响主题；无变化只提交theme_id/theme_key。未复核：" + ", ".join(missing))
-        for update in review.themes:
-            validate_notebook(ResearchNotebook(source_ids=[*update.source_ids, *update.figure_source_ids]), review.instrument_id, notebook_evidence)
-            for source_id in update.figure_source_ids:
-                if notebook_evidence[source_id].get("source_type") not in {"computed_metric", "sector_snapshot", "analyst_estimate_changes"}:
-                    raise ValueError("主题图表必须绑定真实留存的数值来源")
-        existing_events, effective_events, event_candidates = _validate_research_links(session, run, review, themes)
         working = (context.get("research_working_sets") or {}).get(review.instrument_id)
         if working is not None:
             reviewed_cases = {existing_events[item.event_key].case_id for item in review.events if item.event_key in existing_events}
@@ -1307,63 +1371,6 @@ def validate_result(session, run, parsed: ReviewResult):
                               research_plan=_review_research_plan(session, context, review), previous=dossier.get("notebook"), cutoff=cutoff)
         if review.reflection is not None:
             validate_notebook(ResearchNotebook(source_ids=review.reflection.source_ids), review.instrument_id, notebook_evidence)
-        for item in review.events:
-            key = (review.instrument_id, item.event_key)
-            if key in seen:
-                raise ValueError("同一事件在本轮重复出现")
-            seen.add(key)
-            existing = existing_events.get(item.event_key)
-            effective = effective_events[item.event_key]
-            validate_event_source_consistency(item, sources, cutoff, review.instrument_id)
-            item_source_ids = list(dict.fromkeys([*effective.source_ids,
-                *(sid for view in effective.market_views for sid in view.source_ids),
-                *(effective.market_reaction.figure_source_ids if effective.market_reaction else [])]))
-            retained = {**notebook_evidence, **sources}
-            # Sparse edits keep the already verified nested references.
-            retained.update({source["source_id"]: source for source in (existing.evidence_json or {}).get("sources", [])
-                             if source.get("source_id") and source["source_id"] not in retained} if existing else {})
-            if any(sid not in retained for sid in item_source_ids):
-                raise ValueError("事件引用了未取得的来源")
-            item_sources = [retained[sid] for sid in item_source_ids]
-            if effective.market_reaction is not None:
-                reaction = effective.market_reaction
-                if reaction.status in {"available", "partial"} and not reaction.figure_source_ids:
-                    raise ValueError("市场反应必须引用留存的事件窗口计算")
-                for sid in reaction.figure_source_ids:
-                    previous_sources = {source["source_id"]: source for source in (existing.evidence_json or {}).get("sources", [])
-                                        if source.get("source_id")} if existing else {}
-                    source = _event_computed_original(notebook_evidence.get(sid) or previous_sources.get(sid) or {}, session=session)
-                    data = source.get("data") or {}
-                    if (source.get("source_type") != "computed_metric" or source.get("instrument_id") != review.instrument_id
-                            or data.get("analysis_kind") != "event_market_reaction"):
-                        raise ValueError("市场反应必须引用当前标的留存的事件窗口计算")
-                    if data.get("status") != reaction.status:
-                        raise ValueError(f"events[event_key={item.event_key}].market_reaction.status: "
-                            f"市场反应可用状态必须与留存计算一致；提交 {reaction.status}，"
-                            f"来源 {sid} 的留存状态为 {data.get('status')}。")
-                    factual_time = effective.occurred_at or effective.published_at
-                    if existing:
-                        previous = existing.evidence_json or {}
-                        if _same_progress(existing, effective, item_sources, material_only=True, session=session):
-                            factual_time = previous.get("development_at") or previous.get("occurred_at") or previous.get("published_at")
-                        elif (effective.recording_type == "update" and effective.occurred_at == previous.get("occurred_at")
-                                and effective.published_at != previous.get("published_at")):
-                            factual_time = effective.published_at or effective.occurred_at
-                    fact_date = (factual_time if factual_time and len(factual_time) == 10 else
-                        _event_check_time(session, review.instrument_id, datetime.fromisoformat(factual_time)).date().isoformat() if factual_time else "")
-                    if data.get("event_date") and fact_date and str(data["event_date"]) != fact_date:
-                        raise ValueError("市场反应窗口与事件日期不一致")
-            if existing is not None and _event_follow_up(existing.evidence_json or {}) != "watch" and effective.follow_up == "watch":
-                if _same_progress(existing, effective, item_sources, material_only=True, session=session) or _previously_recorded_progress(existing, effective, item_sources, session=session):
-                    raise ValueError("重新开始主动跟进需要新实质进展，重复旧材料不能重新激活")
-            if existing is None:
-                for other in event_candidates:
-                    if effective.progress_kind != "editorial" and " ".join(other.body.split()) != " ".join(effective.body.split()):
-                        continue
-                    if _same_progress(other, effective, item_sources, material_only=True, session=session):
-                        raise ValueError(f"同一事项已留存，请沿用事件标识 {other.signal.removeprefix('sector:')}")
-            if item.action != "new" and existing is None:
-                raise ValueError("更新或解除的事件没有原跟进记录")
     return sources, notebook_evidence
 
 

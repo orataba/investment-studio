@@ -19,6 +19,10 @@ def read_research_context(request, section: str = "overview", offset: int = 0, l
                           path: list[str | int] | None = None) -> dict:
     """Start with the bound question, scope and section counts. Read catalogue to discover related IDs; history/evidence/page_context and selected references hold the actual conversation inputs. Read nonempty selected references before answering; read market_coverage for channel details. Every section is paginated: follow next_offset, then every deferred.path with the SAME section until complete. Text offsets are characters, array offsets rows, object offsets fields. Empty/unread sections never prove no new information. Automatic tracking covers instrument_ids; a conversation follows the question and selected page, not every catalogue member."""
     context = request("context")
+    if (context.get("sector_run")
+            and (context.get("execution") or {}).get("research_section") in {"recent_updates", "themes", "quantitative"}
+            and section in {"research_working_sets", "section_results"}):
+        raise ValueError("专员请通过read_research_section读取自己分工的工作集与交接结果，不读取全部角色上下文；原件按具体论点读取。")
     if context.get("sector_run") and section == "overview":
         if offset or path:
             raise ValueError("overview不使用offset/path，请按分工入口读取。")

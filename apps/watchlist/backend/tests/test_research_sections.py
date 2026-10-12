@@ -9,7 +9,7 @@ import pytest
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services import research_sections as sections
 from watchlist_app.services import sector_research
-from .test_sector_research import seed_sector, add_sources
+from .test_sector_research import seed_sector, add_sources, bind_policy_theme
 from .test_research_themes import research_client
 from .test_research_activity import activity_client, publish, event
 
@@ -55,6 +55,52 @@ def test_synthesis_requires_all_specialists_and_overview_owner():
         sections.require_section_results(run)
 
 
+@pytest.mark.parametrize("defect,message", [
+    ("theme_figure", "主题图表必须绑定真实留存的数值来源"),
+    ("missing_event", "更新或解除的事件没有原跟进记录"),
+    ("event_figure", "市场反应必须引用当前标的留存的事件窗口计算"),
+])
+def test_specialist_and_final_share_source_and_event_action_contract(client, monkeypatch, defect, message):
+    seed_sector(client, monkeypatch)
+    with get_session_factory()() as session:
+        run, _ = sector_research.begin_run(session, ["xlk"])
+        theme = bind_policy_theme(session, run)
+        add_sources(run)
+        section = "themes" if defect == "theme_figure" else "recent_updates"
+        run.status = "running"
+        run.context_json = {**run.context_json, "input_snapshot_cutoff": run.context_json["cutoff"],
+            "section_results": {}, "execution": {"attempt": 1, "research_section": section}}
+        session.commit()
+        values = {"instrument_id": "xlk", "section": section, "status": "completed",
+            "summary": "有来源的专员提案仍须满足发布契约。", "source_ids": ["web-one"]}
+        if defect == "theme_figure":
+            values["themes"] = [{"theme_id": theme["theme_id"], "theme_key": theme["theme_key"],
+                "figure_source_ids": ["web-one"]}]
+        else:
+            values["events"] = [event(source_ids=["web-one"], published_at=run.context_json["cutoff"],
+                occurred_at=None, follow_up="none", action="updated" if defect == "missing_event" else "new",
+                **({"market_reaction": {"status": "available", "figure_source_ids": ["web-one"]}}
+                   if defect == "event_figure" else {}))]
+        payload = sections.SectionSubmission.model_validate(values)
+        with principal_context(replace(current_principal(), resource_scope={"kind": "run", "id": run.entry_id, "attempt": "1"})):
+            with pytest.raises(ValueError, match=message):
+                sections.save_section_result(session, run, payload)
+            assert not run.context_json["section_results"]
+        final = sector_research.ReviewResult(reviews=[sector_research.SectorReview(
+            instrument_id="xlk", events=payload.events, themes=payload.themes)])
+        with pytest.raises(ValueError, match=message):
+            sector_research.validate_result(session, run, final)
+
+        # The specialist can repair its own proposal without starting synthesis.
+        if defect == "theme_figure":
+            values["themes"][0].update(figure_source_ids=[], source_ids=["web-one"])
+        else:
+            values["events"][0].update(action="new", market_reaction=None)
+        repaired = sections.SectionSubmission.model_validate(values)
+        with principal_context(replace(current_principal(), resource_scope={"kind": "run", "id": run.entry_id, "attempt": "1"})):
+            assert sections.save_section_result(session, run, repaired)["section"] == section
+
+
 def test_specialists_receive_distinct_context_without_whole_notebook_history():
     context = {"instrument_ids": ["xlk"], "cutoff": "bound", "input_snapshot_cutoff": "bound",
         "research_dossiers": [{"instrument_id": "xlk", "instrument_type": "etf",
@@ -75,6 +121,39 @@ def test_specialists_receive_distinct_context_without_whole_notebook_history():
     assert overview["section_results"] and overview["prior_judgment"] and overview["current_stance"]
     assert len({value["skill"] for value in (news, themes, quant, overview)}) == 4
     assert all("UNRELATED ARCHIVE" not in str(value) for value in (news, themes, quant, overview))
+
+
+@pytest.mark.parametrize("assigned", sections.SECTION_ORDER)
+def test_specialist_context_keeps_its_assignment_but_synthesis_and_assistant_can_read(assigned):
+    context = {"sector_run": True, "instrument_ids": ["xlk"],
+        "execution": {"research_section": assigned}}
+    assert sections.section_context(context, "xlk", assigned)["section"] == assigned
+    for other in (*sections.SECTION_ORDER, "overview"):
+        if other == assigned:
+            continue
+        with pytest.raises(ValueError, match=f"当前分工为 {assigned}"):
+            sections.section_context(context, "xlk", other)
+    for allowed in ({**context, "execution": {"research_section": "overview"}},
+                    {**context, "sector_run": False}):
+        for other in (*sections.SECTION_ORDER, "overview"):
+            assert sections.section_context(allowed, "xlk", other)["section"] == other
+
+
+def test_section_read_tool_advertises_only_assigned_section_without_mutating_assistant_schema(monkeypatch):
+    import asyncio
+    from watchlist_app import research_mcp
+    def section_enum():
+        tool = next(tool for tool in asyncio.run(research_mcp.mcp.list_tools()) if tool.name == "read_research_section")
+        return tool.input_schema["properties"]["section"]["enum"]
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE", "sector")
+    for assigned in sections.SECTION_ORDER:
+        monkeypatch.setenv("INVESTMENT_STUDIO_RESEARCH_SECTION", assigned)
+        assert section_enum() == [assigned]
+    monkeypatch.setenv("INVESTMENT_STUDIO_RESEARCH_SECTION", "overview")
+    assert set(section_enum()) == {*sections.SECTION_ORDER, "overview"}
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE", "conversation")
+    monkeypatch.setenv("INVESTMENT_STUDIO_RESEARCH_SECTION", "themes")
+    assert set(section_enum()) == {*sections.SECTION_ORDER, "overview"}
 
 
 def test_skills_are_editable_with_revision_and_not_overwritten_by_analyst(research_client):

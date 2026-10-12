@@ -66,7 +66,7 @@ def require_section_results(run):
 def save_section_result(session, run, payload: SectionSubmission):
     from watchlist_app.services.research_access import require_entry_access
     from watchlist_app.services.research_notebook import ResearchNotebook, research_sources, validate_notebook, notebook_source_ids
-    from watchlist_app.services.sector_research import event_evidence_sources, validate_event_source_consistency
+    from watchlist_app.services.sector_research import event_evidence_sources, validate_review_updates, SectorReview
     session.refresh(run, with_for_update=True)
     require_entry_access(session, run, tool_write=True)
     context = run.context_json or {}
@@ -79,10 +79,9 @@ def save_section_result(session, run, payload: SectionSubmission):
     sources = research_sources(context, run.entry_id, session=session)
     refs = notebook_source_ids(payload.model_dump(mode="json"))
     validate_notebook(ResearchNotebook(source_ids=sorted(refs)), payload.instrument_id, sources)
-    cutoff = datetime.fromisoformat(context["cutoff"])
     event_sources = event_evidence_sources(context, run.entry_id, notebook_evidence=sources)
-    for event in payload.events:
-        validate_event_source_consistency(event, event_sources, cutoff, payload.instrument_id)
+    validate_review_updates(session, run, SectorReview(instrument_id=payload.instrument_id,
+        events=payload.events, themes=payload.themes), sources, event_sources)
     if payload.status == "completed" and not refs:
         raise ValueError("完成的专员研究须绑定实际读取的依据；资料不足请提交 limited 并说明限制")
     result = {**payload.model_dump(mode="json"), "attempt": execution.get("attempt", 0),
@@ -105,6 +104,9 @@ def section_context(context, instrument_id, section):
     """Role-specific inputs: shared storage does not mean shared prompts/history."""
     if section not in (*SECTION_ORDER, "overview"):
         raise ValueError("未知研究部分")
+    assigned = (context.get("execution") or {}).get("research_section")
+    if context.get("sector_run") and assigned in SECTION_ORDER and section != assigned:
+        raise ValueError(f"当前分工为 {assigned} 专员，请读取自己的 section={assigned}；具体论点所需原件仍可按 source_id 或所需资料分区读取。")
     if instrument_id not in context.get("instrument_ids", []):
         raise ValueError("标的不在本轮研究范围")
     dossier = next((item for item in context.get("research_dossiers", []) if item["instrument_id"] == instrument_id), {})

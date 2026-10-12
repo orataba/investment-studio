@@ -16,6 +16,9 @@ Daily collaboration
   material risk reports, and produces one coherent research submission. Reuse their evidence and
   calculations; retrieve an original again only for a specific unresolved claim. A specialist report
   is analysis, not an independent source, and a completed session does not itself establish truth.
+  Reconcile contradictions in the proposed events, themes, quantitative modules and risk explanations,
+  not only in the overview paragraph. Check numeric statements against retained values; qualify or
+  remove causal claims when another specialist identifies missing assumptions or contrary evidence.
 - The independent factual reviewer checks the final draft before publication. A specialist does not
   publish a final view, and the synthesizer must not claim an uncompleted section was examined.
 - Resume a retained run at its original frozen input boundary. Reuse completed section work and

@@ -375,7 +375,7 @@ export const researchMessages: LanguageMessages = {
   '原始科目': 'Original line item', '原始数值': 'Original value', '单位未明确': 'Unit not specified',
   '报表币种不等于每个科目的单位；每股指标、比率和股数需分别核实。': 'Reporting currency is not the unit for every line item. Per-share measures, ratios and share counts require separate interpretation.',
   '展开分析': 'Expand analysis', '收起分析': 'Collapse analysis', '来源观点': 'Source opinion',
-  '研究动态': 'Research activity', '判断依据与期限': 'Assessment, evidence and horizon',
+  '判断依据与期限': 'Assessment, evidence and horizon',
   '研究资料已更新': 'Research materials updated', '尚未形成研究结论。': 'No research conclusion has been formed yet.',
 
 
@@ -398,9 +398,6 @@ export const researchMessages: LanguageMessages = {
   '追问这条更新': 'Discuss this update', '讨论当时判断': 'Discuss the earlier assessment', '写投资观点': 'Write an investment opinion',
   '请助手建立主题': 'Ask assistant to create a theme', '我的投资判断': 'My investment judgment', '交给助手保存': 'Send to assistant to save',
   '将交给研究助手保存，并关联这条更新；助手完成保存后会显示结果。': 'The assistant will save your opinion with a reference to this update and report the result.',
-  '按记录时间排列；事件发生、信息发布和引用修正前的原判断时间分别保留。主题中的更新与这里是同一条记录。': 'Ordered by record time. Event, publication and original assessment times before citation corrections are retained separately. Themes share these same records.',
-  '当前范围没有研究更新。检查是否完成及资料覆盖情况，请查看上方研究状态。': 'No research updates in this range. Check the research status above for completion and coverage.',
-  '正在读取研究动态…': 'Loading research activity…', '研究动态暂时无法读取：': 'Research activity is unavailable: ',
   '研究员提出': 'Proposed by researcher', '人工建立': 'Created by a team member', '当前判断': 'Current assessment', '最新变化': 'Latest development',
   '尚待形成研究判断。': 'The research assessment is pending.', '下一步观察': 'What to watch next', '结束原因': 'Reason for closing',
   '尚无主题更新。后续事件、判断和复盘会保留在这里。': 'No theme updates yet. Events, assessments and reviews will be retained here.',

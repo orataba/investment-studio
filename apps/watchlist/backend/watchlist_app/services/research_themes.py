@@ -109,7 +109,8 @@ class AnalystThemeUpdate(BaseModel):
     synthesis: str | None = Field(default=None, max_length=6000)
     latest_development: str | None = Field(default=None, max_length=3000)
     next_check: str | None = Field(default=None, max_length=2000)
-    figure_source_ids: list[str] = Field(default_factory=list)
+    figure_source_ids: list[str] = Field(default_factory=list,
+        description="Retained numeric figures only: computed_metric, sector_snapshot, or analyst_estimate_changes. Text/article references belong in source_ids; omit figures when no numeric original exists.")
 
 
 def _lifecycle_owner(context):
