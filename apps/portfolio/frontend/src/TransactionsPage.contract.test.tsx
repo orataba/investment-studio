@@ -1901,6 +1901,26 @@ describe('Transactions rendered page contract', () => {
     expect(search).toHaveValue('GETF')
   })
 
+  it('navigates FCN review to the exact missing contract field without recording or duplicating validation', async () => {
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.click(within(dialog).getByRole('button', { name: /^FCN/ }))
+    const review = within(dialog).getByRole('complementary', { name: 'Transaction review' })
+    await user.click(within(review).getByRole('button', { name: 'New derivative contracts require an id and name.' }))
+    expect(within(dialog).getByLabelText('Contract ID')).toHaveFocus()
+    await user.type(within(dialog).getByLabelText('Contract ID'), 'fcn-offline')
+    await user.click(within(review).getByRole('button', { name: 'New derivative contracts require an id and name.' }))
+    expect(within(dialog).getByLabelText('Contract Name')).toHaveFocus()
+    await user.type(within(dialog).getByLabelText('Contract Name'), 'Offline FCN')
+    await user.click(within(review).getByRole('button', { name: 'FCN notional must be positive.' }))
+    expect(within(dialog).getByLabelText('Notional per Contract')).toHaveFocus()
+    await user.click(within(review).getByRole('button', { name: 'References, lots and note' }))
+    expect(dialog.querySelector('details.transaction-entry-additional-details')).toHaveAttribute('open')
+    expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+  })
+
   it.each([['FCN', 'Underlying 1'], ['Option', 'Underlying Security']])(
     'registers an external %s underlying only after selection without creating a transaction', async (kind, label) => {
       const candidate = { instrument_type: 'equity', symbol: 'PDD', catalog_provider: 'fmp', catalog_symbol: 'PDD',

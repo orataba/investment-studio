@@ -272,12 +272,12 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
     </ResearchReadingAside>
     </div>
     <nav className="research-reading-nav" aria-label="研究报告目录">
-      {sections.filter(section => !privateFund || section !== 'events').map(section => <a key={section} href={`#research-${sectionIds[section]}-${instrumentId}`}>{sectionLabels[section]}</a>)}
+      {sections.filter(section => !privateFund || section !== 'events').map(section => <a key={section} href={`#research-${sectionIds[section]}-${instrumentId}`} onClick={() => document.getElementById(`research-${sectionIds[section]}-${instrumentId}`)?.focus({ preventScroll: true })}>{sectionLabels[section]}</a>)}
     </nav>
     {error && <p role="alert">研究档案暂时无法读取：{error} <button type="button" onClick={() => setRefresh(value => value + 1)}>重试读取</button></p>}
     {!notebook && <p className="sector-research-note">研究基线尚未建立；已保存的主题与材料仍可查看。</p>}
     <div className={`research-current-sections${privateFund ? ' research-current-sections-private' : ''}`}>
-      {sections.map(section => <div key={section} id={`research-${sectionIds[section]}-${instrumentId}`} className={`research-current-section research-section-${section}`}>{content[section]}</div>)}
+      {sections.map(section => <div key={section} id={`research-${sectionIds[section]}-${instrumentId}`} tabIndex={-1} aria-label={sectionLabels[section]} className={`research-current-section research-section-${section}`}>{content[section]}</div>)}
     </div>
       <footer className="research-report-library" aria-label="研究资料与设置"><div className="research-library-links">
       <ResearchReadingAside label="基础档案" title="基础档案">

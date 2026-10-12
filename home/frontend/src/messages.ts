@@ -94,4 +94,11 @@ export const homeMessages: LanguageMessages = { 'zh-Hans': {
   'The local workspace does not require sign-in.': '本机工作区无需登录。',
   'Open workspaces': '进入工作区',
   'Team role for {name}': '{name}的团队角色',
+  'Change team role': '更改团队角色',
+  'Changes were saved, but the member list could not refresh. Reload to see the current state.': '更改已保存，但成员列表刷新失败。请重新载入页面查看当前状态。',
+  'The new team role applies immediately. Portfolio access is managed separately.': '新的团队角色立即生效；组合访问权限单独管理。',
+  'This account can sign in again. Revoked sessions and setup links will not be restored.': '该账号将恢复登录权限。已撤销的会话和设置链接不会恢复。',
+  'This account will lose access immediately. Existing sessions and setup links will be revoked; research and portfolio records are retained.': '该账号将立即失去访问权限，现有会话和设置链接将被撤销；研究和组合记录保留。',
+  'This member will become the team owner and administrator. You will remain an administrator; portfolio permissions stay unchanged.': '该成员将成为团队所有者和管理员。你仍保留管理员角色，组合权限不变。',
+  'Existing sessions and setup links will be revoked. A new one-time link will be shown for this member.': '现有会话和设置链接将被撤销，并为该成员显示新的一次性链接。',
 } }

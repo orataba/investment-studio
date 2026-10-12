@@ -155,6 +155,7 @@ export default function PortfolioTableViewControls({
           className="portfolio-table-view-select"
           disabled={busy}
           onClick={() => setViewMenuOpen((open) => !open)}
+          title={activeView?.description || undefined}
           aria-haspopup="listbox"
           aria-expanded={viewMenuOpen}
         >
@@ -188,6 +189,8 @@ export default function PortfolioTableViewControls({
                 <div
                   key={view.id}
                   role="option"
+                  aria-label={view.name}
+                  aria-description={view.description || undefined}
                   aria-selected={view.id === activeViewId}
                   tabIndex={0}
                   className={`portfolio-table-view-option ${view.id === activeViewId ? 'portfolio-table-view-option-active' : ''}`}
@@ -197,6 +200,7 @@ export default function PortfolioTableViewControls({
                 >
                   <span className="portfolio-table-view-option-copy">
                     <span className="portfolio-table-view-option-name">{view.name}</span>
+                    {view.description ? <small className="portfolio-table-view-option-description">{view.description}</small> : null}
                   </span>
                   {deletable ? (
                     <button

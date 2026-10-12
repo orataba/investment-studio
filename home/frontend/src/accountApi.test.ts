@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { accountRequest, roleName } from './accountApi'
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('account requests', () => {
   it('uses the current browser session and never caches identity data', async () => {
@@ -20,5 +20,18 @@ describe('account requests', () => {
   it('handles session revocation without expecting a response body', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 204 }))
     expect(await accountRequest('/logout-all', 'POST')).toBeUndefined()
+  })
+  it('bounds an unresponsive account read and leaves mutations outside that read deadline', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn((_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    })))
+    const read = expect(accountRequest('/session')).rejects.toThrow('读取超时')
+    await vi.advanceTimersByTimeAsync(30_000)
+    await read
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, status: 204 })
+    vi.stubGlobal('fetch', fetcher)
+    await accountRequest('/members/member/reset', 'POST')
+    expect(fetcher.mock.calls[0][1].signal).toBeUndefined()
   })
 })

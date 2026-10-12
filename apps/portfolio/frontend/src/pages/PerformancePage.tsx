@@ -334,12 +334,14 @@ const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
   {
     id: 'risk-attribution',
     name: 'Default',
+    description: 'Return contribution and realized risk attribution for the selected period.',
     readonly: true,
     state: DEFAULT_CALCULATION_TABLE_VIEW_STATE,
   },
   {
     id: 'full-calculation',
     name: 'Full Calculation',
+    description: 'Valuation boundaries, flows, gains, income, fees and FX for reconciliation.',
     readonly: true,
     state: {
       columns: FULL_CALCULATION_COLUMNS,
@@ -353,6 +355,7 @@ const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
   {
     id: 'pnl-breakdown',
     name: 'P&L Breakdown',
+    description: 'Components of realized and unrealized profit and loss, fees, taxes and FX.',
     readonly: true,
     state: {
       columns: [

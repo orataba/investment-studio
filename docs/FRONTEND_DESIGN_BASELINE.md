@@ -127,20 +127,18 @@
 - `packages/ui` 只承载已经在多个 app 中稳定复用的基础能力：语言、确认弹窗与焦点管理、通知、下载格式菜单、表格导出、Sparkline 以及请求/串行任务工具。
 - 业务布局、业务表格和领域组件继续留在各自 app；只有形成稳定跨 app contract 后才沉淀到共享包。
 - 不为单次视觉修复创建新的全局 override 层；优先修改现有变量和已有模块样式。
-- Portfolio 和 Watchlist 代码边界保持分离，不通过复制业务组件或跨 app import 来“统一”。两边的 toolbar controls 采用一致视觉 contract：30px 高度、0 radius、透明背景、细边框、regular 字重、蓝色 hover/focus、disabled 透明度；各 app 用自己的局部 class 落地。
+- Portfolio 和 Watchlist 代码边界保持分离，不通过复制业务组件或跨 app import 来“统一”。两边的 toolbar controls 采用一致视觉 contract：30px 高度、0 radius、透明背景、细边框、regular 字重、青绿 hover/focus、disabled 透明度；各 app 用自己的局部 class 落地。
 
 ## Pre-Commit Check
 
 提交前至少执行：
 
 ```bash
-npm --prefix home/frontend run build
-npm --prefix apps/watchlist/frontend run build
-npm --prefix apps/portfolio/frontend run build
+infra/scripts/verify_repository.sh frontend all
 git diff --check
 ```
 
-涉及后端或数据库时，再补跑对应 backend tests 和 migration check，具体命令见 [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md)。
+使用仓库锁定的 Node 版本；命令同时执行四个前端的测试与构建。Regime 静态界面使用子模块自己的验证流程。涉及后端或数据库时，再补跑对应 backend tests 和 migration check，具体命令见 [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md)。
 
 ## Reading And Task Continuity
 
@@ -149,7 +147,7 @@ git diff --check
 - Briefing 页内章节与来源锚点只改变阅读位置，不清空同一报告。按日期提供最新可读版入口，旧版及失败尝试保留版本历史；来源证据下钻保留价格比较并可原路返回。
 - 简报首屏保留报告身份、证据时间和简短真实覆盖限制，关键进展优先；来源渠道明细按需展开。生成完成与来源完整分别表达。
 - 短表单使用单一标题和清楚的取消/提交；用 modal hook 统一聚焦，避免 React autoFocus 抢先覆盖返回目标。打开动作明确保存触发焦点，异步详情替换后焦点留在面板内。非模态菜单支持 Escape 并恢复入口。
-- 账号页以个人资料、安全、团队和拥有者交接定位现有区块，不清空未提交字段；每份表单突出一个完成动作，成员角色完整显示，宽表局部横滚。
+- 账号页以个人资料、安全、团队和拥有者交接定位现有区块，不清空未提交字段；每份表单突出一个完成动作，成员角色完整显示，宽表局部横滚。角色变更、停用／恢复、重置／重发邀请和所有者交接先显示目标成员与实际后果，确认后才写入；成功写入与随后读取失败分别反馈，不以刷新失败诱导重做凭据操作。确认窗口复用现有 modal 焦点与背景滚动约束。
 - 目录创建入口与标题同行；空态按无持仓、所选日期、样本不足、缺少分类或分类末级说明实际原因，提供权限内有效下一步，不能同时提示运行并无解释禁用。
 
 ## 文案与翻译
@@ -158,7 +156,7 @@ git diff --check
 - 翻译用户界面和系统说明，不改写用户命名、证券名称、研究原文或保存的业务枚举。新增动态说明需同时提供完整中英文，避免拼接后留下英文片段或逐词替换。
 - 含用户名称的操作提示用完整句式翻译后插入原值，并保护渲染结果不被 DOM 再次翻译。Type 在字段标签中是“类型”，在输入指令中是“输入”，不能让拆开的文本节点共用名词译法。
 
-## Task overview and retained evidence
+## Important risks and retained evidence
 
 Home 保留四个工作区入口为主体，重要风险在下方以细线分隔的紧凑链接呈现，每页不超过三条，不展开证据、任务或一般风险。无匹配与读取失败分别显示。新进展待复核时，首页保留仍有效的上次确认标题及原时点，另标待复核；重大限时但未确认的线索单独标明，不与已确认风险混用。详情分别保留旧判断与新进展各自的版本、正文、来源和日期；核证撤回仅作失效历史，不伪称风险解除。研究正文保持原语言，系统界面随语言切换。组合优化中的长诊断使用按次翻译的重复片段缓存，不能通过截断诊断换取速度。
 

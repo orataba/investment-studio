@@ -393,21 +393,8 @@ const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[
 const ALL_HOLDINGS_COLUMN_KEYS = HOLDINGS_COLUMN_GROUPS.flatMap((group) => group.columns)
 
 const DEFAULT_HOLDINGS_COLUMNS: HoldingsColumnKey[] = [
-  'instrument',
-  'ticker',
-  'currency',
-  'last_price',
-  'instrument_return_1m',
-  'instrument_return_mtd',
-  'quantity',
-  'market_value_base',
-  'weight',
-  'avg_cost_book',
-  'break_even_price',
-  'unrealized_price_pnl',
-  'unrealized_fx_pnl_base',
-  'unrealized_pnl_base',
-  'unrealized_return_base',
+  'instrument', 'ticker', 'currency', 'quantity', 'last_price', 'market_value_base',
+  'weight', 'instrument_return_1m', 'unrealized_return_base', 'coverage',
 ]
 
 const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
@@ -478,12 +465,14 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
   {
     id: 'default',
     name: 'Default',
+    description: 'Position, market value and unrealized return. Use Return & Risk for analysis or Full Holdings for reconciliation.',
     readonly: true,
     state: DEFAULT_HOLDINGS_VIEW_STATE,
   },
   {
     id: 'return-risk',
     name: 'Return & Risk',
+    description: 'Registered return series, volatility, drawdown and forward risk contribution.',
     readonly: true,
     state: {
       columns: [
@@ -515,6 +504,11 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
       sortField: 'unrealized_return_base',
       sortDirection: 'desc',
     },
+  },
+  {
+    id: 'full-holdings', name: 'Full Holdings', readonly: true,
+    description: 'All security fields, including cost, currency, coverage and risk. Cash and contracts retain their own column controls.',
+    state: { ...DEFAULT_HOLDINGS_VIEW_STATE, columns: ALL_HOLDINGS_COLUMN_KEYS },
   },
 ]
 

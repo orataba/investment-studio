@@ -9,7 +9,7 @@ import '../../../../packages/ui/src/notice-toast.css'
 import { useModalDialog } from '../../../../packages/ui/src/useModalDialog'
 import { LanguageSelector, useLanguage } from '../../../../packages/ui/src/i18n'
 import { resolveWorkspaceUrl, withLanguage } from '../../../../packages/ui/src/navigation'
-import type { CitedItem, ReportDetail, ReportSummary, ReportType, Source } from './types'
+import type { CitedItem, MacroRelease, ReportDetail, ReportSummary, ReportType, Source } from './types'
 import { safeUrl, SourceEvidence } from './SourceEvidence'
 import GenerateEditionForm from './GenerateEditionForm'
 import { EvidenceTime, ExternalLinkIcon, navigateToSection, quoteUnit } from './reading'
@@ -150,7 +150,15 @@ export function ReportBody({ detail, onSource, canReadSources = true }: { detail
     return <div className="citation" key={id}>{url ? <a href={url} target="_blank" rel="noreferrer" translate="no">{label} <ExternalLinkIcon /></a>
       : <button disabled={!canReadSources && !numericLabels.has(id)} onClick={() => onSource(id)} translate="no">{label}</button>}{source?.source_name && <span className="citation-meta" translate="no">{source.source_name}{source.published_at && <> · <EvidenceTime value={source.published_at} timezone={detail.window.timezone} /></>}</span>}</div>
   })}</div></details>
-  const renderItem = (item: CitedItem, index: number) => <article className="briefing-item" key={item.title}>
+  const articleIds = new Map<CitedItem, string>()
+  detail.report?.sections.forEach(section => {
+    const entries = [...(section.items || []), ...(section.groups?.flatMap(group => group.items) || [])]
+    entries.forEach((item, index) => articleIds.set(item, `item-${section.kind}-${index + 1}`))
+  })
+  const leadSection = detail.report?.sections.find(section => section.kind === (detail.report_type === 'weekly' ? 'topic_recommendations' : 'takeaway_section'))
+  const readingOrder = [...(leadSection?.items || []), ...(leadSection?.groups?.flatMap(group => group.items) || [])]
+  const readingLink = (item: CitedItem) => <li key={articleIds.get(item)}><a href={`#${articleIds.get(item)}`} translate="no" onClick={event => { event.preventDefault(); navigateToSection(articleIds.get(item)!) }}>{item.title}</a>{item.related_market_symbols.length > 0 && <span className="reading-order-symbols" translate="no">{item.related_market_symbols.join(' · ')}</span>}</li>
+  const renderItem = (item: CitedItem, index: number) => <article id={articleIds.get(item)} className="briefing-item" key={articleIds.get(item)}>
     <span className="entry-number" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
     <div className="entry-content">
     <h4 translate="no">{item.title}</h4>
@@ -179,14 +187,15 @@ export function ReportBody({ detail, onSource, canReadSources = true }: { detail
   const visibleSections = detail.report?.sections.filter(section => section.kind !== 'macro_data_calendar' || section.rows?.length) || []
   const sectionLinks = [...visibleSections.map(section => ({ id: `section-${section.kind}`, label: sectionTitles[section.kind] })), ...(displayedMarketRows.length ? [{ id: 'market-performance', label: copy('市场表现', 'Market performance') }] : []), ...(displayedMacroRows.length ? [{ id: 'macro-indicators', label: copy('相关指标', 'Related indicators') }] : []), { id: 'source-coverage', label: copy('来源覆盖', 'Source coverage') }]
   return <>
+    {readingOrder.length > 0 && <section className="reading-order" aria-label={copy('本期阅读顺序', 'In this edition')}>
+      <div className="section-heading"><h2>{copy('本期阅读顺序', 'In this edition')}</h2><InfoHint label={copy('阅读顺序说明', 'Reading order')} detail={copy('按本期报告原有重点顺序列出；原文与来源保留在下方。', 'Listed in the saved report’s order. Original text and sources remain below.')} /></div>
+      <ol>{readingOrder.slice(0, 4).map(readingLink)}</ol>
+      {readingOrder.length > 4 && <details><summary>{copy(`其余 ${readingOrder.length - 4} 条重点`, `${readingOrder.length - 4} more developments`)}</summary><ol start={5}>{readingOrder.slice(4).map(readingLink)}</ol></details>}
+    </section>}
     <nav className="report-contents" aria-label={copy('报告章节', 'Report sections')}>{sectionLinks.map(section => <a key={section.id} id={`link-${section.id}`} href={`#${section.id}`} onClick={event => { event.preventDefault(); navigateToSection(section.id) }}>{section.label}</a>)}</nav>
     {detail.report?.sections.filter(section => section.kind !== 'macro_data_calendar' || section.rows?.length).map(section => <section className="report-section" id={`section-${section.kind}`} key={section.kind}>
       <h2>{sectionTitles[section.kind]}</h2>
-      {section.kind === 'macro_data_calendar' && <><p className="table-note">{copy('— 表示来源未提供；不代表 0 或不适用。', '— means not provided by the source; it does not mean zero or not applicable.')}</p><HorizontalTableScroll className="table-scroll"><table className="macro-release-table"><thead><tr>
-        <th>{copy('发布日期', 'Release date')}</th><th>{copy('地区 / 类别', 'Region / category')}</th><th>{copy('指标 / 事件', 'Indicator / event')}</th><th>{copy('公布值 / 决议', 'Actual / decision')}</th><th>{copy('预期', 'Expected')}</th><th>{copy('前值', 'Previous')}</th><th>{copy('来源', 'Sources')}</th>
-      </tr></thead><tbody>{[...(section.rows || [])].sort((left, right) => left.date.localeCompare(right.date)).map(row => <tr key={`${row.date}-${row.region}-${row.title}`}>
-        <td>{row.date}</td><td translate="no">{row.region}<small>{row.category}</small></td><td translate="no">{row.title}</td><td className={valueClass(row.actual)} translate="no">{row.actual || '—'}</td><td className={valueClass(row.expected)} translate="no">{row.expected || '—'}</td><td className={valueClass(row.previous)} translate="no">{row.previous || '—'}</td><td>{renderSources(row)}</td>
-      </tr>)}</tbody></table></HorizontalTableScroll></>}
+      {section.kind === 'macro_data_calendar' && <MacroReleases rows={section.rows || []} renderSources={renderSources} />}
       {section.groups?.map(group => <div className="report-group" key={group.title}>
         <h3>{groupTitle(group.title)}</h3>
         {group.items.length ? group.items.map(renderItem) : <p className="muted">{copy('本期没有新增条目。', 'No new items in this section.')}</p>}
@@ -199,7 +208,21 @@ export function ReportBody({ detail, onSource, canReadSources = true }: { detail
         {displayedMarketRows.map(({ row, index }) => <tr key={row.symbol}><td><button className="table-source" onClick={() => onSource(`market-row:${index}`)}>{row.label}</button><small>{row.symbol}</small></td><td>{row.start_date}</td><td>{row.end_date}</td><td className="number">{row.end_close.toLocaleString(undefined, { maximumFractionDigits: 4 })}<small>{quoteUnit(row, language === 'zh-Hans')}</small></td><td className={`number ${row.return_pct < 0 ? 'negative' : 'positive'}`}>{signed(row.return_pct)}</td></tr>)}
       </tbody></table></HorizontalTableScroll>
     </section>}
-    {displayedMacroRows.length > 0 && <section className="report-section" id="macro-indicators"><h2>{copy('相关宏观指标', 'Related macro indicators')}</h2><HorizontalTableScroll className="table-scroll"><table><thead><tr><th>{copy('指标', 'Indicator')}</th><th>{copy('数据日期', 'Observation date')}</th><th className="number">{copy('数值', 'Value')}</th></tr></thead><tbody>{displayedMacroRows.map(({ row, index }) => <tr key={`${row.symbol}-${row.date}`}><td><button className="table-source" onClick={() => onSource(`macro-row:${index}`)}>{row.label}</button></td><td>{row.date}</td><td className="number">{row.value} {row.unit && (units[row.unit] || row.unit)}</td></tr>)}</tbody></table></HorizontalTableScroll></section>}
+    {displayedMacroRows.length > 0 && <section className="report-section" id="macro-indicators"><h2>{copy('相关宏观指标', 'Related macro indicators')}</h2><HorizontalTableScroll className="table-scroll"><table><thead><tr><th>{copy('指标', 'Indicator')}</th><th>{copy('数据日期', 'Observation date')}</th><th className="number">{copy('数值', 'Value')}</th></tr></thead><tbody>{displayedMacroRows.map(({ row, index }) => <tr key={`${row.symbol}-${row.date}`}><td><button className="table-source" onClick={() => onSource(`macro-row:${index}`)}>{row.label}</button></td><td>{row.date}</td><td className="number">{row.value} {row.unit ? (units[row.unit] || row.unit) : <small>{copy('单位未留存', 'Unit not retained')}</small>}</td></tr>)}</tbody></table></HorizontalTableScroll></section>}
+  </>
+}
+
+function MacroReleases({ rows, renderSources }: { rows: MacroRelease[]; renderSources: (row: CitedItem) => React.ReactNode }) {
+  const copy = useCopy()
+  const ordered = [...rows].sort((left, right) => left.date.localeCompare(right.date))
+  const statistics = ordered.filter(row => row.category === '宏观数据')
+  const events = ordered.filter(row => row.category !== '宏观数据')
+  const cell = (value?: string | null) => value ? <span translate="no">{value}</span> : <span aria-label={copy('来源未提供', 'Not provided by the source')}>—</span>
+  return <>
+    {statistics.length > 0 && <div className="macro-statistics"><h3>{copy('数据发布', 'Statistical releases')}</h3><p className="table-note">{copy('数值、单位与期间按留存原文展示；— 表示来源未提供，不代表 0 或不适用。', 'Values, units and periods follow the retained text. — means not provided by the source, not zero or not applicable.')}</p><HorizontalTableScroll className="table-scroll"><table className="macro-release-table"><thead><tr>
+      <th>{copy('发布日期', 'Release date')}</th><th>{copy('地区', 'Region')}</th><th>{copy('指标', 'Indicator')}</th><th>{copy('公布值', 'Actual')}</th><th>{copy('预期', 'Expected')}</th><th>{copy('前值', 'Previous')}</th><th>{copy('来源', 'Sources')}</th>
+    </tr></thead><tbody>{statistics.map(row => <tr key={`${row.date}-${row.region}-${row.title}`}><td>{row.date}</td><td translate="no">{row.region}</td><td translate="no">{row.title}</td><td className={valueClass(row.actual)}>{cell(row.actual)}</td><td className={valueClass(row.expected)}>{cell(row.expected)}</td><td className={valueClass(row.previous)}>{cell(row.previous)}</td><td>{renderSources(row)}</td></tr>)}</tbody></table></HorizontalTableScroll></div>}
+    {events.length > 0 && <div className="policy-releases"><h3>{copy('政策与央行沟通', 'Policy and central bank communication')}</h3>{events.map(row => <article className="policy-release" key={`${row.date}-${row.region}-${row.title}`}><p className="policy-meta"><time dateTime={row.date}>{row.date}</time><span translate="no">{row.region} · {row.category}</span></p><h4 translate="no">{row.title}</h4><p className="briefing-prose" translate="no">{row.actual}</p>{(row.expected || row.previous) && <dl className="policy-context">{row.expected && <div><dt>{copy('来源留存的预期', 'Retained expectations')}</dt><dd translate="no">{row.expected}</dd></div>}{row.previous && <div><dt>{copy('来源留存的前次情况', 'Retained previous context')}</dt><dd translate="no">{row.previous}</dd></div>}</dl>}{renderSources(row)}</article>)}</div>}
   </>
 }
 
@@ -229,6 +252,9 @@ export default function App() {
   const [available, setAvailable] = useState<boolean | null>(null)
   const [revision, setRevision] = useState(0)
   const [limit, setLimit] = useState(30)
+  const [archiveMonth, setArchiveMonth] = useState('')
+  const [archiveQuery, setArchiveQuery] = useState('')
+  const [archiveFilter, setArchiveFilter] = useState({ month: '', query: '' })
   const [showGenerate, setShowGenerate] = useState(false)
   const isIndustry = kind === 'industry'
   const sourceOpen = Boolean(sourceId || source)
@@ -275,13 +301,14 @@ export default function App() {
     if (kind === 'industry') return
     const controller = new AbortController()
     setError(''); setLoading(true)
-    Promise.all(Array.from({ length: Math.ceil(limit / 30) }, (_, page) => request<{ rows: ReportSummary[]; total: number }>(`/reports?report_type=${kind}&limit=30&offset=${page * 30}`, { signal: controller.signal }))).then(pages => {
+    const filter = `${archiveFilter.month ? `&month=${encodeURIComponent(archiveFilter.month)}` : ''}${archiveFilter.query ? `&query=${encodeURIComponent(archiveFilter.query)}` : ''}`
+    Promise.all(Array.from({ length: Math.ceil(limit / 30) }, (_, page) => request<{ rows: ReportSummary[]; total: number }>(`/reports?report_type=${kind}&limit=30&offset=${page * 30}${filter}`, { signal: controller.signal }))).then(pages => {
       if (controller.signal.aborted) return
       const result = { rows: pages.flatMap(page => page.rows), total: pages[0].total }
       setRows(result.rows); setTotal(result.total); setLoading(false)
     }).catch(reason => { if (!controller.signal.aborted) { setError(String(reason.message)); setLoading(false) } })
     return () => controller.abort()
-  }, [kind, revision, limit])
+  }, [kind, revision, limit, archiveFilter])
   useEffect(() => {
     if (kind === 'industry') return
     const candidates = rows.filter(row => row.report_type === kind).sort((a, b) => b.report_date.localeCompare(a.report_date) || b.version - a.version)
@@ -386,7 +413,11 @@ export default function App() {
     {!isIndustry && showGenerate && !modelWork?.paused && <GenerateEditionForm kind={kind} busy={generating} onGenerate={generate} onCancel={() => { setShowGenerate(false); generateButton.current?.focus() }} /> }
     {!isIndustry && error && <RequestRecovery error={error} onRetry={() => setRevision(value => value + 1)} busy={loading} />}
     <div className="briefing-tabs" role="tablist" aria-label={copy('报告类型', 'Report type')}>{(['daily', 'weekly', 'industry'] as const).map(type => <button role="tab" aria-selected={kind === type} key={type} onClick={() => changeKind(type)}>{type === 'daily' ? copy('日报', 'Daily') : type === 'weekly' ? copy('周报', 'Weekly') : copy('行业研究', 'Industry research')}</button>)}</div>
-    {isIndustry ? <IndustryResearch /> : <div className="briefing-layout"><aside className="edition-index" aria-busy={loading}><h2>{copy('历史简报', 'Editions')}</h2>{loading && detail && <LoadingNotice active message={copy('加载中', 'Loading')} compact />}{dates.map(({ date, versions, primary }) => <div className="edition-date" key={date}><button className={`edition ${versions.some(row => row.report_id === selected) ? 'selected' : ''}`} aria-current={versions.some(row => row.report_id === selected) ? 'date' : undefined} onClick={() => choose(primary.report_id)}><strong>{date}</strong><span>{copy('版本', 'Version')} {primary.version}<small className={primary.status === 'failed' ? 'negative' : ''}>{statusText(primary.status)}</small></span></button>{versions.length > 1 && <details className="edition-history"><summary>{copy('版本历史', 'Version history')} · {versions.length}</summary>{versions.map(row => <button key={row.report_id} aria-current={selected === row.report_id ? 'page' : undefined} onClick={() => choose(row.report_id)} aria-label={`${date} ${copy('版本', 'Version')} ${row.version} ${statusText(row.status)}`}><span>v{row.version}</span><span className={row.status === 'failed' ? 'negative' : ''}>{statusText(row.status)}</span></button>)}</details>}</div>)}{total > rows.length && <button className="load-more" onClick={() => setLimit(value => value + 30)}>{copy('更多简报', 'More editions')}</button>}</aside>
+    {isIndustry ? <IndustryResearch /> : <div className="briefing-layout"><aside className="edition-index" aria-busy={loading}><h2>{copy('历史简报', 'Editions')}</h2><form className="archive-search" onSubmit={event => { event.preventDefault(); setLimit(30); setArchiveFilter({ month: archiveMonth, query: archiveQuery.trim() }) }}>
+      <label>{copy('月份', 'Month')}<input type="month" value={archiveMonth} onChange={event => setArchiveMonth(event.target.value)} /></label>
+      <label>{copy('日期或标题', 'Date or title')}<input type="search" maxLength={120} value={archiveQuery} onChange={event => setArchiveQuery(event.target.value)} /></label>
+      <div><button type="submit">{copy('查找', 'Find')}</button>{(archiveFilter.month || archiveFilter.query) && <button type="button" onClick={() => { setArchiveMonth(''); setArchiveQuery(''); setArchiveFilter({ month: '', query: '' }); setLimit(30) }}>{copy('清除', 'Clear')}</button>}</div>
+    </form><div className="edition-results">{!loading && !error && rows.length === 0 && (archiveFilter.month || archiveFilter.query) && <p className="muted">{copy('没有匹配的简报。', 'No matching editions.')}</p>}{loading && detail && <LoadingNotice active message={copy('加载中', 'Loading')} compact />}{dates.map(({ date, versions, primary }) => <div className="edition-date" key={date}><button className={`edition ${versions.some(row => row.report_id === selected) ? 'selected' : ''}`} aria-current={versions.some(row => row.report_id === selected) ? 'date' : undefined} onClick={() => choose(primary.report_id)}><strong>{date}</strong><span>{copy('版本', 'Version')} {primary.version}<small className={primary.status === 'failed' ? 'negative' : ''}>{statusText(primary.status)}</small></span></button>{versions.length > 1 && <details className="edition-history"><summary>{copy('版本历史', 'Version history')} · {versions.length}</summary>{versions.map(row => <button key={row.report_id} aria-current={selected === row.report_id ? 'page' : undefined} onClick={() => choose(row.report_id)} aria-label={`${date} ${copy('版本', 'Version')} ${row.version} ${statusText(row.status)}`}><span>v{row.version}</span><span className={row.status === 'failed' ? 'negative' : ''}>{statusText(row.status)}</span></button>)}</details>}</div>)}{total > rows.length && <button className="load-more" onClick={() => setLimit(value => value + 30)}>{copy('更多简报', 'More editions')}</button>}</div></aside>
       <div className="edition-content" aria-busy={detailLoading || loading}>
         {!detail && (loading || detailLoading || Boolean(selected && !detailError)) && <div className="edition-skeleton" role="status" aria-label={copy('加载中', 'Loading')}><div className="edition-skeleton-header" /><div className="edition-skeleton-facts" />{[0, 1, 2].map(index => <div className="edition-skeleton-section" key={index}><span /><span /><span /></div>)}</div>}
         {!detail && !selected && !loading && !error && <p className="muted">{copy('尚无报告。', 'No editions yet.')}</p>}

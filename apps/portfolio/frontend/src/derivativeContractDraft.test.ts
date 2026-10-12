@@ -4,6 +4,7 @@ import {
   buildInitialDerivativeContractDraft,
   derivativeContractDraftFromRecord,
   derivativeContractFromDraft,
+  DerivativeDraftError,
 } from './lib/derivativeContractDraft'
 
 describe('derivative contract form mapping', () => {
@@ -124,4 +125,21 @@ describe('derivative contract form mapping', () => {
     expect(draft.option_strike).toBe('90')
     expect(draft.option_contract_multiplier).toBe('100')
   })
+})
+
+
+it('locates the existing contract validation failure without changing optional evidence semantics', () => {
+  const draft = buildInitialDerivativeContractDraft('fcn', '2026-08-09')
+  Object.assign(draft, { derivative_contract_id: 'f', contract_name: 'FCN', fcn_notional: '100', fcn_maturity_date: '2027-01-01', fcn_issuer: 'I', fcn_counterparty: 'C' })
+  const issue = () => { try { derivativeContractFromDraft(draft) } catch (error) { return error as DerivativeDraftError } throw new Error('Expected draft issue') }
+  expect(issue()).toBeInstanceOf(DerivativeDraftError)
+  expect(issue().field).toBe('fcn_underlyings.0.instrument_id')
+  draft.fcn_underlyings[0].instrument_id = 'asset-1'
+  draft.fcn_underlyings[0].knock_in_level_pct = '-1'
+  expect(issue().field).toBe('fcn_underlyings.0.knock_in_level_pct')
+  draft.fcn_underlyings[0].knock_in_level_pct = ''
+  draft.fcn_coupon_payment_dates = 'invalid'
+  expect(issue().field).toBe('fcn_coupon_payment_dates')
+  draft.fcn_coupon_payment_dates = ''
+  expect(derivativeContractFromDraft(draft).terms.settlement_type).toBeNull()
 })

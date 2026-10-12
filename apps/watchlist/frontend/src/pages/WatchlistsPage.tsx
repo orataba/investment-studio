@@ -51,7 +51,7 @@ import LoadingOverlay from '../components/LoadingOverlay'
 import WorkspaceLoadingDrawer from '../../../../../packages/ui/src/WorkspaceLoadingDrawer'
 import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
 import RenameWatchlistDialog from '../components/RenameWatchlistDialog'
-import WatchlistCreator, { watchlistCreatorLabel } from '../components/WatchlistCreator'
+import WatchlistCreator from '../components/WatchlistCreator'
 import ResearchPage from '../components/LazyResearchPage'
 import { setRiskReferenceParams, type ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import WorkspaceTools, { WorkspaceToolIcon } from '../../../../../packages/ui/src/WorkspaceTools'
@@ -174,7 +174,16 @@ const COLUMN_CHOOSER_LABELS: Record<string, [string, string]> = {
   return_1y: ['近一年收益率', '1-year return'],
   return_chart_1m: ['近一月收益走势', '1-month return chart'],
 }
-const COLUMN_CHOOSER_DESCRIPTIONS: Record<string, [string, string]> = {
+// Business explanations shared by the chooser and table; field definitions stay in the registry.
+const FIELD_DESCRIPTIONS: Record<string, [string, string]> = {
+  currency: ['价格和净值的计价币种；收益率不作汇率换算。', 'Currency of prices and NAVs; returns are not converted to another currency.'],
+  latest_quote: ['基金显示单位净值，股票和 ETF 显示市场价格，指数显示点位。', 'Unit NAV for funds, market price for equities and ETFs, and level for indexes.'],
+  latest_quote_date: ['最新价格或净值对应的实际观测日期，不是页面刷新时间。', 'Observation date of the latest price or NAV, not the page refresh time.'],
+  metric_as_of_date: ['本行收益和风险指标的样本截止日期；不同标的可能不同。', 'Sample end date of this instrument’s return and risk metrics; dates can differ between instruments.'],
+  max_drawdown: ['成立以来最大回撤；按实际可用观测计算，需结合数据缺口判断。', 'Maximum drawdown since inception from available observations; read alongside data gaps.'],
+  'attr.current_drawdown': ['最新观测相对此前高点的回撤。', 'Drawdown at the latest observation relative to the previous high.'],
+  volatility: ['成立以来年化波动率；按实际可用收益区间计算，需结合数据缺口判断。', 'Annualized volatility since inception from available return intervals; read alongside data gaps.'],
+  sharpe_ratio: ['成立以来夏普比率，无风险利率取零；需结合数据缺口判断。', 'Sharpe ratio since inception with a zero risk-free rate; read alongside data gaps.'],
   'attr.risk_attention': [
     '当前风险事项的状态：重点关注、风险线索、监测受限或暂无触发。风险线索包括待风控复核或已评估但仍待核实的事项；暂无触发不代表已完成全面风险评估。',
     'Current risk cases: attention, risk leads, limited monitoring, or no trigger. Risk leads include items awaiting review or still requiring verification after assessment. No trigger does not mean a full risk assessment is complete.',
@@ -593,7 +602,7 @@ function renderCell(
 ) {
   if (fieldKey === 'instrument_name') {
     return (
-      <span className="watchlist-instrument-identity"><span className="watchlist-instrument-name"><Link translate="no" to={buildInstrumentDetailPath(instrumentId, watchlistId)} className="table-link watchlists-instrument-link">
+      <span className="watchlist-instrument-identity"><span className="watchlist-instrument-name"><Link translate="no" title={typeof value === 'string' && value ? value : instrumentId.toUpperCase()} to={buildInstrumentDetailPath(instrumentId, watchlistId)} className="table-link watchlists-instrument-link">
         {typeof value === 'string' && value ? value : instrumentId.toUpperCase()}
       </Link>{['attention', 'pending'].includes(String(row['attr.risk_attention'])) && <button className={`watchlist-risk-indicator${row['attr.risk_attention'] === 'pending' ? ' watchlist-risk-indicator-pending' : ''}`} type="button" onClick={() => openRisk(instrumentId)}
         aria-label={row['attr.risk_attention'] === 'pending'
@@ -802,6 +811,7 @@ function parseJsonSearchParam<T>(value: string | null, fallback: T): T {
 }
 
 export default function WatchlistsPage() {
+  const [listSearch, setListSearch] = useState('')
   const canWriteTeam = useCanWriteTeam()
   const { language, t } = useLanguage()
   const zh = language === 'zh-Hans'
@@ -1844,7 +1854,7 @@ export default function WatchlistsPage() {
     .map((field) => ({
       ...field,
       label: COLUMN_CHOOSER_LABELS[field.field_key]?.[zh ? 0 : 1] || t(field.label),
-      description: COLUMN_CHOOSER_DESCRIPTIONS[field.field_key]?.[zh ? 0 : 1] || t(field.description || ''),
+      description: FIELD_DESCRIPTIONS[field.field_key]?.[zh ? 0 : 1] || t(field.description || ''),
       section: COLUMN_STATUS_FIELDS.has(field.field_key)
         ? 'status'
         : field.field_key.startsWith('return_') ? 'returns' : 'identity',
@@ -2802,65 +2812,19 @@ export default function WatchlistsPage() {
           </div>
         </div>
 
-        <div className="watchlists-compact-switch">
+        <nav className="watchlists-compact-switch" aria-label={zh ? '关注列表导航' : 'Watchlist navigation'}>
+          <label className="watchlists-list-search"><span className="sr-only">{zh ? '查找关注列表' : 'Find watchlist'}</span>
+            <input type="search" value={listSearch} onChange={event => setListSearch(event.target.value)} placeholder={zh ? '查找列表' : 'Find a list'} />
+          </label>
           <label><span className="sr-only">{zh ? '切换关注列表' : 'Switch watchlist'}</span>
-            <select value={watchlistId} onChange={(event) => navigate(buildWatchlistPath(event.target.value))}>
-              {watchlists.map((list) => <option key={list.watchlist_id} value={list.watchlist_id} translate={list.owner_type === 'system' ? undefined : 'no'}>{list.name}</option>)}
+            <select value={watchlistId} title={activeWatchlist?.name || watchlistDetail?.name} onChange={(event) => { setListSearch(''); navigate(buildWatchlistPath(event.target.value)) }}>
+              {watchlists.filter(list => list.watchlist_id === watchlistId || matchesSystemLabel(list.name, listSearch)).map(list => <option key={list.watchlist_id} value={list.watchlist_id} translate={list.owner_type === 'system' ? undefined : 'no'}>{list.name}</option>)}
             </select>
           </label>
-          <Link to="/watchlists">{zh ? '所有列表' : 'All watchlists'}</Link>
+          {listSearch && !watchlists.some(list => matchesSystemLabel(list.name, listSearch)) && <span role="status">{zh ? '没有匹配列表，保留当前选择。' : 'No matching list; current selection retained.'}</span>}
+          <Link to="/watchlists">{zh ? '管理全部列表' : 'All watchlists'}</Link>
           <button type="button" disabled={!canWriteTeam} onClick={() => { resetCreateWatchlistForm(); setModalKind('create-watchlist') }}>{zh ? '新建' : 'Create'}</button>
-        </div>
-        <div className="watchlists-switch-row">
-          <Link to="/watchlists" className="watchlist-switcher-chip watchlist-switcher-chip-inactive watchlist-switcher-chip-home">
-            <span className="watchlist-switcher-home-icon" aria-hidden="true">
-              <svg viewBox="0 0 16 16">
-                <path d="M2.5 7.2 8 2.8l5.5 4.4v5.5H9.8V9.5H6.2v3.2H2.5Z" fill="currentColor" />
-              </svg>
-            </span>
-            <span className="watchlist-switcher-chip-label">All</span>
-          </Link>
-          {watchlists.map((watchlist) =>
-            watchlist.watchlist_id === watchlistId ? (
-              <div className="watchlist-switcher-chip watchlist-switcher-chip-active" key={watchlist.watchlist_id}>
-                <Link
-                  className="watchlist-switcher-chip-label watchlist-switcher-chip-label-active"
-                  title={watchlistCreatorLabel(watchlist, zh)}
-                  translate={watchlist.owner_type === 'system' ? undefined : 'no'}
-                  to={buildWatchlistPath(watchlist.watchlist_id)}
-                >
-                  {watchlist.name}
-                </Link>
-              </div>
-            ) : (
-              <button
-                type="button"
-                key={watchlist.watchlist_id}
-                className="watchlist-switcher-chip watchlist-switcher-chip-inactive"
-                title={watchlistCreatorLabel(watchlist, zh)}
-                translate={watchlist.owner_type === 'system' ? undefined : 'no'}
-                onClick={() => navigate(buildWatchlistPath(watchlist.watchlist_id))}
-              >
-                {watchlist.name}
-              </button>
-            ),
-          )}
-
-          <button
-            type="button"
-            className="watchlist-create-link"
-            disabled={!canWriteTeam}
-            onClick={(event) => {
-              event.currentTarget.focus()
-              resetCreateWatchlistForm()
-              setModalKind('create-watchlist')
-              setNotice(null)
-              setError(null)
-            }}
-          >
-            + Create Watchlist
-          </button>
-        </div>
+        </nav>
 
       </div>
 
@@ -3305,6 +3269,11 @@ export default function WatchlistsPage() {
                   const sortMode = sortabilityByKey.get(column) || 'none'
                   const sortAction = nextSortAction(sortField === column, sortDirection)
                   const columnLabel = t(fieldLabelByKey.get(column) || formatLabel(column))
+                  const field = fieldRegistry.find(field => field.field_key === column)
+                  const explainsBusinessBasis = Boolean(FIELD_DESCRIPTIONS[column]) || (field &&
+                    ['number', 'date', 'datetime'].includes(field.data_type) && !isChartFieldKey(column))
+                  const description = explainsBusinessBasis
+                    ? FIELD_DESCRIPTIONS[column]?.[zh ? 0 : 1] || t(field?.description || '') : ''
                   return (
                     <th
                       key={column}
@@ -3333,9 +3302,11 @@ export default function WatchlistsPage() {
                       onDrop={(event) => handleColumnDrop(event, column)}
                       onDragEnd={() => setColumnDropTarget('')}
                     >
+                      <span className="watchlists-th-content">
                       <button
                         type="button"
                         draggable={false}
+                        title={columnLabel}
                         className={
                           sortMode !== 'none'
                             ? 'watchlists-th-label watchlists-th-sortable'
@@ -3366,6 +3337,8 @@ export default function WatchlistsPage() {
                           </span>
                         ) : null}
                       </button>
+                      {description && <InfoHint label={columnLabel} detail={description} />}
+                      </span>
                       <span
                         className="watchlists-th-resizer"
                         role="separator"

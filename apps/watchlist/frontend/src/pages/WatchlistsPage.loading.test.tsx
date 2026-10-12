@@ -369,7 +369,7 @@ describe('WatchlistsPage loading', () => {
       { field_key: 'instrument_type', label: 'Instrument Type', instrument_scope_json: [], filter_mode: 'multi_select' },
       { field_key: 'attr.coverage_status', label: 'Investment Status', instrument_scope_json: ['public_fund', 'private_fund', 'equity'], filter_mode: 'multi_select' },
       { field_key: 'attr.research_stage', label: 'Research Stage', instrument_scope_json: [], filter_mode: 'multi_select' },
-      { field_key: 'latest_quote', label: 'Latest Quote', description: 'Fund NAV, market price, or index level as applicable.', instrument_scope_json: [], filter_mode: 'none' },
+      { field_key: 'latest_quote', label: 'Latest Quote', description: 'Unit NAV for funds, market price for equities and ETFs, and level for indexes.', instrument_scope_json: [], filter_mode: 'none' },
       { field_key: 'return_chart_1m', label: 'Return 1M', instrument_scope_json: [], filter_mode: 'none' },
     ].map((field) => ({
       category_code: 'general', data_type: 'string', formatter_code: 'text',
@@ -448,13 +448,13 @@ describe('WatchlistsPage loading', () => {
       'Basic information', 'Returns', 'Risk and status',
     ])
     expect(within(dialog).queryByText('Investment research')).toBeNull()
-    expect(within(dialog).queryByText('Fund NAV, market price, or index level as applicable.')).toBeNull()
-    const quoteHelp = within(dialog).getByRole('button', { name: 'Latest price / NAV: Fund NAV, market price, or index level as applicable.' })
+    expect(within(dialog).queryByText('Unit NAV for funds, market price for equities and ETFs, and level for indexes.')).toBeNull()
+    const quoteHelp = within(dialog).getByRole('button', { name: 'Latest price / NAV: Unit NAV for funds, market price for equities and ETFs, and level for indexes.' })
     expect(quoteHelp.getAttribute('title')).toBeNull()
     expect(quoteHelp.textContent).toBe('?')
     fireEvent.pointerEnter(quoteHelp, { pointerType: 'mouse' })
     const explanation = screen.getByRole('tooltip')
-    expect(explanation.textContent).toContain('Fund NAV, market price, or index level as applicable.')
+    expect(explanation.textContent).toContain('Unit NAV for funds, market price for equities and ETFs, and level for indexes.')
     expect(dialog.contains(explanation)).toBe(false)
     fireEvent.click(quoteHelp)
     expect(screen.getByRole('tooltip')).toBe(explanation)

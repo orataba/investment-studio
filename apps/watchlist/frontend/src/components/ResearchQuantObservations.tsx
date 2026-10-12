@@ -10,13 +10,13 @@ export default function ResearchQuantObservations({ instrumentId, notebook, onAs
   const sources = (notebook?.sources || []).filter(source => observation?.figure_source_ids.includes(source.source_id) && source.observation_domain === 'market')
   if (!observation) return null
   return <section className="research-quant-observations" aria-label="量化观察">
-    <div className="research-dossier-section-heading"><h2>量化观察</h2>{observation?.evidence_as_of && <span className="sector-research-note">数据截至 {dateLabel(observation.evidence_as_of)}</span>}</div>
+    <div className="research-dossier-section-heading"><h2>量化观察</h2>{observation?.evidence_as_of && <span className="sector-research-note">量化样本截至 {dateLabel(observation.evidence_as_of)}</span>}</div>
     <>
       {observation.summary && <p translate="no">{observation.summary}</p>}
       {(observation.coverage !== 'supported' || observation.gaps.length > 0) && <div className="sector-research-limitation">
         {observation.coverage !== 'supported' && <span>{observation.coverage === 'partial' ? '量化数据部分可用。' : '量化证据不足。'}</span>}
-        {observation.gaps.length > 0 && <p translate="no">{observation.gaps[0]}</p>}
-        {observation.gaps.length > 1 && <ResearchReadingAside label="查看数据缺口"><ul className="research-dossier-list">{observation.gaps.map((gap, index) => <li key={index} translate="no">{gap}</li>)}</ul></ResearchReadingAside>}
+        <p>缺少的资料不支持完整比较；下方已留存结果仍可查阅。请先核对缺口对应的范围与时点。</p>
+        {observation.gaps.length > 0 && <ResearchReadingAside label="查看数据缺口"><ul className="research-dossier-list">{observation.gaps.map((gap, index) => <li key={index} translate="no">{gap}</li>)}</ul></ResearchReadingAside>}
       </div>}
       {!sources.length && <p className="sector-research-note">尚未留存可展示的数值结果；不能据此推断风险较低。</p>}
       <div className="research-quant-grid">{(all ? sources : sources.slice(0, 5)).map(source => <SavedFigure hideSummary={Boolean(observation.summary)} key={`${notebook?.version_id}:${source.source_id}`} instrumentId={instrumentId} notebookVersionId={notebook?.version_id} source={source} onAskAssistant={onAskAssistant} />)}</div>

@@ -193,10 +193,9 @@ it.each(['daily', 'weekly'] as const)('renders important %s releases with source
   ] })
   page(<ReportBody detail={report} onSource={vi.fn()} canReadSources={false} />)
   expect(screen.getByRole('heading', { name: reportType === 'daily' ? '本期重要宏观发布' : '本周重要宏观发布' })).toBeTruthy()
-  const row = screen.getByText('政策利率决定').closest('tr')!
-  const cells = within(row).getAllByRole('cell')
-  expect(cells[4].textContent).toBe('—')
-  expect(cells[5].textContent).toBe('—')
+  const row = screen.getByText('政策利率决定').closest('article')!
+  expect(row.closest('table')).toBeNull()
+  expect(within(row).queryByText('—')).toBeNull()
   expect(within(row).getByRole('link', { name: '央行声明' }).getAttribute('href')).toBe('https://example.com/statement')
   expect(screen.getByText('51.0')).toBeTruthy()
   expect(screen.getByText('50.8')).toBeTruthy()
@@ -671,4 +670,55 @@ it('shows an intentional paused edition as retained work rather than a failed at
   expect(screen.queryByRole('alert')).toBeNull()
   expect(screen.getAllByText('已暂停').length).toBeGreaterThan(0)
   expect(fetcher.mock.calls.every((call: unknown[]) => !(call[1] as RequestInit | undefined)?.method || (call[1] as RequestInit).method === 'GET')).toBe(true)
+})
+
+
+it('links the saved reading order to the original body without changing source text', () => {
+  const report = structuredClone(detail)
+  const item = report.report!.sections[0].groups![0].items[0]
+  report.report!.sections[0].groups![0].items = Array.from({ length: 6 }, (_, index) => ({ ...item, title: `原有重点 ${index + 1}` }))
+  const { container } = page(<ReportBody detail={report} onSource={vi.fn()} />)
+  const guide = screen.getByRole('region', { name: '本期阅读顺序' })
+  expect(guide.querySelector('details')?.open).toBe(false)
+  expect(Array.from(guide.querySelectorAll('a')).map(node => node.textContent)).toEqual(Array.from({ length: 6 }, (_, i) => `原有重点 ${i + 1}`))
+  const link = within(guide).getByRole('link', { name: '原有重点 3' })
+  fireEvent.click(link)
+  expect(window.location.hash).toBe('#item-takeaway_section-3')
+  expect(document.activeElement).toBe(container.querySelector('#item-takeaway_section-3 h4'))
+  expect(screen.getAllByText('央行维持利率。')).toHaveLength(6)
+})
+
+it('keeps statistical zero and retained units distinct from missing values and policy prose', () => {
+  const report = structuredClone(detail)
+  report.report!.sections.push({ kind: 'macro_data_calendar', title: '', rows: [
+    { title: '价格变化', date: '2026-09-07', region: '中国', category: '宏观数据', actual: '0', expected: null, previous: '2.1%（同比）', source_ids: ['text:v1'], related_market_symbols: [] },
+    { title: '政策声明', date: '2026-09-06', region: '美国', category: '央行沟通', actual: '依赖后续数据判断政策方向。', expected: '原来源预期说明', source_ids: ['text:v1'], related_market_symbols: [] },
+  ] })
+  page(<ReportBody detail={report} onSource={vi.fn()} />)
+  const row = screen.getByText('价格变化').closest('tr')!
+  expect(within(row).getByText('0')).toBeTruthy()
+  expect(within(row).getByText('2.1%（同比）')).toBeTruthy()
+  expect(within(row).getAllByLabelText('来源未提供')).toHaveLength(1)
+  expect(screen.getByText('政策声明').closest('tr')).toBeNull()
+  expect(screen.getByText('原来源预期说明')).toBeTruthy()
+})
+
+it('searches the archive without reloading or replacing the currently open report', async () => {
+  const fetch = vi.fn(async (url: string) => ({ ok: true, json: async () => {
+    if (url.endsWith('/status')) return { harness_available: false, can_generate: false, can_read_sources: true }
+    if (url.includes('/reports?')) return url.includes('month=2026-08') ? { rows: [], total: 0 } : { rows: [detail], total: 1 }
+    return detail
+  } }))
+  vi.stubGlobal('fetch', fetch)
+  page(<App />)
+  await screen.findByRole('heading', { name: '央行继续观察就业' })
+  fireEvent.change(screen.getByLabelText('月份'), { target: { value: '2026-08' } })
+  fireEvent.change(screen.getByLabelText('日期或标题'), { target: { value: '利率%' } })
+  fireEvent.click(screen.getByRole('button', { name: '查找' }))
+  await screen.findByText('没有匹配的简报。')
+  expect(fetch.mock.calls.some(([url]) => url.includes('month=2026-08&query=' + encodeURIComponent('利率%')))).toBe(true)
+  expect(fetch.mock.calls.filter(([url]) => url.endsWith('/reports/report-v1'))).toHaveLength(1)
+  expect(screen.getByRole('heading', { name: '央行继续观察就业' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: '清除' }))
+  await waitFor(() => expect(screen.queryByText('没有匹配的简报。')).toBeNull())
 })

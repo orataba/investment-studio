@@ -432,6 +432,14 @@ textarea {
 .account-table-wrap select { min-width: 174px; }
 .account-table-wrap th:nth-child(3), .account-table-wrap td:nth-child(3) { white-space: nowrap; }
 .account-ownership { border-top: 1px solid var(--studio-line); padding-top: 24px; scroll-margin-top: 20px; }
+.account-member-actions { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.account-shell .account-member-actions button { margin: 0; white-space: nowrap; }
+.account-shell .account-member-actions .account-revoke { color: var(--studio-negative); }
+.account-action-summary > p { margin: 0 0 12px; line-height: 1.65; }
+.account-action-summary > p:first-child { display: grid; gap: 2px; }
+.account-action-summary strong { font-weight: 500; }
+.account-action-summary > p:first-child > span { color: var(--studio-muted); overflow-wrap: anywhere; }
+.account-action-summary > p:last-child { margin-bottom: 0; }
 
 .home-important-risks { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px 24px; margin-top: 30px; padding: 18px 0; border-top: 1px solid var(--studio-line); font-size: 12px; color: var(--studio-muted); }
 .home-important-risks h2 { margin: 2px 0; font-size: 12px; font-weight: 500; color: var(--studio-ink); }

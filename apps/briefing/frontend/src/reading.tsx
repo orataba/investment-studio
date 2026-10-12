@@ -27,7 +27,7 @@ export function navigateToSection(id: string, saveHistory = true) {
     window.history.pushState(null, '', url)
   }
   if (section instanceof HTMLDetailsElement) section.open = true
-  const target = section.querySelector<HTMLElement>('summary, h2') || section
+  const target = section.querySelector<HTMLElement>('summary, h2, h3, h4') || section
   target.setAttribute('tabindex', '-1')
   target.focus({ preventScroll: true })
   section.scrollIntoView?.({ block: 'start' })

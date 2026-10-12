@@ -82,7 +82,7 @@ export function DerivativeSettlementFields({ draft, setDraft }: {
     </label>}
     {textFields.map(([key, label, placeholder]) => <label className="transaction-ticket-field" key={key}>
       <span>{label}</span>
-      <input value={String(draft[key])} placeholder={placeholder}
+      <input data-draft-field={key} value={String(draft[key])} placeholder={placeholder}
         onChange={(event) => setDraft((current) => ({ ...current, [key]: event.target.value }))} />
     </label>)}
     <label className="transaction-ticket-field">

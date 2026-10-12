@@ -97,7 +97,7 @@ it('preserves custom list and view names through language switches while localiz
     expect(within(dialog).getByText('已从“Risk”选择 1 项。')).toBeTruthy()
     expect(within(target).getByRole('option', { name: 'Return' }).getAttribute('value')).toBe('target')
     expect(target.value).toBe('target')
-    expect(container.querySelector('.watchlists-switch-row [translate="no"]')?.textContent).toBe('Risk')
+    expect(container.querySelector('.watchlists-compact-switch [translate="no"]')?.textContent).toBe('Risk')
     fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Close' })).toBeTruthy())
     expect(within(dialog).getByText('1 selected from Risk.')).toBeTruthy()
@@ -152,7 +152,7 @@ it('distinguishes true empty lists from search misses with usable actions', asyn
   expect(screen.getByRole('dialog', { name: 'Add instruments' })).toBeTruthy()
   cleanup(); api.runScreenerQuery.mockResolvedValue(result()); show()
   await screen.findByRole('checkbox', { name: 'Select Alphabet Inc. · GOOG' })
-  fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'missing' } })
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search this watchlist' }), { target: { value: 'missing' } })
   fireEvent.click(await screen.findByRole('button', { name: 'Clear search and filters' }))
   expect(await screen.findByRole('checkbox', { name: 'Select Alphabet Inc. · GOOG' })).toBeTruthy()
 })
@@ -165,7 +165,7 @@ it('selects all 269 filtered results before expanding rows, and search removes h
   fireEvent.click(screen.getByRole('button', { name: 'Show all' }))
   expect(screen.getAllByRole('checkbox')).toHaveLength(270)
   expect(screen.getByText('269 selected of 269 filtered results')).toBeTruthy()
-  fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'CODE-268' } })
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search this watchlist' }), { target: { value: 'CODE-268' } })
   await screen.findByText('1 selected of 1 filtered results')
 })
 it('keeps a failed view change visible and retries its exact settings', async () => {
@@ -187,4 +187,121 @@ it('retries a failed initial list request and returns to that list', async () =>
   fireEvent.click(retry)
   expect(await screen.findByRole('checkbox', { name: 'Select Alphabet Inc. · GOOG' })).toBeTruthy()
   expect(api.getWatchlistDetail.mock.calls.every(([id]) => id === 'focus')).toBe(true)
+})
+
+it('keeps a searchable list selector and current identity for long names and no matches', async () => {
+  const lists = Array.from({ length: 20 }, (_, i) => ({ ...detail, watchlist_id: `list-${i}`, name: `全球多资产长期研究关注列表 ${i}` }))
+  api.getWatchlists.mockResolvedValue([detail, ...lists])
+  show()
+  const selector = await screen.findByRole('combobox', { name: 'Switch watchlist' }) as HTMLSelectElement
+  const search = screen.getByRole('searchbox', { name: 'Find watchlist' })
+  fireEvent.change(search, { target: { value: '19' } })
+  expect(within(selector).getAllByRole('option')).toHaveLength(2)
+  expect(within(selector).getByRole('option', { name: '全球多资产长期研究关注列表 19' })).toBeTruthy()
+  expect(selector.value).toBe('focus')
+  fireEvent.change(search, { target: { value: 'no such list' } })
+  expect(within(selector).getAllByRole('option')).toHaveLength(1)
+  expect(selector.title).toBe('Focus')
+  expect(screen.getByText('No matching list; current selection retained.')).toBeTruthy()
+  expect(api.updateWatchlistView).not.toHaveBeenCalled()
+})
+
+it('recovers a failed row request without hiding the current list identity', async () => {
+  api.runScreenerQuery.mockRejectedValue(new Error('The read request timed out.'))
+  show()
+  await screen.findByText('The read request timed out.')
+  expect((screen.getByRole('combobox', { name: 'Switch watchlist' }) as HTMLSelectElement).value).toBe('focus')
+  api.runScreenerQuery.mockResolvedValue(result())
+  fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+  await screen.findByRole('checkbox', { name: 'Select Alphabet Inc. · GOOG' })
+  expect(screen.queryByText('The read request timed out.')).toBeNull()
+})
+
+function readExport(blob: Blob, binary = false) {
+  return new Promise<string | ArrayBuffer>(resolve => {
+    const reader = new FileReader(); reader.onload = () => resolve(reader.result as string | ArrayBuffer)
+    if (binary) reader.readAsArrayBuffer(blob); else reader.readAsText(blob)
+  })
+}
+function csvRows(text: string) {
+  const rows: string[][] = []; let row: string[] = []; let cell = ''; let quoted = false
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i]
+    if (char === '"') { if (quoted && text[i + 1] === '"') { cell += '"'; i += 1 } else quoted = !quoted }
+    else if (char === ',' && !quoted) { row.push(cell); cell = '' }
+    else if (char === '\n' && !quoted) { row.push(cell.replace(/\r$/, '')); rows.push(row); row = []; cell = '' }
+    else cell += char
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row) }
+  if (rows.length) rows[0][0] = rows[0][0].replace(/^\uFEFF/, '')
+  return rows
+}
+function xlsxRows(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer); const view = new DataView(buffer); const decoder = new TextDecoder()
+  for (let at = 0; at + 30 <= bytes.length && view.getUint32(at, true) === 0x04034b50;) {
+    const compression = view.getUint16(at + 8, true); const size = view.getUint32(at + 18, true)
+    const nameLength = view.getUint16(at + 26, true); const extra = view.getUint16(at + 28, true)
+    const name = decoder.decode(bytes.slice(at + 30, at + 30 + nameLength)); const start = at + 30 + nameLength + extra
+    if (name === 'xl/worksheets/sheet1.xml') {
+      expect(compression).toBe(0)
+      const xml = new DOMParser().parseFromString(decoder.decode(bytes.slice(start, start + size)), 'application/xml')
+      expect(xml.querySelector('parsererror')).toBeNull()
+      return [...xml.querySelectorAll('sheetData row')].map(row => {
+        const values = Array<string>(9).fill('')
+        for (const cell of row.querySelectorAll('c')) {
+          const letters = cell.getAttribute('r')!.replace(/\d/g, '')
+          const index = [...letters].reduce((value, char) => value * 26 + char.charCodeAt(0) - 64, 0) - 1
+          values[index] = cell.querySelector('t, v')?.textContent || ''
+        }
+        return values
+      })
+    }
+    at = start + size
+  }
+  throw new Error('Export has no worksheet')
+}
+
+it.each(['CSV', 'Excel'])('downloads all 269 rows with explicit units, clocks and nulls in the actual %s file', async format => {
+  const chart = { ...fields[0], field_key: 'return_chart_1m', label: 'Return 1M' }
+  const status = { ...fields[0], field_key: 'attr.coverage_status', label: 'Investment Status', data_type: 'enum' }
+  api.getFieldRegistry.mockResolvedValue({ fields: [...fields, chart, status], column_field_keys: [...fields.map(f => f.field_key), chart.field_key, status.field_key], filter_field_keys: [] })
+  api.getWatchlistDetail.mockResolvedValue({ ...detail, item_count: 269, views: [{ ...view, columns: ['instrument_name', 'return_ytd', 'attr.coverage_status', chart.field_key] }] })
+  const allRows = Array.from({ length: 269 }, (_, i) => ({ ...rows[0], instrument_id: `asset-${i}`, instrument_name: i === 0 ? 'A long, quoted "基金名称" · 多币种组合' : `Asset ${i}`, return_ytd: i === 0 ? 0 : i === 1 ? null : 12345.6789, 'attr.coverage_status': 'Invested', metric_quote_basis: 'daily_close', metric_return_kind: 'price_return', metric_series_type: 'canonical' }))
+  api.runScreenerQuery.mockImplementation(async (payload: { fetch_all?: boolean }) => ({ ...result(payload.fetch_all ? allRows : allRows.slice(0, 2)), total_rows: 269 }))
+  const created = vi.fn((_blob: Blob) => 'blob:watchlist-export')
+  const oldCreate = URL.createObjectURL; const oldRevoke = URL.revokeObjectURL
+  URL.createObjectURL = created; URL.revokeObjectURL = vi.fn()
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+  try {
+    show()
+    await screen.findByRole('checkbox', { name: /Select A long/ })
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: format }))
+    await waitFor(() => expect(created).toHaveBeenCalledOnce())
+    const file = await readExport(created.mock.calls[0][0], format === 'Excel')
+    const exported = format === 'Excel' ? xlsxRows(file as ArrayBuffer) : csvRows(file as string)
+    expect(exported).toHaveLength(270)
+    expect(exported[0]).toEqual(['instrument_id', 'currency', 'instrument_name', 'return_ytd (%)', 'attr.coverage_status', 'metric_as_of_date', 'metric_return_kind', 'metric_quote_basis', 'metric_series_type'])
+    expect(exported[1]).toEqual(['asset-0', 'USD', allRows[0].instrument_name, '0', 'Invested', '2026-09-30', 'price_return', 'daily_close', 'canonical'])
+    expect(exported[2][3]).toBe('')
+    expect(exported[exported.length - 1].slice(0, 4)).toEqual(['asset-268', 'USD', 'Asset 268', '12345.6789'])
+    expect(api.runScreenerQuery).toHaveBeenCalledWith(expect.objectContaining({ fetch_all: true, selected_fields: expect.arrayContaining(['currency']) }), undefined)
+    expect(click).toHaveBeenCalledOnce()
+  } finally { click.mockRestore(); URL.createObjectURL = oldCreate; URL.revokeObjectURL = oldRevoke }
+})
+
+it('explains business measurement fields without adding implementation hints to identity or status', async () => {
+  const status = { ...fields[0], field_key: 'attr.coverage_status', label: 'Investment Status', data_type: 'enum', description: 'Coverage workflow status' }
+  api.getFieldRegistry.mockResolvedValue({ fields: [...fields.map(f => ({ ...f, description: 'Internal read model detail' })), status], column_field_keys: [...fields.map(f => f.field_key), status.field_key], filter_field_keys: [] })
+  api.getWatchlistDetail.mockResolvedValue({ ...detail, views: [{ ...view, columns: ['instrument_name', 'currency', 'attr.coverage_status'] }] })
+  show(); await screen.findByRole('checkbox', { name: 'Select Alphabet Inc. · GOOG' })
+  const name = screen.getByRole('columnheader', { name: /Name/ })
+  const investment = screen.getByRole('columnheader', { name: /Investment Status/ })
+  expect(name.querySelector('.investment-studio-info-hint')).toBeNull()
+  expect(investment.querySelector('.investment-studio-info-hint')).toBeNull()
+  expect(investment.querySelector('.watchlists-th-content')?.textContent).toBe('Investment Status')
+  const hint = screen.getByRole('columnheader', { name: /Currency/ }).querySelector('.investment-studio-info-hint')!
+  fireEvent.click(hint)
+  expect(await screen.findByText('Currency of prices and NAVs; returns are not converted to another currency.')).toBeTruthy()
+  expect(screen.queryByText('Internal read model detail')).toBeNull()
 })

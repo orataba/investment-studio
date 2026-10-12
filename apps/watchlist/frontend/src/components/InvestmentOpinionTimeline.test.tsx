@@ -213,3 +213,14 @@ it('selects an explicit overall view and never replaces it with a later note or 
   expect(currentInvestmentOpinion(response)?.body).toBe(selected.body)
   expect(currentInvestmentOpinion({ ...research, notes: [review] })).toBeNull()
 })
+
+
+it('distinguishes no saved view from existing records with no current selection', async () => {
+  const view = render(<InvestmentOpinionTimeline instrumentId="xlk" research={emptyInstrumentResearchResponse()} onChange={vi.fn()} />)
+  expect(screen.getByText('尚无观点记录。先新增一条判断，再选择是否将其设为总体观点。')).toBeTruthy()
+  expect(screen.queryByText('尚未选定总体观点。可从下方记录中选择。')).toBeNull()
+  view.rerender(<InvestmentOpinionTimeline instrumentId="xlk" research={{ ...emptyInstrumentResearchResponse(), notes: [note()] }} onChange={vi.fn()} />)
+  expect(screen.getByText('尚未选定总体观点。可从下方记录中选择。')).toBeTruthy()
+  expect(screen.queryByText('尚无观点记录。先新增一条判断，再选择是否将其设为总体观点。')).toBeNull()
+  expect(api.stance).not.toHaveBeenCalled()
+})

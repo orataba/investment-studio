@@ -114,7 +114,7 @@ it('shows the creator in settings and prevents a reader from adding or creating 
   showPage()
   const add = await screen.findByRole('button', { name: 'Add' })
   expect(add.hasAttribute('disabled')).toBe(true)
-  expect(screen.getByRole('button', { name: '+ Create Watchlist' }).hasAttribute('disabled')).toBe(true)
+  expect(screen.getByRole('button', { name: 'Create' }).hasAttribute('disabled')).toBe(true)
   const settings = screen.getByRole('button', { name: 'Watchlist settings' })
   await waitFor(() => expect(settings.hasAttribute('disabled')).toBe(false))
   fireEvent.click(settings)
@@ -147,7 +147,7 @@ it('sets investment status for selected rows in a single batch', async () => {
 it('keeps failed list creation editable and reports the service error outside the dialog', async () => {
   mocks.createWatchlist.mockRejectedValue(new Error('Creation service unavailable'))
   showPage()
-  fireEvent.click(await screen.findByRole('button', { name: '+ Create Watchlist' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Create' }))
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My research' } })
   const dialog = screen.getByRole('dialog', { name: 'Create watchlist' })
   fireEvent.click(within(dialog).getByRole('button', { name: 'Create Watchlist' }))

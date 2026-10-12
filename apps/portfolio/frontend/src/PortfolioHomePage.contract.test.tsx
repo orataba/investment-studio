@@ -1533,6 +1533,9 @@ describe('Holdings rendered page contract', () => {
     )
     await waitForHoldings()
 
+    await userEvent.click(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: 'View : Default' }))
+    await userEvent.click(screen.getByRole('option', { name: 'Full Holdings' }))
+
     const securitySubtotal = screen.getByText('Securities Subtotal (USD)').closest('tr')!
     expect(securitySubtotal.querySelector('[data-column-key="unrealized_pnl_base"]')).toHaveTextContent('$0.00')
     expect(screen.getByRole('table', { name: 'FCN holdings' })).toBeInTheDocument()
@@ -1684,6 +1687,44 @@ describe('Holdings rendered page contract', () => {
     )
     expect(fcnExport['Annual Coupon']).toBe('12%')
     expect(fcnExport.Days).toBe(169)
+  })
+
+  it('keeps every holding and typed units in real CSV and XLSX output across independent sections', async () => {
+    const positions = Array.from({ length: 41 }, (_, index) => holdingFixture({
+      line_id: `export-${index}`,
+      instrument_core: instrumentFixture({ instrument_id: `export-${index}`, instrument_name: `Export security ${index}` }),
+      quantity: index + 0.125, allocation: 0.0125, instrument_return_1m: 0.05,
+    }))
+    renderHoldings(holdingsWorkspaceFixture({ rows: [...positions, fcnHolding(), writtenOptionHolding(), cashHolding()] }))
+    const user = userEvent.setup()
+    await waitForHoldings()
+    await user.click(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: /View\s*: Default/ }))
+    await user.click(screen.getByRole('option', { name: 'Full Holdings' }))
+    await user.click(screen.getByRole('button', { name: 'Download' }))
+    await user.click(screen.getByRole('menuitem', { name: 'CSV' }))
+    const rows = tableExportMocks.downloadTable.mock.calls[0][1] as Array<Array<string | number | null>>
+    const securityHeader = rows[rows.findIndex(row => row[0] === 'Securities') + 1]
+    const securities = rows.filter(row => row.some(value => typeof value === 'string' && /^Export security \d+$/.test(value)))
+    expect(securities).toHaveLength(41)
+    expect(new Set(securities.map(row => row[securityHeader.indexOf('Instrument')])).size).toBe(41)
+    const weightIndex = securityHeader.indexOf('Current Weight (fraction)')
+    expect(weightIndex).toBeGreaterThan(-1)
+    expect(securities.every(row => row[weightIndex] === 0.0125)).toBe(true)
+    const actual = await vi.importActual<typeof import('../../../../packages/ui/src/tableExport')>('../../../../packages/ui/src/tableExport')
+    const csv = '\uFEFF' + rows.map(row => row.map(actual.csvEscape).join(',')).join('\r\n')
+    const workbook = actual.buildXlsxWorkbook(rows, 'Holdings')
+    const archiveText = new TextDecoder().decode(workbook)
+    const worksheetXml = archiveText.match(/<worksheet[\s\S]*?<\/worksheet>/)?.[0]
+    expect(worksheetXml).toBeDefined()
+    const sheet = new DOMParser().parseFromString(worksheetXml!, 'text/xml')
+    expect(sheet.querySelector('parsererror')).toBeNull()
+    expect(sheet.querySelectorAll('sheetData > row')).toHaveLength(rows.length)
+    expect([...sheet.querySelectorAll('t')].filter(cell => /^Export security \d+$/.test(cell.textContent ?? ''))).toHaveLength(41)
+    expect([...sheet.querySelectorAll('c:not([t]) > v')].filter(cell => cell.textContent === '0.0125')).toHaveLength(41)
+    expect(csv.match(/Export security \d+/g)).toHaveLength(41)
+    for (const section of ['FCN', 'Options', 'Cash & Settlement']) {
+      expect(sheet.querySelectorAll('t')).toContainEqual(expect.objectContaining({ textContent: section }))
+    }
   })
 
   it('does not export empty holding categories', async () => {

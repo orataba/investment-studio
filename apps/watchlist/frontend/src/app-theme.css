@@ -179,19 +179,16 @@
   font-weight: 500;
 }
 
-.watchlists-switch-row,
 .instrument-detail-tabs-row {
   padding: 0;
   border: 0;
   border-bottom: 1px solid var(--line-strong);
 }
 
-.watchlist-switcher-chip,
 .instrument-detail-tab {
   border-radius: 0;
 }
 
-.watchlist-switcher-chip-active,
 .instrument-detail-tab-active {
   color: var(--ink) !important;
 }
@@ -237,17 +234,6 @@
   border-color: var(--accent) !important;
   background: var(--accent) !important;
   color: #ffffff !important;
-}
-
-.watchlist-switcher-chip-active {
-  border-color: transparent !important;
-  border-bottom-color: var(--accent) !important;
-  background: transparent !important;
-  color: var(--ink) !important;
-}
-
-.watchlist-switcher-chip-active .watchlist-menu-trigger {
-  color: var(--muted);
 }
 
 .watchlists-current-search input,

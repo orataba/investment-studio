@@ -117,24 +117,43 @@ function linkedAnswer(entry: Entry, evidence: Evidence[]) {
 // Bound the rendered text, not the retained evidence. Large originals can contain
 // years of input observations and otherwise stall layout/accessibility snapshots.
 const evidencePageCharacters = 24_000
-function EvidenceSnapshot({ request, result, sourceId }: { request?: Record<string, unknown>; result: Record<string, unknown>; sourceId: string }) {
-  const text = useMemo(() => JSON.stringify({ request, result }, null, 2), [request, result])
+function EvidenceSnapshot({ evidence, entry }: { evidence: Evidence & { result: Record<string, unknown> }; entry: Entry }) {
+  const { result, source_id: sourceId } = evidence
+  // A downloaded original keeps the retained receipt and its clock, not just the
+  // currently displayed page. A citation-only receipt is never promoted to read.
+  const text = useMemo(() => JSON.stringify({ run_id: entry.entry_id, cutoff: entry.context_json.cutoff ?? null, ...evidence }, null, 2), [evidence, entry.entry_id, entry.context_json.cutoff])
   const [page, setPage] = useState(0)
   const [query, setQuery] = useState('')
   const [match, setMatch] = useState<number | null>(null)
+  const [highlight, setHighlight] = useState<{ offset: number; length: number } | null>(null)
+  const originalRef = useRef<HTMLPreElement>(null)
   const pageCount = Math.ceil(text.length / evidencePageCharacters)
   const currentPage = Math.min(page, pageCount - 1)
   const fields = useMemo(() => {
     const start = text.indexOf('\n  "result": {')
     return Object.keys(result).map(key => ({ key, offset: text.indexOf(`\n    ${JSON.stringify(key)}:`, start) })).filter(field => field.offset >= 0)
   }, [result, text])
+  useEffect(() => {
+    if (!highlight) return
+    originalRef.current?.focus({ preventScroll: true })
+    originalRef.current?.querySelector('mark')?.scrollIntoView?.({ block: 'nearest' })
+  }, [highlight])
+  function jump(offset: number, length: number) {
+    setPage(Math.floor(offset / evidencePageCharacters))
+    setHighlight({ offset, length })
+  }
+  const pageStart = currentPage * evidencePageCharacters
+  const pageText = text.slice(pageStart, pageStart + evidencePageCharacters)
+  const highlightStart = highlight ? Math.max(0, highlight.offset - pageStart) : -1
+  const highlightEnd = highlight ? Math.min(pageText.length, highlight.offset + highlight.length - pageStart) : -1
   function search() {
     if (!query) return
     const start = match === null ? 0 : match + query.length
     const next = text.indexOf(query, start)
     const found = next >= 0 ? next : text.indexOf(query)
     setMatch(found)
-    if (found >= 0) setPage(Math.floor(found / evidencePageCharacters))
+    if (found >= 0) jump(found, query.length)
+    else setHighlight(null)
   }
   function download() {
     const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }))
@@ -146,21 +165,22 @@ function EvidenceSnapshot({ request, result, sourceId }: { request?: Record<stri
   }
   return <>
     <div className="research-evidence-navigation">
-      <label>跳转字段 <select aria-label="跳转证据字段" defaultValue="" onChange={event => { if (event.target.value) setPage(Math.floor(Number(event.target.value) / evidencePageCharacters)) }}><option value="">选择字段</option>{fields.map(field => <option key={field.key} value={field.offset} translate="no">{field.key}</option>)}</select></label>
+      <label>跳转字段 <select aria-label="跳转证据字段" defaultValue="" onChange={event => { const field = fields.find(item => String(item.offset) === event.target.value); if (field) jump(field.offset + 5, JSON.stringify(field.key).length) }}><option value="">选择字段</option>{fields.map(field => <option key={field.key} value={field.offset} translate="no">{field.key}</option>)}</select></label>
       <form onSubmit={event => { event.preventDefault(); search() }}><label>查找原文 <input value={query} onChange={event => { setQuery(event.target.value); setMatch(null) }} /></label><button type="submit" disabled={!query}>查找下一处</button>{match === -1 && <span role="status">未找到匹配内容</span>}</form>
+      <button type="button" onClick={download}>下载完整证据</button>
     </div>
     {pageCount > 1 && <div className="research-evidence-pages">
       <p>原件较大，以下分段显示；完整内容保留在下载文件中。</p>
       <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>上一段</button>
       <span role="status"><span>文本段</span> {currentPage + 1} / {pageCount}</span>
       <button type="button" disabled={currentPage === pageCount - 1} onClick={() => setPage(currentPage + 1)}>下一段</button>
-      <button type="button" onClick={download}>下载完整证据</button>
     </div>}
-    <pre className="research-evidence-json" translate="no">{text.slice(currentPage * evidencePageCharacters, (currentPage + 1) * evidencePageCharacters)}</pre>
+    <pre ref={originalRef} tabIndex={-1} className="research-evidence-json" translate="no">{highlightStart >= 0 && highlightEnd > highlightStart ? <>{pageText.slice(0, highlightStart)}<mark>{pageText.slice(highlightStart, highlightEnd)}</mark>{pageText.slice(highlightEnd)}</> : pageText}</pre>
   </>
 }
 function EvidenceItem({ item, entry, read }: { item: Evidence; entry: Entry; read: ResearchAssistantProps['read'] }) {
-  const [result, setResult] = useState(item.result)
+  const [receipt, setReceipt] = useState(item)
+  const result = receipt.result
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const fetching = useRef(false)
@@ -171,7 +191,7 @@ function EvidenceItem({ item, entry, read }: { item: Evidence; entry: Entry; rea
     setError('')
     try {
       const receipt = await read<Evidence>(`/research/runs/${encodeURIComponent(entry.entry_id)}/evidence?source_id=${encodeURIComponent(item.source_id)}`)
-      setResult(receipt.result || { available: false, limitation: '此历史记录未保留可展示的证据明细。' })
+      setReceipt({ ...item, ...receipt, result: receipt.result || { available: false, limitation: '此历史记录未保留可展示的证据明细。' } })
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : '证据读取失败，请重试。')
     } finally {
@@ -203,7 +223,7 @@ function EvidenceItem({ item, entry, read }: { item: Evidence; entry: Entry; rea
     <details onToggle={(event) => { if (event.currentTarget.open) void load() }}><summary>当时证据快照</summary>
       {loading && <p role="status">正在读取当时留存的证据…</p>}
       {error && <p role="alert">{error} <button type="button" onClick={() => void load()}>重试读取</button></p>}
-      {result && <EvidenceSnapshot request={item.request} result={result} sourceId={item.source_id} />}
+      {result && <EvidenceSnapshot evidence={{ ...receipt, result }} entry={entry} />}
     </details>
   </div>
 }

@@ -1,3 +1,4 @@
+import MonthlyReturnMatrix from '../components/MonthlyReturnMatrix'
 import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 import WorkspaceSwitcher from '../../../../../packages/ui/src/WorkspaceSwitcher'
 import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
@@ -2505,22 +2506,6 @@ function buildPerformanceMetricSnapshot(
   }
 }
 
-function getHeatmapCellStyle(value: number | null, maxAbsValue: number) {
-  if (value == null) {
-    return undefined
-  }
-  const normalized = Math.min(Math.abs(value) / Math.max(maxAbsValue, 1), 1)
-  if (value >= 0) {
-    return {
-      backgroundColor: `color-mix(in srgb, var(--studio-positive) ${(0.08 + normalized * 0.26) * 100}%, white)`,
-      color: 'var(--studio-positive-strong)',
-    }
-  }
-  return {
-    backgroundColor: `color-mix(in srgb, var(--studio-negative) ${(0.08 + normalized * 0.24) * 100}%, white)`,
-    color: 'var(--studio-negative-strong)',
-  }
-}
 
 function buildCalculationPointSeries(series: FundNavSeriesResponse['calculation_series']) {
   return series
@@ -4816,15 +4801,6 @@ export default function FundDetailPage({
     return { ...row, months: row.months.map((value, index) => complete(row.monthWindows[index]) ? value : null),
       ytd: complete(row.ytdWindow) ? row.ytd : null }
   })
-  const monthlyReturnMatrixMaxAbs = monthlyReturnMatrixRows.reduce((maxAbs, row) => {
-    const rowMax = Math.max(
-      ...[...row.months, row.ytd]
-        .filter((value): value is number => value != null)
-        .map((value) => Math.abs(value)),
-      0,
-    )
-    return Math.max(maxAbs, rowMax)
-  }, 0)
   const peerComparison =
     performance.peer_comparison?.status === 'ready' ||
     performance.peer_comparison?.status === 'limited_sample'
@@ -6762,51 +6738,7 @@ export default function FundDetailPage({
             </div>
             <div className="instrument-performance-section-body">
               {monthlyReturnMatrixRows.length ? (
-                <HorizontalTableScroll className="table-shell instrument-performance-table-shell">
-                  <table className="terminal-table terminal-table-compact instrument-heatmap-table">
-                    <thead>
-                      <tr>
-                        <th>Year</th>
-                        {MONTH_SHORT_LABELS.map((label) => (
-                          <th key={label}>{label}</th>
-                        ))}
-                        <th>Yearly / YTD</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {monthlyReturnMatrixRows.map((row) => (
-                        <tr key={row.year}>
-                          <td className="instrument-heatmap-row-label">{row.year}</td>
-                          {row.months.map((value, index) => (
-                            <td
-                              key={`${row.year}-${MONTH_SHORT_LABELS[index]}`}
-                              className={`instrument-heatmap-cell${value == null ? ' instrument-heatmap-cell-empty' : ''}`}
-                              style={getHeatmapCellStyle(value, monthlyReturnMatrixMaxAbs)}
-                              title={
-                                row.monthWindows[index]
-                                  ? `Anchor: ${row.monthWindows[index]?.anchorDate} · End: ${row.monthWindows[index]?.endDate}`
-                                  : undefined
-                              }
-                            >
-                              {value == null ? '—' : formatPercent(value, 2)}
-                            </td>
-                          ))}
-                          <td
-                            className={`instrument-heatmap-cell${row.ytd == null ? ' instrument-heatmap-cell-empty' : ''}`}
-                            style={getHeatmapCellStyle(row.ytd, monthlyReturnMatrixMaxAbs)}
-                            title={
-                              row.ytdWindow
-                                ? `Anchor: ${row.ytdWindow.anchorDate} · End: ${row.ytdWindow.endDate}`
-                                : undefined
-                            }
-                          >
-                            {row.ytd == null ? '—' : formatPercent(row.ytd, 2)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </HorizontalTableScroll>
+                <MonthlyReturnMatrix rows={monthlyReturnMatrixRows} />
               ) : (
                 <div className="instrument-fallback-block">
                   <div className="instrument-fallback-copy">

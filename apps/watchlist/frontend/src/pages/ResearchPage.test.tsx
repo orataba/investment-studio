@@ -157,7 +157,7 @@ it('keeps a large original out of the DOM while allowing every section and a com
   fireEvent.click(screen.getByRole('button', { name: '下载完整证据' }))
   const blob = createObjectURL.mock.calls[0][0] as Blob
   const downloaded = await new Promise<string>((resolve) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.readAsText(blob) })
-  expect(JSON.parse(downloaded)).toEqual({ result })
+  expect(JSON.parse(downloaded)).toEqual({ run_id: answer.entry_id, cutoff: null, source_id: sourceId, tool: 'comparison', result })
   expect(download).toHaveBeenCalledOnce()
   expect(mocks.read.mock.calls.some(([path]) => String(path).includes('/evidence?'))).toBe(false)
   download.mockRestore()
@@ -559,4 +559,68 @@ it('keeps a paused draft readable and blocks sending without polling the paused 
   await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
   expect(mocks.read).toHaveBeenCalledTimes(count)
   expect(mocks.write).not.toHaveBeenCalled()
+})
+
+
+it('reopens all six retained ETF citation receipts at their exact snapshot without a new run', async () => {
+  const ids = ['instrument:518880-sh:old', 'computed:518880-sh:return', 'computed:518880-sh:drawdown', 'text:gold:original', 'research:518880-sh:prior', 'text:gold:macro/?x=1&y=2']
+  const cutoff = '2026-10-11T21:29:58Z'
+  const sources = ids.map((source_id, i) => ({ source_id, tool: 'source', citation_only: true, recorded_at: `2026-10-0${i + 1}T00:00:00Z`, as_of: '2026-10-09', title: `Retained original ${i}` }))
+  const originals = Object.fromEntries(ids.map((id, i) => [id, { retained_source: { source_id: id, body: `ORIGINAL_${i}`, published_at: '2026-10-09' }, metrics: { value: i === 0 ? null : i }, version_id: `original-v${i}` }]))
+  entries = [{ ...answer, body: ids.map(id => `[${id}]`).join(' '), context_json: { instrument_ids: ['518880-sh'], cutoff, tool_evidence: sources } }]
+  const originalRead = mocks.read.getMockImplementation()!
+  mocks.read.mockImplementation(async (path: string) => {
+    if (path.includes('/evidence?')) {
+      const id = new URL(path, 'http://test').searchParams.get('source_id')!
+      return { ...sources.find(source => source.source_id === id), request: { source_id: id, cutoff }, result: originals[id] }
+    }
+    return originalRead(path)
+  })
+  const createObjectURL = vi.fn((_blob: Blob) => 'blob:retained-original')
+  vi.stubGlobal('URL', Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() }))
+  const download = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+  for (let reopen = 0; reopen < 2; reopen += 1) {
+    const view = render(<MemoryRouter initialEntries={['/assistant?topic=chat-1']}><ResearchPage /></MemoryRouter>)
+    await screen.findByRole('link', { name: ids[0] })
+    for (const id of ids) {
+      const link = screen.getByRole('link', { name: id })
+      fireEvent.click(link)
+      const target = document.getElementById(link.getAttribute('href')!.slice(1))!
+      expect(document.activeElement).toBe(target)
+      fireEvent.click(within(target).getByText('当时证据快照'))
+      await waitFor(() => expect(target.textContent).toContain(originals[id].retained_source.body))
+      fireEvent.click(within(target).getByRole('button', { name: '下载完整证据' }))
+      const blob = createObjectURL.mock.calls[createObjectURL.mock.calls.length - 1][0]
+      const content = await new Promise<string>(resolve => { const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.readAsText(blob) })
+      expect(JSON.parse(content)).toEqual({ run_id: answer.entry_id, cutoff, ...sources.find(source => source.source_id === id), request: { source_id: id, cutoff }, result: originals[id] })
+    }
+    expect(screen.queryAllByText('获取时间', { selector: 'span' })).toHaveLength(0)
+    view.unmount()
+  }
+  expect(mocks.read.mock.calls.filter(([path]) => String(path).includes('/evidence?'))).toHaveLength(12)
+  expect(mocks.write).not.toHaveBeenCalled()
+  download.mockRestore(); vi.unstubAllGlobals()
+})
+
+
+it('navigates an original by field and highlights the exact search match without another request', async () => {
+  entries = [{ ...answer, context_json: { tool_evidence: [{ source_id: 'computed:large', tool: 'quant', result: { observations: 'x'.repeat(25000), final_metric: { note: 'EXACT_ORIGINAL', value: 0 } } }] } }]
+  const { container } = render(<MemoryRouter initialEntries={['/assistant?topic=chat-1']}><ResearchPage /></MemoryRouter>)
+  fireEvent.click(await screen.findByText('查阅依据（1）'))
+  fireEvent.click(screen.getByText('当时证据快照'))
+  const select = screen.getByRole('combobox', { name: '跳转证据字段' })
+  const option = within(select).getByRole('option', { name: 'final_metric' }) as HTMLOptionElement
+  fireEvent.change(select, { target: { value: option.value } })
+  const pre = container.querySelector('pre')!
+  expect(pre.querySelector('mark')?.textContent).toBe('"final_metric"')
+  expect(document.activeElement).toBe(pre)
+  fireEvent.change(screen.getByRole('textbox', { name: '查找原文' }), { target: { value: 'EXACT_ORIGINAL' } })
+  fireEvent.click(screen.getByRole('button', { name: '查找下一处' }))
+  expect(pre.querySelector('mark')?.textContent).toBe('EXACT_ORIGINAL')
+  expect(pre.textContent!.length).toBeLessThanOrEqual(24000)
+  fireEvent.change(screen.getByRole('textbox', { name: '查找原文' }), { target: { value: 'absent' } })
+  fireEvent.click(screen.getByRole('button', { name: '查找下一处' }))
+  expect(screen.getByText('未找到匹配内容')).toBeTruthy()
+  expect(pre.querySelector('mark')).toBeNull()
+  expect(mocks.read.mock.calls.some(([path]) => String(path).includes('/evidence?'))).toBe(false)
 })

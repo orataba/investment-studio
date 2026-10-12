@@ -117,6 +117,7 @@ import {
   buildInitialFcnUnderlyingDraft,
   derivativeContractDraftFromRecord,
   derivativeContractFromDraft,
+  DerivativeDraftError,
   type DerivativeContractDraft,
 } from '../lib/derivativeContractDraft'
 import { DerivativeSettlementFields } from '../components/DerivativeSettlementFields'
@@ -1100,6 +1101,7 @@ export default function TransactionsPage() {
   const autoQuoteKeyRef = useRef<string | null>(null)
   const autoQuantityKeyRef = useRef<string | null>(null)
   const autoGrossDerivedRef = useRef(false)
+  const transactionFormRef = useRef<HTMLFormElement>(null)
   const submittingTransactionRef = useRef(false)
   const transactionRequestRef = useRef<{ signature: string; key: string } | null>(null)
   const [accounts, setAccounts] = useState<PortfolioAccountRecord[]>([])
@@ -1608,16 +1610,24 @@ export default function TransactionsPage() {
   )
   const isCreatingDerivativeContract =
     form.asset_domain === 'derivative' && !form.derivative_contract_id
-  const draftDerivativeContract = (() => {
-    if (!isCreatingDerivativeContract) {
-      return null
-    }
-    try {
-      return derivativeContractFromDraft(derivativeDraft)
-    } catch {
-      return null
-    }
-  })()
+  const draftContractCheck = useMemo(() => {
+    if (!isCreatingDerivativeContract) return { contract: null, issue: null }
+    try { return { contract: derivativeContractFromDraft(derivativeDraft), issue: null } }
+    catch (error) { return { contract: null, issue: error instanceof Error ? error : new Error('Complete the derivative contract terms.') } }
+  }, [isCreatingDerivativeContract, derivativeDraft])
+  const draftDerivativeContract = draftContractCheck.contract
+
+  function focusTicket(target: string, draftField?: string) {
+    const formElement = transactionFormRef.current
+    const section = formElement?.querySelector<HTMLElement>(`[data-ticket-section="${target}"]`)
+    const field = draftField ? formElement?.querySelector<HTMLElement>(`[data-draft-field="${draftField}"]`) : null
+    const element = field ?? section
+    if (!element) return
+    element.closest('details')?.setAttribute('open', '')
+    const control = element.matches('input, select, textarea, button') ? element : element.querySelector<HTMLElement>('input, select, textarea, button')
+    ;(control ?? element).focus({ preventScroll: true })
+    element.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+  }
   const activeDerivativeContract =
     selectedDerivativeContract ?? draftDerivativeContract
   const hasAssetReference =
@@ -3420,6 +3430,7 @@ export default function TransactionsPage() {
         setFormError(
           error instanceof Error ? error.message : 'Complete the derivative contract terms.',
         )
+        focusTicket('contract', error instanceof DerivativeDraftError ? error.field : undefined)
         return
       }
     }
@@ -6686,9 +6697,9 @@ export default function TransactionsPage() {
               </button>
             </div>
 
-            <form className="transaction-form" onSubmit={(event) => void handleCreateTransaction(event)}>
+            <form ref={transactionFormRef} className="transaction-form" onSubmit={(event) => void handleCreateTransaction(event)}>
               <div className="transaction-ticket-main">
-                <div className="transaction-ticket-section-heading">
+                <div className="transaction-ticket-section-heading" data-ticket-section="type" tabIndex={-1}>
                   <div>
                     <strong>Choose what happened</strong>
                   </div>
@@ -6848,7 +6859,7 @@ export default function TransactionsPage() {
                     <label className="transaction-ticket-field">
                       <span>Option Type</span>
                       <select
-                        value={derivativeDraft.option_type}
+                        data-draft-field="option_type" value={derivativeDraft.option_type}
                         onChange={(event) =>
                           setDerivativeDraft((current) => ({
                             ...current,
@@ -6904,7 +6915,7 @@ export default function TransactionsPage() {
               ) : null}
 
               {isCreatingDerivativeContract ? (
-                <section className="transaction-contract-definition">
+                <section className="transaction-contract-definition" data-ticket-section="contract" tabIndex={-1}>
                   <div className="transaction-contract-definition-head">
                     <strong>New {formEntryKindLabel} contract</strong>
                   </div>
@@ -6912,7 +6923,7 @@ export default function TransactionsPage() {
                   <label className="transaction-ticket-field">
                     <span>Contract ID</span>
                     <input
-                      value={derivativeDraft.derivative_contract_id}
+                      data-draft-field="derivative_contract_id" value={derivativeDraft.derivative_contract_id}
                       onChange={(event) =>
                         setDerivativeDraft((current) => ({
                           ...current,
@@ -6924,7 +6935,7 @@ export default function TransactionsPage() {
                   <label className="transaction-ticket-field">
                     <span>Contract Name</span>
                     <input
-                      value={derivativeDraft.contract_name}
+                      data-draft-field="contract_name" value={derivativeDraft.contract_name}
                       onChange={(event) =>
                         setDerivativeDraft((current) => ({
                           ...current,
@@ -6936,7 +6947,7 @@ export default function TransactionsPage() {
                   <label className="transaction-ticket-field">
                     <span>Contract Reference</span>
                     <input
-                      value={derivativeDraft.external_reference}
+                      data-draft-field="external_reference" value={derivativeDraft.external_reference}
                       onChange={(event) =>
                         setDerivativeDraft((current) => ({
                           ...current,
@@ -6949,7 +6960,7 @@ export default function TransactionsPage() {
                   <DerivativeSettlementFields draft={derivativeDraft} setDraft={setDerivativeDraft} />
                   {derivativeDraft.contract_type === 'option' ? (
                     <>
-                      <SecurityInstrumentPicker
+                      <div data-draft-field="option_underlying_instrument_id"><SecurityInstrumentPicker
                         portfolioId={portfolioId}
                         onInstrumentRegistered={rememberRegisteredInstrument}
                         label="Underlying Security"
@@ -6961,12 +6972,12 @@ export default function TransactionsPage() {
                             option_underlying_instrument_id: instrumentId,
                           }))
                         }
-                      />
+                      /></div>
                       <label className="transaction-ticket-field">
                         <span>Expiry Date</span>
                         <input
                           type="date"
-                          value={derivativeDraft.option_expiry_date}
+                          data-draft-field="option_expiry_date" value={derivativeDraft.option_expiry_date}
                           onChange={(event) =>
                             setDerivativeDraft((current) => ({
                               ...current,
@@ -6981,7 +6992,7 @@ export default function TransactionsPage() {
                           type="number"
                           min="0"
                           step="any"
-                          value={derivativeDraft.option_strike}
+                          data-draft-field="option_strike" value={derivativeDraft.option_strike}
                           onChange={(event) =>
                             setDerivativeDraft((current) => ({
                               ...current,
@@ -6996,7 +7007,7 @@ export default function TransactionsPage() {
                           type="number"
                           min="0"
                           step="any"
-                          value={derivativeDraft.option_contract_multiplier}
+                          data-draft-field="option_contract_multiplier" value={derivativeDraft.option_contract_multiplier}
                           onChange={(event) =>
                             setDerivativeDraft((current) => ({
                               ...current,
@@ -7014,7 +7025,7 @@ export default function TransactionsPage() {
                           type="number"
                           min="0"
                           step="any"
-                          value={derivativeDraft.fcn_notional}
+                          data-draft-field="fcn_notional" value={derivativeDraft.fcn_notional}
                           onChange={(event) =>
                             setDerivativeDraft((current) => ({ ...current, fcn_notional: event.target.value }))
                           }
@@ -7026,7 +7037,7 @@ export default function TransactionsPage() {
                           type="number"
                           min="0"
                           step="any"
-                          value={derivativeDraft.fcn_annual_coupon_rate_pct}
+                          data-draft-field="fcn_annual_coupon_rate_pct" value={derivativeDraft.fcn_annual_coupon_rate_pct}
                           onChange={(event) =>
                             setDerivativeDraft((current) => ({
                               ...current,
@@ -7039,7 +7050,7 @@ export default function TransactionsPage() {
                         <span>Issue Date</span>
                         <input
                           type="date"
-                          value={derivativeDraft.fcn_issue_date}
+                          data-draft-field="fcn_issue_date" value={derivativeDraft.fcn_issue_date}
                           onChange={(event) =>
                             setDerivativeDraft((current) => ({ ...current, fcn_issue_date: event.target.value }))
                           }
@@ -7049,7 +7060,7 @@ export default function TransactionsPage() {
                         <span>Final Observation Date</span>
                         <input
                           type="date"
-                          value={derivativeDraft.fcn_final_observation_date}
+                          data-draft-field="fcn_final_observation_date" value={derivativeDraft.fcn_final_observation_date}
                           onChange={(event) =>
                             setDerivativeDraft((current) => ({
                               ...current,
@@ -7062,7 +7073,7 @@ export default function TransactionsPage() {
                         <span>Maturity Date</span>
                         <input
                           type="date"
-                          value={derivativeDraft.fcn_maturity_date}
+                          data-draft-field="fcn_maturity_date" value={derivativeDraft.fcn_maturity_date}
                           onChange={(event) =>
                             setDerivativeDraft((current) => ({ ...current, fcn_maturity_date: event.target.value }))
                           }
@@ -7071,7 +7082,7 @@ export default function TransactionsPage() {
                       <label className="transaction-ticket-field">
                         <span>Issuer</span>
                         <input
-                          value={derivativeDraft.fcn_issuer}
+                          data-draft-field="fcn_issuer" value={derivativeDraft.fcn_issuer}
                           onChange={(event) =>
                             setDerivativeDraft((current) => ({ ...current, fcn_issuer: event.target.value }))
                           }
@@ -7080,13 +7091,13 @@ export default function TransactionsPage() {
                       <label className="transaction-ticket-field">
                         <span>Counterparty</span>
                         <input
-                          value={derivativeDraft.fcn_counterparty}
+                          data-draft-field="fcn_counterparty" value={derivativeDraft.fcn_counterparty}
                           onChange={(event) =>
                             setDerivativeDraft((current) => ({ ...current, fcn_counterparty: event.target.value }))
                           }
                         />
                       </label>
-                      <div className="transaction-fcn-underlyings">
+                      <div className="transaction-fcn-underlyings" data-draft-field="fcn_underlyings">
                         <div className="transaction-fcn-underlyings-head">
                           <strong>FCN Underlyings</strong>
                           <button
@@ -7107,7 +7118,7 @@ export default function TransactionsPage() {
                         </div>
                         {derivativeDraft.fcn_underlyings.map((underlying, index) => (
                           <div className="transaction-fcn-underlying-row" key={underlying.row_id}>
-                            <div className="transaction-fcn-security-field">
+                            <div className="transaction-fcn-security-field" data-draft-field={`fcn_underlyings.${index}.instrument_id`}>
                               <SecurityInstrumentPicker
                                 portfolioId={portfolioId}
                                 onInstrumentRegistered={rememberRegisteredInstrument}
@@ -7172,7 +7183,7 @@ export default function TransactionsPage() {
                                   type="number"
                                   min="0"
                                   step="any"
-                                  value={underlying[field]}
+                                  data-draft-field={`fcn_underlyings.${index}.${field}`} value={underlying[field]}
                                   onChange={(event) =>
                                     setDerivativeDraft((current) => ({
                                       ...current,
@@ -7212,7 +7223,7 @@ export default function TransactionsPage() {
                 </div>
               ) : null}
 
-              <div className="transaction-ticket-section-heading transaction-ticket-section-heading-compact">
+              <div className="transaction-ticket-section-heading transaction-ticket-section-heading-compact" data-ticket-section="facts" tabIndex={-1}>
                 <div>
                   <strong>Transaction facts</strong>
                 </div>
@@ -7601,7 +7612,7 @@ export default function TransactionsPage() {
                 {!isFxConversion && !isTransferTransaction(form.transaction_type) && shouldUsePrice ? amountField : null}
 
                 {shouldShowFees ? (
-                  <fieldset className="transaction-fee-components">
+                  <fieldset className="transaction-fee-components" data-ticket-section="fees" tabIndex={-1}>
                     <legend>{fcnLabel('Fees', '费用明细')}</legend>
                     {form.fee_components.map((item, index) => (
                       <div className="transaction-fee-component" key={index}>
@@ -7670,7 +7681,7 @@ export default function TransactionsPage() {
                 />
               </> : null}
 
-              <details className="transaction-entry-additional-details">
+              <details className="transaction-entry-additional-details" data-ticket-section="additional" tabIndex={-1}>
                 <summary>
                   <strong>Additional details</strong>
                 </summary>
@@ -7734,6 +7745,21 @@ export default function TransactionsPage() {
               </div>
 
               <aside className="transaction-ticket-review" aria-label="Transaction review">
+                <nav className="transaction-review-nav" aria-label={fcnLabel('Review sections', '核对分区')}>
+                  <strong>{fcnLabel('Review before recording', '记录前核对')}</strong>
+                  <button type="button" onClick={() => focusTicket('type')}>{fcnLabel('1 · Account and action', '1 · 账户与动作')}</button>
+                  {isCreatingDerivativeContract ? <button type="button" onClick={() => focusTicket('contract')}>
+                    {fcnLabel('2 · Contract terms', '2 · 合同条款')} · {draftContractCheck.issue ? fcnLabel('Needs attention', '需补充或更正') : fcnLabel('Draft checked', '草稿字段已校验')}
+                  </button> : null}
+                  <button type="button" onClick={() => focusTicket('facts')}>{fcnLabel('Dates, quantity and settlement', '日期、数量与结算')}</button>
+                  {shouldShowFees ? <button type="button" onClick={() => focusTicket('fees')}>{fcnLabel('Fees and taxes', '费用与税费')}</button> : null}
+                  <button type="button" onClick={() => focusTicket('additional')}>{fcnLabel('References, lots and note', '来源、批次与备注')}</button>
+                </nav>
+                {draftContractCheck.issue ? <div className="transaction-review-issue" role="status">
+                  <span>{fcnLabel('Next required correction', '下一项必需更正')}</span>
+                  <button type="button" onClick={() => focusTicket('contract', draftContractCheck.issue instanceof DerivativeDraftError ? draftContractCheck.issue.field : undefined)}>{draftContractCheck.issue.message}</button>
+                </div> : null}
+                <p className="transaction-review-scope">{fcnLabel('Review the effects below. Recording validates the complete transaction and ledger; a checked draft does not confirm the contract evidence.', '请核对下方影响。记录时仍会校验完整交易与账本；草稿字段通过不代表合约证据已核实。')}</p>
                 <div className="transaction-ticket-section-heading">
                   <div>
                     <strong>Accounting impact</strong>

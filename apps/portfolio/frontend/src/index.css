@@ -12040,3 +12040,22 @@ input[type='date']::-webkit-calendar-picker-indicator {
   transform: none;
   overflow-wrap: anywhere;
 }
+
+/* Portfolio comparison and transaction review use the existing type/color roles. */
+.risk-matrix-pair-detail { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 10px 0; font-size: 12px; line-height: 1.5; color: var(--portfolio-muted); }
+.risk-matrix-pair-detail > strong { flex-basis: 100%; color: var(--portfolio-ink); font-weight: 500; overflow-wrap: anywhere; }
+.risk-matrix-pair-detail b { font-weight: 500; font-variant-numeric: tabular-nums; }
+.risk-matrix-pair-detail small { flex-basis: 100%; font-size: inherit; }
+.risk-heatmap-cell[data-pair-axis='true'] { box-shadow: inset 0 -1px var(--portfolio-line-strong); }
+.risk-matrix-cell-button { display: block; width: 100%; min-height: 32px; border: 1px solid transparent; background: transparent; color: inherit; font: inherit; font-variant-numeric: tabular-nums; cursor: pointer; }
+.risk-matrix-cell-button[aria-pressed='true'] { border-color: var(--studio-accent); font-weight: 600; }
+.risk-matrix-cell-button:focus-visible { outline: 2px solid var(--studio-accent); outline-offset: -2px; }
+.portfolio-table-view-option-description { display: block; margin-top: 4px; max-width: 320px; white-space: normal; font-size: 12px; line-height: 1.5; color: var(--portfolio-muted); }
+.transaction-review-nav { display: grid; gap: 6px; padding-bottom: 14px; border-bottom: 1px solid var(--portfolio-line); }
+.transaction-review-nav strong { font-size: 13px; font-weight: 500; }
+.transaction-review-nav button, .transaction-review-issue button { border: 0; padding: 4px 0; background: transparent; text-align: left; color: var(--portfolio-accent); font: inherit; font-size: 12px; line-height: 1.5; cursor: pointer; }
+.transaction-review-nav button:focus-visible, .transaction-review-issue button:focus-visible { outline: 2px solid var(--studio-accent); outline-offset: 3px; }
+.transaction-review-issue { display: grid; gap: 4px; padding-left: 10px; border-left: 2px solid var(--studio-warning); font-size: 12px; line-height: 1.5; }
+.transaction-review-scope { margin: 0; color: var(--portfolio-muted); font-size: 12px; line-height: 1.5; }
+.transaction-ticket-main [data-ticket-section] { scroll-margin-top: 16px; }
+.transaction-ticket-main [data-ticket-section]:focus { outline: 2px solid var(--studio-accent); outline-offset: 3px; }

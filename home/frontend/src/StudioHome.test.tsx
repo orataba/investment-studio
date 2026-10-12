@@ -109,7 +109,9 @@ describe('StudioHome', () => {
     expect(page(<LoginPage />)).not.toContain('name="otp"')
     const account = page(<AccountPage />)
     expect(account).toContain(accountTitle)
-    expect(account).toContain(`role="status" aria-label="${language === 'zh-Hans' ? '加载中' : 'Loading'}"`)
+    expect(account).toContain('role="status"')
+    expect(account).toContain('aria-busy="true"')
+    expect(account).toContain(`aria-label="${language === 'zh-Hans' ? '加载中' : 'Loading'}"`)
     expect(account).not.toContain('href="/login"')
   })
 

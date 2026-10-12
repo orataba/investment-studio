@@ -589,66 +589,18 @@ th {
   color: var(--ink);
 }
 
-.watchlists-switch-row {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  flex-wrap: wrap;
-}
 
 .watchlist-menu-shell {
   position: relative;
 }
 
-.watchlist-switcher-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 28px;
-  padding: 6px 0;
-  border: none;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--ink);
-  font-size: 13px;
-}
 
-.watchlist-switcher-chip-home {
-  text-decoration: none;
-}
 
-.watchlist-switcher-chip-inactive:hover {
-  border-bottom-color: var(--line-strong);
-}
 
-.watchlist-switcher-chip-active {
-  border-bottom-color: var(--accent);
-  background: transparent;
-  color: var(--ink);
-}
 
-.watchlist-switcher-chip-label {
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: inherit;
-}
 
-.watchlist-switcher-chip-label-active {
-  color: var(--ink);
-}
 
-.watchlist-switcher-home-icon {
-  display: inline-flex;
-  width: 14px;
-  height: 14px;
-}
 
-.watchlist-switcher-home-icon svg {
-  width: 14px;
-  height: 14px;
-}
 
 .watchlist-menu-trigger {
   display: inline-flex;
@@ -1437,11 +1389,24 @@ th {
   background: transparent;
 }
 
-.watchlists-table th,
 .watchlists-table td {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.watchlists-table th {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.watchlists-th-content {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.watchlists-th-content .watchlists-th-label { flex: 1 1 auto; }
 
 .watchlists-table tbody tr {
   transition: background 0.16s ease;
@@ -1482,8 +1447,9 @@ th {
 
 .watchlists-th-label > span:first-child {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 
 .watchlists-table th.chart-cell,
@@ -7286,7 +7252,6 @@ button:disabled {
 .toolbar span,
 .toolbar-link,
 .toolbar-select,
-.watchlist-switcher-chip,
 .watchlist-menu-trigger,
 .watchlists-toolbar-button,
 .watchlists-pagination-button,
@@ -7322,14 +7287,12 @@ button:disabled {
   padding: 6px 10px;
 }
 
-.watchlist-switcher-chip,
 .watchlist-menu-trigger {
   border-color: transparent;
 }
 
 .toolbar button:hover,
 .toolbar-link:hover,
-.watchlist-switcher-chip-inactive:hover,
 .watchlist-menu-trigger:hover,
 .watchlists-toolbar-button:hover,
 .watchlists-pagination-button:hover:not(:disabled),
@@ -7344,15 +7307,10 @@ button:disabled {
 }
 
 .button-primary,
-.toolbar-link-active,
-.watchlist-switcher-chip-active {
+.toolbar-link-active {
   border-color: var(--accent) !important;
   background: transparent !important;
   color: var(--accent) !important;
-}
-
-.watchlist-switcher-chip-active .watchlist-menu-trigger {
-  color: var(--accent);
 }
 
 .watchlist-create-link,
@@ -7698,7 +7656,6 @@ input[type='checkbox'] {
   }
 }
 
-.watchlists-compact-switch { display: none; }
 
 @media (max-width: 960px) {
   .watchlist-entry-card { grid-template-columns: auto minmax(0, 1fr); gap: 10px; padding: 12px 0; }
@@ -7708,11 +7665,6 @@ input[type='checkbox'] {
   .watchlist-entry-card-metrics { display: flex; align-items: baseline; gap: 4px; }
   .watchlist-entry-card-metrics span { font-size: 11px; }
   .watchlist-entry-grip-placeholder { display: none; }
-  .watchlists-page .watchlists-switch-row { display: none; }
-  .watchlists-compact-switch { display: flex; align-items: center; gap: 12px; }
-  .watchlists-compact-switch label { flex: 1; min-width: 0; }
-  .watchlists-compact-switch select { width: 100%; min-width: 0; min-height: 32px; }
-  .watchlists-compact-switch a, .watchlists-compact-switch button { white-space: nowrap; font-size: 12px; }
 }
 
 /* Watchlist selection and table alignment overrides. */
@@ -7726,37 +7678,10 @@ input[type='checkbox'] {
   pointer-events: none;
 }
 
-.watchlists-page .watchlist-switcher-chip {
-  min-height: 28px;
-  padding: 6px 0;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  background: transparent !important;
-  color: var(--ink);
-  box-shadow: none;
-}
 
-.watchlists-page .watchlist-switcher-chip-active {
-  border-color: transparent !important;
-  border-bottom-color: var(--accent) !important;
-  background: transparent !important;
-  color: var(--ink) !important;
-}
 
-.watchlists-page .watchlist-switcher-chip-label-active {
-  color: var(--ink) !important;
-}
 
-.watchlists-page .watchlist-switcher-chip-active .watchlist-menu-trigger {
-  border-color: transparent;
-  background: transparent;
-  color: var(--muted);
-}
 
-.watchlists-page .watchlist-switcher-chip-active .watchlist-menu-trigger:hover {
-  color: var(--accent);
-}
 
 .watchlists-table .watchlists-instrument-link {
   display: block;
@@ -8251,3 +8176,18 @@ input[type='checkbox'] {
 .instrument-metric-dates time { display: block; white-space: nowrap; }
 .instrument-metric-dates > span { display: none; }
 .instrument-performance-table-shell { max-height: min(70vh, 640px); overflow: auto; }
+/* One bounded navigation row for both desktop and smaller viewports. */
+.watchlists-compact-switch { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.watchlists-compact-switch label { min-width: 0; flex: 0 1 280px; }
+.watchlists-compact-switch .watchlists-list-search { flex-basis: 160px; }
+.watchlists-compact-switch input, .watchlists-compact-switch select { width: 100%; min-width: 0; min-height: 32px; }
+.watchlists-compact-switch a, .watchlists-compact-switch button { white-space: nowrap; font-size: 12px; }
+.watchlists-compact-switch [role="status"] { font-size: 12px; }
+.instrument-heatmap-table caption { caption-side: bottom; text-align: left; padding: 10px 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.instrument-month-to-date { display: block; font-size: 10px; white-space: normal; line-height: 1.5; font-weight: 400; }
+.listed-price-basis { font-size: 12px; color: var(--muted); margin: 4px 0 8px; }
+
+.watchlists-instrument-link:focus-visible { white-space: normal; overflow-wrap: anywhere; }
+.instrument-performance-table-shell th { font-size: 12px; font-weight: 400; }
+
+.listed-data-table th { font-size: 12px; font-weight: 400; line-height: 1.4; }

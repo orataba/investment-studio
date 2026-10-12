@@ -82,7 +82,7 @@
   scrollbar-color: #aab4bb transparent;
 }
 
-:root:has([role='dialog'][aria-modal='true']) {
+:root:has([aria-modal='true']) {
   overflow: hidden;
 }
 

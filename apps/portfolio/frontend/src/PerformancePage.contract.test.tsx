@@ -391,6 +391,11 @@ describe('Performance rendered page contract', () => {
     expect(row).toHaveAttribute('data-tree-level', 'item')
     expect(within(row).getByText('+0.75')).toBeVisible()
     expect(within(row).getByText('+25.00%')).toBeVisible()
+    for (const riskValue of ['+0.75', '+25.00%']) {
+      const cell = within(row).getByText(riskValue).closest('td')!
+      expect(cell).toHaveClass('performance-cell-number')
+      expect(cell).not.toHaveClass('positive-cell', 'negative-cell')
+    }
   })
 
   it('waits for the saved grouping classification before loading calculation groups', async () => {

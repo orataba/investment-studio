@@ -166,7 +166,12 @@ export function derivativeContractDraftFromRecord(
   return draft
 }
 
-function optionalNumber(value: string, label: string, options?: { allowZero?: boolean }) {
+/** UI location attached to the existing validator; no second contract rule set. */
+export class DerivativeDraftError extends Error {
+  constructor(message: string, readonly field: string) { super(message); this.name = 'DerivativeDraftError' }
+}
+
+function optionalNumber(value: string, label: string, field: string, options?: { allowZero?: boolean }) {
   if (!value.trim()) {
     return null
   }
@@ -174,7 +179,7 @@ function optionalNumber(value: string, label: string, options?: { allowZero?: bo
   const valid =
     Number.isFinite(parsed) && (options?.allowZero ? parsed >= 0 : parsed > 0)
   if (!valid) {
-    throw new Error(`${label} must be ${options?.allowZero ? 'non-negative' : 'positive'}.`)
+    throw new DerivativeDraftError(`${label} must be ${options?.allowZero ? 'non-negative' : 'positive'}.`, field)
   }
   return parsed
 }
@@ -185,14 +190,14 @@ export function derivativeContractFromDraft(
   const derivativeContractId = draft.derivative_contract_id.trim()
   const contractName = draft.contract_name.trim()
   if (!derivativeContractId || !contractName) {
-    throw new Error('New derivative contracts require an id and name.')
+    throw new DerivativeDraftError('New derivative contracts require an id and name.', !derivativeContractId ? 'derivative_contract_id' : 'contract_name')
   }
 
   if (draft.contract_type === 'option') {
     const strike = Number(draft.option_strike)
     const contractMultiplier = Number(draft.option_contract_multiplier)
     if (!draft.option_underlying_instrument_id || !draft.option_expiry_date) {
-      throw new Error('Option underlying and expiry date are required.')
+      throw new DerivativeDraftError('Option underlying and expiry date are required.', !draft.option_underlying_instrument_id ? 'option_underlying_instrument_id' : 'option_expiry_date')
     }
     if (
       !Number.isFinite(strike) ||
@@ -200,7 +205,7 @@ export function derivativeContractFromDraft(
       !Number.isFinite(contractMultiplier) ||
       contractMultiplier <= 0
     ) {
-      throw new Error('Option strike and contract multiplier must be positive.')
+      throw new DerivativeDraftError('Option strike and contract multiplier must be positive.', !Number.isFinite(strike) || strike <= 0 ? 'option_strike' : 'option_contract_multiplier')
     }
     return {
       derivative_contract_id: derivativeContractId,
@@ -216,7 +221,7 @@ export function derivativeContractFromDraft(
         settlement_type: draft.option_settlement_type || null,
         exercise_style: draft.option_exercise_style || null,
         exercise_dates: draft.option_exercise_style === 'bermudan'
-          ? parseContractDates(draft.option_exercise_dates) : null,
+          ? parseContractDates(draft.option_exercise_dates, 'option_exercise_dates') : null,
         strike_currency: draft.option_strike_currency.trim().toUpperCase() || null,
         settlement_formula: draft.option_settlement_formula.trim() || null,
         terms_reference: draft.terms_reference.trim() || null,
@@ -226,35 +231,35 @@ export function derivativeContractFromDraft(
 
   const notional = Number(draft.fcn_notional)
   if (!Number.isFinite(notional) || notional <= 0) {
-    throw new Error('FCN notional must be positive.')
+    throw new DerivativeDraftError('FCN notional must be positive.', 'fcn_notional')
   }
   if (
     !draft.fcn_issue_date ||
     !draft.fcn_maturity_date ||
     draft.fcn_maturity_date < draft.fcn_issue_date
   ) {
-    throw new Error('FCN maturity must be on or after its issue date.')
+    throw new DerivativeDraftError('FCN maturity must be on or after its issue date.', !draft.fcn_issue_date ? 'fcn_issue_date' : 'fcn_maturity_date')
   }
   if (
     draft.fcn_final_observation_date &&
     (draft.fcn_final_observation_date < draft.fcn_issue_date ||
       draft.fcn_final_observation_date > draft.fcn_maturity_date)
   ) {
-    throw new Error('FCN final observation must fall between issue and maturity.')
+    throw new DerivativeDraftError('FCN final observation must fall between issue and maturity.', 'fcn_final_observation_date')
   }
   if (!draft.fcn_issuer.trim() || !draft.fcn_counterparty.trim()) {
-    throw new Error('FCN issuer and counterparty are required.')
+    throw new DerivativeDraftError('FCN issuer and counterparty are required.', !draft.fcn_issuer.trim() ? 'fcn_issuer' : 'fcn_counterparty')
   }
   if (!draft.fcn_underlyings.length) {
-    throw new Error('FCN requires at least one underlying.')
+    throw new DerivativeDraftError('FCN requires at least one underlying.', 'fcn_underlyings')
   }
 
   const instrumentIds = draft.fcn_underlyings.map((item) => item.instrument_id.trim())
   if (instrumentIds.some((instrumentId) => !instrumentId)) {
-    throw new Error('Select a registered security for every FCN underlying.')
+    throw new DerivativeDraftError('Select a registered security for every FCN underlying.', `fcn_underlyings.${instrumentIds.findIndex(id => !id)}.instrument_id`)
   }
   if (new Set(instrumentIds).size !== instrumentIds.length) {
-    throw new Error('FCN underlyings must be unique.')
+    throw new DerivativeDraftError('FCN underlyings must be unique.', `fcn_underlyings.${instrumentIds.findIndex((id, index) => instrumentIds.indexOf(id) !== index)}.instrument_id`)
   }
 
   return {
@@ -267,6 +272,7 @@ export function derivativeContractFromDraft(
       annual_coupon_rate_pct: optionalNumber(
         draft.fcn_annual_coupon_rate_pct,
         'FCN annual coupon rate',
+        'fcn_annual_coupon_rate_pct',
         { allowZero: true },
       ),
       issue_date: draft.fcn_issue_date,
@@ -275,29 +281,33 @@ export function derivativeContractFromDraft(
       issuer: draft.fcn_issuer.trim(),
       counterparty: draft.fcn_counterparty.trim(),
       knock_in_observation: draft.fcn_knock_in_observation || null,
-      knock_out_observation_dates: parseContractDates(draft.fcn_knock_out_observation_dates),
-      coupon_payment_dates: parseContractDates(draft.fcn_coupon_payment_dates),
+      knock_out_observation_dates: parseContractDates(draft.fcn_knock_out_observation_dates, 'fcn_knock_out_observation_dates'),
+      coupon_payment_dates: parseContractDates(draft.fcn_coupon_payment_dates, 'fcn_coupon_payment_dates'),
       coupon_day_count: draft.fcn_coupon_day_count.trim() || null,
       settlement_type: draft.fcn_settlement_type || null,
       payoff_description: draft.fcn_payoff_description.trim() || null,
       terms_reference: draft.terms_reference.trim() || null,
-      underlyings: draft.fcn_underlyings.map((underlying) => ({
+      underlyings: draft.fcn_underlyings.map((underlying, index) => ({
         instrument_id: underlying.instrument_id.trim(),
         initial_reference_price: optionalNumber(
           underlying.initial_reference_price,
           'FCN initial reference price',
+          `fcn_underlyings.${index}.initial_reference_price`,
         ),
         strike_level_pct: optionalNumber(
           underlying.strike_level_pct,
           'FCN strike level',
+          `fcn_underlyings.${index}.strike_level_pct`,
         ),
         knock_in_level_pct: optionalNumber(
           underlying.knock_in_level_pct,
           'FCN knock-in level',
+          `fcn_underlyings.${index}.knock_in_level_pct`,
         ),
         knock_out_level_pct: optionalNumber(
           underlying.knock_out_level_pct,
           'FCN knock-out level',
+          `fcn_underlyings.${index}.knock_out_level_pct`,
         ),
         deliverable: underlying.deliverable,
       })),
@@ -305,12 +315,12 @@ export function derivativeContractFromDraft(
   }
 }
 
-function parseContractDates(value: string): string[] | null {
+function parseContractDates(value: string, field: string): string[] | null {
   if (!value.trim()) return null
   const dates = value.split(/[,;\s]+/).filter(Boolean)
   if (dates.some((day) => !/^\d{4}-\d{2}-\d{2}$/.test(day) || Number.isNaN(Date.parse(day)))) {
-    throw new Error('Contract dates must use YYYY-MM-DD, separated by commas.')
+    throw new DerivativeDraftError('Contract dates must use YYYY-MM-DD, separated by commas.', field)
   }
-  if (new Set(dates).size !== dates.length) throw new Error('Contract dates must be unique.')
+  if (new Set(dates).size !== dates.length) throw new DerivativeDraftError('Contract dates must be unique.', field)
   return dates
 }

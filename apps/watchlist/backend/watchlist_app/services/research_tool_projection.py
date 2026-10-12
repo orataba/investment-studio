@@ -7,7 +7,7 @@ import json
 from typing import Literal, get_args
 from urllib.parse import quote
 from watchlist_app.services.research_read_projection import (
-    checked_overview, coverage_detail, coverage_summary, dossier_overview, dossier_sections, json_bytes, read_page, shape,
+    checked_overview, coverage_detail, coverage_summary, dossier_overview, dossier_sections, json_bytes, read_page, shape, event_working_view, working_set_view,
 )
 from watchlist_app.services.research_estimate_tools import estimate_overview
 from watchlist_app.services.risk_read_projection import _risk_overview_pages, required_detail_reads
@@ -40,6 +40,9 @@ def read_research_context(request, section: str = "overview", offset: int = 0, l
         if initialization_searches is not None:
             sections["initialization"] = {**sections["initialization"], "identity_searches": initialization_searches}
             sections["initialization_candidates"] = context.get("initialization_candidates", [])
+        if "research_working_sets" in sections:
+            sections["research_working_sets"] = {iid: working_set_view(value, iid)
+                for iid, value in sections["research_working_sets"].items()}
         if section != "overview":
             if section not in sections:
                 raise ValueError("该分区不在本轮上下文目录中。")
@@ -199,7 +202,7 @@ def read_research_instrument(request, instrument_id: str, section: ResearchRefer
     details = {"performance": asset.get("performance"), "performance_evidence": asset.get("performance_evidence"),
         "pm_profile": (asset.get("research") or {}).get("profile"), "product_information": asset.get("product_information"),
         "disclosed_holdings": asset.get("holdings"), "registered_materials": asset.get("materials", []),
-        "events": [event for event in context.get("prior_events", []) if event["instrument_id"] == instrument_id],
+        "events": [event_working_view(event) for event in context.get("prior_events", []) if event["instrument_id"] == instrument_id],
         "sector_context": {"sector_inputs": company_inputs,
             "sector_estimate_evidence": [row for row in context.get("sector_estimate_evidence", []) if row["instrument_id"] == instrument_id]}}
     if section in details:
@@ -220,7 +223,9 @@ def read_research_instrument(request, instrument_id: str, section: ResearchRefer
     if company_source_ids and "source_lineage" not in overview["reference_sections"]:
         overview["reference_sections"].append("source_lineage")
     dossier = next(d for d in context["research_dossiers"] if d["instrument_id"] == instrument_id)
+    from watchlist_app.services.research_applicability import numeric_tool_capabilities
     return checked_overview({"instrument_id": instrument_id, "run_id": context["run_id"], "cutoff": context["cutoff"],
+        "numeric_tools": numeric_tool_capabilities(asset.get("instrument_type")),
         "instrument_inputs": [overview],
         "reference_sections": overview["reference_sections"],
         "research_sections": {key: shape(value) for key, value in details.items()},

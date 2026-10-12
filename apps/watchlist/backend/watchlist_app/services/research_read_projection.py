@@ -96,6 +96,47 @@ def source_index(source):
     return {key: item for key, item in source.items() if key in SOURCE_INDEX_FIELDS}
 
 
+def current_research_view(value, instrument_id):
+    """Current judgments carry source identities, never embedded original copies.
+
+    Originals remain in the unchanged bound dossier and use the existing source
+    selector. Unknown judgment fields are preserved rather than summarized away.
+    """
+    if isinstance(value, list):
+        return [current_research_view(item, instrument_id) for item in value]
+    if not isinstance(value, dict):
+        return value
+    return {key: [
+        {**source_index(source), "read": {"tool": "read_research_dossier", "instrument_id": instrument_id,
+            "source_id": source["source_id"]}} if isinstance(source, dict) and source.get("source_id") else source
+        for source in item] if key == "sources" and isinstance(item, list)
+        else current_research_view(item, instrument_id) for key, item in value.items()}
+
+
+def working_set_view(working, instrument_id):
+    if not isinstance(working, dict):
+        return working
+    # The trigger is already an exact, separately paginated run section. Do not
+    # send its complete source revision catalogue again inside each working set.
+    return {**{key: value for key, value in working.items() if key != "reasons"},
+        **({"reason_kinds": [row.get("kind") for row in working["reasons"]],
+            "trigger_read": {"tool": "read_research_context", "section": "incremental_trigger", "path": [instrument_id]}}
+           if working.get("reasons") else {})}
+
+
+def event_working_view(event):
+    value = dict(event)
+    version = event.get("event_version_id")
+    if version:
+        # event_record exposes the current event fields once. Its evidence is
+        # the complete underlying snapshot, including duplicate current fields
+        # and risk continuity records; keep it reachable by its exact version.
+        value.pop("evidence", None)
+        value["snapshot_read"] = {"tool": "read_research_dossier", "instrument_id": event["instrument_id"],
+                                  "version_id": "event:" + version}
+    return current_research_view(value, event["instrument_id"])
+
+
 def browser_source_view(source):
     """Source-list metadata only; complete calculations/originals load by ID.
 
@@ -151,7 +192,7 @@ def dossier_sections(dossier):
         "mandate": dossier.get("mandate"), "frameworks": dossier.get("frameworks", []),
         "research_plan": dossier.get("research_plan"),
         "research_applicability": dossier.get("research_applicability"),
-        "working_set": dossier.get("working_set"), "material_index": dossier.get("material_index", []),
+        "working_set": working_set_view(dossier.get("working_set"), dossier["instrument_id"]), "material_index": dossier.get("material_index", []),
         "available_modules": dossier.get("available_modules", []),
         "research_state": {key: value for key, value in notebook.items()
                            if key not in {*lists, "investment_view", "decision_brief", "sources"}},
@@ -160,7 +201,7 @@ def dossier_sections(dossier):
         "prior_sources": [source_index(source) for source in dossier.get("prior_sources", [])],
         "materials": dossier.get("materials", []), "historical_cases": dossier.get("historical_cases", []),
         "historical_case_limitations": dossier.get("historical_case_limitations", []),
-        "themes": dossier.get("themes", []), "pm_views": pm_views,
+        "themes": current_research_view(dossier.get("themes", []), dossier["instrument_id"]), "pm_views": pm_views,
         "current_stance": dossier.get("current_stance"),
         "review_agenda": dossier.get("review_agenda", {}),
         "versions": [{key: row.get(key) for key in ("version_id", "run_id", "created_at", "updated_at", "checked_at")}

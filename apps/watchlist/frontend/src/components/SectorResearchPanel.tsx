@@ -127,7 +127,7 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
       <div className="sector-research-actions">
         {variant === 'summary' ? onOpenEvents && <button onClick={onOpenEvents}>阅读完整研究</button> : <>
           {error && <button onClick={() => setRefresh(value => value + 1)} disabled={starting}>刷新状态</button>}
-          <button onClick={() => void start()} disabled={!canWrite || busy || paused || !admission?.eligible || Boolean(error) || !data?.available || data.research_enabled === false}>{paused ? '研究已暂停' : busy ? '研究更新中…' : '更新研究'}</button>
+          <button onClick={() => void start()} disabled={!canWrite || busy || paused || !admission?.eligible || Boolean(error) || !data?.available || data.research_enabled === false}>{paused ? '研究已暂停' : busy ? '研究更新中…' : '更新共享研究'}</button>
         </>}
       </div>
     </header>

@@ -246,7 +246,7 @@ body:has(.research-aside-backdrop) { overflow: hidden; }
 
 /* V1 uses the same retained research in four compact reading sections. */
 .research-event-card summary, .research-event-backfills > summary { font-size: 12px; color: var(--accent); cursor: pointer; }
-.research-report-events, .research-report-tracking, .research-quant-observations { scroll-margin-top: 80px; }
+.research-report-events, .research-report-tracking, .research-quant-observations, .research-current-section { scroll-margin-top: 80px; }
 .research-event-filters { display: flex; gap: 6px; }
 .research-event-filters button, .research-event-details button { height: 30px; padding: 0 10px; background: #fff; border: 1px solid var(--line); color: var(--ink); border-radius: 0; font: inherit; font-size: 12px; cursor: pointer; }
 .research-event-filters button[aria-pressed="true"] { border-bottom: 2px solid var(--accent); color: var(--accent); }
@@ -372,3 +372,7 @@ body:has(.research-aside-backdrop) { overflow: hidden; }
 .research-theme-review-note { color: var(--muted); font-size: 11px; margin: 12px 0 0; }
 @media (max-width: 900px) { .research-current-sections { grid-template-columns: minmax(0, 1fr); } .research-section-themes { border-top: 1px solid var(--line); padding-top: 24px; } }
 @media (max-width: 640px) { .research-material-index { grid-template-columns: minmax(0, 1fr); } }
+.research-scope-notice { margin: 6px 0 16px; color: var(--muted); font-size: 12px; line-height: 1.6; max-width: 72ch; }
+.research-scope-notice summary { cursor: pointer; }
+.research-scope-notice p { margin: 8px 0; }
+.research-current-section:focus-visible { outline: 2px solid var(--accent); outline-offset: 5px; }

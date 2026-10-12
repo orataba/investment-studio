@@ -4,6 +4,14 @@ export const researchMessages: LanguageMessages = {
  'zh-Hans': {
   'Configured search endpoint did not execute native web search': '本轮公开网页搜索未能完成，相关信息覆盖受限。',
 }, en: {
+  '更新共享研究': 'Update shared research',
+  '研究发布范围': 'Research publication scope',
+  '标的共享研究': 'Shared instrument research',
+  '主题和已发布成果属于同一标的，主题名称或所在列表不会隔离共享记录。是否执行研究取决于暂停状态与在投研究范围，保存主题不代表研究已开始。': 'Themes and published findings belong to this instrument. A theme name or watchlist does not isolate shared records. Research depends on the pause setting and current invested eligibility; saving a theme does not mean research has started.',
+  '首次研究建立基线，后续按新增材料与条件变化选择复核范围。未复核主题保留原判断与日期；风险线索仍需独立评估。': 'The first study establishes a baseline; later reviews follow new material and changed conditions. Unreviewed themes retain their original judgment and date. Risk leads still require an independent assessment.',
+  '量化样本截至': 'Quantitative sample through',
+  '缺少的资料不支持完整比较；下方已留存结果仍可查阅。请先核对缺口对应的范围与时点。': 'Missing inputs prevent a complete comparison. Retained results below remain readable; check the affected scope and date in the gap details.',
+
   '尚无持续主题。可以记录需要长期跟踪的问题。': 'No ongoing themes yet. Record a question that needs continued attention.',
   '研究材料历史': 'Material history',
   '近期值得关注': 'Recent matters to watch', '持续主题': 'Ongoing themes', '持续研究主题': 'Ongoing research themes',

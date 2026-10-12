@@ -1,3 +1,4 @@
+import MonthlyReturnMatrix from '../components/MonthlyReturnMatrix'
 import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 import WorkspaceSwitcher from '../../../../../packages/ui/src/WorkspaceSwitcher'
 import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
@@ -80,7 +81,6 @@ const INITIAL_PENDING = { bars: true, summary: true, chart: true, performance: t
 type DataSection = keyof typeof INITIAL_PENDING
 
 const RANGE_OPTIONS: PriceRange[] = ['1M', '3M', '6M', '1Y', 'ALL']
-const MONTH_SHORT_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 function instrumentTypeLabel(value: string) {
   if (value === 'etf') return 'ETF'
@@ -116,20 +116,6 @@ function formatRecoveryValue(snapshot: PerformanceMetricSnapshot) {
   return snapshot.recoveryDays == null ? '—' : `${formatNumber(snapshot.recoveryDays, 0)} d`
 }
 
-function getHeatmapCellStyle(value: number | null, maxAbsValue: number) {
-  if (value == null) return undefined
-  const normalized = Math.min(Math.abs(value) / Math.max(maxAbsValue, 1), 1)
-  if (value >= 0) {
-    return {
-      backgroundColor: `color-mix(in srgb, var(--studio-positive) ${(0.08 + normalized * 0.26) * 100}%, white)`,
-      color: 'var(--studio-positive-strong)',
-    }
-  }
-  return {
-    backgroundColor: `color-mix(in srgb, var(--studio-negative) ${(0.08 + normalized * 0.24) * 100}%, white)`,
-    color: 'var(--studio-negative-strong)',
-  }
-}
 
 type StandardizedMetric = {
   present: boolean
@@ -857,18 +843,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     () => buildMonthlyReturnMatrix(calculationSeries),
     [calculationSeries],
   )
-  const monthlyReturnMatrixMaxAbs = useMemo(
-    () => monthlyReturnMatrixRows.reduce((maxAbs, row) => {
-      const rowMax = Math.max(
-        ...[...row.months, row.ytd]
-          .filter((value): value is number => value != null)
-          .map((value) => Math.abs(value)),
-        0,
-      )
-      return Math.max(maxAbs, rowMax)
-    }, 0),
-    [monthlyReturnMatrixRows],
-  )
   const quoteBars = usesCanonicalPriceSeries ? rawLevelBars : rawLevelBars.length ? rawLevelBars : rawBars
   const quotePrevious = quoteBars[quoteBars.length - 2]
   const quoteLatest = quoteBars[quoteBars.length - 1]
@@ -1055,9 +1029,10 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           </div>
           {chartView === 'price' && <div className="listed-segmented-control" aria-label="Price adjustment">
             <button type="button" className={mode === 'raw' ? 'active' : ''} onClick={() => setMode('raw')}>{zh ? '未复权' : 'Raw'}</button>
-            <button type="button" className={mode === 'front' ? 'active' : ''} disabled={!qfqAvailable} title={barsResponse?.unavailable_price_mode_reasons?.front || (zh ? '前复权：以当前价格为基准调整历史展示价格，不等同于含分红总回报序列。' : 'Forward adjusted: historical display prices adjusted to the current price basis; not a dividend total-return series.')} onClick={() => setMode('front')}>{zh ? '前复权' : 'QFQ'}</button>
-            <button type="button" className={mode === 'back' ? 'active' : ''} disabled={!hfqAvailable} title={barsResponse?.unavailable_price_mode_reasons?.back || (zh ? '后复权：以历史价格为基准调整后续展示价格，不等同于含分红总回报序列。' : 'Backward adjusted: subsequent display prices adjusted to a historical price basis; not a dividend total-return series.')} onClick={() => setMode('back')}>{zh ? '后复权' : 'HFQ'}</button>
+            <button type="button" className={mode === 'front' ? 'active' : ''} disabled={!qfqAvailable} title={barsResponse?.unavailable_price_mode_reasons?.front || (zh ? '前复权：以当前价格为基准调整历史展示价格，不等同于含分红总回报序列。' : 'Forward adjusted: historical display prices adjusted to the current price basis; not a dividend total-return series.')} onClick={() => setMode('front')}>{zh ? '前复权' : 'Forward adjusted'}</button>
+            <button type="button" className={mode === 'back' ? 'active' : ''} disabled={!hfqAvailable} title={barsResponse?.unavailable_price_mode_reasons?.back || (zh ? '后复权：以历史价格为基准调整后续展示价格，不等同于含分红总回报序列。' : 'Backward adjusted: subsequent display prices adjusted to a historical price basis; not a dividend total-return series.')} onClick={() => setMode('back')}>{zh ? '后复权' : 'Backward adjusted'}</button>
           </div>}
+          {chartView === 'price' && <InfoHint label={zh ? '价格复权口径' : 'Price adjustment basis'} detail={zh ? '未复权为实际报价；前复权以当前价格为基准调整历史，后复权以历史价格为基准调整后续价格。它们是展示价格，不等于分红再投资总回报；切换不会改变下方风险和收益计算。' : 'Raw is the quoted price. Forward adjustment puts history on the current price basis; backward adjustment puts later prices on a historical basis. These are display prices, not dividend-reinvested total returns. Switching does not change the return or risk calculations below.'} />}
           <div className="listed-segmented-control" aria-label="Date range">
             {RANGE_OPTIONS.map((option) => (
               <button type="button" key={option} className={range === option ? 'active' : ''} onClick={() => setRange(option)}>{option}</button>
@@ -1065,6 +1040,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           </div>
         </div>
       </div>
+      {chartView === 'price' && <p className="listed-price-basis">{zh ? '显示价格' : 'Displayed price'} · {mode === 'raw' ? (zh ? '未复权' : 'Raw') : mode === 'front' ? (zh ? '前复权' : 'Forward adjusted') : (zh ? '后复权' : 'Backward adjusted')}</p>}
       {(chartView === 'return' ? analysisPending : pending.bars) ? sectionLoading(zh ? '行情' : 'Price history') : chartView === 'return' ? <GrowthChart bars={visibleAnalysisBars} /> : error ? <RequestRecovery error={error} onRetry={() => setRetryToken(value => value + 1)} /> : <CandlestickChart bars={visibleBars} />}
       {chartView === 'price' && (!qfqAvailable || !hfqAvailable) && Boolean(barsResponse?.count) ? <div className="listed-source-alert">{zh ? '部分复权方式缺少连续、已确认的因子，暂不可用；原始价格仍可查看。' : 'Some adjustment modes lack continuous, confirmed factors; raw prices remain available.'}</div> : null}
       {sourceRefreshFailed ? (
@@ -1340,41 +1316,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
               </div>
               <div className="instrument-performance-section-body">
                 {pending.chart ? sectionLoading(zh ? '月度收益' : 'Monthly returns') : monthlyReturnMatrixRows.length ? (
-                  <HorizontalTableScroll className="table-shell instrument-performance-table-shell">
-                    <table className="terminal-table terminal-table-compact instrument-heatmap-table">
-                      <thead>
-                        <tr>
-                          <th>Year</th>
-                          {MONTH_SHORT_LABELS.map((label) => <th key={label}>{label}</th>)}
-                          <th>Yearly / YTD</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {monthlyReturnMatrixRows.map((row) => (
-                          <tr key={row.year}>
-                            <td className="instrument-heatmap-row-label">{row.year}</td>
-                            {row.months.map((value, index) => (
-                              <td
-                                key={`${row.year}-${MONTH_SHORT_LABELS[index]}`}
-                                className={`instrument-heatmap-cell${value == null ? ' instrument-heatmap-cell-empty' : ''}`}
-                                style={getHeatmapCellStyle(value, monthlyReturnMatrixMaxAbs)}
-                                title={row.monthWindows[index] ? `Anchor: ${row.monthWindows[index]?.anchorDate} · End: ${row.monthWindows[index]?.endDate}` : undefined}
-                              >
-                                {value == null ? '—' : formatPercent(value, 2)}
-                              </td>
-                            ))}
-                            <td
-                              className={`instrument-heatmap-cell${row.ytd == null ? ' instrument-heatmap-cell-empty' : ''}`}
-                              style={getHeatmapCellStyle(row.ytd, monthlyReturnMatrixMaxAbs)}
-                              title={row.ytdWindow ? `Anchor: ${row.ytdWindow.anchorDate} · End: ${row.ytdWindow.endDate}` : undefined}
-                            >
-                              {row.ytd == null ? '—' : formatPercent(row.ytd, 2)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </HorizontalTableScroll>
+                  <MonthlyReturnMatrix rows={monthlyReturnMatrixRows} />
                 ) : (
                   <div className="instrument-placeholder">
                     {zh ? '取得相邻月末数据后显示月度收益。' : 'Monthly returns appear when adjacent month-end observations are available.'}

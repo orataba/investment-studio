@@ -9,7 +9,7 @@ from studio_runtime import operation
 from briefing_app.access import can_generate, is_published, require_report_access
 import re
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.orm import Session
 
 from briefing_app.contracts import GenerateRequest, ReportDraft
@@ -86,8 +86,19 @@ def create_app(settings=None):
 
     @app.get("/api/briefing/reports")
     def reports(request: Request, report_type: Literal["daily", "weekly"] | None = None, offset: int = Query(0, ge=0),
-                limit: int = Query(30, ge=1, le=100), session: Session = Depends(get_session)):
+                limit: int = Query(30, ge=1, le=100),
+                month: str | None = Query(None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+                query: str | None = Query(None, max_length=120), session: Session = Depends(get_session)):
         filters = [Report.report_type == report_type] if report_type else []
+        if month:
+            filters.append(Report.report_date.startswith(f"{month}-", autoescape=True))
+        if query and query.strip():
+            term = query.strip()
+            # Titles are fixed UI labels, not retained report-body text. Match
+            # both interface languages without hydrating the report JSON.
+            zh_title = case((Report.report_type == "daily", "投研日报"), else_="投研周报") + " | " + Report.report_date
+            en_title = case((Report.report_type == "daily", "Daily research briefing"), else_="Weekly research briefing") + " | " + Report.report_date
+            filters.append(zh_title.icontains(term, autoescape=True) | en_title.icontains(term, autoescape=True))
         principal = request.state.principal
         if principal is None:
             filters += [Report.status == "completed", Report.input_json["edition_role"].as_string() == "publisher"]

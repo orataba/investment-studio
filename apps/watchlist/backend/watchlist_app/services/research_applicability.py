@@ -6,6 +6,16 @@ holdings, leverage, strategy, or a disclosure frequency.
 from copy import deepcopy
 
 
+DAILY_PRICE_INSTRUMENT_TYPES = frozenset({"equity", "etf", "index", "crypto"})
+
+
+def numeric_tool_capabilities(instrument_type):
+    return {"tool": "read_research_numbers", "observations": {"supported": True,
+        "note": "按资产类型和实际可用样本返回固定观察；不足时明确缺口，不构成因果证明。"},
+        "event_reaction": {"supported": instrument_type in DAILY_PRICE_INSTRUMENT_TYPES,
+            "note": "仅equity/etf/index/crypto的已核实事件日期与实际日频价格；公募/私募净值不适用，改用observations的真实净值区间且不能归因于单日事件。"}}
+
+
 def research_applicability(registration: dict) -> dict:
     kind = registration["instrument_type"]
     private = kind == "private_fund"

@@ -2539,7 +2539,7 @@ export default function RiskPage() {
                   <div className="risk-correlation-stack">
                     <div className="risk-matrix-panel">
                       {!selectedCorrelationMatrixResult.issues.length
-                        ? <CorrelationMatrixView matrix={selectedCorrelationMatrixResult.matrix} emptyLabel={selectedMatrixEmptyLabel} />
+                        ? <CorrelationMatrixView matrix={selectedCorrelationMatrixResult.matrix} diagnostics={selectedCorrelationMatrixResult.diagnostics} emptyLabel={selectedMatrixEmptyLabel} />
                         : null}
                     </div>
                   </div>

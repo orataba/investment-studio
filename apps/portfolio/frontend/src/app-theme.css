@@ -11,7 +11,8 @@
   gap: 18px;
   min-width: 0;
   padding-top: 14px;
-  border-top: 2px solid var(--portfolio-ink);
+  /* The adjacent workspace tabs already draw this boundary. */
+  border-top: 0;
 }
 
 .portfolio-toolbar-band {

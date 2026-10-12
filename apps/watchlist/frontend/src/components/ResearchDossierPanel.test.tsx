@@ -55,6 +55,8 @@ it('shows matters, ongoing themes and applicable charts by default while preserv
   const { container } = render(<ResearchDossierPanel instrumentId="fund-1" />)
   await screen.findByRole('region', { name: '量化观察' })
   expect([...container.querySelectorAll('[id^="research-"]')].map(element => element.id)).toEqual(['research-events-fund-1', 'research-tracking-fund-1', 'research-quant-fund-1'])
+  fireEvent.click(screen.getByRole('link', { name: '量化图表' }))
+  expect(document.activeElement).toBe(document.getElementById('research-quant-fund-1'))
   expect(screen.queryByText(module.analysis)).toBeNull()
   expect(screen.queryByText(notebook.important_changes[0])).toBeNull()
   expect(screen.queryByText(question.assessment)).toBeNull()

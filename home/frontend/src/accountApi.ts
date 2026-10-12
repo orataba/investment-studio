@@ -1,3 +1,5 @@
+import { readWithDeadline } from '../../../packages/ui/src/readDeadline'
+
 export type TeamRole = 'admin' | 'member' | 'reader'
 export type Account = {
   user_id: string
@@ -20,16 +22,22 @@ export type Member = {
 export const roleName: Record<TeamRole, string> = { admin: '团队管理员', member: '研究成员', reader: '只读成员' }
 
 export async function accountRequest<T = unknown>(path: string, method = 'GET', body?: unknown): Promise<T> {
-  const response = await fetch(`/api/auth${path}`, {
-    method,
-    credentials: 'same-origin',
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-    cache: 'no-store',
-  })
-  if (!response.ok) {
-    const value = await response.json().catch(() => ({}))
-    throw new Error(typeof value.detail === 'string' ? value.detail : '操作未完成，请检查输入后重试。')
+  const read = async (signal?: AbortSignal): Promise<T> => {
+    const response = await fetch(`/api/auth${path}`, {
+      method,
+      credentials: 'same-origin',
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      cache: 'no-store',
+      signal,
+    })
+    if (!response.ok) {
+      const value = await response.json().catch(() => ({}))
+      throw new Error(typeof value.detail === 'string' ? value.detail : '操作未完成，请检查输入后重试。')
+    }
+    return response.status === 204 ? undefined as T : response.json()
   }
-  return response.status === 204 ? undefined as T : response.json()
+  // Only reads time out. A timed-out mutation would have an ambiguous outcome
+  // and must not be presented as safely retryable.
+  return method === 'GET' ? readWithDeadline(read) : read()
 }

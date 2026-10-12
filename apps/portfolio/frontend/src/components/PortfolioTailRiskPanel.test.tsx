@@ -165,10 +165,16 @@ it('separates blocked candidate scenarios from eligible samples and unavailable 
   mocks.getPortfolioTailRisk.mockResolvedValue(result({ status: 'unavailable', candidate_observation_count: 41,
     observation_count: 0, tail_effective_observations: null, tail_observation_count: null,
     var_amount: null, var_nav_fraction: null, expected_shortfall_amount: null, expected_shortfall_nav_fraction: null,
+    expected_common_observation_count: 726, uncovered_leading_observation_count: 685, uncovered_observation_count: 685,
     missing_internal_observation_count: 0, uncovered_trailing_observation_count: 0,
+    rows: [{ ...result().rows[0], holding_id: 'fund', instrument_id: 'fund', name: 'Test Fund', status: 'modeled', reason: null, observation_count: 41, rejected_period_count: 1, rejected_intervals: [{ start_date: '2026-07-01', end_date: '2026-07-03', reason: 'multi_session_interval' }] }],
     limitations: ['rejected_daily_return_intervals'] }))
   render(<PortfolioTailRiskPanel portfolioId="p" />)
   expect(await screen.findByText('41 / 0 / —')).toBeInTheDocument()
   expect(screen.getByText(/These differ from missing-interval counts/)).toBeInTheDocument()
   expect(screen.getByText(/does not mean zero risk/)).toBeInTheDocument()
+  expect(screen.getByText(/726 expected · 685 uncovered before the sample · 0 missing within it · 0 uncovered after it/)).toBeInTheDocument()
+  fireEvent.click(screen.getByText('Ineligible return intervals (separate from missing counts)'))
+  expect(screen.getByText(/2026-07-01 → 2026-07-03/)).toHaveTextContent('Test Fund')
+  expect(screen.queryByText('0.00%')).not.toBeInTheDocument()
 })

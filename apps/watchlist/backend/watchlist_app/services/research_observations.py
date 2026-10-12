@@ -20,6 +20,7 @@ from watchlist_app.services.calculation_frequency import _market_calendar_sessio
 from watchlist_app.services.research_metrics import _evidence, _number, ewma_price_evidence
 from watchlist_app.services.read_model_freshness import calculation_input_read
 from watchlist_app.services.research_errors import ResearchInputUnavailable
+from watchlist_app.services.research_applicability import DAILY_PRICE_INSTRUMENT_TYPES
 from watchlist_app.services.return_windows import (
     named_return_window_spec, period_return_percent, resolve_return_window, return_window_metadata,
     confirmed_return_points, same_return_segment,
@@ -307,7 +308,7 @@ def _read_snapshot(session, instrument_id, cutoff):
     series = deepcopy(chart.payload_json.get("research_returns") or {})
     # Keep only completed sessions for listed daily observations. Fund NAV keeps
     # its existing clock and is not coerced to a trading-session template.
-    if instrument.instrument_type in {"equity", "etf", "index", "crypto"}:
+    if instrument.instrument_type in DAILY_PRICE_INSTRUMENT_TYPES:
         series["points"] = _completed_rows(series.get("points", []), calendar, cutoff)
         completed_dates = {point["date"] for point in series["points"]}
         series["intervals"] = [item for item in series.get("intervals", []) if item["date"] in completed_dates]
@@ -423,7 +424,7 @@ def instrument_observations(session, instrument_id, *, as_of, benchmark_id=None,
             volume = {"status": "unavailable", "change_pct": None, "error_kind": type(error).__name__}
     observations = {"relative_performance": relative, "volume": volume, "ewma": ewma, "drawdown": drawdown}
     metrics = {"1W相对基准（百分点）": relative[0]["difference_pp"], "1M相对基准（百分点）": relative[1]["difference_pp"]}
-    if instrument.instrument_type in {"equity", "etf", "index", "crypto"}:
+    if instrument.instrument_type in DAILY_PRICE_INSTRUMENT_TYPES:
         metrics["EWMA年化波动率（%）"] = (ewma.get("current") or {}).get("volatility_pct")
         metrics["当前回撤（%）"] = drawdown["current_pct"]
     if instrument.instrument_type == "equity":
@@ -544,7 +545,7 @@ def instrument_event_reaction(session, instrument_id, *, as_of, event_date, timi
     except ResearchInputUnavailable as error:
         return _evidence("事件市场反应", cutoff, {"status": "unavailable", "summary": "数值重算尚未成功完成，暂不能生成新观察。", "limitations": [str(error)],
             "metrics": {}, "tables": [], "charts": []}, {"version": REACTION_METHOD_VERSION}, instrument_id=instrument_id)
-    if instrument.instrument_type not in {"equity", "etf", "index", "crypto"}:
+    if instrument.instrument_type not in DAILY_PRICE_INSTRUMENT_TYPES:
         raise ValueError("事件日频价格反应仅适用于已有日频市场价格的标的")
     data = event_reaction(series, event_date=event_date, calendar=calendar, as_of=cutoff,
         benchmark=benchmark, timing=timing, sessions=sessions)

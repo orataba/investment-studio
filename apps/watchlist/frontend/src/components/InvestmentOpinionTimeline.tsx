@@ -255,7 +255,7 @@ export default function InvestmentOpinionTimeline({ instrumentId, research, onCh
         <p className="investment-opinion-hint">{research.current_stance.note.author} · {research.current_stance.note.note_date} · v{research.current_stance.note.revision_number}</p>
         {research.current_stance.has_later_revision && <p>{t('原记录已有更正；当前仍保留你选定的版本。', 'This record has a correction; the selected version is still retained.')}</p>}
         <button type="button" disabled={!canWrite || saving} onClick={() => void chooseStance(null)}>{t('取消当前选定', 'Clear selection')}</button>
-      </> : <p>{t('尚未选定总体观点。可从下方记录中选择。', 'No overall view selected. Choose a record below.')}</p>}
+      </> : <p>{research.notes.length ? t('尚未选定总体观点。可从下方记录中选择。', 'No overall view selected. Choose a record below.') : t('尚无观点记录。先新增一条判断，再选择是否将其设为总体观点。', 'No views recorded. Add your first judgment, then choose whether to use it as your overall view.')}</p>}
     </section>
     {error && <p className="investment-opinion-message" role="alert">{error}</p>}
     {notice && <p className="investment-opinion-message" role="status">{notice}</p>}
@@ -311,7 +311,7 @@ export default function InvestmentOpinionTimeline({ instrumentId, research, onCh
           </div>
         </article>
       </li>)}
-    </ol> : <p className="investment-opinion-empty">{t('尚无观点记录。形成新的判断时，记下一条。', 'No views recorded yet. Add an entry when you form a new view.')}</p>}
+    </ol> : null}
     {legacy.length > 0 && <details className="investment-opinion-legacy">
       <summary>{t('原研究记录', 'Previous research record')}{research.profile.updated_at ? ` · ${research.profile.updated_at.slice(0, 10)}` : ''}</summary>
       <dl>{legacy.map(([field, zh, en]) => <div key={field}><dt>{t(zh, en)}</dt><dd translate="no">{String(research.profile[field])}</dd></div>)}</dl>

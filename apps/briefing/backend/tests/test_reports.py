@@ -554,3 +554,44 @@ def test_intentional_pause_preserves_report_inputs_draft_and_never_publishes_or_
     assert modes==['write','review'] and revoked==[report_id]
     runner.run_report(report_id,report_id,report_test_actor)
     assert modes==['write','review']
+
+
+def test_archive_filters_share_summary_acl_count_and_literal_search(factory, monkeypatch):
+    app = create_app(Settings(database_url="sqlite+pysqlite:///:memory:"))
+    def session_override():
+        with factory() as session:
+            yield session
+    app.dependency_overrides[get_session] = session_override
+    with factory() as session:
+        for day, team, role in [
+            (7, "default", "publisher"),
+            (8, "default", "publisher"),
+            (9, "other", "publisher"),
+            (10, "default", "preview"),
+        ]:
+            report, _ = begin_report(session, "daily", datetime(2026, 9, day, tzinfo=UTC), "Asia/Shanghai", edition_role=role,
+                                     principal=Principal("pm", "PM", team))
+            report.status = "completed"
+        session.commit()
+    client = TestClient(app, headers={"Authorization": "Bearer test"})
+    response = client.get("/api/briefing/reports", params={"month": "2026-09", "query": "日报", "limit": 1})
+    assert response.status_code == 200
+    assert response.json()["total"] == 3
+    assert len(response.json()["rows"]) == 1
+    assert response.json()["rows"][0]["report_date"] == "2026-09-10"
+    assert client.get("/api/briefing/reports", params={"query": "Daily research briefing"}).json()["total"] == 3
+    assert client.get("/api/briefing/reports", params={"query": "daily"}).json()["total"] == 3
+    assert client.get("/api/briefing/reports", params={"query": "Weekly"}).json()["total"] == 0
+    assert client.get("/api/briefing/reports", params={"query": "%"}).json()["total"] == 0
+    assert client.get("/api/briefing/reports", params={"month": "2026-08"}).json()["total"] == 0
+    assert client.get("/api/briefing/reports", params={"query": "2026-09-07"}).json()["total"] == 1
+    assert client.get("/api/briefing/reports", params={"month": "2026-13"}).status_code == 422
+    # Public search keeps publisher/completed restrictions; scoped credentials
+    # remain restricted even when a matching title exists in the same team.
+    monkeypatch.setattr("briefing_app.main.resolve_request", lambda *a, **k: None)
+    public = client.get("/api/briefing/reports", params={"month": "2026-09", "query": "2026-09"}).json()
+    assert public["total"] == 3
+    assert {row["report_date"] for row in public["rows"]} == {"2026-09-07", "2026-09-08", "2026-09-09"}
+    scoped_id = public["rows"][-1]["report_id"]
+    monkeypatch.setattr("briefing_app.main.resolve_request", lambda *a, **k: Principal("pm", "PM", "default", credential="test", resource_scope={"kind": "report", "id": scoped_id}))
+    assert client.get("/api/briefing/reports", params={"query": "日报"}).json()["total"] == 1
