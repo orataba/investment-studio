@@ -123,7 +123,7 @@ export type ResearchMandate = ResearchRevision & {
 }
 
 export type ResearchCatalyst = {
-  key: string; title: string; scheduled_at: string; status: 'scheduled' | 'released' | 'cancelled'
+  key: string; title: string; scheduled_at: string | null; status: 'scheduled' | 'released' | 'cancelled'
   relevance: string; scenarios: string[]; next_check: string; outcome: string; source_ids: string[]
 }
 
@@ -322,7 +322,7 @@ export type ResearchUpdate = {
   follow_up?: 'none' | 'watch' | 'resolved'; analysis_depth?: 'brief' | 'analysis'
   direction?: 'risk' | 'opportunity' | 'uncertain'; confidence?: string; change?: string; information_type?: 'fact' | 'opinion' | 'rumor' | null
   details?: Array<{ label: string; text: string }>; superseded?: boolean; withdrawn?: boolean
-  status?: string; scheduled_at?: string; withdrawal_reason?: string; withdrawn_at?: string
+  status?: string; scheduled_at?: string | null; withdrawal_reason?: string; withdrawn_at?: string
   tracking_status?: 'active' | 'paused' | 'closed' | null; tracking_reason?: string
   citation_correction?: {
     source_run_id: string; source_notebook_version_id: string; source_update_id: string

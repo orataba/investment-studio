@@ -16,9 +16,9 @@ class ResearchCatalyst(BaseModel):
         "Omit in a sparse update to retain the existing binding; existing theme lifecycle rules still apply.")
     key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     title: str = Field(min_length=1, max_length=250)
-    scheduled_at: str = Field(description="YYYY-MM-DD日期，或含数字时区偏移的ISO8601时间。不得包含ET/盘前等缩写、括号或解释；说明写入relevance。",
+    scheduled_at: str | None = Field(default=None, description="仅填原文支持的YYYY-MM-DD日期或含数字时区偏移的ISO8601时间。具体日期未知或只知月份时为null，月份与限定条件写入relevance；不得补成月初日期。省略保留旧值，显式null更正无依据的旧日期。不得包含ET/盘前等缩写、括号或解释。",
         json_schema_extra={"examples": ["2026-09-16", "2026-09-11T08:30:00-04:00"],
-                           "anyOf": [{"type": "string", "format": "date"}, {"type": "string", "format": "date-time"}]})
+                           "anyOf": [{"type": "string", "format": "date"}, {"type": "string", "format": "date-time"}, {"type": "null"}]})
     status: Literal["scheduled", "released", "cancelled"] = "scheduled"
     relevance: str = Field(min_length=1, max_length=2000)
     scenarios: list[str] = Field(default_factory=list)
@@ -29,6 +29,8 @@ class ResearchCatalyst(BaseModel):
     @field_validator("scheduled_at")
     @classmethod
     def retain_schedule_precision(cls, value):
+        if value is None:
+            return None
         if len(value) == 10:
             return date.fromisoformat(value).isoformat()
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))

@@ -422,7 +422,7 @@ it('compares scheduled instants across offsets, shows their timezone and asks wi
   for (const text of [next.title, next.scheduled_at, next.relevance, next.scenarios[0], next.next_check, 'original-1', '预定事件']) expect(prompt).toContain(text)
 })
 
-it('does not treat today’s date-only event or a timezone-free time as an already elapsed release', async () => {
+it('preserves uncertain schedules without inventing dates or treating them as elapsed releases', async () => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date('2026-09-07T12:00:00Z'))
   const localDay = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
@@ -432,8 +432,10 @@ it('does not treat today’s date-only event or a timezone-free time as an alrea
     catalyst({ key: 'date-only', title: '今日未给具体时间', scheduled_at: today, scenarios: [], source_ids: [], next_check: '' }),
     catalyst({ key: 'previous-date', title: '旧日程尚待核实', scheduled_at: localDay(yesterday) }),
     catalyst({ key: 'naive', title: '缺少时区的日程', scheduled_at: `${today}T09:00:00` }),
+    catalyst({ key: 'month-only', title: '十二月指数调整', scheduled_at: null, relevance: '预计2026年12月实施，具体日期未披露。', scenarios: [], source_ids: [] }),
   ] } })
-  render(<ResearchDossierPanel instrumentId="fund-1" />)
+  const ask = vi.fn()
+  render(<ResearchDossierPanel instrumentId="fund-1" onAskAssistant={ask} />)
   await expandArchive()
   fireEvent.click(screen.getByText('研究日程与结果'))
   const upcoming = screen.getByText('研究日程与结果').closest('details')!
@@ -447,6 +449,13 @@ it('does not treat today’s date-only event or a timezone-free time as an alrea
   const naiveArticle = within(upcoming).getByRole('heading', { name: '缺少时区的日程' }).closest('article')!
   expect(within(naiveArticle).getByText('时间待核实')).toBeTruthy()
   expect(naiveArticle.querySelector('time')?.textContent).toBe(`${today}T09:00:00（时区未披露）`)
+  const monthArticle = within(upcoming).getByRole('heading', { name: '十二月指数调整' }).closest('article')!
+  expect(within(monthArticle).getByText('时间待核实')).toBeTruthy()
+  expect(within(monthArticle).getByText('预计2026年12月实施，具体日期未披露。')).toBeTruthy()
+  expect(monthArticle.querySelector('time')).toBeNull()
+  fireEvent.click(within(monthArticle).getByRole('button', { name: '追问这项事件' }))
+  expect(ask.mock.calls[0][0]).toContain('十二月指数调整”（时间待核实）')
+  expect(ask.mock.calls[0][0]).not.toMatch(/null|Invalid Date|2026-12-01/)
 })
 
 it('keeps released and cancelled outcomes in the archive without duplicating scheduled items in the working paper', async () => {

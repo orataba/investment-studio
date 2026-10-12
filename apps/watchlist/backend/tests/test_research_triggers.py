@@ -273,12 +273,15 @@ def test_numeric_daily_changes_do_not_trigger_without_domain_history_event(store
 
 def test_explicit_schedule_crossing_is_due_not_predicted_event_confirmation(store):
     prior = context(cutoff=stamp(3, 12).isoformat(), market_queries=[], research_dossiers=[{
-        "instrument_id": "gold", "notebook": {"catalysts": [{"key": "statement", "title": "Statement", "status": "scheduled",
+        "instrument_id": "gold", "notebook": {"catalysts": [{"key": "unknown-day", "title": "September reform", "status": "scheduled",
+            "scheduled_at": None, "relevance": "Only the month is disclosed; the actual day is unknown."},
+            {"key": "statement", "title": "Statement", "status": "scheduled",
             "scheduled_at": "2026-09-03T10:00:00-04:00"}], "forecasts": [{"key": "inflation", "claim": "Inflation slows", "horizon": "later", "review_on": "2026-09-04"}]},
     }])
     assert triggers.research_trigger(session(), "gold", prior, now=stamp(3, 13))["reasons"] == []
     result = triggers.research_trigger(session(), "gold", prior, now=stamp(3, 15))
     assert result["reasons"][0]["items"][0]["kind"] == "scheduled_event_check"
+    assert [item["key"] for item in result["reasons"][0]["items"]] == ["statement"]
     assert "不代表事件已经发生" in result["reasons"][0]["items"][0]["note"]
     followup = {**prior, "cutoff": stamp(3, 15).isoformat(), "incremental_trigger": result}
     # The cheap scan keeps this due item until lifecycle resolution; the durable

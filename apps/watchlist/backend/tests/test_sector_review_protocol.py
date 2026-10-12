@@ -228,6 +228,22 @@ def test_schema_inlining_keeps_business_titles_and_accepts_catalyst_title_correc
     assert value["research"]["catalysts"][0]["title"] == "Supported release title"
 
 
+def test_review_can_replace_an_invented_month_start_with_unknown_date():
+    rows = proposed()
+    rows[0]["research"]["catalysts"] = [{"key": "reform", "title": "December reform", "scheduled_at": "2026-12-01",
+        "relevance": "Only December is supported by the retained original.", "next_check": "Wait for the actual schedule",
+        "source_ids": ["original"]}]
+    receipts = accepted(rows)
+    receipts["reviews"][0]["research"] = {"decision": "correct", "reason": "No exact date in the original", "omit_fields": [],
+        "patch": {"catalysts": [{"key": "reform", "decision": "correct", "reason": "Do not invent month-start precision",
+            "patch": {"scheduled_at": None}, "omit_fields": []}]}}
+    saved = checked(rows, receipts)[0]["research"]["catalysts"][0]
+    assert saved["scheduled_at"] is None
+    assert saved["relevance"] == rows[0]["research"]["catalysts"][0]["relevance"]
+    assert saved["title"] == "December reform"
+    assert rows[0]["research"]["catalysts"][0]["scheduled_at"] == "2026-12-01"
+
+
 def facts():
     return [{"subject": "gold", "metric": "price", "period": day, "value": value,
              "unit": "USD/oz", "comparison": "", "uncertainty": "", "source_ids": ["original"]}

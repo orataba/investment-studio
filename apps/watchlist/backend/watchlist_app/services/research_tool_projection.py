@@ -275,6 +275,8 @@ def read_research_dossier(request, instrument_id: str, source_id: str | None = N
     suffix = f"dossier/{quote(instrument_id, safe='')}"
     metadata = {"instrument_id": instrument_id, "run_id": context.get("run_id"), "cutoff": context.get("cutoff"),
                 "section": section, **params}
+    if not params and section in {"working_set", "review_agenda"}:
+        metadata["scope_note"] = "档案working_set来自上次已完成的自动研究，review_agenda是参考目录；它们不构成本轮对话的必需复核范围。本轮回执义务只由当前上下文research_working_sets确定；对话仅提交与用户问题有关的实际变化，不重写无关事件或主题。"
     if params:
         value = request(suffix + "?" + urlencode(params))
         return read_page(value, metadata, offset=offset, limit=limit, path=path)

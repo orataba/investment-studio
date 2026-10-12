@@ -212,6 +212,26 @@ def test_scheduled_catalyst_retains_original_time_and_remains_pending_until_rele
                           {"history": {"source_type": "historical_case", "sources": ["old report"], "instrument_id": "xlk"}})
 
 
+def test_unknown_catalyst_date_can_clear_unsupported_day_without_erasing_month_or_history():
+    catalyst = {"key": "index-reform", "title": "12月指数调整", "scheduled_at": "2026-12-01",
+        "relevance": "公告仅确认2026年12月，具体日期未披露。", "next_check": "取得正式生效日公告。",
+        "source_ids": ["old-original"]}
+    sources = {"old-original": original()}
+    previous = retain_notebook(notebook(catalysts=[catalyst]), None, sources, "original-run", CUTOFF)
+    omitted = {key: value for key, value in catalyst.items() if key != "scheduled_at"}
+    unchanged = retain_notebook(notebook(catalysts=[omitted]), previous, sources, "quiet-run", CUTOFF)
+    assert unchanged["catalysts"][0]["scheduled_at"] == "2026-12-01"
+
+    correction = notebook(catalysts=[{**catalyst, "scheduled_at": None}])
+    validate_notebook(correction, "xlk", sources, previous=previous)
+    saved = retain_notebook(correction, previous, sources, "correction-run", CUTOFF)
+    assert saved["catalysts"][0]["scheduled_at"] is None
+    assert saved["catalysts"][0]["relevance"] == catalyst["relevance"]
+    assert saved["catalysts"][0]["status"] == "scheduled"
+    assert previous["catalysts"][0]["scheduled_at"] == "2026-12-01"
+    assert notebook(catalysts=[omitted]).catalysts[0].scheduled_at is None
+
+
 def test_notebook_from_other_instrument_topic_is_not_relabelled_as_current_dossier(client):
     with get_session_factory()() as session:
         session.add(InstrumentDetail(instrument_id="notebook-current", instrument_name="当前标的", instrument_type="equity", detail_view_type="equity"))

@@ -21,19 +21,19 @@ const questionTrackingLabels = { active: '跟进中', paused: '已暂停', close
 function Catalyst({ catalyst, sources, onAskAssistant, instrumentId, versionId }: { catalyst: ResearchCatalyst; sources: NotebookSource[]; instrumentId?: string; versionId?: string; onAskAssistant?: AskResearchAssistant }) {
   const now = new Date()
   const localDay = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-  const due = /^\d{4}-\d{2}-\d{2}$/.test(catalyst.scheduled_at)
+  const due = !catalyst.scheduled_at ? null : /^\d{4}-\d{2}-\d{2}$/.test(catalyst.scheduled_at)
     ? catalyst.scheduled_at < localDay
     : hasTimeZone(catalyst.scheduled_at) ? Date.parse(catalyst.scheduled_at) <= now.getTime() : null
   const status = catalyst.status === 'released' ? '已发布' : catalyst.status === 'cancelled' ? '已取消' : due === null ? '时间待核实' : due ? '结果待核实' : '预定事件'
   const references = sources.filter(source => catalyst.source_ids.includes(source.source_id))
   return <article className="research-notebook-question">
     <div className="research-notebook-question-heading"><h4 translate="no">{catalyst.title}</h4><span>{status}</span></div>
-    <p className="sector-research-note">预定时间 <time dateTime={catalyst.scheduled_at}>{dateLabel(catalyst.scheduled_at)}</time></p>
+    {catalyst.scheduled_at && <p className="sector-research-note">预定时间 <time dateTime={catalyst.scheduled_at}>{dateLabel(catalyst.scheduled_at)}</time></p>}
     {catalyst.relevance && <p translate="no">{catalyst.relevance}</p>}
     {catalyst.outcome && <p translate="no">{catalyst.outcome}</p>}
     {catalyst.next_check && <p className="research-notebook-next"><strong>下一步核实</strong> <span translate="no">{catalyst.next_check}</span></p>}
     {(catalyst.scenarios.length > 0 || references.length > 0) && <details><summary>情景与依据</summary>{catalyst.scenarios.length > 0 && <TextList items={catalyst.scenarios} />}{references.length > 0 && <SourceList instrumentId={instrumentId} versionId={versionId} sources={references} />}</details>}
-    {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(`请分析事项“${catalyst.title}”（${catalyst.scheduled_at}）。当前记录状态：${status}。\n相关性：${catalyst.relevance}\n发布前情景：${catalyst.scenarios.join('；')}\n已记录结果：${catalyst.outcome}\n下一步：${catalyst.next_check}\n参考来源：${catalyst.source_ids.join('、')}\n请先核实日程状态和结果；如已发布，对照实际值、此前预期和修订值，再说明对当前标的判断的影响。`)}>追问这项事件</button>}
+    {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(`请分析事项“${catalyst.title}”（${catalyst.scheduled_at || '时间待核实'}）。当前记录状态：${status}。\n相关性：${catalyst.relevance}\n发布前情景：${catalyst.scenarios.join('；')}\n已记录结果：${catalyst.outcome}\n下一步：${catalyst.next_check}\n参考来源：${catalyst.source_ids.join('、')}\n请先核实日程状态和结果；如已发布，对照实际值、此前预期和修订值，再说明对当前标的判断的影响。`)}>追问这项事件</button>}
   </article>
 }
 

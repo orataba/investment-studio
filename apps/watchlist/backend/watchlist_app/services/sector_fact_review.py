@@ -263,6 +263,9 @@ scheduled_at is a machine date, never a display label: use YYYY-MM-DD or ISO8601
 UTC offset, e.g. 2026-09-11T08:30:00-04:00. Preserve a supported, valid draft timestamp instead
 of rewriting it as "08:30 ET". Put meeting ranges, source qualifications and explanations in
 relevance, never in scheduled_at. Use date-only precision when that is all the evidence supports.
+If only a month is supported or the specific date is unknown, set scheduled_at=null and retain
+the known month or uncertainty in relevance. Never invent the first day of a month. Explicit null
+corrects an unsupported prior date; omission would preserve it. No date means no due-date trigger.
 Before release, scenarios must remain conditional and consensus must have dated evidence. After
 release, separate first values, revisions, actual-vs-consensus surprise and observed price reaction.
 Remove unsupported schedules or conclusions; do not fill them from memory. Historical outcomes
