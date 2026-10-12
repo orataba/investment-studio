@@ -571,8 +571,15 @@ def test_prepare_context_retains_scoped_sector_inputs(client, monkeypatch):
         run = session.get(ResearchEntry, rid)
         run.context_json = {**run.context_json, "cutoff": (datetime.fromisoformat(context["cutoff"]) + timedelta(days=1)).isoformat()}
         session.commit()
-    page = client.post(f"/api/research/runs/{rid}/read", json={"resource": "context"}).json()
-    assert page["initialization"] == original_window
+    page = client.post(f"/api/research/runs/{rid}/read", json={"resource": "context"})
+    assert page.status_code == 200
+    # The overview no longer preloads acquisition work for every role. The
+    # dynamics specialist still receives the original frozen search window.
+    assert "initialization" not in page.json()
+    specialist = client.post(f"/api/research/runs/{rid}/section-context",
+        json={"instrument_id": "xlk", "section": "recent_updates"})
+    assert specialist.status_code == 200
+    assert specialist.json()["acquisition"]["initialization"] == original_window
     selected = client.post(f"/api/research/runs/{rid}/read", json={"resource": "context", "section": "initialization"}).json()
     assert {key: selected["data"][key] for key in original_window} == original_window
     assert selected["data"]["identity_searches"]["as_of"] == original_window["as_of"]
