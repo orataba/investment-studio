@@ -24,7 +24,10 @@ def refresh_risk_cases(session: Session, instrument_ids: list[str] | None = None
         query = query.where(InstrumentDetail.instrument_id.in_(instrument_ids))
     # Notes, manual thresholds and recalculation can refresh the same instrument.
     # Serialize first creation as well as updates; case locks retain PM history.
-    for instrument in session.scalars(query.order_by(InstrumentDetail.instrument_id).with_for_update()
+    # Identity keys are not changed here. PostgreSQL NO KEY UPDATE keeps risk
+    # writers serialized without blocking the KEY SHARE check when a recalc job
+    # references this instrument; the market-data enqueue must stay independent.
+    for instrument in session.scalars(query.order_by(InstrumentDetail.instrument_id).with_for_update(key_share=True)
             .execution_options(populate_existing=True)):
         iid = instrument.instrument_id
         risk = session.get(InstrumentRiskReadModel, iid)

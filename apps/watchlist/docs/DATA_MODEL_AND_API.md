@@ -207,6 +207,9 @@ canonical recalc 在同一事务内写入两个 payload。`sparklines` 固定保
 - `recalc_job`
 
 stale read repair 也只会写 job，不会直接在 Web 请求里补算；后台 worker 会异步消费这些 queued jobs。
+
+风险事项刷新使用 PostgreSQL `FOR NO KEY UPDATE` 串行化同一资产的风险写入，事项行本身仍使用 `FOR UPDATE` 保留人工跟进历史。刷新不更改资产身份键，因此不会阻塞 `recalc_job` 外键检查所需的 `KEY SHARE` 锁；批量行情通知可在风险扫描期间提交队列。`POST /api/recalc/bulk` 的成功响应表示持久入队或已有未完成任务，不表示重算完成；客户端超时也不能据此推断服务器事务已撤销，任务终态以持久队列为准。
+
 Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会分页对账源版本与本地 materialization cutoff，并通过同一条 durable、per-instrument 串行队列修复漏通知。
 
 ### 4.7 Watchlist 投资研究 V1
