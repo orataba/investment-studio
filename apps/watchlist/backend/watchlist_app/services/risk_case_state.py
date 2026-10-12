@@ -44,7 +44,11 @@ def last_assessed_snapshot(case, *, recover_history=False):
         snapshot = _snapshot(current, assessment)
         if snapshot:
             return snapshot
-    if not recover_history:
+    # An explicit empty retained decision is authoritative. A reset may keep
+    # original event history for human citations without retaining its former
+    # risk judgment. Only an absent field permits reconstruction from history;
+    # a valid exact-version current assessment above remains independently valid.
+    if not recover_history or "last_assessed_snapshot" in evidence:
         return None
     history = _value(case, "history_json", []) or []
     events = {item["snapshot"].get("event_version_id"): item["snapshot"] for item in history

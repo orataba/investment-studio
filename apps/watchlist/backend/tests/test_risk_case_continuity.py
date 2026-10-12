@@ -145,6 +145,39 @@ def test_legacy_backfill_recovers_exact_old_decision_not_new_text_or_unknown_his
     assert risk_state_projection(case, recover_history=True)["last_assessed_snapshot"] is None
 
 
+def test_explicit_empty_decision_does_not_resurrect_history_after_repeated_publication():
+    case = legacy_case()
+    original_history = deepcopy(case.history_json)
+    case.evidence_json = {**case.evidence_json, "withdrawn": True,
+        "risk_assessment": None, "last_assessed_snapshot": None, "pending_revision": None}
+    case.status, case.trigger_active = "handled", False
+    assert risk_state_projection(case, recover_history=True)["last_assessed_snapshot"] is None
+    for version in ("v3", "v4"):
+        new = event(version, title="新的公告，需要独立核实")
+        state = advance_event_risk(case, new, material_change=True, sources=new["sources"])
+        assert state["last_assessed_snapshot"] is None
+        assert state["risk_assessment"]["status"] == "pending"
+        assert state["pending_revision"]["event_version_id"] == version
+        case.evidence_json = {**new, **state}
+        case.history_json.append({"action": "updated", "snapshot": deepcopy(case.evidence_json)})
+        assert assessed_risk_fields(case, decision(version, "pending"))["last_assessed_snapshot"] is None
+        assert not case.trigger_active and case.status == "handled"
+    assert case.history_json[:len(original_history)] == original_history
+    # A new independent decision can establish a current risk after the reset.
+    confirmed = assessed_risk_fields(case, decision("v4"))
+    assert confirmed["last_assessed_snapshot"]["event_version_id"] == "v4"
+    assert confirmed["last_assessed_snapshot"]["status"] == "active"
+
+
+def test_explicit_empty_retained_decision_does_not_hide_exact_current_assessment():
+    case = current_case()
+    case.evidence_json["last_assessed_snapshot"] = None
+    for recover_history in (False, True):
+        result = risk_state_projection(case, recover_history=recover_history)
+        assert result["last_assessed_snapshot"]["event_version_id"] == "v1"
+        assert result["last_assessed_snapshot"]["status"] == "active"
+
+
 @pytest.mark.parametrize("explicit_none", [False, True])
 def test_migration_preserves_original_history_and_matches_live_projection(monkeypatch, explicit_none):
     path = Path(__file__).parents[1] / "alembic/versions/20261012_0071_risk_assessment_continuity.py"

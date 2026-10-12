@@ -163,9 +163,9 @@ function CaseRow({
     }
   }
   if (evidence.withdrawn === true) return <article className="risk-case">
-    <div className="risk-case-meta"><strong>核证撤回</strong>{typeof evidence.withdrawn_at === 'string' && <span>撤回时间 {evidence.withdrawn_at}</span>}</div>
+    <div className="risk-case-meta"><strong>已撤回</strong>{typeof evidence.withdrawn_at === 'string' && <span>撤回时间 {evidence.withdrawn_at}</span>}</div>
     <h3><a href={instrumentHref(record.instrument_id, record.signal)} translate="no">{record.title}</a></h3>
-    <p>{String(evidence.withdrawal_reason || '原有判断未通过核证，已撤回。')}</p>
+    <p>{String(evidence.withdrawal_reason || '原有判断已撤回，不再作为当前判断。')}</p>
     <details className="risk-follow-up" onToggle={(event) => setDetailsOpen(event.currentTarget.open)}><summary>撤回前记录与来源</summary>
       {detailStatus}
       <p className="research-muted">以下为已撤回的旧稿，不再作为当前风险判断。</p>

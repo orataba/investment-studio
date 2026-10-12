@@ -257,7 +257,7 @@ it('labels a withdrawn finding as invalidated history even if an old active snap
   render(<RiskPanel request={request} instrumentHref={(id) => `/instruments/${id}`} />)
   // General/history cases are a user-selected scope, never current attention.
   fireEvent.click(await screen.findByRole('button', { name: /全部记录/ }))
-  expect(await screen.findByText('核证撤回')).toBeInTheDocument()
+  expect(await screen.findByText('已撤回')).toBeInTheDocument()
   fireEvent.click(screen.getByText('撤回前记录与来源'))
   expect(screen.getByText('以下为已撤回的旧稿，不再作为当前风险判断。')).toBeInTheDocument()
   expect(screen.queryByText('风险仍有效 · 新进展待复核')).not.toBeInTheDocument()

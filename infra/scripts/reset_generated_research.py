@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
+from datetime import UTC, datetime
 import hashlib
 import json
 import os
@@ -93,6 +94,40 @@ def human_theme(context):
             or any(item.get("updated_by_role") == "user" for item in context.get("versions", [])))
 
 
+def human_case(case):
+    return (bool(case["evidence"].get("follow_up_pinned"))
+            or any(referenced_ids(item, {"recorded_by_role", "updated_by_role"}) & {"user"}
+                   for item in [case["evidence"], *case["history"]])
+            # The human follow-up API records status actions without a source
+            # snapshot; generated event publications also use 'resolved', but
+            # always retain their publication snapshot.
+            or any(item.get("action") in {"open", "investigating", "handled", "resolved"}
+                   and "snapshot" not in item for item in case["history"]))
+
+
+def withdraw_referenced_case(case, timestamp):
+    evidence = deepcopy(case["evidence"])
+    reason = "研究重构撤回旧生成判断，仅保留人工引用原件。"
+    fields = ("risk_assessment", "last_assessed_snapshot", "pending_revision", "follow_up",
+              "follow_up_until", "next_observation_on")
+    history = [*case["history"], {"at": timestamp, "action": "withdrawn", "detail": reason,
+                                "before": {key: evidence.get(key) for key in fields}}]
+    evidence.update(withdrawn=True, withdrawal_reason=reason, withdrawn_at=timestamp,
+                    risk_assessment={}, last_assessed_snapshot=None, pending_revision=None,
+                    follow_up="none", follow_up_until=None, next_observation_on=None)
+    return {"evidence": evidence, "history": history}
+
+
+def retirement_complete(case):
+    evidence = case["evidence"]
+    return (bool(evidence.get("withdrawn")) and evidence.get("risk_assessment") == {}
+            and "last_assessed_snapshot" in evidence and evidence["last_assessed_snapshot"] is None
+            and "pending_revision" in evidence and evidence["pending_revision"] is None
+            and evidence.get("follow_up") == "none" and not evidence.get("follow_up_until")
+            and not evidence.get("next_observation_on") and not case.get("trigger_active")
+            and case.get("status") == "handled" and not case.get("follow_up_date"))
+
+
 def reset_theme(context):
     """Keep manual questions and history, remove the current model assessment."""
     if context.get("updated_by_role") != "researcher":
@@ -155,9 +190,10 @@ def build_plan(entries, cases, notes, runs):
                     updates[entry["id"]] = clean
     generated_cases = [case["id"] for case in cases if case["signal"].startswith("sector:")
                        and case["id"] not in protected_cases
-                       and not case["evidence"].get("follow_up_pinned")
-                       and not any(referenced_ids(item, {"recorded_by_role", "updated_by_role"}) & {"user"}
-                                   for item in [case["evidence"], *case["history"]])]
+                       and not human_case(case)]
+    retired_cases = [case["id"] for case in cases if case["signal"].startswith("sector:")
+                     and case["id"] in protected_cases and not human_case(case)
+                     and not retirement_complete(case)]
     preserved = [*notes, *(updates.get(entry["id"], entry["context"]) for entry in entries
                            if entry["kind"] != "analysis" and entry["id"] not in themes),
                  *(value for case in cases if case["id"] not in generated_cases
@@ -165,7 +201,7 @@ def build_plan(entries, cases, notes, runs):
     required = required_analysis_ids(preserved, set(analysis))
     return {"analysis_ids": [run_id for run_id in analysis if run_id not in required],
             "retained_analysis_ids": sorted(required), "theme_ids": themes, "theme_updates": updates,
-            "case_ids": generated_cases, "portfolio_runs": runs}
+            "case_ids": generated_cases, "retired_case_ids": retired_cases, "portfolio_runs": runs}
 
 
 def freeze_case_sources(connection, value, seen=frozenset()):
@@ -216,8 +252,9 @@ def empty_managed_topics(topics, entries, removed_ids):
 def load_plan(connection):
     entries = [{"id": row[0], "kind": row[1], "context": row[2] or {}, "topic_id": row[3]} for row in connection.execute(
         "SELECT entry_id,kind,CASE WHEN kind='analysis' THEN '{}'::json ELSE context_json END,topic_id FROM watchlist.research_entry")]
-    cases = [{"id": row[0], "signal": row[1], "evidence": row[2] or {}, "history": row[3] or []}
-             for row in connection.execute("SELECT case_id,signal,evidence_json,history_json FROM watchlist.risk_case")]
+    cases = [{"id": row[0], "signal": row[1], "evidence": row[2] or {}, "history": row[3] or [],
+              "trigger_active": row[4], "status": row[5], "follow_up_date": row[6]}
+             for row in connection.execute("SELECT case_id,signal,evidence_json,history_json,trigger_active,status,follow_up_date FROM watchlist.risk_case")]
     notes = [row[0] or {} for row in connection.execute("""SELECT research_context FROM watchlist.instrument_research_note_revision
         UNION ALL SELECT research_context FROM watchlist.instrument_research_note""")]
     runs = [list(row) for row in connection.execute("SELECT portfolio_id,research_run_id FROM portfolio.research_run_record")]
@@ -231,6 +268,10 @@ def load_plan(connection):
             if (case["evidence"], case["history"]) != original:
                 case_updates[case["id"]] = {"evidence": case["evidence"], "history": case["history"]}
     plan = build_plan(entries, cases, notes, runs)
+    plan["source_frozen_case_count"] = len(case_updates)
+    for case in cases:
+        if case["id"] in plan["retired_case_ids"]:
+            case_updates[case["id"]] = withdraw_referenced_case(case, datetime.now(UTC).isoformat())
     plan["case_updates"] = case_updates
     all_analysis = set(plan["analysis_ids"]) | set(plan["retained_analysis_ids"])
     required, checked = set(plan["retained_analysis_ids"]), set()
@@ -269,6 +310,8 @@ def apply_plan(connection, plan):
     for case_id, values in plan.get("case_updates", {}).items():
         connection.execute("UPDATE watchlist.risk_case SET evidence_json=%s,history_json=%s WHERE case_id=%s",
                            (Json(values["evidence"]), Json(values["history"]), case_id))
+    connection.execute("""UPDATE watchlist.risk_case SET trigger_active=false,status='handled',follow_up_date=NULL
+        WHERE case_id=ANY(%s)""", (plan.get("retired_case_ids", []),))
     connection.execute("DELETE FROM portfolio.research_run_record")
     connection.execute("DELETE FROM portfolio.portfolio_workspace_read_model WHERE surface='research_analysis'")
 
@@ -326,7 +369,8 @@ def main(argv=None):
                              "empty_managed_topics": len(plan["empty_topic_ids"])},
                   "retained_themes_reset": len(plan["theme_updates"]),
                   "retained_analysis_dependencies": plan["retained_analysis_ids"],
-                  "retained_cases_sources_frozen": len(plan["case_updates"]),
+                  "retained_cases_sources_frozen": plan["source_frozen_case_count"],
+                  "referenced_events_withdrawn": len(plan["retired_case_ids"]),
                   "portfolio_artifact_directories": plan["portfolio_runs"]}
         if args.apply:
             apply_plan(connection, plan)

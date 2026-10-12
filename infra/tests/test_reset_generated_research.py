@@ -57,9 +57,36 @@ def test_generated_events_preserve_manual_risk_actions_and_references():
         return {"id": case_id, "signal": signal, "evidence": evidence or {}, "history": history or []}
     cases = [case("generated"), case("manual", "manual"), case("threshold", "drawdown_limit"),
              case("pinned", evidence={"follow_up_pinned": True}), case("referenced"),
+             case("human_status", history=[{"action": "handled", "detail": "PM follow-up"}]),
+             case("auto_resolved", history=[{"action": "resolved", "snapshot": {}}]),
              case("edited", history=[{"snapshot": {"recorded_by_role": "user"}}])]
     plan = reset.build_plan([], cases, [{"reference": {"event_case_id": "referenced"}}], [])
-    assert plan["case_ids"] == ["generated"]
+    assert plan["case_ids"] == ["generated", "auto_resolved"]
+    assert plan["retired_case_ids"] == ["referenced"]
+
+
+def test_referenced_old_generated_event_is_history_without_a_market_risk_resolution():
+    evidence = {"source_ids": ["original"], "sources": [{"data": "Original\\u0000text"}],
+        "published_at": "2026-09-01", "risk_assessment": {"status": "pending"},
+        "last_assessed_snapshot": {"status": "active"}, "pending_revision": {"status": "pending"},
+        "follow_up": "watch", "follow_up_until": "2026-10-20"}
+    case = {"evidence": evidence, "history": [{"action": "new", "snapshot": evidence}]}
+    result = reset.withdraw_referenced_case(case, "2026-10-13T00:00:00+00:00")
+    assert result["evidence"]["withdrawn"] is True
+    assert result["evidence"]["risk_assessment"] == {}
+    assert result["evidence"]["last_assessed_snapshot"] is result["evidence"]["pending_revision"] is None
+    assert result["evidence"]["follow_up"] == "none"
+    assert result["evidence"]["sources"] == evidence["sources"]
+    assert result["evidence"]["published_at"] == evidence["published_at"]
+    assert result["history"][:-1] == case["history"]
+    assert result["history"][-1]["before"]["risk_assessment"] == evidence["risk_assessment"]
+    assert evidence["follow_up"] == "watch"
+    # A prior withdrawal is not a reset boundary if an obsolete decision or
+    # follow-up survives. Only the complete current state is idempotent.
+    assert not reset.retirement_complete({**case, "evidence": {**evidence, "withdrawn": True}})
+    completed = {**case, "evidence": result["evidence"], "trigger_active": False, "status": "handled", "follow_up_date": None}
+    assert reset.retirement_complete(completed)
+    assert not reset.retirement_complete({**completed, "trigger_active": True})
 
 
 def test_only_live_manual_reference_dependencies_preserve_analyses():
