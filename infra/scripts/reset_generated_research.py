@@ -16,7 +16,7 @@ import sys
 
 import psycopg
 from psycopg import sql
-from psycopg.types.json import Jsonb
+from psycopg.types.json import Json
 
 
 PORTFOLIO_FACTS = (
@@ -264,11 +264,11 @@ def apply_plan(connection, plan):
     for entry_id, context in plan["theme_updates"].items():
         connection.execute("""UPDATE watchlist.research_entry
             SET context_json=%s,read_context_json=%s,access_context_json=%s WHERE entry_id=%s""",
-            (Jsonb(context), Jsonb(derive_read_context(context)), Jsonb(derive_access_context(context)), entry_id))
+            (Json(context), Json(derive_read_context(context)), Json(derive_access_context(context)), entry_id))
     connection.execute("DELETE FROM watchlist.risk_case WHERE case_id=ANY(%s)", (plan["case_ids"],))
     for case_id, values in plan.get("case_updates", {}).items():
         connection.execute("UPDATE watchlist.risk_case SET evidence_json=%s,history_json=%s WHERE case_id=%s",
-                           (Jsonb(values["evidence"]), Jsonb(values["history"]), case_id))
+                           (Json(values["evidence"]), Json(values["history"]), case_id))
     connection.execute("DELETE FROM portfolio.research_run_record")
     connection.execute("DELETE FROM portfolio.portfolio_workspace_read_model WHERE surface='research_analysis'")
 

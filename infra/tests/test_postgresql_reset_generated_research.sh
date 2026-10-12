@@ -56,7 +56,14 @@ try:
                 (entry_id,topic_id,kind,title,body,source,context_json,status,read_context_json,access_context_json)
                 VALUES (%s,'reset-test-topic',%s,'Retained title','Content','Source','{}','completed','{}','{}')""", (entry_id,kind))
         connection.execute("UPDATE watchlist.research_entry SET topic_id='dossier:reset-material' WHERE entry_id='reset-test-topic-material'")
-        from psycopg.types.json import Jsonb
+        from psycopg.types.json import Json, Jsonb
+        # PostgreSQL JSON preserves escaped NUL in old human source text; JSONB
+        # rejects it. Reset must not clean or force-cast those manual originals.
+        manual_theme = {'role': 'research_theme', 'origin': 'user', 'updated_by_role': 'researcher',
+                        'synthesis': 'Old AI', 'versions': [{'updated_by_role': 'user', 'question': 'Exact\\u0000literal\x00text'}]}
+        connection.execute("""INSERT INTO watchlist.research_entry
+            (entry_id,topic_id,kind,title,body,source,context_json,status,read_context_json,access_context_json)
+            VALUES ('reset-test-theme','reset-test-topic','note','Theme','','',%s,'completed','{}','{}')""", (Json(manual_theme),))
         human_note = {'source_ids': ['original'], 'sources': [{'source_id': 'original',
             'retained_reference': {'run_id': 'reset-test-original', 'path': ['computed_metrics', '*']}}]}
         original = {'computed_metrics': [{'source_id': 'original', 'retained_reference': {
@@ -74,12 +81,12 @@ try:
             VALUES ('reset-test-asset','equity','equity','Protected asset',true,'{}')""")
         event_reference = {'source_id': 'calculation', 'instrument_id': 'reset-test-asset',
             'retained_reference': {'run_id': 'reset-test-run', 'path': ['computed_metrics', '*']}}
-        event_evidence = {'follow_up_pinned': True, 'assessment': 'Manual opinion', 'sources': [event_reference]}
+        event_evidence = {'follow_up_pinned': True, 'assessment': 'Manual\x00opinion', 'sources': [event_reference]}
         event_history = [{'recorded_by_role': 'user', 'snapshot': {'sources': [event_reference]}}]
         connection.execute("""INSERT INTO watchlist.risk_case
             (case_id,instrument_id,signal,title,body,severity,trigger_active,status,evidence_json,history_json)
             VALUES ('reset-test-event','reset-test-asset','sector:event','Human event','Manual body','attention',true,'open',%s,%s)""",
-            (Jsonb(event_evidence), Jsonb(event_history)))
+            (Json(event_evidence), Json(event_history)))
         connection.execute("""INSERT INTO watchlist.research_execution(run_id,attempt,status,queued_at)
             VALUES ('reset-test-run',1,'finished',now())""")
         event_original = {'source_id': 'calculation', 'source_type': 'computed_metric',
@@ -106,7 +113,8 @@ try:
         assert event[:2] == ('Human event','Manual body')
         assert event[2] == {**event_evidence, 'sources': [event_original]}
         assert event[3] == [{'recorded_by_role': 'user', 'snapshot': {'sources': [event_original]}}]
-        assert connection.execute("SELECT kind FROM watchlist.research_entry WHERE topic_id='reset-test-topic' ORDER BY kind").fetchall() == [('analysis',),('analysis',),('evidence',),('note',)]
+        assert connection.execute("SELECT context_json FROM watchlist.research_entry WHERE entry_id='reset-test-theme'").fetchone()[0] == reset.reset_theme(manual_theme)
+        assert connection.execute("SELECT kind FROM watchlist.research_entry WHERE topic_id='reset-test-topic' ORDER BY kind").fetchall() == [('analysis',),('analysis',),('evidence',),('note',),('note',)]
         for entry_id, context in [('reset-test-note', human_note), ('reset-test-original', original),
                                    ('reset-test-transitive', transitive)]:
             assert connection.execute('SELECT context_json FROM watchlist.research_entry WHERE entry_id=%s', (entry_id,)).fetchone()[0] == context
