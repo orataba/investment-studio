@@ -99,6 +99,35 @@ def test_removes_or_corrects_each_event_and_preserves_unreviewed_sectors(monkeyp
     ]
 
 
+def test_review_receives_same_input_specialist_counterevidence_without_copying_proposals(monkeypatch, retained_run):
+    context = review._api_request("test-run", "context?originals=true")
+    context["input_snapshot_cutoff"] = context["cutoff"]
+    original = {"source_id": "counter-original", "source_type": "public_source", "instrument_id": "xle",
+        "text": "The disclosure gives constituent counts but no weighting methodology."}
+    context["research_dossiers"] = [{"instrument_id": "xle", "prior_sources": [original]}]
+    finding = {"input_snapshot_cutoff": context["cutoff"], "status": "limited",
+        "summary": "成分数目变化不能确定单名权重变化。", "limitations": ["未取得权重规则。"],
+        "source_ids": [original["source_id"]], "risks": [],
+        "events": [{"body": "DO_NOT_COPY_PROPOSALS"}], "themes": [{"body": "DO_NOT_COPY_PROPOSALS"}]}
+    context["section_results"] = {"xle": {"quantitative": finding,
+        "recent_updates": {**finding, "input_snapshot_cutoff": "different-input"}},
+        "xlk": {"themes": finding}}
+    before = deepcopy(context)
+    prior_api = review._api_request
+    def api(run_id, suffix, payload=None):
+        if suffix == "dossier/xle?source_id=counter-original":
+            return deepcopy(original)
+        return prior_api(run_id, suffix, payload)
+    monkeypatch.setattr(review, "_api_request", api)
+    packet = review._evidence_packet(context, [{"instrument_id": "xle", "events": [], "research": None}], "test-run")
+    findings = packet["specialist_findings"]
+    assert len(findings) == 1 and findings[0]["section"] == "quantitative"
+    assert findings[0]["limitations"] == ["未取得权重规则。"]
+    assert "DO_NOT_COPY_PROPOSALS" not in json.dumps(findings)
+    assert next(row for row in packet["sources"] if row["source_id"] == original["source_id"])["text"] == original["text"]
+    assert context == before
+
+
 def test_explicit_recheck_uses_real_context_boundary_and_feeds_prior_publication_error(client, monkeypatch, retained_run):
     from datetime import UTC, datetime
     from watchlist_app.db.models import InstrumentAttributeValue, InstrumentDetail

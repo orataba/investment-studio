@@ -46,6 +46,23 @@ def test_review_tool_schema_does_not_share_mutable_registration_or_packet_metada
     assert not (tmp_path / "reads.jsonl").exists()
 
 
+def test_review_must_read_specialist_counterevidence_before_accepting_synthesis(monkeypatch, tmp_path):
+    from .test_sector_review_protocol import accepted
+    proposed = [{"instrument_id": "asset", "events": [], "themes": [], "research": None,
+        "summary": "", "coverage": []}]
+    _bound(monkeypatch, tmp_path, {"draft_reviews": proposed, "sources": [],
+        "specialist_findings": [{"instrument_id": "asset", "section": "quantitative",
+            "summary": "The weighting method is missing; constituent count alone does not establish concentration.",
+            "limitations": ["No actual constituent weights."], "source_ids": []}]})
+    _complete_read(review_mcp.read_review_context, section="draft_reviews")
+    receipts = accepted(proposed)
+    with pytest.raises(ValueError, match="specialist_findings"):
+        review_mcp.submit_review_receipts(receipts)
+    assert not (tmp_path / "result.json").exists()
+    _complete_read(review_mcp.read_review_context, section="specialist_findings")
+    assert review_mcp.submit_review_receipts(receipts)["accepted"]
+
+
 def test_reviewer_stdio_advertises_bound_schema_and_preserves_submission_checks(monkeypatch, tmp_path):
     import os
     import sys

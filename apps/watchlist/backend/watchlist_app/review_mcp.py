@@ -198,7 +198,7 @@ def _read_quant_input(packet, source_id, input_path, prefix, selector, audit, *,
 @_tool
 def read_review_context(section: str = "overview", offset: int = 0, limit: int = 20,
                         path: list[str | int] | None = None) -> dict:
-    """Start at overview for the compact receipt contract and bound object/schema-path index. Read the complete draft/acquisition and relevant previous judgments. In prior_judgment_versions, a quant input locator resolves at path=[version_index,'sources',source_index,'methodology','input_sources',input_index,...] using that exact historical version, never the current same-ID source. response_schema is optional: select the listed path for a correction or validation error instead of traversing all possible corrections. Follow next_offset and deferred.path for selected material. sources is only a directory; read_review_source supplies current evidence."""
+    """Start at overview for the compact receipt contract and bound object/schema-path index. Read the complete draft/acquisition, nonempty specialist_findings and relevant previous judgments. Specialist findings identify analytical disagreements to check against originals; they are not factual sources. In prior_judgment_versions, a quant input locator resolves at path=[version_index,'sources',source_index,'methodology','input_sources',input_index,...] using that exact historical version, never the current same-ID source. response_schema is optional: select the listed path for a correction or validation error instead of traversing all possible corrections. Follow next_offset and deferred.path for selected material. sources is only a directory; read_review_source supplies current evidence."""
     state = _state()
     packet = state["packet"]
     selected = list(path or [])
@@ -218,7 +218,7 @@ def read_review_context(section: str = "overview", offset: int = 0, limit: int =
                 "sections": {key: shape(value) for key, value in packet.items() if key != "sources"},
                 "sources": shape(packet.get("sources", [])), "response_schema": shape(state["response_schema"]),
                 "receipt_contract": review_receipt_contract(packet["draft_reviews"], state["response_schema"]),
-                "next_read": "Read complete draft_reviews and acquisition, then relevant prior judgments and substantive originals. acquisition contains the market coverage summary; full market_coverage is available separately when its details matter. research_dossiers preserves current themes; agenda focus_themes.current_read resolves those same themes. Follow each theme.history_read only for the specific historical claim/version/timeline being checked. Quant methodology.input_sources entries with retained_reference are locators: read_review_source at that exact input path resolves the bound original through this run. An index or unread history is not verified evidence. Use the compact receipt_contract above; response_schema paths are for specific corrections, not a required full traversal. Reopen exact source_id and path after compaction. Submit every instrument receipt together."},
+                "next_read": "Read complete draft_reviews, acquisition and nonempty specialist_findings, then relevant prior judgments and substantive originals. Check specialist counterevidence and missing assumptions against originals; do not cite a specialist as factual evidence. acquisition contains the market coverage summary; full market_coverage is available separately when its details matter. research_dossiers preserves current themes; agenda focus_themes.current_read resolves those same themes. Follow each theme.history_read only for the specific historical claim/version/timeline being checked. Quant methodology.input_sources entries with retained_reference are locators: read_review_source at that exact input path resolves the bound original through this run. An index or unread history is not verified evidence. Use the compact receipt_contract above; response_schema paths are for specific corrections, not a required full traversal. Reopen exact source_id and path after compaction. Submit every instrument receipt together."},
                 pageable_fields=[(["receipt_contract"], {"tool": "read_review_context", "section": "receipt_contract"})])
     value = ([source_index(source) for source in packet["sources"]] if section == "sources"
              else state["response_schema"] if section == "response_schema"
@@ -307,6 +307,9 @@ def submit_review_receipts(receipts: dict) -> dict:
     acquisition = state["packet"].get("acquisition")
     if acquisition and not _complete(acquisition, [], [row for row in reads if row.get("section") == "acquisition"]):
         raise ValueError("Read the complete acquisition coverage and information clocks before approving coverage claims")
+    findings = state["packet"].get("specialist_findings")
+    if findings and not _complete(findings, [], [row for row in reads if row.get("section") == "specialist_findings"]):
+        raise ValueError("Read the complete specialist_findings and check their counterevidence against original sources before approving synthesis")
     versions = state["packet"].get("prior_judgment_versions", [])
     version_reads = [row for row in reads if row.get("section") == "prior_judgment_versions" and not row.get("retained_input")]
     for index, version in enumerate(versions):

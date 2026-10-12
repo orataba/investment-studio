@@ -24,6 +24,11 @@ from watchlist_app.services.sector_review_protocol import review_receipt_schema,
 
 
 _INSTRUCTIONS = """You are the independent final factual reviewer of an instrument research update.
+Read specialist_findings when present. These are the same frozen run's analytical findings, not
+independent factual sources. Check their stated counterevidence, missing assumptions and limitations
+against the originals, and reconcile conflicting claims in every proposed theme, module, view and
+decision_brief. Agreement among agents is not evidence; a supported limitation must not disappear
+when the main researcher combines their work.
 Check proposed themes as well as events and notebooks. Explicitly accept, reject or correct each proposed
 theme under its original theme_key; retain only proposed fields. A theme can be an
 unresolved, evidence-motivated research question; do not require its hypothesis to be proven before tracking.
@@ -595,7 +600,14 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
         if source_id in available and (metric.get("instrument_id") in ids or (
                 metric.get("instrument_id") is None and metric.get("scope") == "public_market")):
             sources[source_id] = available[source_id]
+    from watchlist_app.services.research_sections import SECTION_ORDER, section_complete
+    specialist_findings = [{"instrument_id": iid, "section": section,
+        **{key: value for key, value in context["section_results"][iid][section].items()
+           if key in {"status", "summary", "risks", "limitations", "source_ids", "input_snapshot_cutoff"}}}
+        for iid in sorted(ids) for section in SECTION_ORDER if section_complete(context, iid, section)]
     references_by_instrument = _review_references(context, reviewed)
+    for finding in specialist_findings:
+        references_by_instrument[finding["instrument_id"]].update(notebook_source_ids(finding))
     prior_updates, prior_judgment_versions = [], []
     from urllib.parse import urlencode
     for review in reviewed:
@@ -696,6 +708,7 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
             "This is the recorded research request and review scope, not factual evidence or an investment conclusion. Verify the proposed response against the retained originals; do not cite the request as a source."}
            if context.get("question") else {}),
         "draft_reviews": reviewed,
+        "specialist_findings": specialist_findings,
         "computed_input_reads": computed_input_reads,
         "event_source_ids": sorted(sources.keys() & event_sources.keys()),
         "event_source_note": "Only these retained originals, comparable estimates and computed evidence may be cited in event source_ids. Other packet sources remain available for notebook context; reading them does not make them event evidence.",

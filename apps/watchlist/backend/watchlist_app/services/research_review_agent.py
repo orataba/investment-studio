@@ -55,7 +55,9 @@ def run_review_agent(packet, schema, instructions, record):
             "--patch", str(root / "apps/watchlist/backend/config/review_harness.patch.yml"),
             "--patch", str(outcome_patch),
             "Start with read_review_context overview for the compact receipt contract and bound object index. "
-            "Read the complete draft, acquisition limits, "
+            "Read the complete draft, acquisition limits and nonempty specialist_findings. "
+            "Specialist findings are analytical claims, not factual originals; check their counterevidence "
+            "and missing assumptions against the draft and retained sources. Read "
             "applicable previous judgments and relevant original evidence through paged tools. Read the passages "
             "needed to assess each text citation, including qualifying context; passage delivery is not full-document "
             "coverage or proof that a claim is supported. Empty comparison results require their coverage, clocks "
