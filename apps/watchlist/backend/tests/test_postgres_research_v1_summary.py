@@ -85,8 +85,11 @@ def test_page_and_scheduler_reads_never_transfer_computed_source_trees(postgres_
         "sources": [{"text": original_text}], "input_snapshot": {"original": original_text},
         "input_series": [{"date": "2026-09-30", "value": 3, "original": original_text}],
         "source_ids": [original_text], "data": {"analysis_kind": "watchlist_observations", "raw": original_text}}
+    unreferenced = {**source, "source_id": "computed:unreferenced"}
     notebook = {"version_id": "saved-version", "investment_view": {"direction": "Current judgment",
-        "updated_at": "2026-10-01", "versions": [{"direction": "Historical judgment"}]}, "sources": [source]}
+        "source_ids": [source["source_id"]], "updated_at": "2026-10-01",
+        "versions": [{"direction": "Historical judgment", "source_ids": [unreferenced["source_id"]]}]},
+        "sources": [source, unreferenced]}
     context = {"sector_run": True, "instrument_ids": [iid], "cutoff": "2026-10-01T00:00:00Z",
         "reviews": {iid: {"status": "completed", "research": notebook}}}
     with get_session_factory()() as session:
@@ -117,13 +120,15 @@ def test_page_and_scheduler_reads_never_transfer_computed_source_trees(postgres_
             assert shown["sources"] == [browser_source_view(source)]
             assert "versions" not in shown
             current, _ = _notebooks(session, iid, False, source_metadata_only=True)
-            assert current["sources"] == [browser_source_view(source)]
+            assert current["sources"] == [browser_source_view(source), browser_source_view(unreferenced)]
             state = review_states(session, instrument_ids=[iid], summary_only=True)["latest"][iid]
             assert state["current_summary"] == "Current judgment"
             assert "versions" not in state["current_research"]["investment_view"]
             assert "sources" not in state["current_research"]
             trigger = trigger_dossier(session, iid)
             assert trigger["notebook"]["sources"] == [browser_source_view(source)]
+            assert trigger["source_ids"] == [source["source_id"]]
+            assert {row["source_id"] for row in trigger["prior_sources"]} == {source["source_id"]}
             assert trigger["themes"][0]["sources"] == [browser_source_view(source)]
             assert not any("research_entry.context_json" in statement for statement in statements)
             assert not session.identity_map
