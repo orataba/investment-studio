@@ -13,6 +13,7 @@ SYSTEMCTL_CALLS="$TEST_ROOT/systemctl-calls"
 mkdir -p "$BACKEND_ROOT/scripts" "$PROJECT_ROOT/infra/launchd" "$PROJECT_ROOT/infra/scripts" "$ENV_ROOT" "$MOCK_BIN"
 touch "$BACKEND_ROOT/scripts/refresh_market_data_scheduled.py"
 cp "$REPOSITORY_ROOT/infra/scripts/market_close_schedule.py" "$PROJECT_ROOT/infra/scripts/market_close_schedule.py"
+cp "$REPOSITORY_ROOT/infra/scripts/settlement_refresh_schedule.py" "$PROJECT_ROOT/infra/scripts/settlement_refresh_schedule.py"
 cp "$REPOSITORY_ROOT/infra/launchd/load_runtime_env.sh" \
   "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 chmod 700 "$ENV_ROOT"
@@ -91,7 +92,10 @@ SERVICE_FILE="$TEST_ROOT/config/systemd/user/investment-studio-market-data-refre
 TIMER_FILE="$TEST_ROOT/config/systemd/user/investment-studio-market-data-refresh.timer"
 test -f "$SERVICE_FILE"
 test -f "$TIMER_FILE"
-grep -Fq 'OnCalendar=*-*-* 21:00 Asia/Shanghai' "$TIMER_FILE"
+grep -Fxq 'OnCalendar=*-*-* 21,23:00 Asia/Shanghai' "$TIMER_FILE"
+grep -Fxq 'Restart=no' "$SERVICE_FILE"
+grep -Fq 'ExecCondition=' "$SERVICE_FILE"
+grep -Fq 'settlement_refresh_schedule.py --summary-file' "$SERVICE_FILE"
 grep -Fq -- '--lock-file' "$SERVICE_FILE"
 grep -Fq -- '--lock-wait-seconds 900' "$SERVICE_FILE"
 grep -Fq -- 'market-data-refresh.lock' "$SERVICE_FILE"
@@ -136,6 +140,10 @@ for schedule in \
   grep -Fq -- "--channel $channel --market-scope $market_scope" "$service_file"
   grep -Fq -- "$market_scope-$channel-data-refresh-summary.json" "$service_file"
   grep -Fxq 'Restart=no' "$service_file"
+  if grep -Fq 'settlement_refresh_schedule.py' "$service_file"; then
+    echo "A non-settlement schedule acquired the settlement retry condition." >&2
+    exit 1
+  fi
   if [[ "$channel" == "market" && ( "$market_scope" == "hk" || "$market_scope" == "us" ) ]]; then
     grep -Fxq 'StartLimitIntervalSec=0' "$service_file"
     grep -Fq "ExecCondition=" "$service_file"
@@ -144,13 +152,26 @@ for schedule in \
   grep -Fq "enable $unit_name.timer" "$SYSTEMCTL_CALLS"
 done
 
-# An operator who enables automatic restart keeps its bounded retry policy.
+# Explicit non-settlement restart overrides keep their existing start-rate limit.
 HOME="$TEST_ROOT/home" XDG_CONFIG_HOME="$TEST_ROOT/config" PATH="$MOCK_BIN:$PATH" \
 PROJECT_ROOT="$PROJECT_ROOT" BACKEND_ROOT="$BACKEND_ROOT" \
 PYTHON_BIN="$(command -v python3)" ENV_ROOT="$ENV_ROOT" CHANNEL=market MARKET_SCOPE=hk RESTART_ON_FAILURE=true \
   "$REPOSITORY_ROOT/infra/systemd/install_market_data_refresh_timer.sh"
 grep -Fxq 'Restart=on-failure' "$TEST_ROOT/config/systemd/user/investment-studio-hk-market-data-refresh.service"
 grep -Fxq 'StartLimitIntervalSec=3h' "$TEST_ROOT/config/systemd/user/investment-studio-hk-market-data-refresh.service"
+
+# Settlement cannot silently restore the whole-batch automatic restart loop.
+set +e
+HOME="$TEST_ROOT/home" XDG_CONFIG_HOME="$TEST_ROOT/config" PATH="$MOCK_BIN:$PATH" \
+PROJECT_ROOT="$PROJECT_ROOT" BACKEND_ROOT="$BACKEND_ROOT" \
+PYTHON_BIN="$(command -v python3)" ENV_ROOT="$ENV_ROOT" CHANNEL=settlement RESTART_ON_FAILURE=true \
+  "$REPOSITORY_ROOT/infra/systemd/install_market_data_refresh_timer.sh" \
+  > "$TEST_ROOT/settlement-restart.out" 2>&1
+settlement_restart_status=$?
+set -e
+test "$settlement_restart_status" -eq 64
+grep -Fq 'RESTART_ON_FAILURE must be false' "$TEST_ROOT/settlement-restart.out"
+grep -Fxq 'Restart=no' "$SERVICE_FILE"
 
 : > "$SYSTEMCTL_CALLS"
 HOME="$TEST_ROOT/home" XDG_CONFIG_HOME="$TEST_ROOT/config" PATH="$MOCK_BIN:$PATH" \

@@ -14,6 +14,10 @@ MARKET_SCOPE="${MARKET_SCOPE:-}"
 REFRESH_NAME=market-data-refresh
 DEFAULT_ON_CALENDAR="*-*-* 21:00 Asia/Shanghai"
 DEFAULT_RESTART_ON_FAILURE=true
+if [[ "$CHANNEL" == "settlement" ]]; then
+  DEFAULT_ON_CALENDAR="*-*-* 21,23:00 Asia/Shanghai"
+  DEFAULT_RESTART_ON_FAILURE=false
+fi
 if [[ -n "$MARKET_SCOPE" ]]; then
   DEFAULT_RESTART_ON_FAILURE=false
   case "$CHANNEL:$MARKET_SCOPE" in
@@ -156,6 +160,10 @@ for boolean_name in FAIL_ON_ITEM_FAILURE REQUIRE_DOWNSTREAM_SUCCESS RESTART_ON_F
     exit 64
   fi
 done
+if [[ "$CHANNEL" == "settlement" && "$RESTART_ON_FAILURE" == "true" ]]; then
+  echo "Settlement uses a conditional 23:00 retry; RESTART_ON_FAILURE must be false." >&2
+  exit 64
+fi
 
 PROJECT_INSTRUMENT_CORE="$PROJECT_ROOT/shared-data/instruments/python"
 PYTHONPATH_VALUE="$BACKEND_ROOT:$PROJECT_ROOT/shared-data/market"
@@ -205,6 +213,13 @@ if [[ "$CHANNEL" == "market" && ( "$MARKET_SCOPE" == "hk" || "$MARKET_SCOPE" == 
   fi
   escaped_schedule_helper="$(printf '%q' "$PROJECT_ROOT/infra/scripts/market_close_schedule.py")"
   schedule_condition="ExecCondition=/bin/bash -lc '$escaped_python_bin $escaped_schedule_helper --market-scope $MARKET_SCOPE'"
+elif [[ "$CHANNEL" == "settlement" ]]; then
+  if [[ ! -f "$PROJECT_ROOT/infra/scripts/settlement_refresh_schedule.py" ]]; then
+    echo "Cannot find the settlement schedule helper under PROJECT_ROOT." >&2
+    exit 1
+  fi
+  escaped_schedule_helper="$(printf '%q' "$PROJECT_ROOT/infra/scripts/settlement_refresh_schedule.py")"
+  schedule_condition="ExecCondition=/bin/bash -lc '$escaped_python_bin $escaped_schedule_helper --summary-file $escaped_summary_file'"
 fi
 
 cat > "$SERVICE_FILE" <<EOF

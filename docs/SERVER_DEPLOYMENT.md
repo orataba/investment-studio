@@ -783,7 +783,7 @@ Shared market pipeline definition generation never starts its timers.
 | `market / hk` | Actual Hong Kong session close + 30 minutes |
 | `market / us` | Actual US session close + 30 minutes |
 | `reference / cn-hk` | 08:00 Asia/Shanghai |
-| `settlement` | 21:00 Asia/Shanghai |
+| `settlement` | 21:00 Asia/Shanghai; conditional retry at 23:00 |
 
 IANA timezones handle US daylight saving time. The shared runner selects instruments by their configured
 market calendars and skips closed markets. Hong Kong and US post-close timers check at each hour
@@ -799,8 +799,19 @@ Nightly settlement covers the FMP catalogue, Tushare fund NAVs, email NAVs, FX a
 without repeating equity closing-price or reference collection.
 
 All batches retain the shared exclusive `fcntl` lock. Scheduled refreshes wait up to `LOCK_WAIT_SECONDS` (default 900 seconds) for the current writer; waiting is logged and expiry remains an explicit exit 75. This bounded wait covers overlap between source acquisition and settlement without running simultaneous writers. Each schedule has its own log and atomic summary
-under `~/.local/state/investment-studio`. Item and downstream failures fail the service. Settlement retains
-its existing bounded systemd restart policy; the four market/source schedules do not add restarts. App installation,
+under `~/.local/state/investment-studio`. Missing required closes, item failures and downstream failures remain
+service failures. Settlement runs at 21:00 and uses `infra/scripts/settlement_refresh_schedule.py` to check
+the existing atomic summary at 23:00. A completed, successful settlement started at or after that day's
+21:00 Shanghai primary slot skips the late slot without replacing its summary. Earlier same-day runs
+may cover only a previous trading session and cannot suppress the late attempt. A missing, invalid, older or failed summary allows one
+late attempt. The condition reads at most 1 MiB plus one overflow-detection byte; a summary exceeding that
+bound is not success evidence. An I/O error other than a missing file fails the condition explicitly.
+
+Settlement uses `Restart=no` and rejects `RESTART_ON_FAILURE=true`: a systemd start-rate limit is not a total
+retry budget for long batches. The two calendar slots bound automatic whole-batch attempts; a still-active
+primary run is not started concurrently by the late tick. Existing per-item transient retries remain limited
+to two, and a failed late attempt stays failed until a later scheduled or explicit operator run. The four
+market/source schedules retain their existing slots and default to no automatic restarts. App installation,
 database restore and the service-group controls include every data service/timer in their stop/restore sets.
 
 ## Ports
