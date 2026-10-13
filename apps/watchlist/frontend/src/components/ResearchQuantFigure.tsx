@@ -65,7 +65,12 @@ function Chart({ chart, table, showTitle }: { chart: ResearchQuantChart; table: 
   const y = (value: number) => top + (yMax - value) / (yMax - yMin) * plotHeight
   const sorted = rows.map((_, index) => index).sort((a, b) => xValues[a] - xValues[b])
   // A middle observation can sit next to an endpoint on an irregular date axis.
-  const xTicks = continuousX ? [...new Set([sorted[0], sorted[rows.length - 1]])] : sorted
+  // Reserve label space at the larger compact-screen font size. Bars and their
+  // full-value tooltips remain intact when only a subset of category ticks fits.
+  const categoryLabelWidth = Math.max(...rawX.map(value => Array.from(String(value))
+    .reduce((size, char) => size + (/[^\x00-\x7f]/.test(char) ? 19 : 11), 0))) + 16
+  const categoryTickStep = Math.max(1, Math.ceil(categoryLabelWidth * rows.length / plotWidth))
+  const xTicks = continuousX ? [...new Set([sorted[0], sorted[rows.length - 1]])] : sorted.filter((_, index) => index % categoryTickStep === 0)
   const barX = (index: number) => continuousX ? x(index) : left + (index + 0.5) / rows.length * plotWidth
   const barWidth = Math.min(26, plotWidth / Math.max(1, rows.length) / (chart.series.length + 1))
   return <div className="research-quant-chart">

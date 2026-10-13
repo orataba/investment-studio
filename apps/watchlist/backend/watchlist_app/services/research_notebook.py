@@ -307,8 +307,13 @@ class ResearchNotebook(BaseModel):
         "an explicit empty list clears all facts. For a targeted correction, first read the current "
         "complete facts and retain every unchanged observation alongside the corrected ones."))
     mandate_update: ResearchMandateInput | None = None
-    investment_view: InvestmentView | None = None
-    decision_brief: DecisionBrief | None = None
+    investment_view: InvestmentView | None = Field(default=None, description=(
+        "Changing any content creates a new view version. An existing decision_brief becomes stale "
+        "unless submitted in the same update. Read and recheck the current brief; include its "
+        "unchanged or revised content when still supported, or leave it stale when reassessment is needed."))
+    decision_brief: DecisionBrief | None = Field(default=None, description=(
+        "Recommendation for the effective investment_view. Submission confirms its consistency "
+        "and the server binds its view version; do not invent basis_view_version_id."))
     changes: list[ResearchChange] = Field(default_factory=list, max_length=20)
     forecasts: list[ResearchForecast] = Field(default_factory=list)
     forecast_reviews: list[ForecastReview] = Field(default_factory=list)

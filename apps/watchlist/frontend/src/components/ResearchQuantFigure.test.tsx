@@ -61,6 +61,25 @@ it('labels every financial category and preserves negative bars on the same zero
   expect(Number(bars[2].getAttribute('height'))).toBeGreaterThan(0)
 })
 
+it('spaces long category labels without dropping bars, tooltip identities or table rows', () => {
+  const saved = source()
+  const symbols = Array.from({ length: 15 }, (_, index) => `${688110 + index}.SH`)
+  saved.data!.tables![0].rows = symbols.map((date, index) => ({ date, return: 1.46 - index * 0.04 }))
+  saved.data!.charts![0].kind = 'bar'
+  const { container } = render(<ResearchQuantFigure source={saved} />)
+  const labels = [...container.querySelectorAll('svg text')].filter(node => symbols.includes(node.textContent || ''))
+  expect(labels.length).toBeGreaterThan(1)
+  expect(labels.length).toBeLessThan(symbols.length)
+  for (let index = 1; index < labels.length; index++) {
+    expect(Number(labels[index].getAttribute('x')) - Number(labels[index - 1].getAttribute('x'))).toBeGreaterThan(110)
+  }
+  const bars = [...container.querySelectorAll('rect')]
+  expect(bars).toHaveLength(15)
+  expect(bars.map(bar => bar.querySelector('title')?.textContent?.split(' · ')[0])).toEqual(symbols)
+  fireEvent.click(screen.getByRole('button', { name: '实际观测 · 15 条观测' }))
+  expect(screen.getByRole('dialog').querySelectorAll('tbody tr')).toHaveLength(15)
+})
+
 it('retains small nonzero results in the table, metrics, tooltips and chart scale', () => {
   const saved = source()
   saved.data!.metrics = { variance: 0.00000125 }
