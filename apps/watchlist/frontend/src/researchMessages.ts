@@ -435,6 +435,7 @@ export const researchMessages: LanguageMessages = {
   '关键假设': 'Key assumptions', '主题背景': 'Theme background', '资料限制': 'Coverage limitations', '撤回原因': 'Reason for withdrawal', '复核条件': 'Review conditions', '复盘结果': 'Review outcome', '经验': 'Lesson',
 } }
 export const researchPatterns: LanguagePatternMessages = { 'zh-Hans': [
+  { match: /^Exported (\d+) rows from the current watchlist view\.$/, replace: '已导出当前筛选和排序结果，共 $1 行。' },
   { match: /^Tavily public search is not configured;[\s\S]*$/, replace: 'Tavily 搜索尚未配置。已保存资料和已知公开链接仍可使用。' },
 ], en: [
   { match: /^Tavily public search is not configured;[\s\S]*$/, replace: 'Tavily search is not configured. Saved materials and known public links remain available.' },

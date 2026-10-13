@@ -1,5 +1,8 @@
 // System UI copy only. User content must be marked translate="no".
 export const systemMessages: Record<string, string> = {
+  "Security Reinvestment Position": "红利再投资持仓",
+  "Position Recognition Bridge": "持仓确认衔接",
+  "Performance Fee": "业绩报酬",
   "First triggered": "首次触发",
   "Triggered": "触发",
   "Condition cleared": "条件解除",
