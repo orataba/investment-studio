@@ -84,7 +84,7 @@ def _require_instruction(run, command):
                 continue
             directive = re.split(r"[:：]", directive_context)[-1].strip()
             if directive and not re.match(
-                    r"(?:请|帮我|麻烦|我(?:授权|要求|希望)(?:你)?|将|把|现在|直接|立即)|"
+                    r"(?:请|帮我|麻烦|我(?:明确授权|授权|要求|希望)(?:你)?|将|把|现在|直接|立即)|"
                     r"(?:please|kindly|I\s+(?:authorize|ask|want)\s+you\s+to)\b", directive, re.IGNORECASE):
                 continue
         if not re.search(negative, clause, re.IGNORECASE) and not re.search(r"如何|怎么|是否需要|要不要", clause):

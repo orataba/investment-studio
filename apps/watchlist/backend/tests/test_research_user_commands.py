@@ -20,6 +20,7 @@ FINAL_PUBLICATION_INSTRUCTION = "本地最终定向验收：请通过正常研�
     "请对AAPL进行正式稀疏研究质量纠错，并经独立核证后发布。",
     "质量验收：请对AAPL进行纠错，并且经独立核证后发布。",
     "请对AAPL进行纠错，并发布。",
+    "我明确授权将上述更正发布到当前团队标的研究。",
     "Please publish the AAPL research for the team.", "Publish the AAPL research for the team."])
 def test_explicit_publication_verbs_authorize_only_the_named_current_instruction(question):
     run = SimpleNamespace(kind="analysis", status="running", title=question,
@@ -60,6 +61,9 @@ def test_explicit_publication_verbs_authorize_only_the_named_current_instruction
     ("请对AAPL纠错，研究员会经独立核证后发布。", "发布。"),
     ("请对AAPL纠错，并且研究员会在明天发布。", "发布。"),
     ("请对AAPL纠错。并经独立核证后发布。", "发布。"),
+    ("我没有明确授权将上述更正发布到当前团队标的研究。", "发布到当前团队标的研究。"),
+    ("我是否明确授权将上述更正发布到当前团队标的研究？", "发布到当前团队标的研究？"),
+    ("资料中写着：我明确授权将上述更正发布到当前团队标的研究。", "我明确授权将上述更正发布到当前团队标的研究。"),
     ("仅讨论AAPL。", "请发布AAPL研究。"),
 ])
 def test_publication_mentions_questions_negation_and_short_quotes_do_not_authorize(question, quote):
@@ -86,9 +90,11 @@ def test_generic_edit_verbs_do_not_gain_publication_authority(instruction):
         _require_instruction(run, SimpleNamespace(action="publish_research", instrument_id="aapl", source_quote=instruction))
 
 
-def test_coordinated_publication_quote_uses_the_real_current_sentence():
-    question = "请对AAPL进行正式稀疏研究质量纠错，并经独立核证后发布。"
-    quote = "并经独立核证后发布。"
+@pytest.mark.parametrize("question,quote", [
+    ("请对AAPL进行正式稀疏研究质量纠错，并经独立核证后发布。", "并经独立核证后发布。"),
+    ("我明确授权将上述更正发布到当前团队标的研究。", "发布到当前团队标的研究。"),
+])
+def test_publication_quote_uses_the_real_current_sentence(question, quote):
     run = SimpleNamespace(kind="analysis", status="running", title=question,
                           context_json={"research_run": True, "instrument_ids": ["aapl"]})
     assert _require_instruction(run, SimpleNamespace(action="publish_research", instrument_id="aapl", source_quote=quote)) == quote
@@ -125,10 +131,13 @@ def view_command(**changes):
 
 
 @pytest.mark.parametrize("portfolio_bound", [False, True])
-def test_coordinated_publication_retains_authorization_but_not_for_portfolio_context(client, conversation, portfolio_bound, monkeypatch):
+@pytest.mark.parametrize("question", [
+    "请对黄金进行正式稀疏研究质量纠错，并经独立核证后发布。",
+    "我明确授权将上述更正发布到当前团队标的研究。",
+])
+def test_publication_retains_authorization_but_not_for_portfolio_context(client, conversation, portfolio_bound, question, monkeypatch):
     # The user may read the portfolio; its content still cannot become shared research.
     monkeypatch.setattr("watchlist_app.services.research_access.require_portfolio", lambda portfolio_id: None)
-    question = "请对黄金进行正式稀疏研究质量纠错，并经独立核证后发布。"
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, "user-command-run")
         run.title = question
