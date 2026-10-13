@@ -67,7 +67,8 @@ def run_review_agent(packet, schema, instructions, record):
             "objects, numerical units and information clocks, plus contradictions across objects. Work iteratively "
             "with tools; read a listed response_schema path only for a specific correction or validation error, "
             "not every optional correction branch. After automatic compaction reread exact original source_id/path when needed. Submit one "
-            "complete receipt object through submit_review_receipts, repair any validation errors, then briefly acknowledge acceptance."]
+            "complete receipt object through submit_review_receipts and repair any validation errors. "
+            "Acceptance completes your work; the runtime ends the review without another acknowledgement."]
         output = None
         try:
             # The outer research process owns the wall-clock deadline and kills
