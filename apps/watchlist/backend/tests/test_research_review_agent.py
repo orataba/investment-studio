@@ -724,3 +724,68 @@ def test_review_event_cannot_add_notebook_snapshot_and_can_repair_before_accepta
     assert review_mcp.submit_review_receipts(receipts)['accepted']
     published = json.loads((tmp_path / 'result.json').read_text())['result']['reviews'][0]
     assert published['research']['source_ids'] == ['instrument:bound:asset']
+
+
+@pytest.mark.parametrize("variant", ["retained_computed", "pm_material", "snapshot", "other_instrument", "future", "unobtained"])
+def test_hydrated_event_original_keeps_the_publication_source_boundary(monkeypatch, tmp_path, variant):
+    from urllib.parse import parse_qs, urlsplit
+    from mcp.server.mcpserver.exceptions import ToolError
+    from .test_sector_review_protocol import accepted
+
+    original = {"source_id": "original", "source_type": "public_source", "instrument_id": "asset",
+        "text": "The retained dated original reports the development.", "published_at": "2026-09-25"}
+    retained = {"source_id": "computed:retained", "source_type": "computed_metric", "instrument_id": "asset",
+        "scope": "instrument", "as_of": "2026-09-25T12:00:00+00:00",
+        "methodology": {"frequency": "daily", "description": "Retained disclosed measurement"},
+        "data": {"status": "available", "rows": [{"value": 3}]}}
+    if variant == "pm_material":
+        retained = {"source_id": "material:pm", "source_type": "research_material", "instrument_id": "asset",
+            "text": "The manager's recorded opinion."}
+    elif variant == "snapshot":
+        retained = {"source_id": "instrument:prior:asset", "source_type": "instrument_snapshot",
+            "instrument_id": "asset", "snapshot": {"price": 100}}
+    elif variant == "other_instrument":
+        retained["instrument_id"] = "other"
+    elif variant == "future":
+        retained["as_of"] = "2026-09-27T00:00:00+00:00"
+    metadata = {key: value for key, value in retained.items() if key not in {"data", "methodology", "text", "snapshot"}}
+    context = {"cutoff": "2026-09-26T00:00:00+00:00", "market_text_sources": [original],
+        "research_dossiers": [{"instrument_id": "asset", "notebook": {
+            "sources": [] if variant == "unobtained" else [metadata]}}]}
+    event = {"event_key": "disclosure", "action": "updated", "direction": "uncertain", "title": "Disclosure",
+        "body": "The original reports a development.", "confidence": "confirmed", "information_type": "fact",
+        "recording_type": "update", "source_ids": ["original", retained["source_id"]], "published_at": "2026-09-25"}
+    proposed = {"instrument_id": "asset", "summary": "Retain the supported observation.",
+        "change_kind": "knowledge", "coverage": [], "events": [event], "themes": [], "research": None}
+    calls = []
+
+    def api(run_id, suffix, payload=None):
+        assert run_id == "bound" and suffix.startswith("dossier/asset?")
+        assert parse_qs(urlsplit(suffix).query) == {"source_id": [retained["source_id"]]}
+        calls.append(suffix)
+        return deepcopy(retained)
+
+    monkeypatch.setattr(review, "_api_request", api)
+    before = deepcopy(context)
+    packet = review._evidence_packet(context, [proposed], "bound")
+    assert context == before
+    assert len(calls) == (0 if variant == "unobtained" else 1)
+    assert (retained["source_id"] in packet["event_source_ids"]) == (variant == "retained_computed")
+    _bound(monkeypatch, tmp_path, packet)
+    _complete_read(review_mcp.read_review_context, section="draft_reviews")
+    _complete_read(review_mcp.read_review_context, section="acquisition")
+    for source in packet["sources"]:
+        _complete_read(review_mcp.read_review_source, source_id=source["source_id"])
+    receipts = accepted([proposed])
+
+    async def submit():
+        return await review_mcp.mcp.call_tool("submit_review_receipts", {"receipts": receipts})
+
+    if variant == "retained_computed":
+        assert asyncio.run(submit()).structured_content["accepted"]
+        saved = json.loads((tmp_path / "result.json").read_text())["result"]["reviews"][0]
+        assert saved["decisions"][0]["event"]["source_ids"] == event["source_ids"]
+    else:
+        with pytest.raises(ToolError, match="disclosure source_ids|Read substantive original evidence"):
+            asyncio.run(submit())
+        assert not (tmp_path / "result.json").exists()

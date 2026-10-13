@@ -634,7 +634,6 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
     computed_input_reads = {}
     available = research_sources(context, run_id)
     from watchlist_app.services.sector_research import event_evidence_sources
-    event_sources = event_evidence_sources(context, run_id, notebook_evidence=available)
     # Actual reads in this run are evidence for receipt claims too. Historical
     # hydrated archives and all-company estimates are not automatically in scope.
     sources = {s["source_id"]: s for capture in context.get("web_evidence", [])
@@ -717,6 +716,11 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
                 original = _api_request(run_id, f"dossier/{quote(iid, safe='')}?" + urlencode({"source_id": source_id}))
                 kind = "historical_case" if source_id.startswith("historical:") else "research_material" if source_id.startswith("material:") else original.get("source_type")
                 sources[source_id] = {**original, "source_type": kind, "instrument_id": iid}
+                # The context may carry only this original's metadata. Admit its
+                # resolved body under the same ownership/cutoff contract used by
+                # research_sources before deriving the event citation catalogue.
+                if _original_source({**original, "source_type": kind}, iid, datetime.fromisoformat(context["cutoff"])):
+                    available[source_id] = sources[source_id]
                 if kind == "computed_metric":
                     computed_input_reads[source_id] = {"instrument_id": iid}
             elif source_id in available:
@@ -760,6 +764,7 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
             "read_review_context(section='market_coverage')；同一冻结核证包内的完整覆盖细项按需读取。索引/采集状态不表示已覆盖全部事实，缺口不能推定无新增。"}
     from watchlist_app.services.market_evidence import initialization_search_summary
     initialization_searches = initialization_search_summary(context)
+    event_sources = event_evidence_sources(context, run_id, notebook_evidence=available)
     return {
         "run_id": run_id,
         "cutoff": context["cutoff"],
