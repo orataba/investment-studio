@@ -402,7 +402,8 @@ def test_execution_revalidates_original_issuer_after_preparation_outlasts_first_
         return replace(issuer, credential=token, resource_scope={"kind": "run", "id": run_id, "attempt": "1"})
     def issue(principal, **kwargs):
         assert prepared and principal is issuer
-        assert kwargs == {"audience": "watchlist", "resource_scope": {"kind": "run", "id": run_id, "attempt": "1"}}
+        assert kwargs == {"audience": "watchlist", "resource_scope": {"kind": "run", "id": run_id, "attempt": "1"},
+                          "ttl_seconds": 7500}
         if issuer_revoked:
             raise IdentityError(403, "fixture issuer was revoked")
         return "execution-grant"
@@ -470,7 +471,8 @@ def test_sector_review_has_its_own_deadline_over_the_saved_draft(client, monkeyp
         assert run.context_json["submitted_draft"] == json.loads(result)
         run.status = "completed"
     monkeypatch.setattr(sector_research, "apply_result", publish)
-    clock = iter([0, 1, 1801, 1802, 3603])
+    # Both stages can use their whole configured allowance independently.
+    clock = iter([0, 7100, 7201, 14300, 14403])
     from types import SimpleNamespace
     monkeypatch.setattr(runner, "time", SimpleNamespace(monotonic=lambda: next(clock)))
     runner.run_analysis("stages")
@@ -483,6 +485,7 @@ def test_sector_review_has_its_own_deadline_over_the_saved_draft(client, monkeyp
             assert run.status == "failed"
             assert run.context_json["runtime_error"]["stage"] == "review"
             assert run.context_json["runtime_error"]["retryable"] is True
+            assert run.context_json["runtime_error"]["timeout_seconds"] == 7200
         else:
             assert run.status == "completed"
 
@@ -503,7 +506,8 @@ def test_review_renews_original_issuer_grant_without_reusing_expired_generation_
     generation_finished = []
     def issue(principal, **kwargs):
         assert principal is issuer
-        assert kwargs == {"audience": "watchlist", "resource_scope": {"kind": "run", "id": run_id, "attempt": "1"}}
+        assert kwargs == {"audience": "watchlist", "resource_scope": {"kind": "run", "id": run_id, "attempt": "1"},
+                          "ttl_seconds": 7500}
         if generation_finished and review_authority_revoked:
             raise IdentityError(403, "original issuer revoked before review")
         token = "review-grant" if generation_finished else "generation-grant"

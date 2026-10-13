@@ -177,6 +177,24 @@ def test_normal_completion_does_not_stop_the_exited_group(monkeypatch):
     assert runner._wait_harness(process) == ("completed", "", 0)
 
 
+def test_active_research_can_finish_after_thirty_minutes(monkeypatch):
+    clock = iter([0, 1, 1900])
+    monkeypatch.setattr(runner, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    process = SimpleNamespace(args=["offline-harness"], returncode=0)
+    waits = []
+
+    def communicate(timeout):
+        waits.append(timeout)
+        if len(waits) == 1:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        return "completed synthesis after specialists", ""
+
+    process.communicate = communicate
+    monkeypatch.setattr(runner, "_stop_process_group", lambda item: pytest.fail("Active research was stopped early"))
+    assert runner._wait_harness(process) == ("completed synthesis after specialists", "", 0)
+    assert len(waits) == 2
+
+
 @pytest.mark.parametrize("returncode", [-15, 0])
 @pytest.mark.parametrize("accepted", [False, True])
 def test_cancellation_during_communicate_keeps_worker_interruption_semantics(monkeypatch, returncode, accepted):

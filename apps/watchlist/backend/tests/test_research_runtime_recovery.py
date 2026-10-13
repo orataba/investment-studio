@@ -367,6 +367,8 @@ def test_generation_recovery_reuses_saved_computations_and_keeps_original_clock(
     from watchlist_app import research_mcp as mcp
     context = {"sector_run": True, "run_id": "recovery", "cutoff": "2026-09-23T00:00:00Z",
         "input_snapshot_cutoff": "2026-09-23T00:00:00Z", "execution": {"attempt": 1, "resume": True},
+        "research_tasks": {"saved-specialist": {"status": "completed", "role": "recent_updates",
+            "result": {"summary": "Retained completed investigation", "source_ids": ["computed:saved"]}}},
         "computed_metrics": [{"source_id": "computed:saved", "source_type": "computed_metric", "title": "Saved figure",
             "instrument_id": "xlk", "as_of": "2026-09-23", "data": {"analysis_kind": "python_quant", "tables": [{"return": 0.2}]},
             "methodology": {"input_sources": [], "code": "retained-code"}}]}
@@ -406,6 +408,7 @@ def test_generation_recovery_reuses_saved_computations_and_keeps_original_clock(
         run = session.get(ResearchEntry, "recovery")
         assert run.status == "completed"
         assert run.context_json["computed_metrics"] == context["computed_metrics"]
+        assert run.context_json["research_tasks"] == context["research_tasks"]
         assert run.context_json["cutoff"] == context["cutoff"]
         assert run.context_json["input_snapshot_cutoff"] == context["input_snapshot_cutoff"]
 
@@ -432,7 +435,7 @@ def test_native_output_limit_marker_is_recorded_as_generation_failure(client, mo
 
 @pytest.mark.parametrize('has_draft', [False, True])
 def test_first_attempt_timeout_recovers_only_a_persisted_bound_review(client, monkeypatch, has_draft):
-    clock = iter([0, 1, 1801])
+    clock = iter([0, 1, 7201])
     from types import SimpleNamespace
     monkeypatch.setattr(runner, "time", SimpleNamespace(monotonic=lambda: next(clock)))
     from studio_identity import current_principal

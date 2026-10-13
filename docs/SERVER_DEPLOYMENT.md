@@ -729,8 +729,15 @@ researcher may delegate independent questions to native Harness child agents.
 provider requests across that agent tree; a parent waiting for children does not
 occupy a request slot. This does not increase the instrument worker concurrency.
 The main researcher and its children share the generation allowance; independent
-fact review retains its separate allowance. Completed, validated child findings
-remain attached to the original frozen input when a run is resumed.
+fact review starts a separate allowance. Both default to two hours, configured by
+`INVESTMENT_STUDIO_WATCHLIST_RESEARCH_STAGE_TIMEOUT_SECONDS` in `watchlist.env`.
+Stage credentials cover that allowance plus five minutes for publication and
+cleanup, bounded by the original parent identity's expiry; each stage revalidates
+that identity. The pinned Harness separately ends a model stream after five minutes
+without data, so extending a research stage does not remove stalled-network handling.
+Completed, validated child findings remain attached to the original frozen input
+when a run is resumed. A generation timeout without an accepted draft requires an
+explicit recovery after diagnosis rather than automatically repeating paid work.
 Increase concurrency only after measuring
 the combined API, Harness, fact-review and data-refresh memory peak on the target
 host. Restore overdue collection schedules before starting a research batch and

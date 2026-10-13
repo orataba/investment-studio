@@ -40,3 +40,12 @@ def test_research_defaults_to_one_worker_and_rejects_unsafe_counts():
     for count in (0, 5):
         with pytest.raises(ValidationError, match="research_worker_concurrency"):
             Settings(database_url="sqlite+pysqlite:///:memory:", research_worker_concurrency=count)
+
+
+def test_research_stage_allowance_fits_home_grant_with_publication_time():
+    settings = Settings(database_url="sqlite+pysqlite:///:memory:")
+    assert settings.research_stage_timeout_seconds == 7200
+    assert Settings(database_url=settings.database_url, research_stage_timeout_seconds=10800).research_stage_timeout_seconds == 10800
+    for seconds in (0, 24 * 3600):
+        with pytest.raises(ValidationError, match="research_stage_timeout_seconds"):
+            Settings(database_url=settings.database_url, research_stage_timeout_seconds=seconds)

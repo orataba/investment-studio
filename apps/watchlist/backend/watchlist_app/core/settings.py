@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     research_worker_concurrency: int = Field(default=1, ge=1, le=4)
     research_worker_lease_seconds: float = Field(default=300, gt=0)
     research_worker_heartbeat_seconds: float = Field(default=30, gt=0)
+    # Each model stage gets this allowance; its credential also reserves five
+    # minutes for process cleanup/publication within Home's 24-hour grant limit.
+    research_stage_timeout_seconds: int = Field(default=2 * 3600, gt=0, le=24 * 3600 - 300)
     recalc_worker_poll_interval_seconds: float = 1.0
     recalc_worker_shutdown_timeout_seconds: float = 5.0
     recalc_worker_running_job_timeout_seconds: float = 300.0

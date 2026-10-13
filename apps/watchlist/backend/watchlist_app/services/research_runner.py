@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from sqlalchemy import JSON, select, true
 from studio_identity import (IdentityError, current_principal, issue_delegation, principal_context,
                              resolve_token, revoke_delegation, service_principal)
+from watchlist_app.core.settings import get_settings
 from watchlist_app.db.models.workbench import ResearchEntry
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services.research_errors import ResearchInputUnavailable
@@ -55,10 +56,12 @@ def _accepted_submission(run_id, attempt, *, risk_run):
         return bool(row.submitted_draft)
 
 
-def _wait_harness(process, *, cancellation=None, accepted=None, timeout=1800):
+def _wait_harness(process, *, cancellation=None, accepted=None, timeout=None):
     """Own the process group until completion, including local polling failures."""
     cleanup_started = False
     try:
+        if timeout is None:
+            timeout = get_settings().research_stage_timeout_seconds
         deadline = time.monotonic() + timeout
         while True:
             if model_work_status()["paused"] or (cancellation is not None and cancellation.is_set()):
@@ -297,7 +300,7 @@ def run_analysis(run_id: str, token: str | None = None, issuer=None, *, attempt:
             identities.enter_context(principal_context(resolve_token(token, "watchlist")))
 
             def execution_authorization():
-                # Input materialization can outlast the initial one-hour grant.
+                # Input materialization can outlast the initial stage grant.
                 # Revalidate the original subject after preparation; never renew
                 # from an expired run token or substitute a different service.
                 if issuer is not None:
@@ -354,7 +357,7 @@ def _fail_run(run_id, message, *, attempt, runtime_error=None):
             session.commit()
 
 
-def authorize_run(principal, run_id, *, attempt=None, ttl_seconds=3600):
+def authorize_run(principal, run_id, *, attempt=None, ttl_seconds=None):
     """A persisted queue item must reach a terminal state if dispatch is rejected."""
     try:
         current = _current_attempt(run_id)
@@ -362,8 +365,13 @@ def authorize_run(principal, run_id, *, attempt=None, ttl_seconds=3600):
             attempt = current
         if current is None or attempt != current:
             raise HTTPException(409, "研究执行已结束或已被重试替代，不能签发旧任务凭证")
+        # A long research stage must not outlive its own tool credential. Queue
+        # grants keep their explicit allowance; Home still bounds every child
+        # by the original subject/parent expiry and revocation chain.
+        if ttl_seconds is None:
+            ttl_seconds = get_settings().research_stage_timeout_seconds + 300
         return issue_delegation(principal, audience="watchlist", resource_scope={"kind": "run", "id": run_id, "attempt": str(attempt)},
-                                **({"ttl_seconds": ttl_seconds} if ttl_seconds != 3600 else {}))
+                                ttl_seconds=ttl_seconds)
     except (IdentityError, HTTPException) as error:
         _fail_authorization(run_id, error, attempt=attempt)
         raise
@@ -552,10 +560,11 @@ def _execute_analysis(run_id: str, *, execution_authorization=None, attempt=None
             completed = True
     except (ResearchExecutionInterrupted, ModelWorkPaused):
         raise ResearchExecutionInterrupted()
-    except subprocess.TimeoutExpired:
-        outcome = "研究助手本次运行超时；可以缩小问题范围后重试。"
+    except subprocess.TimeoutExpired as error:
+        outcome = "研究助手达到本阶段运行时限，尚未完成；已有证据、计算和专员成果已保留，可从原进度继续。"
         runtime_error = {"type": "TimeoutExpired", "summary": outcome, "exit_code": process.returncode if process else None,
-                         "retryable": resume_review, "stage": "review" if resume_review else "generation"}
+                         "retryable": resume_review, "stage": "review" if resume_review else "generation",
+                         "timeout_seconds": error.timeout}
     except (IdentityError, HTTPException):
         raise  # Preserve authorization status and do not start/publish a model result.
     except ResearchInputUnavailable as error:

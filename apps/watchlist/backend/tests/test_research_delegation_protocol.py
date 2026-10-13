@@ -30,7 +30,9 @@ from home_api.services.auth import hash_password, token_hash
 
 
 @pytest.mark.parametrize("interrupted", [False, True])
-def test_worker_revokes_stage_children_without_parent_authority(client, monkeypatch, tmp_path, interrupted):
+@pytest.mark.parametrize("stage_seconds", [7200, 10800])
+def test_worker_revokes_stage_children_without_parent_authority(client, monkeypatch, tmp_path, interrupted, stage_seconds):
+    monkeypatch.setattr(runner.get_settings(), "research_stage_timeout_seconds", stage_seconds)
     settings = Settings(database_url=f"sqlite:///{tmp_path / 'identity.db'}")
     monkeypatch.setattr(auth, "get_settings", lambda: settings)
     monkeypatch.setattr(home_identity, "get_settings", lambda: settings)
@@ -93,6 +95,9 @@ def test_worker_revokes_stage_children_without_parent_authority(client, monkeypa
             children = [grant for grant in grants if grant.parent_kind == "delegation"]
             assert len(children) == 2
             assert all(grant.parent_id == parent.id and grant.revoked_at is not None for grant in children)
+            assert all(stage_seconds + 299 <= (grant.expires_at - grant.created_at).total_seconds()
+                       <= stage_seconds + 300 for grant in children)
+            assert 24 * 3600 - 1 <= (parent.expires_at - parent.created_at).total_seconds() <= 24 * 3600
             assert (parent.revoked_at is None) is interrupted
         assert all(status < 400 for _, status in responses)
         assert sum(path.endswith("/revoke") for path, _ in responses) == (2 if interrupted else 3)
