@@ -3,11 +3,13 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from sqlalchemy.orm import Session
 from sqlalchemy import select
 from studio_identity import current_principal
 
 from watchlist_app.db.models.research import InstrumentResearchNoteRevision
 from watchlist_app.services.research_identity import research_identity
+from watchlist_app.services.research_records import research_repository, serialize_note, serialize_profile
 from watchlist_app.services.research_themes import get_theme
 
 
@@ -27,7 +29,7 @@ def read_current_stances(session, instrument_ids, *, actor=None):
     """Resolve the latest explicit choices together, within this read only."""
     from sqlalchemy import func, tuple_
     from watchlist_app.db.models.research import InstrumentInvestmentStance, InstrumentResearchNote
-    from watchlist_app.api.routes.research import _serialize_note_revision
+    from watchlist_app.services.research_records import serialize_note_revision
     from watchlist_app.services.read_models import serialize_payload
     actor = actor or research_identity()
     if not instrument_ids:
@@ -59,7 +61,7 @@ def read_current_stances(session, instrument_ids, *, actor=None):
             continue
         result[selection.instrument_id] = serialize_payload({"selection_id": selection.selection_id, "selected_at": selection.selected_at,
             "selected_by": selection.selected_by, "selected_by_name": selection.selected_by_name,
-            "note": {**_serialize_note_revision(revision), "created_at": current.created_at,
+            "note": {**serialize_note_revision(revision), "created_at": current.created_at,
                      "updated_at": revision.recorded_at, "updated_by": revision.recorded_by},
             "has_later_revision": current.revision_number != selection.note_revision})
     return result
@@ -276,3 +278,15 @@ def prepare_note_values(session, instrument_id, payload, *, actor=None, record=N
         saved_context.update(information_cutoff=cutoff, source_ids=refs,
             sources=[deepcopy(source_reference(available[sid])) for sid in dict.fromkeys(refs)])
     return values
+
+
+def read_research_records(session: Session, instrument_id: str) -> dict[str, object]:
+    return {
+        "profile": serialize_profile(research_repository.get_profile(session, instrument_id)),
+        "current_stance": read_current_stance(session, instrument_id),
+        "notes": [
+            serialize_note(note)
+            for note in research_repository.list_notes(session, instrument_id)
+            if current_principal().local_unrestricted or note.team_id == research_identity()['team_id']
+        ],
+    }

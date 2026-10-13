@@ -4786,6 +4786,12 @@ export default function FundDetailPage({
     const comparisonComplete = comparisonFundLimitation == null && benchmarkLimitation == null
     return {
       ...period,
+      // SI is the available-series window; its first observation is not proof of fund inception.
+      label: period.key === 'SI'
+        ? language === 'zh-Hans'
+          ? selectedBenchmark ? '共同历史' : '全部可用历史'
+          : selectedBenchmark ? 'Common History' : 'Available History'
+        : period.label,
       limitation: selectedBenchmark ? comparisonFundLimitation || benchmarkLimitation : fundLimitation,
       effectiveDates: selectedBenchmark
         ? alignedComparisonWindows ? { anchor: alignedComparisonWindows.left.anchorDate, end: alignedComparisonWindows.left.endDate } : null
@@ -5853,7 +5859,7 @@ export default function FundDetailPage({
             </div>
           </div> : null}
           {resourceReady('navSeries') ? <p className="fund-overview-date-note">{language === 'zh-Hans' ? '可用历史' : 'Available history'} {formatDate(calculationBasisSeries[0]?.date)} — {formatDate(performanceReferenceEndDate)} · {calculationFrequencyStatus}</p> : null}
-          {summary.freshness.staleness_reason && <p className="fund-overview-date-note" role="status"><FreshnessNote reason={summary.freshness.staleness_reason} observationDate={performanceReferenceEndDate || unitNavDate} /></p>}
+          {(summary.freshness.staleness_reason || (summary.freshness.data_freshness_status === 'fresh' && Boolean(summary.freshness.awaiting_publication_date) && !summary.freshness.staleness_reason)) && <p className="fund-overview-date-note" role="status"><FreshnessNote status={summary.freshness.data_freshness_status} awaitingPublicationDate={summary.freshness.awaiting_publication_date} reason={summary.freshness.staleness_reason} observationDate={performanceReferenceEndDate || unitNavDate} /></p>}
           {resourceReady('navSeries') && ((navSeries.calculation_frequency_profile.gap_count ?? 0) > 0 || hasUnconfirmedReturnSegmentBreak) ? <p className="fund-overview-quality" role="status">{hasUnconfirmedReturnSegmentBreak
             ? (language === 'zh-Hans' ? '存在尚未确认的基金事件，完整收益历史与风险指标暂不可用。' : 'An unconfirmed fund event prevents complete return history and path risk metrics.')
             : (language === 'zh-Hans' ? '净值历史存在缺口，路径风险指标暂不可用。' : 'NAV history has gaps; path risk metrics are unavailable.')}</p> : null}
@@ -6704,8 +6710,8 @@ export default function FundDetailPage({
                 ? `回撤与标的自身风险保留共同首尾内各自完整路径；相关风险按共同相邻区间对齐，不删点掩盖缺口。披露频率：标的 ${calculationFrequencyProfile.resolved_frequency} / 基准 ${benchmarkNavSeries?.calculation_frequency_profile.resolved_frequency || '未确认'}。`
                 : `Drawdown and each instrument's risk retain their full paths between common endpoints; relative risk uses common intervals after completeness checks. Observation frequency: instrument ${calculationFrequencyProfile.resolved_frequency} / benchmark ${benchmarkNavSeries?.calculation_frequency_profile.resolved_frequency || 'unconfirmed'}.`}</p>}
               {activePerformanceMatrixMode !== 'values' && <p className="fund-overview-date-note" role="note">{language === 'zh-Hans'
-                ? '同类比较仅使用实际起止日、币种、频率和收益口径一致的固定区间收益；成立以来收益和风险指标不参与排名或中位数比较。'
-                : 'Peer comparisons use fixed-window returns with matching actual start/end dates, currency, frequency and return basis. Since-inception returns and risk metrics are excluded from ranks and medians.'}</p>}
+                ? '同类比较仅使用实际起止日、币种、频率和收益口径一致的固定区间收益；全部可用历史收益和风险指标不参与排名或中位数比较。'
+                : 'Peer comparisons use fixed-window returns with matching actual start/end dates, currency, frequency and return basis. Available-history returns and risk metrics are excluded from ranks and medians.'}</p>}
               <HorizontalTableScroll className="table-shell instrument-performance-table-shell">
                 <table aria-busy={comparisonPending} className={`terminal-table terminal-table-compact instrument-metrics-table${showAllMetricPeriods ? '' : ' instrument-metrics-table-core'}`}>
                   <thead>
@@ -7607,7 +7613,7 @@ export default function FundDetailPage({
             <div><span>{language === 'zh-Hans' ? '业绩数据截至' : 'Performance as of'}</span><strong>{formatDate(performance.snapshot_metadata?.as_of_date || null)}</strong></div>
             <div><span>{language === 'zh-Hans' ? '风险数据截至' : 'Risk as of'}</span><strong>{formatDate(risk.snapshot_metadata?.as_of_date || null)}</strong></div>
           </div>
-          {summary.freshness.staleness_reason && <p role="status"><FreshnessNote reason={summary.freshness.staleness_reason} observationDate={performanceReferenceEndDate || unitNavDate} /></p>}
+          {(summary.freshness.staleness_reason || (summary.freshness.data_freshness_status === 'fresh' && Boolean(summary.freshness.awaiting_publication_date) && !summary.freshness.staleness_reason)) && <p role="status"><FreshnessNote status={summary.freshness.data_freshness_status} awaitingPublicationDate={summary.freshness.awaiting_publication_date} reason={summary.freshness.staleness_reason} observationDate={performanceReferenceEndDate || unitNavDate} /></p>}
           {navRefreshStatus?.message && <p>{navRefreshStatus.message}</p>}
           {bundle.reference && Object.keys(bundle.reference.section_errors).length > 0 && <p>{Object.values(bundle.reference.section_errors).join(' ')}</p>}
         </section>

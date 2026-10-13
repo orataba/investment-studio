@@ -462,7 +462,7 @@ it('excludes since-inception metrics from peer ranking and permits median-only s
   await waitFor(() => expect((median as HTMLButtonElement).disabled).toBe(false))
   expect((screen.getByRole('button', { name: 'Peer Rank' }) as HTMLButtonElement).disabled).toBe(true)
   fireEvent.click(median)
-  expect(screen.getByText('同类比较仅使用实际起止日、币种、频率和收益口径一致的固定区间收益；成立以来收益和风险指标不参与排名或中位数比较。')).toBeTruthy()
+  expect(screen.getByText('同类比较仅使用实际起止日、币种、频率和收益口径一致的固定区间收益；全部可用历史收益和风险指标不参与排名或中位数比较。')).toBeTruthy()
   const annualizedRow = screen.getByRole('cell', { name: 'Ann. Return' }).closest('tr')!
   expect(annualizedRow.lastElementChild?.textContent).toBe('—')
   const volatilityRow = screen.getByRole('cell', { name: 'Ann. Volatility' }).closest('tr')!
@@ -537,7 +537,7 @@ it.each(['fund', 'benchmark'] as const)('keeps recent confirmed returns but reje
   const table = container.querySelector('.instrument-metrics-table') as HTMLElement
   fireEvent.click(screen.getByRole('button', { name: '全部周期' }))
   const headers = [...table.querySelectorAll('thead th')]
-  const cell = (label: string, period: string) => within(table).getByText(label).closest('tr')!.querySelectorAll('td')[headers.findIndex(h => h.textContent?.startsWith(period))]
+  const cell = (label: string, period: string) => within(table).getByText(label).closest('tr')!.querySelectorAll('td')[headers.findIndex(h => period === 'SI' ? /^(共同历史|全部可用历史)/.test(h.textContent || '') : h.textContent?.startsWith(period))]
   expect(cell('Period Return', 'SI').querySelector('strong')?.textContent).toBe('—')
   expect(cell('Period Return', 'YTD').querySelector('strong')?.textContent).toBe('—')
   expect(cell('Period Return', 'MTD').querySelector('strong')?.textContent).toContain('10.00%')
@@ -601,7 +601,7 @@ it.each([false, true])('scopes interval completeness to the selected window; rec
   const table = container.querySelector('.instrument-metrics-table') as HTMLElement
   fireEvent.click(screen.getByRole('button', { name: '全部周期' }))
   const headers = [...table.querySelectorAll('thead th')]
-  const cell = (label: string, period: string) => within(table).getByText(label).closest('tr')!.querySelectorAll('td')[headers.findIndex(header => header.textContent?.startsWith(period))]
+  const cell = (label: string, period: string) => within(table).getByText(label).closest('tr')!.querySelectorAll('td')[headers.findIndex(header => period === 'SI' ? /^(共同历史|全部可用历史)/.test(header.textContent || '') : header.textContent?.startsWith(period))]
   expect(cell('Period Return', 'SI').querySelector('strong')?.textContent).toBe('—')
   expect(cell('Period Return', '1M').querySelector('strong')?.textContent).toBe(recentGap ? '—' : '5.00%')
   expect(cell('Max DD', '1M').querySelector('strong')?.textContent).toBe(recentGap ? '—' : '-4.55%')
@@ -645,4 +645,14 @@ it('uses current NAV provenance instead of historical reference refresh timestam
   expect(screen.queryByText('old-channel-error')).toBeNull()
   expect(screen.queryByText('Last data update')).toBeNull()
   expect(screen.getByText('Configured mailbox')).toBeTruthy()
+})
+
+
+it('labels the full observed fund sample as available history, without claiming fund inception', async () => {
+  const { container } = show('/instruments/fund-1?currency=CNY')
+  await screen.findByText('Rolling Risk')
+  const table = container.querySelector('.instrument-metrics-table') as HTMLElement
+  const historyHeader = within(table).getByRole('columnheader', { name: /全部可用历史/ })
+  expect(historyHeader.textContent).toContain('2025-12-31')
+  expect(within(table).queryByRole('columnheader', { name: /成立以来|^SI/ })).toBeNull()
 })

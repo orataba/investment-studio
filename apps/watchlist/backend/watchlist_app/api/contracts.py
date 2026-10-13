@@ -4,7 +4,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from watchlist_app.services.research_records import InstrumentResearchNoteInput
 
 
 class WatchlistCreateRequest(BaseModel):
@@ -273,67 +274,6 @@ class InstrumentResearchProfileInput(BaseModel):
 class InstrumentResearchProfileUpsertRequest(BaseModel):
     profile: InstrumentResearchProfileInput
     updated_by: str | None = None
-
-
-class InstrumentResearchNoteContextInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    theme_id: str | None = None
-    research_update_id: str | None = None
-    event_case_id: str | None = None
-    event_version_id: str | None = None
-    notebook_version_id: str | None = None
-    theme_version_id: str | None = None
-    investment_view_version_id: str | None = None
-    related_note_id: str | None = None
-    related_revision: int | None = Field(default=None, ge=1)
-    relationship: Literal["initial", "update", "review", "lesson"] = "initial"
-    background: str = ""
-    horizon: str = ""
-    verification: str = ""
-    invalidation: str = ""
-    outcome: str = ""
-    mechanism_assessment: str = ""
-    lesson: str = ""
-    applicability: str = ""
-    limitations: str = ""
-    alternative_explanations: list[str] = Field(default_factory=list)
-    source_ids: list[str] = Field(default_factory=list)
-
-
-class InstrumentResearchNoteInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    completed_at: datetime | None = None
-    note_date: date
-    note_type: Literal[
-        "research_update",
-        "thesis_update",
-        "evidence",
-        "meeting",
-        "event",
-        "risk",
-        "decision",
-        "review",
-    ] = "research_update"
-    title: str = Field(min_length=1)
-    summary: str = ""
-    body: str = ""
-    importance: Literal["low", "medium", "high"] = "medium"
-    tags: list[str] = Field(default_factory=list)
-    source_refs: str = ""
-    people: str = ""
-    author: str = ""
-    follow_up_date: date | None = None
-    research_context: InstrumentResearchNoteContextInput | None = None
-
-    @field_validator("title")
-    @classmethod
-    def validate_title(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("title cannot be empty")
-        return normalized
 
 
 class InstrumentResearchNoteUpsertRequest(BaseModel):

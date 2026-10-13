@@ -305,11 +305,11 @@ def test_registered_terms_change_is_material_but_refresh_clock_is_not(client, mo
 
 
 def test_registered_material_originals_are_available_initially_and_only_reread_when_changed(client, monkeypatch):
-    from watchlist_app.api.routes.funds import _instrument_document_dir
+    from watchlist_app.services.instrument_documents import instrument_document_dir
     from watchlist_app.db.models import InstrumentManualProfile
     from watchlist_app.services import research_dossier
     seed_sector(client, monkeypatch)
-    folder = _instrument_document_dir("xlk")
+    folder = instrument_document_dir("xlk")
     folder.mkdir(parents=True)
     (folder / "terms.txt").write_text("管理人确认：赎回每季度开放。", encoding="utf-8")
     with get_session_factory()() as session:

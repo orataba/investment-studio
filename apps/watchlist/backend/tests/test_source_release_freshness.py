@@ -283,3 +283,32 @@ def test_unknown_daily_profile_preserves_observed_gap_without_certifying_alignme
     assert profile['gap_status'] == 'unverified'
     assert profile['gap_count'] is None
     assert 'unverified' in profile['status_label']
+
+
+@pytest.mark.parametrize('calendar,clock,current,latest,status,expected,pending', [
+    ('XSHG', '2026-10-13T14:30:00+08:00', '2026-10-13', '2026-10-12', 'fresh', '2026-10-12', None),
+    ('XSHG', '2026-10-13T21:00:00+08:00', '2026-10-13', '2026-10-12', 'fresh', '2026-10-12', '2026-10-13'),
+    ('XSHG', '2026-10-13T21:00:00+08:00', '2026-10-13', '2026-10-13', 'fresh', '2026-10-12', None),
+    ('XSHG', '2026-10-14T00:01:00+08:00', '2026-10-14', '2026-10-12', 'stale', '2026-10-13', None),
+    ('XSHG', '2026-10-13T21:00:00+08:00', '2026-10-13', '2026-10-09', 'stale', '2026-10-12', '2026-10-13'),
+    ('XNYS', '2026-10-14T01:00:00Z', '2026-10-13', '2026-10-12', 'fresh', '2026-10-12', '2026-10-13'),
+    ('XNYS', '2026-10-14T04:01:00Z', '2026-10-14', '2026-10-12', 'stale', '2026-10-13', None),
+    ('XSHG', '2026-10-11T21:00:00+08:00', '2026-10-11', '2026-10-09', 'fresh', '2026-10-09', None),
+])
+def test_same_day_publication_waiting_is_not_historical_missing(calendar, clock, current, latest, status, expected, pending):
+    reading = assess_latest_observation_freshness(latest_observation_date=date.fromisoformat(latest),
+        current_date=date.fromisoformat(current), resolved_frequency='daily', market_calendar=calendar,
+        instrument_type='etf', now=datetime.fromisoformat(clock))
+    assert reading['status'] == status
+    assert reading['expected_latest_date'] == expected
+    assert reading['awaiting_publication_date'] == pending
+
+
+def test_positive_source_lag_preserves_existing_contract_without_double_allowance():
+    reading = assess_latest_observation_freshness(latest_observation_date=date(2026, 10, 9),
+        current_date=date(2026, 10, 13), resolved_frequency='daily', market_calendar='XSHG',
+        instrument_type='private_fund', source_mode='email', release_lag_days=1,
+        now=datetime.fromisoformat('2026-10-13T21:00:00+08:00'))
+    assert reading['status'] == 'stale'
+    assert reading['expected_latest_date'] == '2026-10-12'
+    assert reading['awaiting_publication_date'] is None

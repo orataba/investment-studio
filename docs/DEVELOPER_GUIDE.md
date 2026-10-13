@@ -91,6 +91,8 @@ docs/                          当前仓库级合同与手册
 
 主页包为 `home_api`，只持有 `identity` 的账号、会话与服务凭证，不读取业务账本。后台维护包为 `studio_data`、`studio_market`，业务包为 `watchlist_app`、`portfolio_app`、`briefing_app`；各包在同一个 PostgreSQL 数据库中维护明确分区。Regime 继续使用独立 Python 环境。
 
+页面接口、后台任务与 agent 共用业务服务；不要从 `api.routes` 导入函数来复用计算、记录投影或文件路径。跨调用方的实现放在所属 app 的 `services`，HTTP 适配保留在路由中；基础设施测试检查这一依赖方向。Portfolio 的交易与计算合同仍以本应用的规格为准，不能为了统一目录形状而改写账本语义。
+
 ### 3.1 修改什么，至少检查什么
 
 | 修改类型 | 主要代码 | 同步检查 |

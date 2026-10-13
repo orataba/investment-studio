@@ -180,10 +180,10 @@ const FIELD_DESCRIPTIONS: Record<string, [string, string]> = {
   latest_quote: ['基金显示单位净值，股票和 ETF 显示市场价格，指数显示点位。', 'Unit NAV for funds, market price for equities and ETFs, and level for indexes.'],
   latest_quote_date: ['最新价格或净值对应的实际观测日期，不是页面刷新时间。', 'Observation date of the latest price or NAV, not the page refresh time.'],
   metric_as_of_date: ['本行收益和风险指标的样本截止日期；不同标的可能不同。', 'Sample end date of this instrument’s return and risk metrics; dates can differ between instruments.'],
-  max_drawdown: ['成立以来最大回撤；按实际可用观测计算，需结合数据缺口判断。', 'Maximum drawdown since inception from available observations; read alongside data gaps.'],
+  max_drawdown: ['全部可用历史的最大回撤；按实际可用观测计算，需结合数据缺口判断。', 'Maximum drawdown over available history; read alongside data gaps.'],
   'attr.current_drawdown': ['最新观测相对此前高点的回撤。', 'Drawdown at the latest observation relative to the previous high.'],
-  volatility: ['成立以来年化波动率；按实际可用收益区间计算，需结合数据缺口判断。', 'Annualized volatility since inception from available return intervals; read alongside data gaps.'],
-  sharpe_ratio: ['成立以来夏普比率，无风险利率取零；需结合数据缺口判断。', 'Sharpe ratio since inception with a zero risk-free rate; read alongside data gaps.'],
+  volatility: ['全部可用历史的年化波动率；按实际可用收益区间计算，需结合数据缺口判断。', 'Annualized volatility over available return intervals; read alongside data gaps.'],
+  sharpe_ratio: ['全部可用历史的夏普比率，无风险利率取零；需结合数据缺口判断。', 'Sharpe ratio over available history with a zero risk-free rate; read alongside data gaps.'],
   'attr.risk_attention': [
     '当前风险事项的状态：重点关注、风险线索、监测受限或暂无触发。风险线索包括待风控复核或已评估但仍待核实的事项；暂无触发不代表已完成全面风险评估。',
     'Current risk cases: attention, risk leads, limited monitoring, or no trigger. Risk leads include items awaiting review or still requiring verification after assessment. No trigger does not mean a full risk assessment is complete.',

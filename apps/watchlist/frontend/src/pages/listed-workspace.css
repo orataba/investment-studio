@@ -3,6 +3,7 @@
 .listed-overview .listed-overview-quote { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .listed-overview-quote .listed-metric-card { padding-top: 13px; padding-bottom: 12px; }
 .listed-overview-quote .listed-metric-value { font-size: 22px; }
+.listed-overview-publication { margin: 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
 .listed-overview-quality { margin: 0; font-size: 12px; line-height: 1.6; color: var(--warning); }
 .listed-risk-metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .listed-drawdown-line { stroke: var(--studio-negative); stroke-width: 2; }

@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 import exchange_calendars
 from exchange_calendars.errors import CalendarError
-from studio_market.calendars import confirmed_market_closures, closed_market_sessions
+from studio_market.calendars import confirmed_market_closures, daily_publication_sessions
 
 
 CalculationFrequency = Literal["daily", "weekly", "monthly", "event_driven", "unknown"]
@@ -207,7 +207,8 @@ def assess_latest_observation_freshness(
 
     Daily exchange-calendar sources are compared with the latest completed
     session whose trading-session release lag has fully elapsed. An aware now
-    includes today's session only after its actual exchange close. Date-only
+    keeps a closed same-day session pending until the next market-local date
+    unless a positive declared release lag already supplies that allowance. Date-only
     evaluations represent the start of the specified source-local date.
     """
 
@@ -241,6 +242,7 @@ def assess_latest_observation_freshness(
         normalized_release_lag = 0
     normalized_market_calendar = str(market_calendar or "").strip() or None
     expected_latest_date: date | None = None
+    awaiting_publication_date: date | None = None
 
     if not event_driven and not non_daily and normalized_market_calendar:
         sessions = _market_calendar_sessions(
@@ -248,10 +250,14 @@ def assess_latest_observation_freshness(
             current_date - timedelta(days=370),
             current_date,
         )
-        completed_sessions = (list(closed_market_sessions(normalized_market_calendar,
-            current_date - timedelta(days=370), current_date, now) or ()) if now is not None
-            else [session_date for session_date in (sessions or ()) if session_date < current_date])
-        available_sessions = completed_sessions[:-normalized_release_lag] if normalized_release_lag else completed_sessions
+        if now is not None:
+            availability = daily_publication_sessions(normalized_market_calendar,
+                current_date - timedelta(days=370), current_date, now,
+                release_lag_days=normalized_release_lag)
+            available_sessions, awaiting_publication_date = availability or ((), None)
+        else:
+            completed_sessions = [day for day in (sessions or ()) if day < current_date]
+            available_sessions = completed_sessions[:-normalized_release_lag] if normalized_release_lag else completed_sessions
         if available_sessions:
             expected_latest_date = available_sessions[-1]
 
@@ -264,9 +270,13 @@ def assess_latest_observation_freshness(
             if missing and set(missing).issubset(confirmed_no_trade_dates):
                 stale = False
                 confirmed = [day.isoformat() for day in missing]
+        pending = awaiting_publication_date if (awaiting_publication_date is not None
+            and latest_observation_date < awaiting_publication_date
+            and awaiting_publication_date not in confirmed_no_trade_dates) else None
         return {
             "status": "stale" if stale else "fresh",
             "expected_latest_date": expected_latest_date.isoformat(),
+            "awaiting_publication_date": pending.isoformat() if pending else None,
             "release_lag_trading_days": normalized_release_lag,
             "lag_days": max((current_date - latest_observation_date).days, 0),
             "confirmed_no_trade_dates": confirmed,

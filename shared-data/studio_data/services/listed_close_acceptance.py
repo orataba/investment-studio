@@ -10,7 +10,7 @@ from sqlalchemy import func, or_, select
 from investment_studio_instrument_core.db_models import (
     Instrument, InstrumentIdentifier, InstrumentMarketData,
 )
-from studio_market.calendars import closed_market_sessions, latest_closed_market_session
+from studio_market.calendars import closed_market_sessions, daily_publication_sessions, latest_closed_market_session
 from studio_market.numeric.hkex_sessions import matching_no_trade_evidence
 from studio_market.numeric.schema import batches, current
 from studio_data.db.session import get_session_factory
@@ -138,7 +138,17 @@ def _check_close(result: dict, instrument: dict | None, cutoff: datetime, baseli
         expected = latest_closed_market_session(calendar, cutoff)
     except ValueError:
         return {**checked, "reason": "unverified_market_calendar"}
-    checked["expected_close_date"] = expected.isoformat()
+    try:
+        availability = daily_publication_sessions(calendar, expected - timedelta(days=370), expected,
+            cutoff, release_lag_days=max(int(source.get("release_lag_days") or 0), 0))
+    except (ValueError, TypeError):
+        return {**checked, "reason": "invalid_publication_schedule"}
+    if availability is None or not availability[0]:
+        return {**checked, "reason": "unverified_market_calendar"}
+    due_sessions, _ = availability
+    due_date = due_sessions[-1]
+    checked["latest_closed_session"] = expected.isoformat()
+    checked["expected_close_date"] = due_date.isoformat()
     quote = instrument.get("close")
     if not quote:
         return {**checked, "reason": "complete_raw_close_missing"}
@@ -162,7 +172,8 @@ def _check_close(result: dict, instrument: dict | None, cutoff: datetime, baseli
     missing = [day for day in sessions if day not in by_date]
     if not missing:
         return {**checked, "status": "complete", "reason": None}
-    checked["missing_session_dates"] = [day.isoformat() for day in missing]
+    evidenced_dates = set()
+    evidence = []
     if calendar == "XHKG":
         tickers = instrument.get("exchange_tickers", [])
         match = re.fullmatch(r"([0-9]{1,5})\.HK", str(tickers[0])) if len(tickers) == 1 else None
@@ -180,23 +191,33 @@ def _check_close(result: dict, instrument: dict | None, cutoff: datetime, baseli
                 return {**checked, "reason": "no_trade_currency_unverified"}
             symbol = f"{int(match[1]):04d}.HK"
             evidence_rows = _read_hkex_evidence(symbol, window_start, expected)
-            evidence = []
             for day in missing:
                 previous_dates = [observed for observed in by_date if observed < day]
                 if not previous_dates:
-                    break
+                    continue
                 previous_close = Decimal(str(by_date[max(previous_dates)]["value"])) / multiplier
                 matched = matching_no_trade_evidence(
                     [row for row in evidence_rows if str(row.get("date")) == day.isoformat()],
                     symbol=symbol, currency=currency, last_close=previous_close,
                 )
                 if len(matched) != 1:
-                    break
+                    continue
                 evidence.extend(matched)
+                evidenced_dates.add(day)
             if len(evidence) == len(missing):
                 return {**checked, "status": "complete", "reason": "confirmed_no_trade",
                         "evidence_source_ids": [str(row["source_id"]) for row in evidence]}
-    return {**checked, "reason": "closed_session_price_missing"}
+    overdue = [day for day in missing if day <= due_date and day not in evidenced_dates]
+    awaiting = [day for day in missing if day > due_date and day not in evidenced_dates]
+    if evidence:
+        checked["evidence_source_ids"] = [str(row["source_id"]) for row in evidence]
+    checked["missing_session_dates"] = [day.isoformat() for day in overdue]
+    checked["awaiting_publication_dates"] = [day.isoformat() for day in awaiting]
+    if overdue:
+        return {**checked, "reason": "closed_session_price_missing"}
+    if awaiting:
+        return {**checked, "status": "pending", "reason": "awaiting_publication"}
+    return {**checked, "status": "complete", "reason": "confirmed_no_trade" if evidence else None}
 
 
 def verify_listed_close_coverage(
@@ -229,6 +250,7 @@ def verify_listed_close_coverage(
                     checked.append({"instrument_id": result["instrument_id"], "status": "unavailable",
                                     "reason": "verification_failed", "error_type": type(error).__name__})
     failed = sum(row["status"] == "unavailable" for row in checked)
-    return {"status": "failed" if failed else "passed" if targets else "not_required",
-            "cutoff": cutoff.isoformat(), "checked_count": len(checked), "failed_count": failed,
+    pending = sum(row["status"] == "pending" for row in checked)
+    return {"status": "failed" if failed else "pending" if pending else "passed" if targets else "not_required",
+            "cutoff": cutoff.isoformat(), "checked_count": len(checked), "failed_count": failed, "pending_count": pending,
             "results": checked}

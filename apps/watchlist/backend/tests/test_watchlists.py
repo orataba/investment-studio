@@ -624,6 +624,7 @@ def test_completed_recalc_marks_missing_canonical_series_unavailable() -> None:
         "staleness_reason": "No canonical series available.",
         "latest_observation_date": None,
         "expected_latest_date": None,
+        "awaiting_publication_date": None,
         "observation_lag_days": None,
         "no_trade_evidence": [],
         "release_lag_trading_days": None,
@@ -5911,7 +5912,8 @@ def test_fund_document_upload_rejects_oversized_file_without_partial_artifact(
     assert add_response.status_code == 200
 
     monkeypatch.setattr(funds_routes.settings, "document_upload_max_bytes", 4)
-    instrument_dir = funds_routes._instrument_document_dir("sxv264")
+    from watchlist_app.services.instrument_documents import instrument_document_dir
+    instrument_dir = instrument_document_dir("sxv264")
     files_before = set(instrument_dir.iterdir()) if instrument_dir.exists() else set()
 
     response = client.post(

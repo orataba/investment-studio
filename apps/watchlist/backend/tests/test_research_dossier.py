@@ -226,8 +226,8 @@ def test_private_conversation_evidence_is_not_automatically_shared(dossier_clien
 
 
 def test_fund_directory_reads_real_owned_files_and_keeps_unread_records_explicit(dossier_client, tmp_path):
-    from watchlist_app.api.routes.funds import _instrument_document_dir
-    folder = _instrument_document_dir("private")
+    from watchlist_app.services.instrument_documents import instrument_document_dir
+    folder = instrument_document_dir("private")
     folder.mkdir(parents=True)
     (folder / "manager.txt").write_text("实际管理人报告正文", encoding="utf-8")
     outside = tmp_path / "not-this-instrument.txt"

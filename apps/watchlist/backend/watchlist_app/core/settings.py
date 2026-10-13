@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     research_portfolio_api_url: str | None = None
     research_regime_api_url: str | None = None
+    tavily_api_key: SecretStr | None = Field(default=None, repr=False)
     wind_api_key: SecretStr | None = Field(default=None, repr=False)
 
     app_name: str = "Investment Studio Watchlist API"

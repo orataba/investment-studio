@@ -93,3 +93,31 @@ def latest_closed_market_session(calendar_name: str, now: datetime) -> date:
     if not sessions:
         raise MarketCalendarUnavailable(f"No verified closed session in the past year for {calendar_name!r}")
     return sessions[-1]
+
+
+def daily_publication_sessions(
+    calendar_name: str, start: date, end: date, now: datetime, *, release_lag_days: int = 0,
+) -> tuple[tuple[date, ...], date | None] | None:
+    """Due daily observations and a closed same-day session awaiting publication.
+
+    A market close is not a publisher's delivery deadline. Without a positive
+    declared trading-session lag, today's market-local daily observation becomes
+    overdue on the next local date. Explicit positive lags retain their existing
+    completed-session contract; the same-day allowance is not added again.
+    This changes availability expectations, never the exchange calendar or data.
+    """
+    from datetime import UTC
+    import exchange_calendars
+
+    sessions = closed_market_sessions(calendar_name, start, end, now)
+    if sessions is None:
+        return None
+    lag = max(int(release_lag_days), 0)
+    if lag:
+        return sessions[:-lag], None
+    name = str(calendar_name or "").upper()
+    name = {"XSHE": "XSHG", "HKEX": "XHKG", "HK": "XHKG"}.get(name, name)
+    zone = UTC if name == "24/7" else exchange_calendars.get_calendar(name).tz
+    today = now.astimezone(zone).date()
+    pending = sessions[-1] if sessions and sessions[-1] == today else None
+    return (sessions[:-1] if pending else sessions), pending

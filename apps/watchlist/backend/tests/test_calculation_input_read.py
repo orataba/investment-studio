@@ -135,10 +135,10 @@ def test_new_configuration_during_evidence_assembly_is_not_published(client, mon
 
 
 def test_risk_snapshot_rejects_configuration_completed_after_workspace_read(client, monkeypatch):
-    from watchlist_app.api.routes import workbench
+    from watchlist_app.services import risk_workspace
     from watchlist_app.services import risk_officer
     seed(client)
-    original = workbench.risk_workspace
+    original = risk_workspace.read_risk_workspace
 
     def finish_after_workspace(*args, **kwargs):
         result = original(*args, **kwargs)
@@ -146,7 +146,7 @@ def test_risk_snapshot_rejects_configuration_completed_after_workspace_read(clie
         assert drain_recalc_jobs() == 1
         return result
 
-    monkeypatch.setattr(workbench, "risk_workspace", finish_after_workspace)
+    monkeypatch.setattr(risk_workspace, "read_risk_workspace", finish_after_workspace)
     with get_session_factory()() as session:
         result = risk_officer.read_snapshot(session, instrument_id=IID)
     assert result["scope_available"] is False

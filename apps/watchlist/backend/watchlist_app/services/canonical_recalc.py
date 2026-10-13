@@ -2910,6 +2910,7 @@ class CanonicalRecalcService:
                 "expected_latest_date": observation_freshness.get(
                     "expected_latest_date"
                 ),
+                "awaiting_publication_date": observation_freshness.get("awaiting_publication_date"),
                 "observation_lag_days": observation_freshness.get("lag_days"),
                 "no_trade_evidence": [
                     {key: row.get(key) for key in ("date", "official_close", "currency", "source_id", "source_url", "observed_at")}

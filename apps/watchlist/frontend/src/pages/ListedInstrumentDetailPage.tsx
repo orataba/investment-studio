@@ -1113,7 +1113,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             <span className="context-chip">{(usesCanonicalPriceSeries ? chart?.currency : barsResponse?.currency) || latest?.currency || (quotePending ? loadingLabel : '—')}</span>
             {usesCanonicalPriceSeries ? <span className="context-chip">{indexSemanticsLabel}</span> : null}
             {sourceRefreshFailed ? <span className="context-chip listed-source-failed-chip">Source update failed</span> : null}
-            {!isIndex && summary?.freshness.data_freshness_status ? <span className="context-chip">{zh ? '行情' : 'Price data'} · {formatLabel(summary.freshness.data_freshness_status)}</span> : null}
+            {!isIndex && summary?.freshness.data_freshness_status ? <span className="context-chip">{zh ? '行情' : 'Price data'} · {(summary.freshness.data_freshness_status === 'fresh' && Boolean(summary.freshness.awaiting_publication_date) && !summary.freshness.staleness_reason) ? zh ? '等待当日数据发布' : 'Awaiting today’s data publication' : formatLabel(summary.freshness.data_freshness_status)}</span> : null}
             {typeof displayedCoverageStatus === 'string' && displayedCoverageStatus ? (
               <span className="context-chip">{formatLabel(displayedCoverageStatus)}</span>
             ) : null}
@@ -1252,7 +1252,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             <MetricCard tone={usesCanonicalPriceSeries ? signedValueClass(displayReturns.oneMonth) : undefined} label={usesCanonicalPriceSeries ? '1 Month' : zh ? '成交量' : 'Volume'} value={(usesCanonicalPriceSeries ? pending.performance : pending.bars) ? loadingLabel : usesCanonicalPriceSeries ? percentValue(displayReturns.oneMonth) : compactValue(latestPriceBar?.volume ?? null, 2)} />
           </section>
           {standardizedError && <p className="listed-overview-quality" role="status">{zh ? '部分绩效或风险数据无法读取，相应指标暂不展示。' : standardizedError}</p>}
-          {summary?.freshness.staleness_reason && <p className="listed-overview-quality" role="status"><FreshnessNote reason={summary.freshness.staleness_reason} observationDate={chart?.date_range?.end || latest?.date} /></p>}
+          {summary?.freshness && (summary.freshness.staleness_reason || (summary.freshness.data_freshness_status === 'fresh' && Boolean(summary.freshness.awaiting_publication_date) && !summary.freshness.staleness_reason)) && <p className={(summary.freshness.data_freshness_status === 'fresh' && Boolean(summary.freshness.awaiting_publication_date) && !summary.freshness.staleness_reason) ? 'listed-overview-publication' : 'listed-overview-quality'} role="status"><FreshnessNote status={summary.freshness.data_freshness_status} awaitingPublicationDate={summary.freshness.awaiting_publication_date} reason={summary.freshness.staleness_reason} observationDate={chart?.date_range?.end || latest?.date} /></p>}
           {noTradeConfirmation && <p className="listed-overview-quality" role="status">
             <a href={noTradeConfirmation.source_url} target="_blank" rel="noreferrer">{zh ? '港交所确认' : 'HKEX confirms'}</a>
             {zh

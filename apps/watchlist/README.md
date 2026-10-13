@@ -51,7 +51,7 @@ PM 投资观点保留作者、日期及引用。研究助手从当前部分、�
 
 模型共享约束在 [research_core.md](./backend/config/research_core.md)，各标的可编辑 skill 的默认值在后端 `research_skills.py`；二者分别持有安全/证据边界与研究分工，不重复存储用户偏好。
 
-研究、风险及助手使用仓库外 `portfolio-copilot.env` 和统一 Harness 模型配置。`DEEPSEEK_BASE_URL` 是追加 `/chat/completions` 前的 API 命名空间；公开搜索须真实返回原生搜索结果，普通回答或客户端工具调用不算完成检索。确认原生搜索不可用时用 `DEEPSEEK_SEARCH_ENABLED=false` 停止该入口，共享资讯和已知 URL 原文读取继续可用；不得擅自换目的地发送凭据。
+研究、风险及助手使用仓库外 `portfolio-copilot.env` 和统一 Harness 模型配置。`DEEPSEEK_BASE_URL` 是追加 `/chat/completions` 前的 API 命名空间；通用网页搜索独立使用 [Tavily Search](https://docs.tavily.com/documentation/api-reference/endpoint/search)，不再经过模型网关。专用密钥在私有 `watchlist.env` 配置 `INVESTMENT_STUDIO_WATCHLIST_TAVILY_API_KEY`，只由 Watchlist API 持有，不传入 Harness 主／子代理、MCP 或计算沙箱。未配置时返回 `search_status=not_configured` 并保留覆盖缺口；共享资讯和已知 URL 原文读取继续可用。开通与密钥管理使用 [Tavily 官方控制台](https://app.tavily.com/)，配置密钥后需用公开查询完成真实调用验收，接口安装不代表真实搜索已可用。
 
 Wind 补充研究由后端连接官方 HTTP MCP，在私有 `watchlist.env` 配置 `INVESTMENT_STUDIO_WATCHLIST_WIND_API_KEY`，凭据不进入 Harness 或模型。主研究员和专员按问题发现新闻公告、基金、股票、指数或宏观域的实际工具，读取必要资料；同轮同请求复用已留存原件，续读不重复联网。原始响应保留单位、日期和片段范围，可供隔离量化使用；供应商原件不等于自行计算或已核证结论。该入口不改正式行情、交易或账户，不提供 Wind 通用分析或交易工具，研究按具体缺口取数、不自动批量扫市场；接口可用不代表有完整覆盖或无限额度。Wind 新闻检索也不代替通用网页搜索。富途沿用[仅行情 REST 接入](../../docs/FUTU_MARKET_DATA.md)，不为研究挂载账户和交易工具。
 

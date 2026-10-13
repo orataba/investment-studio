@@ -19,3 +19,17 @@ it('refreshes a cached age at UTC midnight without refreshing data or claiming d
   act(() => vi.advanceTimersByTime(1000))
   expect(screen.getByText(/Latest observation is 109 calendar days old/).textContent).toContain('as of 2026-10-02 UTC')
 })
+
+
+it('shows a neutral publication wait with actual observation date, without treating age as overdue', () => {
+  window.history.replaceState({}, '', '?lang=zh-Hans')
+  render(<LanguageProvider enableDomTranslation={false}><p><FreshnessNote status="fresh" observationDate="2026-10-12" awaitingPublicationDate="2026-10-13" /></p></LanguageProvider>)
+  expect(screen.getByText(/等待当日数据发布/).textContent).toBe('等待当日数据发布 · 2026-10-13；最新观察日 2026-10-12')
+  expect(screen.queryByText(/滞后|已过去/)).toBeNull()
+})
+it('does not let a later publication wait conceal already overdue source data', () => {
+  window.history.replaceState({}, '', '?lang=en')
+  render(<LanguageProvider enableDomTranslation={false}><p><FreshnessNote status="stale" observationDate="2026-10-09" awaitingPublicationDate="2026-10-13" reason="Missing due observation for 2026-10-12." /></p></LanguageProvider>)
+  expect(screen.getByText(/Missing due observation for 2026-10-12/)).toBeTruthy()
+  expect(screen.queryByText(/Awaiting today/)).toBeNull()
+})

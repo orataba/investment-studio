@@ -5,7 +5,6 @@ from __future__ import annotations
 import http.client
 import ipaddress
 import json
-import os
 import re
 import socket
 import ssl
@@ -15,8 +14,10 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
-from watchlist_app.services.deepseek_config import deepseek_endpoint, deepseek_model
+from watchlist_app.core.settings import get_settings
 
+_SEARCH_URL = "https://api.tavily.com/search"
+_SEARCH_RESULTS = 10
 _TIMEOUT = 30
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _MAX_TEXT_CHARS = 12000
@@ -26,6 +27,10 @@ _CHARSET = re.compile(r"charset\s*=\s*[\"']?([^;\s\"']+)", re.I)
 
 class SectorWebError(RuntimeError):
     """Evidence could not be acquired; this does not mean nothing happened."""
+
+    def __init__(self, message: str, *, code: str = "unavailable"):
+        super().__init__(message)
+        self.code = code
 
 
 def _public_destination(url: str):
@@ -89,84 +94,69 @@ def _request(url: str, *, method="GET", headers=None, body=None, timeout: int = 
 
 
 def search_web(query: str) -> dict:
+    """Discover public leads. Only the authenticated API holds the Tavily key."""
     query = query.strip()
     if not query:
         raise SectorWebError("Search query is empty")
-    if os.environ.get("DEEPSEEK_SEARCH_ENABLED", "true").strip().lower() in {"0", "false", "no", "off"}:
-        raise SectorWebError("Native public search is disabled because no supported endpoint is currently enabled; use retained information or known public URLs and preserve this coverage gap")
-    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    configured = get_settings().tavily_api_key
+    key = configured.get_secret_value().strip() if configured is not None else ""
     if not key:
-        raise SectorWebError("DEEPSEEK_API_KEY is not configured")
-    body = {
-        "model": deepseek_model(), "max_tokens": 4096,
-        "messages": [{"role": "user", "content": [{
-            "type": "text", "text": f"Perform a web search for the query: {query}",
-        }]}],
-        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
-    }
-    status, _, payload = _request(deepseek_endpoint(search=True), method="POST", headers={
-        "x-api-key": key, "authorization": f"Bearer {key}",
-        "anthropic-version": "2023-06-01", "content-type": "application/json",
+        raise SectorWebError("Tavily public search is not configured; set "
+            "INVESTMENT_STUDIO_WATCHLIST_TAVILY_API_KEY in private watchlist.env. "
+            "Retained information and known public URLs remain available.", code="not_configured")
+    body = {"query": query, "search_depth": "basic", "topic": "general",
+        "max_results": _SEARCH_RESULTS, "chunks_per_source": 1,
+        "include_answer": False, "include_raw_content": False,
+        "include_images": False, "include_published_date": True, "auto_parameters": False}
+    status, _, payload = _request(_SEARCH_URL, method="POST", headers={
+        "authorization": f"Bearer {key}", "content-type": "application/json",
         "accept": "application/json", "user-agent": "InvestmentStudio-SectorResearch/1.0",
     }, body=json.dumps(body).encode())
-    # Never forward the credential-bearing request to a redirect destination.
+    # Never retry automatically or forward a credential-bearing redirect. Provider
+    # diagnostics and echoed credentials must not enter evidence or model context.
     if not 200 <= status < 300:
-        # Some compatible gateways translate native server tools into ordinary
-        # client functions. Adding input_schema would hide this capability gap:
-        # a requested tool call is not a search performed by the provider.
-        try:
-            error = json.loads(payload).get("error", {})
-            message = error.get("message", "") if isinstance(error, dict) else ""
-        except (ValueError, AttributeError):
-            message = ""
-        if (status == 400 and isinstance(message, str) and "tools[0]" in message
-                and "parameters must be valid JSON" in message):
-            raise SectorWebError("Configured endpoint rejected native web_search server-tool schema (HTTP 400); no search results were acquired")
-        raise SectorWebError(f"DeepSeek search failed (HTTP {status})")
+        raise SectorWebError(f"Tavily search failed (HTTP {status}); no search results were acquired")
+    if key.encode() in payload:
+        raise SectorWebError("Tavily search returned an unsafe response")
     try:
         document = json.loads(payload)
-        blocks = document.get("content", [])
-    except (ValueError, AttributeError) as exc:
-        raise SectorWebError("DeepSeek search returned an invalid response") from exc
-    if not isinstance(blocks, list):
-        raise SectorWebError("DeepSeek search returned invalid content blocks")
-    results = [block for block in blocks if isinstance(block, dict)
-               and block.get("type") == "web_search_tool_result"]
-    if not results:
-        if any(isinstance(block, dict) and block.get("type") == "tool_use" for block in blocks):
-            raise SectorWebError("Configured search endpoint did not execute native web search")
-        raise SectorWebError("DeepSeek returned no structured web search result blocks")
-    snippets = {}
-    for block in blocks:
-        if not isinstance(block, dict) or block.get("type") != "text":
-            continue
-        for citation in block.get("citations") or []:
-            if isinstance(citation, dict) and citation.get("url") and citation.get("cited_text"):
-                snippets.setdefault(citation["url"], citation["cited_text"])
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise SectorWebError("Tavily search returned an invalid response") from exc
+    if not isinstance(document, dict) or not isinstance(document.get("results"), list):
+        raise SectorWebError("Tavily search returned no structured search results")
+    if key in json.dumps(document, ensure_ascii=False):
+        raise SectorWebError("Tavily search returned an unsafe response")
+    items = document["results"]
+    if len(items) > _SEARCH_RESULTS:
+        raise SectorWebError("Tavily search exceeded the requested result limit")
     sources, seen, coverage = [], set(), []
     discovered_at = datetime.now(timezone.utc).isoformat()
-    for result in results:
-        items = result.get("content", [])
-        if isinstance(items, dict) and items.get("type") == "web_search_tool_result_error":
-            coverage.append("Native search reported an incomplete or failed search")
+    for item in items:
+        if not isinstance(item, dict):
+            raise SectorWebError("Tavily search returned an invalid result")
+        url = item.get("url")
+        try:
+            parsed = urlsplit(url) if isinstance(url, str) else None
+            public_url = (parsed is not None and parsed.scheme in {"https", "http"}
+                and parsed.hostname and not parsed.username and not parsed.password
+                and not any(ord(c) < 33 for c in url))
+        except ValueError:
+            public_url = False
+        if not public_url:
+            coverage.append("A search result had no usable public webpage URL")
             continue
-        if not isinstance(items, list):
-            coverage.append("Native search returned an unreadable result block")
+        if url in seen:
             continue
-        for item in items:
-            if not isinstance(item, dict) or item.get("type") != "web_search_result":
-                continue
-            url = item.get("url")
-            if not isinstance(url, str) or not url or url in seen:
-                continue
-            seen.add(url)
-            source = {"source_id": str(uuid4()), "url": url, "title": item.get("title") or "",
-                      "published_at_raw": item.get("page_age"), "time_status": "search_metadata",
-                      "discovered_at": discovered_at}
-            if url in snippets:
-                source["excerpt"] = snippets[url]
-            sources.append(source)
-    return {"query": query, "sources": sources, "coverage": coverage}
+        seen.add(url)
+        source = {"source_id": str(uuid4()), "url": url,
+            "title": item.get("title") if isinstance(item.get("title"), str) else "",
+            "provider": "tavily", "published_at_raw": item.get("published_date")
+                if isinstance(item.get("published_date"), str) else None,
+            "time_status": "search_metadata", "discovered_at": discovered_at}
+        if isinstance(item.get("content"), str):
+            source["excerpt"] = item["content"]
+        sources.append(source)
+    return {"query": query, "sources": sources, "coverage": list(dict.fromkeys(coverage))}
 
 
 class _HTMLCharset(HTMLParser):

@@ -13,9 +13,9 @@ from watchlist_app.services.research_notebook import (
 
 @pytest.fixture
 def document(monkeypatch, tmp_path):
-    from watchlist_app.api.routes import funds
+    from watchlist_app.services import instrument_documents
 
-    monkeypatch.setattr(funds, "_instrument_document_dir", lambda instrument_id: tmp_path)
+    monkeypatch.setattr(instrument_documents, "instrument_document_dir", lambda instrument_id: tmp_path)
     path = tmp_path / "manager.txt"
     path.write_text("Cash exposure is 30%.", encoding="utf-8")
     row = {"title": "Manager report", "stored_file_name": path.name, "file_name": path.name,

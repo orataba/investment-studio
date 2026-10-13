@@ -537,15 +537,15 @@ def _file_text(path: Path) -> tuple[str, str, str]:
 
 def _document_materials(session: Session, instrument_id: str) -> list[dict]:
     # Match the existing fund-document download route's actual storage location.
-    from watchlist_app.api.routes.funds import _instrument_document_dir, _safe_file_segment
+    from watchlist_app.services.instrument_documents import instrument_document_dir, safe_file_segment
     manual = session.get(InstrumentManualProfile, instrument_id)
     rows = (manual.documents_payload_json or {}).get("current_documents", []) if manual else []
-    folder = _instrument_document_dir(instrument_id).resolve()
+    folder = instrument_document_dir(instrument_id).resolve()
     result = []
     for index, row in enumerate(rows):
         stored_name = row.get("stored_file_name")
         body, status, extraction = "", "metadata_only", "只有资料目录，未读取原文"
-        if stored_name and _safe_file_segment(stored_name) == stored_name:
+        if stored_name and safe_file_segment(stored_name) == stored_name:
             path = folder / stored_name
             if path.resolve().is_relative_to(folder):
                 body, status, extraction = _file_text(path)
@@ -729,13 +729,13 @@ def read_dossier_version(session: Session, instrument_id: str, version_id: str, 
             "usage_note": "当时保存的主题判断与依据；不使用后来研究中的同名来源替换。"})
     if version_id.startswith("pm:"):
         from watchlist_app.services.research_views import note_version, note_sources
-        from watchlist_app.api.routes.research import _serialize_note_revision
+        from watchlist_app.services.research_records import serialize_note_revision
         try:
             _, note_id, revision = version_id.split(":")
             record = note_version(session, instrument_id, note_id, int(revision), actor=actor)
         except (TypeError, ValueError) as error:
             raise LookupError("当前标的没有这个投资经理观点版本") from error
-        value = _serialize_note_revision(record)
+        value = serialize_note_revision(record)
         return {"instrument_id": instrument_id, "version_id": version_id, "kind": "pm_view", "value": value,
                 "information_cutoff": (value.get("research_context") or {}).get("information_cutoff") or value["recorded_at"],
                 "recorded_at": value["recorded_at"], "sources": note_sources(session, instrument_id, value.get("research_context") or {}),
@@ -803,7 +803,7 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
     from watchlist_app.services.research_notebook import retained_public_sources
     from watchlist_app.services.research_themes import themes_view
     from watchlist_app.services.research_identity import research_identity
-    from watchlist_app.api.routes.research import _serialize_note, research_repository
+    from watchlist_app.services.research_records import serialize_note, research_repository
     actor = actor or research_identity()
     from studio_identity import current_principal
     local_unrestricted = current_principal().local_unrestricted
@@ -831,7 +831,7 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
     notes = research_repository.list_notes(session, instrument_id)
     from watchlist_app.services.research_views import note_sources, read_current_stance
     from watchlist_app.services.market_evidence import source_reference
-    pm_views = [{**_serialize_note(note), "sources": [source_reference(source) for source in note_sources(session, instrument_id, note.research_context or {})], "versions": [
+    pm_views = [{**serialize_note(note), "sources": [source_reference(source) for source in note_sources(session, instrument_id, note.research_context or {})], "versions": [
         {"revision_number": v.revision_number, "version_id": f"pm:{v.note_id}:{v.revision_number}",
          "recorded_at": v.recorded_at} for v in versions if v.note_id == note.note_id]}
         for note in notes

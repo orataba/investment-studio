@@ -185,8 +185,8 @@ def test_endpoint_reuses_canonical_chart_validates_identity_and_options(client, 
     assert client.get("/api/instruments/unknown/tail-risk").status_code == 404
 
 
-@pytest.mark.parametrize('hour,minute,expected,available', [(7, 0, '2026-10-07', True), (8, 5, '2026-10-07', True), (8, 10, '2026-10-08', False), (15, 0, '2026-10-08', False)])
-def test_hk_tail_uses_actual_closed_session_including_auction(hour, minute, expected, available):
+@pytest.mark.parametrize('hour,minute,expected,available', [(7, 0, '2026-10-07', True), (8, 5, '2026-10-07', True), (8, 10, '2026-10-07', True), (15, 0, '2026-10-07', True), (16, 1, '2026-10-08', False)])
+def test_hk_tail_waits_for_same_day_publication_but_rejects_overdue_tail(hour, minute, expected, available):
     from datetime import UTC, datetime
     from watchlist_app.services.calculation_frequency import _market_calendar_sessions
     sessions = _market_calendar_sessions('XHKG', date(2026, 1, 1), date(2026, 10, 7))

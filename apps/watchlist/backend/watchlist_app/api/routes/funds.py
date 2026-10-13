@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
 from pathlib import Path
-import re
 from typing import Any
 from uuid import uuid4
 
@@ -15,6 +14,7 @@ from watchlist_app.api.contracts import (
     NavSettingsUpsertRequest,
 )
 from watchlist_app.core.settings import get_settings
+from watchlist_app.services.instrument_documents import instrument_document_dir, safe_file_segment
 from watchlist_app.db.session import get_db_session
 from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
@@ -64,16 +64,6 @@ canonical_recalc_service = CanonicalRecalcService()
 
 FUND_INSTRUMENT_TYPES = frozenset({"public_fund", "private_fund"})
 LOOK_THROUGH_INSTRUMENT_TYPES = frozenset({*FUND_INSTRUMENT_TYPES, "etf"})
-
-
-def _safe_file_segment(value: str | None, fallback: str = "file") -> str:
-    raw = Path(value or "").name.strip()
-    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._")
-    return normalized or fallback
-
-
-def _instrument_document_dir(instrument_id: str) -> Path:
-    return settings.document_storage_root / _safe_file_segment(instrument_id, fallback="instrument")
 
 
 def _instrument_document_download_url(instrument_id: str, stored_file_name: str) -> str:
@@ -567,8 +557,8 @@ async def upload_fund_document(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _require_instrument(session, instrument_id)
-    original_file_name = _safe_file_segment(file.filename, fallback="uploaded-document")
-    instrument_dir = _instrument_document_dir(instrument_id)
+    original_file_name = safe_file_segment(file.filename, fallback="uploaded-document")
+    instrument_dir = instrument_document_dir(instrument_id)
     instrument_dir.mkdir(parents=True, exist_ok=True)
     stored_file_name = f"{uuid4().hex}-{original_file_name}"
     stored_path = instrument_dir / stored_file_name
@@ -639,8 +629,8 @@ def download_fund_document(
     session: Session = Depends(get_db_session),
 ) -> FileResponse:
     _require_instrument(session, instrument_id)
-    safe_stored_file_name = _safe_file_segment(stored_file_name)
-    stored_path = _instrument_document_dir(instrument_id) / safe_stored_file_name
+    safe_stored_file_name = safe_file_segment(stored_file_name)
+    stored_path = instrument_document_dir(instrument_id) / safe_stored_file_name
     if not stored_path.is_file():
         raise HTTPException(status_code=404, detail="Document file not found.")
     download_name = safe_stored_file_name.split("-", 1)[1] if "-" in safe_stored_file_name else safe_stored_file_name

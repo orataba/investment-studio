@@ -491,6 +491,8 @@ export type InstrumentSummaryResponse = {
     last_successful_snapshot_at: string | null
     staleness_reason: string | null
     latest_observation_date?: string | null
+    expected_latest_date?: string | null
+    awaiting_publication_date?: string | null
     no_trade_evidence?: Array<{ date: string; official_close: string; currency: string; source_id: string; source_url: string; observed_at: string }>
   }
   quick_monitoring_items: string[]

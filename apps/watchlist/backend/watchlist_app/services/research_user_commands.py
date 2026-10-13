@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from watchlist_app.api.contracts import InstrumentResearchNoteInput
+from watchlist_app.services.research_records import InstrumentResearchNoteInput
 from watchlist_app.repositories.sqlalchemy.research import SQLAlchemyInstrumentResearchRepository
 from watchlist_app.services.research_identity import run_identity
 from watchlist_app.services.research_themes import ThemeInput, ThemePatch, save_theme

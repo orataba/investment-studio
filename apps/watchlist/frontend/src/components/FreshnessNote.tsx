@@ -7,7 +7,7 @@ export function observationAge(observationDate: string | null | undefined, refer
   return Number.isFinite(age) && age >= 0 ? age : null
 }
 
-export default function FreshnessNote({ reason, observationDate }: { reason: string; observationDate?: string | null }) {
+export default function FreshnessNote({ reason = null, observationDate, status, awaitingPublicationDate }: { reason?: string | null; observationDate?: string | null; status?: string; awaitingPublicationDate?: string | null }) {
   const { language, t } = useLanguage()
   const [referenceDate, setReferenceDate] = useState(() => new Date().toISOString().slice(0, 10))
   useEffect(() => {
@@ -15,6 +15,8 @@ export default function FreshnessNote({ reason, observationDate }: { reason: str
     const timer = window.setTimeout(() => setReferenceDate(new Date().toISOString().slice(0, 10)), Math.max(1, nextMidnight - Date.now()))
     return () => window.clearTimeout(timer)
   }, [referenceDate])
+  if (status === 'fresh' && awaitingPublicationDate && !reason) return <>{language === 'zh-Hans' ? '等待当日数据发布' : 'Awaiting today’s data publication'}{awaitingPublicationDate && <> · <time dateTime={awaitingPublicationDate}>{awaitingPublicationDate}</time></>}{observationDate && <>{language === 'zh-Hans' ? '；最新观察日 ' : '; latest observation '}<time dateTime={observationDate}>{observationDate}</time></>}</>
+  if (!reason) return null
   const age = observationAge(observationDate, referenceDate)
   // Age is a reading-time fact, not the age frozen in a materialized snapshot.
   const currentReason = /Latest observation is \d+ calendar days old;/.test(reason) && age != null

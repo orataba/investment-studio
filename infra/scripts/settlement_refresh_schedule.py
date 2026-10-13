@@ -41,6 +41,11 @@ def should_run(summary_file: Path, now: datetime) -> bool:
             or summary["exit_code"] != 0
         ):
             return True
+        coverage = summary.get("listed_close_coverage") or {}
+        if coverage.get("status") == "pending" or coverage.get("pending_count", 0):
+            # A successful collection may still await today's publisher rows.
+            # Preserve the existing late slot instead of treating that as final.
+            return True
         started = datetime.fromisoformat(summary["started_at"])
         finished = datetime.fromisoformat(summary["finished_at"])
     except (ValueError, TypeError, KeyError):

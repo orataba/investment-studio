@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { fetchJson, type InstrumentChartResponse, type InstrumentSummaryResponse } from '../lib/api'
 import ResearchReadingAside from './ResearchReadingAside'
+import FreshnessNote from './FreshnessNote'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import ResearchFundamentalNumbers from './ResearchFundamentalNumbers'
 import EstimateHistoryPanel from './EstimateHistoryPanel'
@@ -46,7 +47,7 @@ export default function ResearchCurrentNumbers({ instrumentId }: { instrumentId:
     {!current && <p className="sector-research-note" role="status">正在读取量化数据…</p>}
     {current?.errors.map((error, index) => <p role="alert" key={index}>{error}</p>)}
     {summary?.key_stats?.length ? <dl className="research-quant-metrics">{summary.key_stats.map(stat => <div key={stat.label}><dt>{stat.label}</dt><dd>{stat.value ?? '—'}</dd></div>)}</dl> : null}
-    {summary?.freshness?.staleness_reason && <p className="sector-research-limitation">{summary.freshness.staleness_reason}</p>}
+    {summary?.freshness && (summary.freshness.staleness_reason || (summary.freshness.data_freshness_status === 'fresh' && Boolean(summary.freshness.awaiting_publication_date) && !summary.freshness.staleness_reason)) && <p className={(summary.freshness.data_freshness_status === 'fresh' && Boolean(summary.freshness.awaiting_publication_date) && !summary.freshness.staleness_reason) ? 'sector-research-note' : 'sector-research-limitation'}><FreshnessNote status={summary.freshness.data_freshness_status} awaitingPublicationDate={summary.freshness.awaiting_publication_date} reason={summary.freshness.staleness_reason} observationDate={summary.freshness.latest_observation_date} /></p>}
     <div className="research-dossier-section-heading"><h3>价格与收益历史</h3><div className="research-event-filters" aria-label="价格历史范围">{[[3, '3个月'], [6, '6个月'], [12, '1年'], [0, '全部']] .map(([value, label]) => <button type="button" key={value} aria-pressed={months === value} onClick={() => setMonths(Number(value))}>{label}</button>)}</div></div>
     <div className="research-event-filters" aria-label="历史数值口径"><button type="button" aria-pressed={!showingReturn} onClick={() => setPreferredSeries("price")}>原始价格</button><button type="button" disabled={!chart?.return_series?.wealth_points.length} aria-pressed={showingReturn} onClick={() => setPreferredSeries("return")}>收益路径</button></div>
     {!showingReturn && last && <p className="sector-research-note">原始价格可能包含拆股、分红等机械变化，不能直接据此判断投资回报。</p>}

@@ -116,3 +116,11 @@ def test_io_error_fails_condition_without_starting_collection(tmp_path):
         capture_output=True,
     )
     assert result.returncode == 255
+
+
+@pytest.mark.parametrize('coverage', [
+    {'status': 'pending', 'pending_count': 100},
+    {'status': 'failed', 'failed_count': 1, 'pending_count': 3},
+])
+def test_waiting_publication_does_not_suppress_existing_late_slot(tmp_path, coverage):
+    assert schedule.should_run(write_summary(tmp_path, listed_close_coverage=coverage), LATE)

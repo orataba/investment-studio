@@ -112,6 +112,7 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         'INVESTMENT_STUDIO_AUTH_SERVICE_TOKEN_FILE': '/private/backend-token-file',
         'INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL': 'private-database',
         'FMP_API_KEY': 'private-market-key',
+        'INVESTMENT_STUDIO_WATCHLIST_TAVILY_API_KEY': 'private-search-key',
     }
     env.pop('INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME', None)
     if stage:
@@ -155,8 +156,8 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         assert runtime_env[prefix + 'RUN_ID'] == 'run-test'
         assert runtime_env['INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE'] == (task_mode or 'conversation')
         assert runtime_env['INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME'] == (configured_model or 'deepseek-v4.1-flash')
-        assert runtime_env['DEEPSEEK_SEARCH_URL'] == 'https://provider.example/v1/messages'
-        assert runtime_env['DEEPSEEK_SEARCH_ENABLED'] == 'false'
+        assert 'DEEPSEEK_SEARCH_URL' not in runtime_env and 'DEEPSEEK_SEARCH_ENABLED' not in runtime_env
+        assert 'INVESTMENT_STUDIO_WATCHLIST_TAVILY_API_KEY' not in runtime_env
         assert runtime_env['INVESTMENT_STUDIO_RESEARCH_PERSONA'] == (ROOT / core).read_text().rstrip('\n')
         reviewer_args = [json.loads(line.removeprefix('FACT_REVIEW_ARGS ')) for line in result.stderr.splitlines()
                          if line.startswith('FACT_REVIEW_ARGS ')]

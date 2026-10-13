@@ -284,3 +284,11 @@ it('filters instrument developments by server category before pagination and kee
   fireEvent.click(screen.getByRole('button', { name: '讨论标的动态' }))
   expect(ask).toHaveBeenCalledWith(expect.stringContaining('财报与业绩会'), { instrument_id: 'stock' })
 })
+
+
+it.each(['zh-Hans', 'en'])('presents unconfigured public search without private configuration instructions in %s', async language => {
+  window.history.replaceState(null, '', `/?lang=${language}`)
+  render(<LanguageProvider messages={researchMessages} patterns={researchPatterns}><p>Tavily public search is not configured; set INVESTMENT_STUDIO_WATCHLIST_TAVILY_API_KEY in private watchlist.env. Retained information and known public URLs remain available.</p></LanguageProvider>)
+  await screen.findByText(language === 'zh-Hans' ? 'Tavily 搜索尚未配置。已保存资料和已知公开链接仍可使用。' : 'Tavily search is not configured. Saved materials and known public links remain available.')
+  expect(screen.queryByText(/TAVILY_API_KEY|watchlist\.env/)).toBeNull()
+})

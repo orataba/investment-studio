@@ -45,17 +45,18 @@ def verify(monkeypatch, record, *, cutoff=CUTOFF, baseline=None, result=RESULT):
                                                   baseline={"sample": baseline})
 
 
-@pytest.mark.parametrize("clock,latest,expected,passed", [
-    ("2026-10-08T16:09:00+08:00", "2026-10-07", "2026-10-07", True),
-    ("2026-10-08T16:10:00+08:00", "2026-10-07", "2026-10-08", False),
-    ("2026-10-08T16:30:00+08:00", "2026-10-08", "2026-10-08", True),
-    ("2026-02-16T12:30:00+08:00", "2026-02-13", "2026-02-16", False),
-    ("2023-09-08T16:30:00+08:00", "2023-09-07", "2023-09-07", True),
+@pytest.mark.parametrize("clock,latest,closed,expected,status", [
+    ("2026-10-08T16:09:00+08:00", "2026-10-07", "2026-10-07", "2026-10-07", "passed"),
+    ("2026-10-08T16:10:00+08:00", "2026-10-07", "2026-10-08", "2026-10-07", "pending"),
+    ("2026-10-08T16:30:00+08:00", "2026-10-08", "2026-10-08", "2026-10-07", "passed"),
+    ("2026-02-16T12:30:00+08:00", "2026-02-13", "2026-02-16", "2026-02-13", "pending"),
+    ("2023-09-08T16:30:00+08:00", "2023-09-07", "2023-09-07", "2023-09-07", "passed"),
 ])
-def test_frozen_request_clock_observes_actual_hk_close(monkeypatch, clock, latest, expected, passed):
+def test_frozen_request_clock_separates_hk_close_from_publication(monkeypatch, clock, latest, closed, expected, status):
     monkeypatch.setattr(acceptance, "_read_hkex_evidence", lambda *args: [])
     result = verify(monkeypatch, instrument(quote(latest)), cutoff=datetime.fromisoformat(clock))
-    assert (result["status"] == "passed") is passed
+    assert result["status"] == status
+    assert result["results"][0]["latest_closed_session"] == closed
     assert result["results"][0]["expected_close_date"] == expected
 
 
@@ -73,7 +74,8 @@ def test_after_cutoff_latest_still_requires_all_baseline_sessions(monkeypatch):
     record = instrument(quote("2026-10-05"), quote("2026-10-09"))
     result = verify(monkeypatch, record, baseline="2026-10-05")
     assert result["status"] == "failed"
-    assert result["results"][0]["missing_session_dates"] == ["2026-10-06", "2026-10-07", "2026-10-08"]
+    assert result["results"][0]["missing_session_dates"] == ["2026-10-06", "2026-10-07"]
+    assert result["results"][0]["awaiting_publication_dates"] == ["2026-10-08"]
 
 
 def test_no_trade_evidence_uses_each_missing_days_preceding_real_close_and_source_units(monkeypatch):
@@ -97,7 +99,8 @@ def test_no_trade_evidence_uses_each_missing_days_preceding_real_close_and_sourc
 def test_missing_day_is_not_waived_by_inadequate_exchange_evidence(monkeypatch, change):
     rows = [evidence("2026-10-08", **change)]
     monkeypatch.setattr(acceptance, "_read_hkex_evidence", lambda *args: rows)
-    result = verify(monkeypatch, instrument(quote("2026-10-07")), baseline="2026-10-07")
+    result = verify(monkeypatch, instrument(quote("2026-10-07")), baseline="2026-10-07",
+        cutoff=datetime.fromisoformat("2026-10-09T00:00:00+08:00"))
     assert result["status"] == "failed"
     assert result["results"][0]["reason"] == "closed_session_price_missing"
 
@@ -173,3 +176,24 @@ def test_readers_use_canonical_complete_closes_and_only_published_exchange_evide
     retained = acceptance._read_hkex_evidence("2822.HK", date(2026, 10, 5), date(2026, 10, 8))
     assert [row["date"] for row in retained] == ["2026-10-06"]
     engine.dispose()
+
+
+def test_same_day_waiting_preserves_late_retry_but_next_date_is_overdue(monkeypatch):
+    monkeypatch.setattr(acceptance, '_read_hkex_evidence', lambda *args: [])
+    record = instrument(quote('2026-10-07'))
+    waiting = verify(monkeypatch, record)
+    assert waiting['status'] == 'pending'
+    assert waiting['failed_count'] == 0 and waiting['pending_count'] == 1
+    assert waiting['results'][0]['awaiting_publication_dates'] == ['2026-10-08']
+    overdue = verify(monkeypatch, record, cutoff=datetime.fromisoformat('2026-10-09T00:01:00+08:00'))
+    assert overdue['status'] == 'failed'
+    assert overdue['results'][0]['missing_session_dates'] == ['2026-10-08']
+
+
+def test_declared_trading_session_lag_is_not_added_twice(monkeypatch):
+    monkeypatch.setattr(acceptance, "_read_hkex_evidence", lambda *args: [])
+    record = instrument(quote('2026-10-07'))
+    record['source_settings']['release_lag_days'] = 1
+    result = verify(monkeypatch, record)
+    assert result['status'] == 'pending'
+    assert result['results'][0]['expected_close_date'] == '2026-10-07'

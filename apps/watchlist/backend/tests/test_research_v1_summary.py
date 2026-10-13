@@ -35,7 +35,7 @@ def test_current_status_can_skip_all_event_history(activity_client, monkeypatch)
 
 def test_current_dossier_skips_auxiliary_history_but_keeps_exact_sources(activity_client, monkeypatch):
     from watchlist_app.services import research_activity, research_notebook
-    from watchlist_app.api.routes.research import research_repository
+    from watchlist_app.services.research_records import research_repository
     with get_session_factory()() as session:
         publish(session, research={"investment_view": {"direction": "保留当前判断", "risks": [risk()]}})
     complete = activity_client.get("/api/research/instruments/xlk/dossier").json()

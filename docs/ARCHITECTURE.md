@@ -84,6 +84,7 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 - 直接读取 `instrument_data`
 - 当前已发布范围是 `public_fund / private_fund / etf / equity / index / crypto`；加密资产现货当前数据合同为 BTC/USD，直接债券和商品不进入主工作面，其 ETF／基金／指数载体按登记类型研究
 - 在本地维护自己的 read models、recalc jobs、manual profile 和产品框架
+- HTTP 路由只承接请求与响应，后台业务与 agent 不反向导入路由。研究记录的校验／投影由 `research_records` 持有，观点选择和聚合读取由 `research_views` 持有；文档路径由 `instrument_documents` 持有，页面与风控快照共用 `risk_workspace` 投影。
 - 维护研究对话、标的资料档案、持续研究底稿、原始证据及其日期、助手运行快照和风险跟进；沿用 ResearchTopic / ResearchEntry，PM 观点与自动研究分别保存
 - 自动研究检查当前在投、有效且适用的权益标的增量；普通数值更新与跨日不触发模型。自动风控仅处理在投单标的必要事项，不遍历列表与组合。运行暂停默认关闭模型工作，资料接收和确定性计算独立运行；合同见[投资研究系统](INVESTMENT_RESEARCH_SYSTEM.md)。
 - 研究工具通过显式配置的只读 API 取得 Portfolio 持仓与 Regime 状态；不取得交易写权限，不跨 schema 复制这些事实

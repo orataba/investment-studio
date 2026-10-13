@@ -275,7 +275,7 @@ def test_public_source_tools_retain_sector_evidence_when_used_in_daily_research(
     from watchlist_app import research_mcp as mcp
     monkeypatch.setattr(mcp, "request", server_projection(lambda _: {"sector_run": True}))
     monkeypatch.setattr(mcp, "read_sector_source", lambda url: {"operation": "fetch", "url": url})
-    monkeypatch.setattr(mcp, "search_sector_information", lambda query: {"operation": "search", "query": query})
+    monkeypatch.setattr(mcp, "search_sector_information", lambda query, **kwargs: {"operation": "search", "query": query})
     assert mcp.read_public_source("https://example.com") == {"operation": "fetch", "url": "https://example.com"}
     assert mcp.search_public_information("public company") == {"operation": "search", "query": "public company"}
 

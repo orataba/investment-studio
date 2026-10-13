@@ -74,7 +74,7 @@ def _portfolio_snapshot(portfolio_id):
 def _research_context_inputs(session, instrument_ids):
     from studio_identity import current_principal
     from investment_studio_instrument_core.db_models import Instrument
-    from watchlist_app.api.routes.research import research_repository
+    from watchlist_app.services.research_records import research_repository
     from watchlist_app.services.research_identity import research_identity
     from watchlist_app.services.research_themes import theme_record
     from watchlist_app.services.research_views import read_current_stances
@@ -101,7 +101,7 @@ def _research_context_inputs(session, instrument_ids):
 def _research_context(session, instrument_id, notebook, *, inputs=None):
     """Bind current team judgments, without hydrating the historical source corpus."""
     from studio_identity import current_principal
-    from watchlist_app.api.routes.research import _serialize_note, _serialize_profile
+    from watchlist_app.services.research_records import serialize_note, serialize_profile
     from watchlist_app.services.sector_research import RESEARCH_TIMEZONES
 
     inputs = inputs if inputs is not None else _research_context_inputs(session, [instrument_id])
@@ -115,13 +115,13 @@ def _research_context(session, instrument_id, notebook, *, inputs=None):
     profile = inputs["profiles"].get(instrument_id)
     if profile is not None:
         records.append({"kind": "pm_profile", "source_id": f"risk-pm-profile:{instrument_id}:{profile.revision_number}",
-            "instrument_id": instrument_id, "value": _serialize_profile(profile),
+            "instrument_id": instrument_id, "value": serialize_profile(profile),
             "note": "标的PM档案及历史研究字段；current_view/thesis是旧档案原文，不是当前选定的总体观点，后者仅见current_stance。保留研究阶段，不推定仍建议持有。primary_analyst是负责人、updated_by是维护人，均不等于原观点作者；此档案未保存独立作者归属，不能补推。"})
     for note in inputs["notes"].get(instrument_id, []):
         if (not current_principal().local_unrestricted and note.team_id != actor["team_id"]
                 or note.completed_at is not None or (note.research_context or {}).get("theme_id") in inactive):
             continue
-        value = _serialize_note(note)
+        value = serialize_note(note)
         context = value.get("research_context") or {}
         if "sources" in context:
             # A PM note binds originals for provenance, but risk reads that PM's
@@ -183,7 +183,7 @@ def selected_cases(cases):
 
 
 def read_snapshot(session, **scope):
-    from watchlist_app.api.routes.workbench import risk_workspace
+    from watchlist_app.services.risk_workspace import read_risk_workspace
     from watchlist_app.services.sector_research import review_states
     scope = normalize_scope(**scope)
     key, identifier = next(iter(scope.items()))
@@ -226,7 +226,7 @@ def read_snapshot(session, **scope):
         ids, name = [identifier], record.instrument_name
     try:
         with calculation_input_read(session, ids):
-            workspace = risk_workspace(instrument_ids=",".join(ids), session=session)
+            workspace = read_risk_workspace(instrument_ids=",".join(ids), session=session)
             instruments = sorted(workspace["instruments"], key=lambda item: item["instrument_id"])
             states = review_states(session, instrument_ids=[item["instrument_id"] for item in instruments], for_risk=True)
             latest_research, completed_research = states["latest"], states["last_completed"]

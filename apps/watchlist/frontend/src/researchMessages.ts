@@ -433,7 +433,10 @@ export const researchMessages: LanguageMessages = {
   '其他解释': 'Alternative explanations', '适用限制': 'Limitations', '判断期限': 'Assessment horizon', '观察条件': 'Observation conditions', '失效条件': 'Invalidation conditions',
   '关键假设': 'Key assumptions', '主题背景': 'Theme background', '资料限制': 'Coverage limitations', '撤回原因': 'Reason for withdrawal', '复核条件': 'Review conditions', '复盘结果': 'Review outcome', '经验': 'Lesson',
 } }
-export const researchPatterns: LanguagePatternMessages = { en: [
+export const researchPatterns: LanguagePatternMessages = { 'zh-Hans': [
+  { match: /^Tavily public search is not configured;[\s\S]*$/, replace: 'Tavily 搜索尚未配置。已保存资料和已知公开链接仍可使用。' },
+], en: [
+  { match: /^Tavily public search is not configured;[\s\S]*$/, replace: 'Tavily search is not configured. Saved materials and known public links remain available.' },
   { match: /^在已检查范围内，未发现足够明确的新(机会|风险)线索。$/, replace: kind => `No sufficiently clear new ${kind === '机会' ? 'opportunity' : 'risk'} leads were found within the reviewed scope.` },
   { match: /^展开其余 (\d+) 项$/, replace: 'Show remaining $1 items' },
   { match: /^查看其余 (\d+) 份观察$/, replace: 'Show remaining $1 observations' },

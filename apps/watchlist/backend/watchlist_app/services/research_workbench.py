@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from watchlist_app.core.settings import get_settings
 from watchlist_app.db.models import InstrumentChartReadModel, InstrumentDetail, InstrumentRiskReadModel, InstrumentManualProfile, WatchlistRowReadModel, Watchlist, WatchlistItem, InstrumentSummaryReadModel, InstrumentPerformanceReadModel, InstrumentExposureReadModel, InstrumentExposureHoldingsReadModel
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic, RiskCase
-from watchlist_app.api.routes.research import _research_response
+from watchlist_app.services.research_views import read_research_records
 from watchlist_app.services.read_models import serialize_payload
 from watchlist_app.services.research_dossier import read_research_plan
 from watchlist_app.services.research_methods import analyst_guidance
@@ -190,10 +190,10 @@ def _read_instrument_evidence(session: Session, ids: list[str], *, include_dossi
                 asset[name] = {"data": None, "freshness": "unavailable", "source_cutoff_at": row.source_cutoff_at,
                                "reason": reason}
         if working_only:
-            from watchlist_app.api.routes.research import _serialize_profile, research_repository
-            asset["research"] = {"profile": _serialize_profile(research_repository.get_profile(session, iid))}
+            from watchlist_app.services.research_records import serialize_profile, research_repository
+            asset["research"] = {"profile": serialize_profile(research_repository.get_profile(session, iid))}
         else:
-            asset["research"] = _research_response(session, iid)
+            asset["research"] = read_research_records(session, iid)
         asset["research_tracking"] = completed_research.get(iid)
         asset["research_tracking_note"] = "这是已保存的自动研究结论，不是本轮最新核实；请按生成日期使用，并回到原始证据核实相关事实。"
         manual = session.get(InstrumentManualProfile, iid, populate_existing=True)

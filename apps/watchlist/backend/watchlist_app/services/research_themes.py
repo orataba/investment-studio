@@ -613,7 +613,7 @@ def research_progress(session, instrument_id, *, theme_id=None, note_id=None, ac
 
 
 def themes_view(session, instrument_id, *, actor=None, activity=None, notes=None, theme_id=None):
-    from watchlist_app.api.routes.research import _serialize_note
+    from watchlist_app.services.research_records import serialize_note
     from watchlist_app.repositories.sqlalchemy.research import SQLAlchemyInstrumentResearchRepository
     actor = actor or research_identity()
     notes = notes if notes is not None else SQLAlchemyInstrumentResearchRepository().list_notes(session, instrument_id)
@@ -624,7 +624,7 @@ def themes_view(session, instrument_id, *, actor=None, activity=None, notes=None
     updates = activity["updates"]
     receipts = review_receipts(session, instrument_id) if themes else {}
     for theme in themes:
-        theme["notes"] = [_serialize_note(note) for note in notes if (current_principal().local_unrestricted or note.team_id == actor["team_id"])
+        theme["notes"] = [serialize_note(note) for note in notes if (current_principal().local_unrestricted or note.team_id == actor["team_id"])
                           and (note.research_context or {}).get("theme_id") == theme["theme_id"]]
         theme["research_progress"] = activity["theme_progress"].get(theme["theme_id"], [])
         theme["updates"] = [row for row in updates if theme["theme_id"] in row["theme_ids"]]
