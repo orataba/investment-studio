@@ -4930,8 +4930,8 @@ export default function TransactionsPage() {
                           <dd>
                             {formatCurrency(selectedTransaction.fees, selectedTransaction.currency)}{selectedTransaction.transaction_type !== 'dividend_reinvestment' && <> / {formatCurrency(selectedTransaction.taxes, selectedTransaction.currency)}</>}
                             <br /><span>{selectedTransaction.fee_components?.length
-                              ? selectedTransaction.fee_components.map(item => `${formatLabel(item.category)} ${formatCurrency(Number(item.amount), selectedTransaction.currency)}`).join(' · ')
-                              : formatLabel(selectedTransaction.fee_category)}</span>
+                              ? selectedTransaction.fee_components.map(item => `${t(formatLabel(item.category))} ${formatCurrency(Number(item.amount), selectedTransaction.currency)}`).join(' · ')
+                              : t(formatLabel(selectedTransaction.fee_category))}</span>
                           </dd>
                         </div>
                         {selectedTransaction.transaction_type === 'dividend_reinvestment' && <>
