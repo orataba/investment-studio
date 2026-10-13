@@ -13,6 +13,7 @@ from studio_identity import current_principal, principal_context
 from watchlist_app.api.routes import sector_research as routes
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
 from watchlist_app.db.session import get_session_factory
+from studio_market import wind as wind_transport
 from watchlist_app.services import research_wind as wind
 from watchlist_app.services.research_read_projection import source_index, current_research_view
 from watchlist_app.services.research_run_evidence import (computed_reference, retained_computed_sources,
@@ -55,7 +56,7 @@ def provider(monkeypatch):
         assert kwargs["follow_redirects"] is False
         assert kwargs["trust_env"] is False
         return original(**kwargs, transport=httpx2.MockTransport(serve))
-    monkeypatch.setattr(wind.httpx2, "AsyncClient", client)
+    monkeypatch.setattr(wind_transport.httpx2, "AsyncClient", client)
     monkeypatch.setattr(wind, "get_settings", lambda: SimpleNamespace(wind_api_key=SecretStr(KEY)))
     return calls, response
 

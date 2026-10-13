@@ -52,7 +52,7 @@ RefreshOperationMode = Literal[
     "api",
     "projection_reconciliation",
 ]
-RefreshChannel = Literal["configured", "email", "tushare", "fmp", "futu", "all"]
+RefreshChannel = Literal["configured", "email", "tushare", "fmp", "futu", "wind", "all"]
 FxRateSourceKind = Literal["direct", "inverse", "cross"]
 InstrumentLifecycleStatus = Literal["active", "archived"]
 EmailParserProfile = Literal[

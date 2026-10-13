@@ -429,6 +429,12 @@ data coverage or remaining quota. Failed authentication or quota is reported wit
 changing endpoints or retrying a broader query. Wind financial search does not
 replace the separately configured public-web search capability.
 
+The explicitly configured Wind All A daily data source uses the same authorized
+credential under `INVESTMENT_STUDIO_DATA_WIND_API_KEY` in private `data.env`.
+It runs through the existing China post-close data task, without a model or an
+additional service. Source configuration, history backfill and price-return
+semantics are defined in [Data maintenance](../shared-data/README.md#万得全-a-日线).
+
 Watchlist's retained-data Python analysis also requires the separately provisioned
 [quantitative execution image](../infra/research-quant/README.md). Build that image
 from the staged release before switching services, and verify the kernel-boundary

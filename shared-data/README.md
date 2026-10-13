@@ -94,6 +94,14 @@ bin/investment-studio data reference refresh INSTRUMENT_ID --apply
 
 `jobs run` 是立即执行的维护作业，不是预览。现有 launchd/systemd 定时任务继续自动运行；`all` 包含邮件/行情/基金净值投影以及资料快照更新。Watchlist 从自己的只读接口读取已采集的共享资料，不因打开页面调用供应商。目录、附件和解析失败仍保留在原来的持久状态中，可用状态命令检查并通过作业重试。
 
+### 万得全 A 日线
+
+万得全 A `881001.WI` 使用官方 Wind MCP 的 `index_data.get_index_kline`，配置 `source_mode=api`、`source_api_profile=wind`、`market_calendar=XSHG`、`return_semantics=price_return` 和明确的 `history_start_date`。私有 `data.env` 保存 `INVESTMENT_STUDIO_DATA_WIND_API_KEY`；与研究工具共用只读 MCP 传输合同，取数和写入所有权仍在数据层。此接入只覆盖该指数，不自动扩展到其他 Wind 标的。
+
+首次按明确历史起点补采；日常只增量读取并重叠最近已保留日期，核对已结束的真实交易日。日 K 的 `MATCH` 为收盘点位，未复权 OHLC 保留原值，不生成总回报或虚构分红；成交量单位不明时不写成股数。完整供应商响应及获取时间留在公共数值原件中，验证后的价格和 OHLC 同批提交，缺口不填零，来源配置中途改变则终止本次投影。
+
+沿用中国市场盘后 `market / cn` 任务（上海 15:30），无需独立模型或新定时器。`jobs run --channel wind` 可检查该来源；认证、额度或数据合同错误明确阻断本次刷新，不立即重试消耗额度。云端与本地分别按各自配置运行，研究原件查询不改正式指数历史。
+
 未指定 `--summary-file` 时，摘要按渠道和市场分开保存：`settlement` 保留 `market-data-refresh-summary.json`，`reference` 和有市场范围的行情沿用 `[市场-]reference-data-refresh-summary.json`、`市场-market-data-refresh-summary.json`，无市场范围的行情使用 `all-market-data-refresh-summary.json`，其余渠道使用 `渠道-data-refresh-summary.json`；显式指定的路径保持原样，公共数据投影不会覆盖结算摘要或运行状态。
 
 ### 比特币现货

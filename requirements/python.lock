@@ -72,9 +72,9 @@ et-xmlfile==2.0.0
 exchange-calendars==4.13.2
     # via
     #   -c requirements/python.lock
-    #   investment-studio-market (shared-data/market/pyproject.toml)
     #   investment-studio-portfolio-backend (apps/portfolio/backend/pyproject.toml)
     #   investment-studio-watchlist-backend (apps/watchlist/backend/pyproject.toml)
+    #   investment-studio-market (shared-data/market/pyproject.toml)
     #   investment-studio-data (shared-data/pyproject.toml)
 fastapi==0.141.1
     # via
@@ -107,6 +107,7 @@ httpx2==2.12.0
     #   investment-studio-portfolio-backend (apps/portfolio/backend/pyproject.toml)
     #   investment-studio-watchlist-backend (apps/watchlist/backend/pyproject.toml)
     #   investment-studio-home (home/backend/pyproject.toml)
+    #   investment-studio-market (shared-data/market/pyproject.toml)
     #   investment-studio-data (shared-data/pyproject.toml)
     #   mcp
 httpx2-jsfetch==1.0 ; sys_platform == 'emscripten'
@@ -127,6 +128,7 @@ jsonschema==4.26.0
     # via
     #   -c requirements/python.lock
     #   investment-studio-watchlist-backend (apps/watchlist/backend/pyproject.toml)
+    #   investment-studio-market (shared-data/market/pyproject.toml)
     #   mcp
 jsonschema-specifications==2025.9.1
     # via
@@ -150,6 +152,7 @@ mcp==2.0.0
     #   investment-studio-briefing-backend (apps/briefing/backend/pyproject.toml)
     #   investment-studio-portfolio-backend (apps/portfolio/backend/pyproject.toml)
     #   investment-studio-watchlist-backend (apps/watchlist/backend/pyproject.toml)
+    #   investment-studio-market (shared-data/market/pyproject.toml)
 mcp-types==2.0.0
     # via
     #   -c requirements/python.lock
@@ -167,6 +170,7 @@ openpyxl==3.1.5
     #   -c requirements/python.lock
     #   investment-studio-portfolio-backend (apps/portfolio/backend/pyproject.toml)
     #   investment-studio-watchlist-backend (apps/watchlist/backend/pyproject.toml)
+    #   investment-studio-market (shared-data/market/pyproject.toml)
     #   investment-studio-data (shared-data/pyproject.toml)
 opentelemetry-api==1.44.0
     # via
@@ -287,6 +291,7 @@ referencing==0.37.0
 requests==2.34.2
     # via
     #   -c requirements/python.lock
+    #   investment-studio-market (shared-data/market/pyproject.toml)
     #   investment-studio-data (shared-data/pyproject.toml)
 rpds-py==2026.6.3
     # via

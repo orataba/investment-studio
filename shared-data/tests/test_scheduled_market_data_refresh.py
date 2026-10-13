@@ -290,6 +290,7 @@ def test_all_channels_merge_into_one_downstream_notification(monkeypatch, tmp_pa
         "email",
         "fmp",
         "futu",
+        "wind",
         "fund_nav_projection",
         "reference",
     ]

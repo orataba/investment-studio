@@ -63,3 +63,37 @@ def test_watermark_read_failure_prevents_refresh_and_preserves_original_error(mo
     assert caught.value is failure
     refresh.assert_not_called()
     status.assert_not_called()
+
+
+def test_wind_failure_does_not_enter_immediate_paid_retry(monkeypatch):
+    from studio_market.wind import WindError
+
+    before = {"instrument_id": "881001-wi", "source_settings": {"source_api_profile": "wind"}}
+    monkeypatch.setattr(market_data_ops, "get_instrument", lambda _: before)
+    monkeypatch.setattr(market_data_ops, "market_data_item_timeout", lambda _: nullcontext())
+    query = Mock(side_effect=WindError("Wind quota unavailable", 429))
+    monkeypatch.setattr(market_data_ops, "refresh_market_data", query)
+    status = Mock(side_effect=lambda **kw: {**before, "refresh_status": kw})
+    monkeypatch.setattr(market_data_ops, "update_refresh_status", status)
+    result = market_data_ops.refresh_market_data_with_timeout(
+        instrument_id="881001-wi", updated_by="test", source="configured")
+    assert result["refresh_status"]["status"] == "blocked"
+    assert result["canonical_changed"] is False
+    query.assert_called_once()
+
+
+def test_configured_wind_dispatch_preserves_source_ownership(monkeypatch):
+    from studio_data.services import wind_index
+
+    before = {"instrument_id": "881001-wi", "source_settings": {
+        "source_mode": "api", "source_api_profile": "wind"}}
+    monkeypatch.setattr(market_data_ops, "get_instrument", lambda _: before)
+    query = Mock(return_value=before)
+    monkeypatch.setattr(wind_index, "refresh_wind_index", query)
+    assert market_data_ops.refresh_market_data(
+        instrument_id="881001-wi", updated_by="test") == before
+    query.assert_called_once_with("881001-wi", full_history=False)
+    with pytest.raises(wind_index.WindIndexError, match="differs"):
+        market_data_ops.refresh_market_data(
+            instrument_id="881001-wi", updated_by="test", source="fmp")
+    assert query.call_count == 1

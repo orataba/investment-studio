@@ -3772,6 +3772,16 @@ def refresh_market_data(
 
     source_settings = dict(instrument.get("source_settings", {}))
     requested_source = str(source or "configured").strip().lower()
+    if str(source_settings.get("source_api_profile") or "").strip().lower() == "wind":
+        from studio_data.services.wind_index import WindIndexError, refresh_wind_index
+
+        if requested_source not in {"configured", "wind"}:
+            raise WindIndexError("The requested source differs from this instrument's configured Wind source.")
+        return refresh_wind_index(instrument_id, full_history=full_history)
+    if requested_source == "wind":
+        from studio_data.services.wind_index import refresh_wind_index
+
+        return refresh_wind_index(instrument_id, full_history=full_history)
     if (str(source_settings.get("source_api_profile") or "").strip().lower() == "futu"
             and requested_source not in {"configured", "futu"}):
         from studio_data.services.futu import FutuRefreshError
@@ -3898,7 +3908,7 @@ def refresh_market_data_with_timeout(
         refresh_mode = (
             "email"
             if normalized_source == "email"
-            else "api" if normalized_source in {"tushare", "fmp", "futu"} else None
+            else "api" if normalized_source in {"tushare", "fmp", "futu", "wind"} else None
         )
         LOGGER.warning(
             "market data item timed out instrument_id=%s source=%s message=%s",
@@ -3916,15 +3926,17 @@ def refresh_market_data_with_timeout(
     except Exception as exc:
         from studio_data.services.fmp import FmpApiError
         from studio_data.services.futu import FutuRefreshError
+        from studio_data.services.wind_index import WindIndexError
+        from studio_market.wind import WindError
 
         # Scheduled market projections select each instrument's configured
         # source. A typed FMP failure has the same per-item boundary there as
         # when the caller explicitly selected FMP.
-        if not isinstance(exc, (FmpApiError, FutuRefreshError)):
+        if not isinstance(exc, (FmpApiError, FutuRefreshError, WindIndexError, WindError)):
             raise
         record = update_refresh_status(
             instrument_id=instrument_id,
-            status="failed",
+            status="blocked" if isinstance(exc, (WindIndexError, WindError)) else "failed",
             message=str(exc),
             updated_by=updated_by,
             mode="api",
@@ -4482,7 +4494,7 @@ def _matches_batch_source(instrument: dict[str, object], source: str) -> bool:
         return source_mode == "email"
     if normalized_source == "tushare":
         return source_mode == "api" and _tushare_profile_enabled(source_settings)
-    if normalized_source in {"fmp", "futu"}:
+    if normalized_source in {"fmp", "futu", "wind"}:
         return source_mode == "api" and str(
             source_settings.get("source_api_profile") or ""
         ).strip().lower() == normalized_source
@@ -4946,11 +4958,16 @@ def refresh_market_data_batch(
             source="futu", updated_by=updated_by, full_history=full_history,
             include_inactive=include_inactive,
         )
+        wind_result = refresh_market_data_batch(
+            source="wind", updated_by=updated_by, full_history=full_history,
+            include_inactive=include_inactive,
+        )
         combined_results = [
             *list(tushare_result.get("results", [])),
             *list(email_result.get("results", [])),
             *list(fmp_result.get("results", [])),
             *list(futu_result.get("results", [])),
+            *list(wind_result.get("results", [])),
         ]
         return {
             **email_result,
@@ -5013,7 +5030,7 @@ def refresh_market_data_batch(
             "skipped_count": len(instruments) - len(targets),
             "results": results,
         }
-    if normalized_source in {"fmp", "futu"} and targets:
+    if normalized_source in {"fmp", "futu", "wind"} and targets:
         results: list[dict[str, object]] = []
         for target in targets:
             refreshed = refresh_market_data_with_timeout(

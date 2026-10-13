@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
 
-from pydantic import field_validator
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     fmp_api_key_file: Path | None = None
     fmp_api_url: str = "https://financialmodelingprep.com/stable"
     fmp_timeout_seconds: int = 30
+    wind_api_key: SecretStr | None = None
 
     model_config = SettingsConfigDict(
         env_prefix="INVESTMENT_STUDIO_DATA_",

@@ -203,7 +203,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Refresh Investment Studio market data without a browser session.")
     parser.add_argument(
         "--channel",
-        choices=("all", "email", "tushare", "fmp", "futu", "projection", "reference", "market", "settlement"),
+        choices=("all", "email", "tushare", "fmp", "futu", "wind", "projection", "reference", "market", "settlement"),
         default="all",
         help=(
             "Data channel to refresh. all refreshes the local FMP and authorized Futu security catalogs, "
@@ -303,7 +303,7 @@ def _parse_args() -> argparse.Namespace:
 
 def _channels(selected_channel: str) -> list[str]:
     if selected_channel == "all":
-        return ["fmp_catalog", "tushare", "email", "fmp", "futu", "fund_nav_projection", "reference"]
+        return ["fmp_catalog", "tushare", "email", "fmp", "futu", "wind", "fund_nav_projection", "reference"]
     if selected_channel == "fmp":
         return ["fmp_catalog", "fmp"]
     if selected_channel == "projection":
@@ -629,7 +629,7 @@ def _run_refresh(
         channels = [channel for channel in channels if channel != "fmp_catalog"]
     close_baseline = (
         listed_close_baseline(requested_instrument_ids or None)
-        if any(channel in {"configured", "tushare", "fmp", "futu"} for channel in channels)
+        if any(channel in {"configured", "tushare", "fmp", "futu", "wind"} for channel in channels)
         else {}
     )
     for channel in channels:
