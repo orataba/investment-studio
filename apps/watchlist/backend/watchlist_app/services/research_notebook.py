@@ -302,7 +302,10 @@ class ResearchNotebook(BaseModel):
     next_research: list[str] = Field(default_factory=list)
     source_ids: list[str] = Field(default_factory=list)
     catalysts: list[ResearchCatalyst] = Field(default_factory=list)
-    facts: list[ResearchFact] = Field(default_factory=list)
+    facts: list[ResearchFact] = Field(default_factory=list, description=(
+        "Complete replacement observation set, not a list of changed facts. Omit when unchanged; "
+        "an explicit empty list clears all facts. For a targeted correction, first read the current "
+        "complete facts and retain every unchanged observation alongside the corrected ones."))
     mandate_update: ResearchMandateInput | None = None
     investment_view: InvestmentView | None = None
     decision_brief: DecisionBrief | None = None
