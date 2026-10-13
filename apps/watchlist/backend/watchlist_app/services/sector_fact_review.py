@@ -178,8 +178,12 @@ and hedges are unknown; never infer them from smooth NAV or a similar product. A
 holdings percentage must identify whether its denominator is fund NAV, stock assets or a disclosed subset;
 an ambiguous field name or a plausible total does not establish that denominator. Without it, remove
 unsupported cash/uncovered NAV inferences and comparisons with benchmark weights or contractual limits.
-The same disclosed positions can still support a qualified exposure observation. A material
-market event needs evidence connecting it to this product. A material directory is not full
+The same disclosed positions can still support a qualified exposure observation. A net-impact or
+offset claim needs comparable scenario shocks and transmission/sensitivity assumptions;
+beneficiaries' and adversely affected holdings' weights alone do not establish their earnings or
+valuation responses. Remove that unsupported inference while retaining the observed exposure and
+conditional mechanism. A material market event needs evidence connecting it to this product.
+A material directory is not full
 document text, and a user's research thesis or previous AI response does not prove a new fact.
 Check transmission to the instrument's actual exposure. Unsupported valuation, already-priced-in
 claims or good-business-news arguments do not establish an investment opportunity.

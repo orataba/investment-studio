@@ -114,7 +114,11 @@ Financial interpretation
   invented weighted aggregate. Fund NAV level alone does not establish cheapness.
   Holdings percentages require a verified denominator: fund NAV, stock assets and a disclosed subset are
   different bases. Without that basis, do not infer cash/uncovered NAV weights or compare with allocation
-  limits. Asset-proportional fee rates are not fixed monetary costs; smaller assets alone do not raise
+  limits. Position weights measure exposure, not the size of an earnings or valuation response. Comparing
+  beneficiaries' and adversely affected holdings' weights alone cannot establish an offset or net effect;
+  that inference needs comparable scenario shocks and transmission/sensitivity assumptions. Without
+  those inputs, retain the conditional mechanism and leave the net effect unresolved.
+  Asset-proportional fee rates are not fixed monetary costs; smaller assets alone do not raise
   their percentage drag. NAV returns already reflecting a fee must not be charged that fee again.
   Fund size alone does not establish higher market impact or constrained strategy capacity. Redemption
   pressure depends on flows relative to liquid assets; trading-cost claims need order size, liquidity
