@@ -157,6 +157,8 @@ def test_migration_requires_explicit_full_history_and_preserves_raw_evidence(reg
     lambda data: data["rows"][0].__setitem__(0, "2026-10-08"),
     lambda data: data["rows"][0].__setitem__(0, "not-a-date"),
     lambda data: data["rows"][0].__setitem__(0, "2026-10-08T01:00:00+08:00"),
+    lambda data: data["rows"][0].__setitem__(0, "2026-10-08T00:00:00+09:00"),
+    lambda data: data["rows"][0].__setitem__(0, "2026-10-08T16:00:00+00:00"),
     lambda data: data["rows"][0].__setitem__(2, "NaN"),
     lambda data: data["rows"][0].__setitem__(2, "Infinity"),
     lambda data: data["rows"][0].__setitem__(2, "INVALID"),
@@ -271,3 +273,14 @@ def test_full_history_cannot_overwrite_a_different_quote_basis(registry):
     with pytest.raises(wind.WindIndexError, match="non-close"):
         wind.refresh_wind_index(iid, full_history=True, now=NOW, store=market)
     provider.assert_not_called()
+
+
+def test_mixed_wind_midnight_labels_preserve_daily_session_and_original_clock(registry):
+    sessions, iid, market, provider = registry
+    mutate(provider.return_value, lambda data: data["rows"][1].__setitem__(0, "2026-10-09T00:00:00.000+00:00"))
+    wind.refresh_wind_index(iid, full_history=True, now=NOW, store=market)
+    assert [point["as_of_date"] for point in core.get_instrument(sessions, iid)["market_data"]] == DAYS
+    row = next(row for row in market.query("market_series_daily", symbols=[wind.SYMBOL])["rows"] if row["date"] == DAYS[1])
+    assert row["provider_fields"]["TIME"] == "2026-10-09T00:00:00.000+00:00"
+    assert row["date_semantics"] == "provider_daily_session_label"
+    assert any("not a disclosure clock" in limitation for limitation in row["limitations"])

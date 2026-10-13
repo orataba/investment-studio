@@ -1,7 +1,7 @@
 """Retain Wind's unadjusted index observations and publish verified closes."""
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 import json
 from zoneinfo import ZoneInfo
@@ -140,8 +140,13 @@ def _rows(response: dict, sessions: set[date]) -> tuple[list[dict], list[dict], 
         except (TypeError, ValueError) as error:
             raise WindIndexError("Wind index TIME must be an explicit Shanghai daily timestamp.") from error
         local = clock.astimezone(SHANGHAI) if clock.tzinfo else None
-        if local is None or local.time() != time(0) or clock.utcoffset() != local.utcoffset():
-            raise WindIndexError("Wind index TIME must identify a Shanghai calendar day at midnight with its timezone.")
+        # TIME identifies the period=1d session, not a publication instant.
+        # Real Wind history mixes midnight +08:00 with midnight +00:00.
+        # Both preserve the same Shanghai date; reject other or crossing clocks.
+        if (local is None or clock.time() != time(0)
+                or clock.utcoffset() not in {timedelta(0), timedelta(hours=8)}
+                or local.date() != clock.date()):
+            raise WindIndexError("Wind index TIME must be a midnight UTC/+08 daily label preserving the Shanghai session date.")
         day = local.date()
         if day not in sessions:
             raise WindIndexError(f"Wind index date {day} is outside the requested closed XSHG sessions.")
@@ -164,7 +169,9 @@ def _rows(response: dict, sessions: set[date]) -> tuple[list[dict], list[dict], 
         observations.append(dict(series_id=SYMBOL, date=day.isoformat(), value=str(prices["close"]),
             **{key: str(value) for key, value in prices.items()}, currency="CNY", value_unit="index_points",
             return_semantics="price_return", ohlc_adjustment="unadjusted", provider_fields=row,
-            provider_units=units or None, limitations=["VOLUME unit is not established; no canonical volume was inferred.",
+            provider_units=units or None, date_semantics="provider_daily_session_label",
+            limitations=["TIME is a daily session label, not a disclosure clock; Wind can mix midnight UTC and +08 labels for the same Shanghai date.",
+                "VOLUME unit is not established; no canonical volume was inferred.",
                 "INVALID and empty values are unavailable, not zero; reported totals do not establish completeness."]))
     missing = sessions - {point["as_of_date"] for point in points}
     if missing:
