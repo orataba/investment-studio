@@ -33,7 +33,7 @@ def seed_instruments(client, monkeypatch):
         session.commit()
 
 
-def reply(iid, *, summary="存在需跟进的重要变化。", sources=None, themes=None, **changes):
+def reply(iid, *, summary="存在需跟进的重要变化。", sources=None, themes=None, research=None, **changes):
     events = [] if sources is None else [{"event_key": "index-rule-change", "action": "new", "direction": "risk",
         "importance_score": 3, "importance_reason": "规则调整可能改变持有产品的实际敞口。",
         "title": "跟踪指数规则变更", "body": "编制机构公告确认指数规则调整，需核对实际跟踪敞口的变化。",
@@ -48,7 +48,7 @@ def reply(iid, *, summary="存在需跟进的重要变化。", sources=None, the
             "next_check": "对照新编制说明及下一期持仓披露，核对实际敞口变化。"}] if events else []
     return json.dumps({"reviews": [{"instrument_id": iid, "summary": summary,
                                    "change_kind": "investment" if events else "none", "coverage": [], "events": events,
-                                   "themes": themes, "research": None}]})
+                                   "themes": themes, "research": research}]})
 
 
 def test_single_instrument_scope_and_runs_do_not_expand_or_block_sector_daily_checks(client, monkeypatch):
@@ -127,7 +127,10 @@ def test_prepare_preserves_bond_etf_evidence_and_original_event_survives_latest_
         run.context_json = {**run.context_json, "web_evidence": [{"operation": "search", "sources": []},
                             {"operation": "fetch", "sources": [source]}]}
         completed_sections(run)
-        service.apply_result(session, run, reply("fund-us-agg", sources=["index-original"]))
+        service.apply_result(session, run, reply("fund-us-agg", sources=["index-original"], research={
+            "investment_view": {"direction": "指数规则调整已确认，实际跟踪敞口及其投资影响仍待核实。",
+                                "coverage_status": "limited", "source_ids": ["index-original"]},
+            "source_ids": ["index-original"]}))
         run.created_at = run.completed_at = datetime.now(UTC) - timedelta(days=1)
         session.commit()
         assert run.status == "completed" and asset["name"] in run.body
@@ -159,8 +162,8 @@ def test_prepare_preserves_bond_etf_evidence_and_original_event_survives_latest_
     assert result["sectors"][0]["latest_review"]["run_id"] == failed_id
     assert result["sectors"][0]["latest_review"]["status"] == "failed"
     assert result["sectors"][0]["last_completed_review"]["run_id"] == newest_id
-    # Research follow-up remains active while risk assessment is pending; event prose is not the overall judgment.
-    assert result["sectors"][0]["last_completed_review"]["summary"] == ""
+    # A quiet follow-up preserves the established view instead of replacing it with event-check prose.
+    assert result["sectors"][0]["last_completed_review"]["summary"] == "指数规则调整已确认，实际跟踪敞口及其投资影响仍待核实。"
     assert result["sectors"][0]["last_completed_review"]["change_kind"] == "none"
     assert len(result["events"]) == 1 and not result["events"][0]["trigger_active"]
     assert result["events"][0]["risk_assessment"]["status"] == "pending"

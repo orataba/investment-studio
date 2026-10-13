@@ -127,10 +127,13 @@ def test_daily_notebook_material_and_assistant_share_the_same_instrument_evidenc
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id)
         run.context_json = {**run.context_json, 'web_evidence': [{'operation': 'search', 'sources': []}]}
-        # A quiet check does not require an invented notebook or opinion.
-        sector_research.validate_result(session, run, sector_research.ReviewResult.model_validate({'reviews': [
-            {'instrument_id': 'sxv264', 'change_kind': 'none', 'summary': '', 'coverage': [], 'events': []}]}))
-        paper = {'modules': [{'key': 'fund-strategy', 'summary': '策略来自管理人说明，底层敞口仍待核实。', 'analysis': '暂没有可比估值资料。'}], 'key_drivers': [],
+        # No news is valid, but a first baseline must state its actual limits.
+        with pytest.raises(ValueError, match='首次研究基线'):
+            sector_research.validate_result(session, run, sector_research.ReviewResult.model_validate({'reviews': [
+                {'instrument_id': 'sxv264', 'change_kind': 'none', 'summary': '', 'coverage': [], 'events': []}]}))
+        paper = {'investment_view': {'direction': '底层敞口未披露，目前无法形成投资判断。',
+                    'coverage_status': 'not_established', 'source_ids': [sid]},
+            'modules': [{'key': 'fund-strategy', 'summary': '策略来自管理人说明，底层敞口仍待核实。', 'analysis': '暂没有可比估值资料。'}], 'key_drivers': [],
             'questions': [{'key': 'exposure', 'question': '底层敞口是什么？', 'assessment': '尚未披露。', 'next_check': '取得持仓说明。',
                           'status': 'open', 'theme_id': 'fund-exposure', 'source_ids': [sid]}], 'source_ids': [sid]}
         completed_sections(run)
@@ -210,7 +213,9 @@ def test_fund_research_and_assistant_bind_nav_benchmark_common_sample_and_missin
                 "priority_reason": "净值差异已观察到，但未披露敞口使收益来源仍需验证。",
                 "source_ids": [computed["source_id"]], "synthesis": "共同观察日计算得到超额收益5个百分点，敞口未知，不能归因为特定策略。",
                 "next_check": "取得同期策略与敞口披露，验证共同样本超额收益的来源。"}],
-            "research": {"modules": [{"key": "fund-strategy", "summary": "基于共同周度观察日的表现仍需结合策略与敞口解释。"}], "source_ids": [computed["source_id"]]},
+            "research": {"investment_view": {"direction": "共同样本表现为正，但敞口未知，尚不足以判断投资吸引力。",
+                "coverage_status": "limited", "source_ids": [computed["source_id"]]},
+                "modules": [{"key": "fund-strategy", "summary": "基于共同周度观察日的表现仍需结合策略与敞口解释。"}], "source_ids": [computed["source_id"]]},
             "events": [{"event_key": "common-sample-review", "action": "new", "direction": "uncertain",
                 "importance_score": 3, "importance_reason": "相对表现及未知敞口影响基金判断。",
                 "title": "共同样本表现待解释", "body": "共同样本超额收益5个百分点，底层敞口仍未知。",
