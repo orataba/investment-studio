@@ -75,9 +75,14 @@ def _require_instruction(run, command):
                     or re.search(r"(?:引用|引文|资料内容|原文|摘录)\s*[:：]", sentence)
                     or re.search(r"^[^。！？.!?\n；;]*(?:吗|么|否)\s*[？?]", following)):
                 continue
-            if re.search(r"请问|如何|怎么|是否|要不要|应否|可否|能否|描述|报道|提到|写着|表示|声称|介绍|解释|翻译|说明|举例|示例|资料中|报告中|文中|原文中|查看|检查|分析|讨论|了解|\b(?:how|whether|should|says?|said|describes?|explain|translate|example)\b", clause, re.IGNORECASE):
+            # A subjectless coordinating clause continues the same directive:
+            # “请对…纠错，并经独立核证后发布”. Do not borrow authority
+            # across a sentence boundary or from a new descriptive subject.
+            continuation = re.fullmatch(r"\s*并(?:且)?(?:经独立核证后)?\s*", clause)
+            directive_context = sentence if continuation else clause
+            if re.search(r"请问|如何|怎么|是否|要不要|应否|可否|能否|描述|报道|提到|写着|表示|声称|介绍|解释|翻译|说明|举例|示例|资料中|报告中|文中|原文中|查看|检查|分析|讨论|了解|\b(?:how|whether|should|says?|said|describes?|explain|translate|example)\b", directive_context, re.IGNORECASE):
                 continue
-            directive = re.split(r"[:：]", clause)[-1].strip()
+            directive = re.split(r"[:：]", directive_context)[-1].strip()
             if directive and not re.match(
                     r"(?:请|帮我|麻烦|我(?:授权|要求|希望)(?:你)?|将|把|现在|直接|立即)|"
                     r"(?:please|kindly|I\s+(?:authorize|ask|want)\s+you\s+to)\b", directive, re.IGNORECASE):

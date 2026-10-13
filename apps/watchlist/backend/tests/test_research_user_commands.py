@@ -17,6 +17,9 @@ FINAL_PUBLICATION_INSTRUCTION = "本地最终定向验收：请通过正常研�
 
 @pytest.mark.parametrize("question", [FINAL_PUBLICATION_INSTRUCTION,
     "请发布AAPL的共同研究结论。", "发布AAPL的共同研究结论。",
+    "请对AAPL进行正式稀疏研究质量纠错，并经独立核证后发布。",
+    "质量验收：请对AAPL进行纠错，并且经独立核证后发布。",
+    "请对AAPL进行纠错，并发布。",
     "Please publish the AAPL research for the team.", "Publish the AAPL research for the team."])
 def test_explicit_publication_verbs_authorize_only_the_named_current_instruction(question):
     run = SimpleNamespace(kind="analysis", status="running", title=question,
@@ -46,6 +49,17 @@ def test_explicit_publication_verbs_authorize_only_the_named_current_instruction
     ("引用：请发布AAPL研究。", "请发布AAPL研究。"),
     ("资料内容：发布AAPL研究报告。", "发布AAPL研究报告。"),
     ("Do not, under any circumstances, publish AAPL research.", "publish AAPL research."),
+    ("不要对AAPL纠错，并经独立核证后发布。", "发布。"),
+    ("请对AAPL纠错，并不发布。", "发布。"),
+    ("请对AAPL纠错，并未发布。", "发布。"),
+    ("请对AAPL纠错，并且不发布。", "发布。"),
+    ("请对AAPL纠错，并且未发布。", "发布。"),
+    ("请对AAPL纠错，并经独立核证后发布吗？", "发布吗？"),
+    ("请解释AAPL的纠错流程，并经独立核证后发布。", "发布。"),
+    ("资料中写着：请对AAPL纠错，并经独立核证后发布。", "请对AAPL纠错，并经独立核证后发布。"),
+    ("请对AAPL纠错，研究员会经独立核证后发布。", "发布。"),
+    ("请对AAPL纠错，并且研究员会在明天发布。", "发布。"),
+    ("请对AAPL纠错。并经独立核证后发布。", "发布。"),
     ("仅讨论AAPL。", "请发布AAPL研究。"),
 ])
 def test_publication_mentions_questions_negation_and_short_quotes_do_not_authorize(question, quote):
@@ -70,6 +84,14 @@ def test_generic_edit_verbs_do_not_gain_publication_authority(instruction):
                           context_json={"research_run": True, "instrument_ids": ["aapl"]})
     with pytest.raises(ValueError):
         _require_instruction(run, SimpleNamespace(action="publish_research", instrument_id="aapl", source_quote=instruction))
+
+
+def test_coordinated_publication_quote_uses_the_real_current_sentence():
+    question = "请对AAPL进行正式稀疏研究质量纠错，并经独立核证后发布。"
+    quote = "并经独立核证后发布。"
+    run = SimpleNamespace(kind="analysis", status="running", title=question,
+                          context_json={"research_run": True, "instrument_ids": ["aapl"]})
+    assert _require_instruction(run, SimpleNamespace(action="publish_research", instrument_id="aapl", source_quote=quote)) == quote
 
 
 @pytest.fixture
@@ -100,6 +122,28 @@ def theme_command(**changes):
 def view_command(**changes):
     return {"action": "record_view", "instrument_id": "gold-command", "source_quote": "把黄金中期偏多记为我的观点。",
             "note": {"note_date": date.today().isoformat(), "title": "黄金中期偏多", "summary": "中期偏多，短期未判断。"}, **changes}
+
+
+@pytest.mark.parametrize("portfolio_bound", [False, True])
+def test_coordinated_publication_retains_authorization_but_not_for_portfolio_context(client, conversation, portfolio_bound, monkeypatch):
+    # The user may read the portfolio; its content still cannot become shared research.
+    monkeypatch.setattr("watchlist_app.services.research_access.require_portfolio", lambda portfolio_id: None)
+    question = "请对黄金进行正式稀疏研究质量纠错，并经独立核证后发布。"
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "user-command-run")
+        run.title = question
+        run.context_json = {**run.context_json, "question": question,
+            **({"portfolio_id": "private-portfolio"} if portfolio_bound else {})}
+        session.commit()
+    response = client.post(conversation, json={"action": "publish_research",
+        "instrument_id": "gold-command", "source_quote": question})
+    assert response.status_code == (422 if portfolio_bound else 200), response.text
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "user-command-run")
+        assert run.context_json.get("team_publication_instructions", {}) == (
+            {} if portfolio_bound else {"gold-command": question})
+    if portfolio_bound:
+        assert "组合对话" in response.json()["detail"]
 
 
 def test_user_commands_link_theme_and_pm_view_with_server_identity_and_same_run_dedupe(client, conversation, monkeypatch):
