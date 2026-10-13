@@ -44,6 +44,18 @@ jobs:
       - name: Synchronize locked Python environment
         run: infra/scripts/sync_python_env.sh
 
+      - name: Set up Node.js for native research tests
+        if: matrix.app == 'watchlist'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+
+      - name: Provision pinned research Harness
+        if: matrix.app == 'watchlist'
+        run: |
+          npm install --global pnpm@12.9.1
+          infra/harness/install.sh
+
       - name: Run backend suite
         run: infra/scripts/verify_repository.sh backend "${{ matrix.app }}"
 

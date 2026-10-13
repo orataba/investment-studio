@@ -1405,10 +1405,10 @@ def shared_market_coverage_gaps(context, *, instrument_id=None):
 
 def apply_result(session, run, reply):
     # The independent reviewer emits one complete structured document.
-    from watchlist_app.services.research_sections import require_section_results
+    from watchlist_app.services.research_tasks import require_finished_tasks
     parsed = ReviewResult.model_validate_json(reply)
     sources, notebook_evidence = validate_result(session, run, parsed)
-    require_section_results(run)
+    require_finished_tasks(run)
     context = run.context_json
     # Both entrances can update the same instrument while a model is running.
     # Publish only against the versions actually studied; preserve a stale draft for review.

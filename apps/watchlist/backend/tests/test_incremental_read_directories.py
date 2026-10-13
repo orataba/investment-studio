@@ -12,28 +12,6 @@ from .research_projection_fixture import server_projection
 from watchlist_app import research_mcp as mcp
 
 
-@pytest.mark.parametrize("role", ["recent_updates", "themes", "quantitative"])
-@pytest.mark.parametrize("section", ["research_working_sets", "section_results"])
-def test_specialists_cannot_reload_all_role_contexts_through_generic_reader(role, section):
-    context = {"sector_run": True, "instrument_ids": ["fund"],
-        "execution": {"research_section": role},
-        "research_working_sets": {"fund": {"affected_theme_ids": ["theme"]}},
-        "section_results": {"fund": {"themes": {"summary": "Other role's draft"}}}}
-    with pytest.raises(ValueError, match="自己分工"):
-        projection.read_research_context(lambda _: context, section=section)
-    overview = projection.read_research_context(lambda _: context)
-    assert overview["section_reads"][0]["section"] == role
-    assert "Other role's draft" not in str(overview)
-
-    # The synthesis owner and an ordinary conversation retain their explicit
-    # bound read; only specialist working contexts are separated.
-    context["execution"]["research_section"] = "overview"
-    assert projection.read_research_context(lambda _: context, section=section)["data"]
-    context["sector_run"] = False
-    context["execution"]["research_section"] = role
-    assert projection.read_research_context(lambda _: context, section=section)["data"]
-
-
 def test_current_theme_sources_are_selectable_originals_not_embedded_copies(monkeypatch):
     original = {"source_id": "computed:old:fund", "source_type": "computed_metric", "title": "原净值区间",
         "retrieved_at": "2026-10-01T00:00:00+00:00", "as_of": "2026-09-30", "data": {"points": [1, 2, 3] * 10000}}

@@ -232,7 +232,9 @@ Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会
 - 风控工具保留 48KB 返回上限；单条当前或历史记录过大时，返回同一分区原页的 `deferred` 目录，以 `page_offset` 绑定原页、`path` 定位字段、`offset` 续读该字段。原文、来源与 PM 判断不截断；全部 `next_offset` 和 `deferred.path` 分支实际交付后才通过必读检查，目录本身不能充当已读证据，未完成时返回精确 `missing_reads`。
 - 公开来源统一由 `/research/runs/{run_id}/sector-evidence` 留存；旧 `/tools` 的 `search` / `source` 与任意 `public_result` 写入口已删除。历史 `tool_evidence` 仍可读取，搜索目录不能当作原文证据。PM 讨论引用同时携带 `pm_note_id` 和 `pm_note_revision`，服务器按原版本绑定，失效引用在入队前返回 422。
 
-三个独立专员分别调用 `POST /api/research/runs/{run_id}/section-context` 和 `section-report`，上下文路径支持字符串字段及整数数组索引。`section_results` 按标的及角色保存并绑定输入截点，总览提交与最终发布均要求三份专员结果齐备。该结果不是独立事实来源，也不直接发布事件或主题。
+主研究员通过原生 `delegate_research` 按需创建具体任务；标的动态、主题、量化是职责模板，不要求每次全部执行。受信任的 Harness 适配器调用 `POST /api/research/runs/{run_id}/tasks`，将真实子会话身份绑定任务，再通过 `GET .../tasks/{task_id}/context` 和 `POST .../tasks/{task_id}/result` 读取分工上下文、保存经验证的提案；失败由 `POST .../tasks/{task_id}/failure` 留存具体限制。主题专员仅能进一步委派同标的、范围不扩大的主题子任务，最多两层。
+
+`context.research_tasks` 按任务保存角色、标的、主题范围、父任务、执行尝试及输入截点。上下文路径支持字符串字段及整数数组索引；主研究员通过 `task_results` 读取提案，子会话只通过原生 `read_assigned_context` 定位自己的分工和直接子任务。当前有效任务结束后，只有主研究员可提交最终草稿；独立核证读取各任务原始风险与限制。提案不是独立事实来源，不直接发布事件或主题，也不修改人工记录。恢复时复用已验证且输入未变的结果，未完成任务留存中断原因。
 
 `PUT /api/research/instruments/{instrument_id}/dossier/mandate` 接受 `guidance`、四部分 `section_skills` 和 `expected_revision`。`POST .../themes/{theme_id}/notes` 保存人工记录，`DELETE .../themes/{theme_id}` 按当前 revision 删除主题及研究引用，保护 PM、事件事实与风险状态。模型不得通过专员工具编辑用户 skill 或 PM 观点。
 

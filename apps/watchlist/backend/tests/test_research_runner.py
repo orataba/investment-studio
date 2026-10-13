@@ -463,6 +463,7 @@ def test_sector_review_has_its_own_deadline_over_the_saved_draft(client, monkeyp
 
 @pytest.mark.parametrize("review_authority_revoked", [False, True])
 def test_review_renews_original_issuer_grant_without_reusing_expired_generation_token(client, monkeypatch, review_authority_revoked):
+    monkeypatch.delenv("INVESTMENT_STUDIO_RESEARCH_MODEL_CONCURRENCY", raising=False)
     from dataclasses import replace
     from studio_identity import IdentityError, Principal
     issuer = Principal("pm-one", "PM", "default", credential="original-session")
@@ -503,6 +504,8 @@ def test_review_renews_original_issuer_grant_without_reusing_expired_generation_
                 return "草稿已提交", ""
             return json.dumps({"reviews": []}), ""
     def launch(*args, **kwargs):
+        assert kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_SECTION"] == "overview"
+        assert kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_MODEL_CONCURRENCY"] == "3"
         token = kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN"]
         assert token == ("review-grant" if generation_finished else "generation-grant")
         launched.append(token)

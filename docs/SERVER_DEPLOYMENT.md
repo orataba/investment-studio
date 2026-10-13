@@ -697,7 +697,15 @@ remaining current members through the same authorization and publication checks.
 It can recover a failed draft without recollecting its original evidence.
 Automatic and batch research default to one concurrent instrument, controlled by
 `INVESTMENT_STUDIO_WATCHLIST_RESEARCH_WORKER_CONCURRENCY` (1–4); an explicit
-`--workers` overrides the batch setting. Increase concurrency only after measuring
+`--workers` overrides the batch setting. Within one shared research run, the main
+researcher may delegate independent questions to native Harness child agents.
+`INVESTMENT_STUDIO_RESEARCH_MODEL_CONCURRENCY` defaults to `3` and limits actual
+provider requests across that agent tree; a parent waiting for children does not
+occupy a request slot. This does not increase the instrument worker concurrency.
+The main researcher and its children share the generation allowance; independent
+fact review retains its separate allowance. Completed, validated child findings
+remain attached to the original frozen input when a run is resumed.
+Increase concurrency only after measuring
 the combined API, Harness, fact-review and data-refresh memory peak on the target
 host. Restore overdue collection schedules before starting a research batch and
 let their catch-up work settle. An OOM kill can interrupt the research worker

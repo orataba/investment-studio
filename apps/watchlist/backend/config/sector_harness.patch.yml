@@ -51,9 +51,9 @@
 - id: plan-mode
   disabled: true
 - id: subagent
-  disabled: true
+  disabled: false
 - id: subagent-spawn-in-process
-  disabled: true
+  disabled: false
 - id: subagent-fork-in-process
   disabled: true
 - id: tool-subagent-control

@@ -29,6 +29,10 @@ independent factual sources. Check their stated counterevidence, missing assumpt
 against the originals, and reconcile conflicting claims in every proposed theme, module, view and
 decision_brief. Agreement among agents is not evidence; a supported limitation must not disappear
 when the main researcher combines their work.
+Findings identify each delegated question and its parent task. Delegation is optional, not a fixed
+three-role checklist; a task's limited/not_applicable/failed status does not establish completed
+coverage of its question. Inspect child findings as well as their parent's summary so a material
+risk or counterargument cannot be lost during aggregation.
 Check proposed themes as well as events and notebooks. Explicitly accept, reject or correct each proposed
 theme under its original theme_key; retain only proposed fields. A theme can be an
 unresolved, evidence-motivated research question; do not require its hypothesis to be proven before tracking.
@@ -93,6 +97,11 @@ instrument's draft_reviews.events. prior_events and prior_research_updates are h
 additional candidates. If that instrument's draft events=[], return decisions=[] even when prior_events
 contains open events; reviewing a receipt does not authorize a new decision about a prior event.
 Check EVERY proposed event separately:
+First identify the actual external development or attributed public view and why it matters to this
+instrument. A fresh calculation, rechecking old holdings, finding no announcement, or an expected reporting
+window alone is research/coverage work, not a new external event. Remove such proposals from events; do not
+invent an unproposed module or theme to relocate them. A newly published material NAV disclosure can be an
+event, but a research calculation from already held NAVs does not become one merely because it is useful.
 1. Verify the material fact or attributed discussion, including important older facts newly
 discovered by this system. There is NO publication-age admission window. Seven days is only a
 display range. Do not reject a useful old or undated original solely for its date. An AI
@@ -127,6 +136,12 @@ historical extreme; titles must not overstate what the retained measurements sup
 Keep each number's security, currency, unit, quote basis and as-of date attached. Check arithmetic
 consistency where the disclosure supplies the inputs: shares times price should reconcile to gross
 proceeds (not net proceeds), and million/billion/万/亿 and ordinary-share/ADS ratios must agree.
+Inspect the retained field's unit: an already-percent value must not be multiplied by 100 as a decimal
+return. Verify each return/risk metric's actual sample start and end against its computation; annualized
+return, volatility and maximum drawdown from a shorter sample cannot be called since-inception measures.
+For a claim that original data was wrong or corrected, read the exact original field, value and unit,
+not only a derived summary or another analyst's comparison. Remove a fabricated discrepancy and its
+claimed risk consistently from every proposed module, fact, view and decision_brief.
 For every ratio or percentage, identify its named numerator and denominator, check their units/period/scope,
 and recompute the division in that order. Verify the prose says which amount is a share of which; correctly
 citing both amounts does not excuse reversing A/B into B/A. Correct each affected proposed theme, question,
@@ -155,9 +170,15 @@ describe the cost structure, not an additional deduction from a net return. Veri
 charges and investor-specific performance fees against applicable contracts and, for actual portfolio
 outcomes, authorized ledger evidence; neither assume all fees are included in NAV nor infer investor charges
 from a published rate alone. Correct any proposed double deduction while preserving historical records.
+An asset-proportional fee rate is not a fixed monetary expense: smaller assets alone do not increase its
+percentage drag. A cost-dilution claim needs evidence of the actual fixed costs, not just a published rate.
 For public funds preserve disclosed holdings' reporting dates and lag. For private funds use
 the actual strategy, manager materials, NAV frequency and terms. Undisclosed holdings, leverage
-and hedges are unknown; never infer them from smooth NAV or a similar product. A material
+and hedges are unknown; never infer them from smooth NAV or a similar product. A reported
+holdings percentage must identify whether its denominator is fund NAV, stock assets or a disclosed subset;
+an ambiguous field name or a plausible total does not establish that denominator. Without it, remove
+unsupported cash/uncovered NAV inferences and comparisons with benchmark weights or contractual limits.
+The same disclosed positions can still support a qualified exposure observation. A material
 market event needs evidence connecting it to this product. A material directory is not full
 document text, and a user's research thesis or previous AI response does not prove a new fact.
 Check transmission to the instrument's actual exposure. Unsupported valuation, already-priced-in
@@ -606,11 +627,14 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
         if source_id in available and (metric.get("instrument_id") in ids or (
                 metric.get("instrument_id") is None and metric.get("scope") == "public_market")):
             sources[source_id] = available[source_id]
-    from watchlist_app.services.research_sections import SECTION_ORDER, section_complete
-    specialist_findings = [{"instrument_id": iid, "section": section,
-        **{key: value for key, value in context["section_results"][iid][section].items()
-           if key in {"status", "summary", "risks", "limitations", "source_ids", "input_snapshot_cutoff"}}}
-        for iid in sorted(ids) for section in SECTION_ORDER if section_complete(context, iid, section)]
+    from watchlist_app.services.research_tasks import TERMINAL_STATUSES, current_tasks
+    specialist_findings = [{
+        **{key: task.get(key) for key in ("task_id", "parent_task_id", "instrument_id", "role", "instruction",
+                                        "theme_ids", "status", "input_snapshot_cutoff")},
+        **{key: value for key, value in (task.get("result") or {}).items()
+           if key in {"summary", "risks", "limitations", "source_ids"}}}
+        for task in current_tasks(context).values()
+        if task.get("instrument_id") in ids and task.get("status") in TERMINAL_STATUSES]
     references_by_instrument = _review_references(context, reviewed)
     for finding in specialist_findings:
         references_by_instrument[finding["instrument_id"]].update(notebook_source_ids(finding))

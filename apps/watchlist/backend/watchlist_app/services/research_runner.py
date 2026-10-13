@@ -55,52 +55,6 @@ def _accepted_submission(run_id, attempt, *, risk_run):
         return bool(row.submitted_draft)
 
 
-def _section_finished(run_id, attempt, section):
-    from watchlist_app.services.research_sections import section_complete
-    from watchlist_app.services.research_run_context import load_run_fields
-    with get_session_factory()() as session:
-        run = load_run_fields(session, run_id, {
-            "execution", "instrument_ids", "input_snapshot_cutoff", "section_results"})
-        context = run.context_json
-        return (run.status == "running" and context.get("execution", {}).get("attempt") == attempt
-                and all(section_complete(context, iid, section) for iid in context.get("instrument_ids", [])))
-
-
-def _run_specialists(run_id, attempt, launch, *, cancellation=None):
-    """Three independent sessions share one retained input and publication owner.
-
-    Serial execution keeps memory and provider concurrency bounded on the host.
-    A recovered run reuses completed sections from the same input snapshot.
-    """
-    from watchlist_app.services.research_sections import SECTION_ORDER
-    from watchlist_app.services.research_access import require_entry_access
-    for section in SECTION_ORDER:
-        if _section_finished(run_id, attempt, section):
-            continue
-        with get_session_factory()() as session:
-            run = session.get(ResearchEntry, run_id, with_for_update=True)
-            require_entry_access(session, run)
-            if run.status != "running" or run_attempt(run) != attempt:
-                raise ResearchExecutionInterrupted()
-            run.context_json = {**run.context_json, "execution": {
-                **run.context_json.get("execution", {}), "research_section": section}}
-            session.commit()
-        process = launch(section)
-        reply, errors, returncode = _wait_harness(process, cancellation=cancellation,
-            accepted=lambda: _section_finished(run_id, attempt, section))
-        if returncode or not _section_finished(run_id, attempt, section):
-            return reply, errors or 'SECTOR_REVIEW_ERROR {"type":"IncompleteSection","summary":"研究分工未提交有效结果，本轮尚未汇总。","retryable":false}', returncode or 1
-    with get_session_factory()() as session:
-        run = session.get(ResearchEntry, run_id, with_for_update=True)
-        require_entry_access(session, run)
-        if run.status != "running" or run_attempt(run) != attempt:
-            raise ResearchExecutionInterrupted()
-        run.context_json = {**run.context_json, "execution": {
-            **run.context_json.get("execution", {}), "research_section": "overview"}}
-        session.commit()
-    return None
-
-
 def _wait_harness(process, *, cancellation=None, accepted=None, timeout=1800):
     """Own the process group until completion, including local polling failures."""
     cleanup_started = False
@@ -455,6 +409,10 @@ def _execute_analysis(run_id: str, *, execution_authorization=None, attempt=None
         execution.update(attempt=execution.get("attempt", 0) + 1,
                          stage="publication" if checkpoint or risk_checkpoint is not None else "review" if resume_review else "generation" if prepared else "preparation",
                          started_at=datetime.now(UTC).isoformat(), resume=False)
+        if sector_run:
+            from watchlist_app.services.research_tasks import interrupt_unfinished_tasks
+            execution["research_section"] = "overview"
+            context["research_tasks"] = interrupt_unfinished_tasks(context)
         run.context_json = {**context, "execution": execution}
         session.commit()
     outcome = "研究助手未返回回答，请重试。"
@@ -498,7 +456,7 @@ def _execute_analysis(run_id: str, *, execution_authorization=None, attempt=None
                 "research_result": None, "research_publication": {"status": "not_requested"}}, ensure_ascii=False), "", 0
         else:
             launched = False
-            def launch(section=None):
+            def launch():
                 nonlocal launched
                 # The first stage uses the grant refreshed after preparation.
                 # Each later session gets its own full execution allowance.
@@ -510,22 +468,18 @@ def _execute_analysis(run_id: str, *, execution_authorization=None, attempt=None
                     from watchlist_app.services.research_policy import require_run_policy, run_policy_projection
                     require_run_policy(policy_session, run_policy_projection(policy_session, run_id))
                 return subprocess.Popen(["/bin/bash", str(SCRIPT), run_id, *mode], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
-                    env={**os.environ, **usage.environment(section or ("review" if resume_review else "generation")),
-                     "INVESTMENT_STUDIO_RESEARCH_SECTION": section or "overview",
+                    env={**os.environ, **usage.environment("review" if resume_review else "generation"),
+                     "INVESTMENT_STUDIO_RESEARCH_SECTION": "overview",
+                     "INVESTMENT_STUDIO_RESEARCH_MODEL_CONCURRENCY": os.environ.get("INVESTMENT_STUDIO_RESEARCH_MODEL_CONCURRENCY", "3"),
                      "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN": current_principal().credential,
                      "INVESTMENT_STUDIO_RESEARCH_GENERATION_ONLY": "1" if not risk_run and not resume_review else "0",
                      "INVESTMENT_STUDIO_RESEARCH_RESUME_GENERATION": "1" if not risk_run and prepared and not resume_review else "0",
                      "INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW": "1" if resume_review else "0"})
-            specialist_failure = (_run_specialists(run_id, attempt, launch, cancellation=cancellation)
-                if sector_run and not resume_review else None)
             # Generation and independent review are two actual work stages.
             # A long generation must not consume the reviewer's entire allowance.
             accepted = (lambda: _accepted_submission(run_id, attempt, risk_run=risk_run)) if (risk_run or sector_run) and not resume_review else None
-            if specialist_failure:
-                reply, errors, returncode = specialist_failure
-            else:
-                process = launch()
-                reply, errors, returncode = _wait_harness(process, cancellation=cancellation, accepted=accepted)
+            process = launch()
+            reply, errors, returncode = _wait_harness(process, cancellation=cancellation, accepted=accepted)
             if not risk_run and not resume_review and not returncode:
                 with get_session_factory()() as session:
                     current = session.get(ResearchEntry, run_id, with_for_update=True)

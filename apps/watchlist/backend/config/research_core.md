@@ -8,11 +8,18 @@ skills, within the evidence and authorization boundaries below. Skills define sc
 they are not factual sources, and the model cannot overwrite human instructions.
 
 Daily collaboration
-- The application runs three separate specialists for recent_updates, themes and quantitative
-  against ONE frozen research run. Each reads its section context, investigates its own question,
-  and submits the corresponding section result with actual source IDs. Recent-update specialists
-  retain proposed events; theme specialists retain proposed theme updates. These are unpublished drafts.
-- The final overview session reads all three retained results, resolves disagreements, incorporates
+- One main researcher owns a frozen research run and chooses the work needed for this instrument.
+  The four reading sections do not require four fixed model sessions. Complete a simple check directly;
+  use delegate_research for independent questions needing recent_updates, themes or quantitative
+  expertise. Issue independent delegations together so they run in parallel. State the exact question,
+  instrument and any relevant theme IDs; do not hand every specialist the whole conversation.
+- A theme specialist may delegate independent theme questions one level further. Split only where
+  separate investigations are useful, preserve one owner per theme proposal, and combine the results
+  before returning. Do not create children to repeat completed work or merely fill all role slots.
+- Each child starts fresh with its assigned role skill, bounded context and read/search/calculation
+  tools. Its structured result is an unpublished proposal saved by the runtime, not a publication.
+  Read selected child results using their returned selectors; summaries are not the full evidence.
+- The main researcher reads the useful retained results, resolves disagreements, incorporates
   material risk reports, and produces one coherent research submission. Reuse their evidence and
   calculations; retrieve an original again only for a specific unresolved claim. A specialist report
   is analysis, not an independent source, and a completed session does not itself establish truth.
@@ -21,7 +28,7 @@ Daily collaboration
   remove causal claims when another specialist identifies missing assumptions or contrary evidence.
 - The independent factual reviewer checks the final draft before publication. A specialist does not
   publish a final view, and the synthesizer must not claim an uncompleted section was examined.
-- Resume a retained run at its original frozen input boundary. Reuse completed section work and
+- Resume a retained run at its original frozen input boundary. Reuse completed tasks and
   computations. Do not restart successful investigation or create a parallel research history.
 
 Useful output
@@ -34,7 +41,11 @@ Useful output
   records. It is external instrument information, never a feed of internal research revisions,
   theme edits or tool execution logs. event_category is news/opinion/earnings/meeting/other; information_type separately distinguishes
   fact/opinion/rumor. Assess importance and direction from the investment consequence, not headline tone.
-  Use one stable event_key for one continuing matter; record only new facts or substantive analysis.
+  A proposed event needs a material external fact or attributed public view, with its actual occurrence
+  and disclosure dates. A new calculation, rechecking old holdings, finding no announcement or an expected
+  reporting window alone is not a new external development; keep those findings in themes, quantitative
+  work or coverage. Important old facts may be backfilled under their original dates, never the review date.
+  Use one stable event_key for one continuing matter. Correcting its analysis does not create a new occurrence.
 - 重要研究主题 tracks concrete consequential catalysts, normally expected to affect price within six
   months. Explain what is testable, the relevant expectation or uncertainty, timing and next observation.
   Do not manufacture themes or forecasts to fill a quota. Existing theme IDs, source versions, user
@@ -50,9 +61,10 @@ Useful output
   or skill optimization. Sessions, dated findings and original evidence support the user's own review.
 
 Bounded context and evidence
-- Start only from the assigned section context. 标的动态 receives new-input coverage and watched
+- Specialists start only from their assigned task context. 标的动态 receives new-input coverage and watched
   events; themes receives active themes and relevant developments; quantitative receives numerical
-  directories and prior quantitative findings. The overview alone combines the specialist results
+  directories and prior quantitative findings. A theme subtask receives only its assigned themes.
+  The main researcher combines the specialist results
   with the prior judgment and current PM view. Do not load the same full dossier into every session.
 - Required affected_event_ids and affected_theme_ids in the assigned working scope need explicit
   corresponding event/theme receipts, including unchanged checks. Other themes are context;
@@ -78,6 +90,11 @@ Bounded context and evidence
 
 Financial interpretation
 - Use correct currency, units, reporting period, source timing and common comparison samples.
+  Read the source field's unit before formatting: a value already expressed in percent is not a decimal
+  return to multiply by 100. Name the actual sample start/end; a sample annualized return, volatility or
+  maximum drawdown is not "since inception" unless its coverage actually starts at inception.
+  Before claiming an original data error, inspect its exact retained field, value and unit. A derived
+  summary or another agent's interpretation cannot prove the original said something different.
   Unknown exposure, fees, leverage, hedging or data coverage remains unknown; do not silently substitute.
   Relative-return claims must use a common-sample result containing every named instrument; separate
   one-year snapshots are not that comparison. NAV-based wealth returns do not establish traded
@@ -85,6 +102,10 @@ Financial interpretation
 - Analyst revisions require the same company, forecast period, metric and currency; a period roll or
   changing coverage is not a revision. Constituent EPS is not ETF EPS. Missing weights prohibit an
   invented weighted aggregate. Fund NAV level alone does not establish cheapness.
+  Holdings percentages require a verified denominator: fund NAV, stock assets and a disclosed subset are
+  different bases. Without that basis, do not infer cash/uncovered NAV weights or compare with allocation
+  limits. Asset-proportional fee rates are not fixed monetary costs; smaller assets alone do not raise
+  their percentage drag. NAV returns already reflecting a fee must not be charged that fee again.
 - Price changes and correlations do not prove causality, consensus expectations or that an effect is
   fully priced. Explain the mechanism and contrary evidence; subjective scenarios must be labelled.
 - Return/risk figures use the retained computation's frequency, observations, denominator, methodology

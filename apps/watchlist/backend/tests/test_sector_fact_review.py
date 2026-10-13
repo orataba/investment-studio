@@ -104,27 +104,41 @@ def test_review_receives_same_input_specialist_counterevidence_without_copying_p
     context["input_snapshot_cutoff"] = context["cutoff"]
     original = {"source_id": "counter-original", "source_type": "public_source", "instrument_id": "xle",
         "text": "The disclosure gives constituent counts but no weighting methodology."}
-    context["research_dossiers"] = [{"instrument_id": "xle", "prior_sources": [original]}]
-    finding = {"input_snapshot_cutoff": context["cutoff"], "status": "limited",
+    risk_original = {**original, "source_id": "risk-original", "text": "The issuer disclosed a liquidity constraint."}
+    context["research_dossiers"] = [{"instrument_id": "xle", "prior_sources": [original, risk_original]}]
+    finding = {"status": "limited",
         "summary": "成分数目变化不能确定单名权重变化。", "limitations": ["未取得权重规则。"],
-        "source_ids": [original["source_id"]], "risks": [],
+        "source_ids": [original["source_id"]], "risks": [{"title": "流动性约束", "explanation": "原件披露的限制未进入主摘要。",
+            "severity": "important", "source_ids": [risk_original["source_id"]]}],
         "events": [{"body": "DO_NOT_COPY_PROPOSALS"}], "themes": [{"body": "DO_NOT_COPY_PROPOSALS"}]}
-    context["section_results"] = {"xle": {"quantitative": finding,
-        "recent_updates": {**finding, "input_snapshot_cutoff": "different-input"}},
-        "xlk": {"themes": finding}}
+    task = {"task_id": "quant", "parent_task_id": "theme-parent", "role": "quantitative", "instrument_id": "xle",
+        "instruction": "验证权重推断", "theme_ids": [], "input_snapshot_cutoff": context["cutoff"],
+        "status": "limited", "result": finding}
+    context["research_tasks"] = {"quant": task,
+        "old": {**task, "task_id": "old", "input_snapshot_cutoff": "different-input"},
+        "other": {**task, "task_id": "other", "instrument_id": "xlk"},
+        "pending": {**task, "task_id": "pending", "status": "running"},
+        "failure": {**task, "task_id": "failure", "role": "themes", "status": "failed",
+            "result": {"summary": "任务未完成", "limitations": ["原文不可读取"], "source_ids": [], "risks": []}}}
     before = deepcopy(context)
     prior_api = review._api_request
     def api(run_id, suffix, payload=None):
         if suffix == "dossier/xle?source_id=counter-original":
             return deepcopy(original)
+        if suffix == "dossier/xle?source_id=risk-original":
+            return deepcopy(risk_original)
         return prior_api(run_id, suffix, payload)
     monkeypatch.setattr(review, "_api_request", api)
     packet = review._evidence_packet(context, [{"instrument_id": "xle", "events": [], "research": None}], "test-run")
     findings = packet["specialist_findings"]
-    assert len(findings) == 1 and findings[0]["section"] == "quantitative"
+    assert {item["task_id"] for item in findings} == {"quant", "failure"}
+    assert findings[0]["role"] == "quantitative" and findings[0]["parent_task_id"] == "theme-parent"
     assert findings[0]["limitations"] == ["未取得权重规则。"]
+    assert findings[1]["status"] == "failed" and findings[1]["limitations"] == ["原文不可读取"]
     assert "DO_NOT_COPY_PROPOSALS" not in json.dumps(findings)
     assert next(row for row in packet["sources"] if row["source_id"] == original["source_id"])["text"] == original["text"]
+    assert findings[0]["risks"][0]["explanation"] == "原件披露的限制未进入主摘要。"
+    assert next(row for row in packet["sources"] if row["source_id"] == risk_original["source_id"])["text"] == risk_original["text"]
     assert context == before
 
 

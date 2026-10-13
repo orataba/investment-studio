@@ -373,8 +373,8 @@ def stored_research_data(run_id: str, request: StoredDataRequest, session: Sessi
 def submit_draft(run_id: str, request: service.ReviewResult, session: Session = Depends(get_db_session)):
     run = current_run(session, run_id, writing=True)
     try:
-        from watchlist_app.services.research_sections import require_section_results
-        require_section_results(run)
+        from watchlist_app.services.research_tasks import require_finished_tasks
+        require_finished_tasks(run)
         service.validate_result(session, run, request)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error

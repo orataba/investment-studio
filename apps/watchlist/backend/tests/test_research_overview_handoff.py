@@ -23,18 +23,19 @@ def test_specialist_handoff_preserves_valid_structures_into_accepted_draft(submi
         run.context_json = context
         run.status = "running"
         session.commit()
+        handoff = {}
         for section, field in (("recent_updates", "events"), ("themes", "themes")):
-            run.context_json = {**run.context_json, "execution": {"attempt": 1, "research_section": section}}
+            run.context_json = {**run.context_json, "execution": {"attempt": 1, "research_section": "overview"}}
             session.commit()
-            asyncio.run(mcp.mcp.call_tool("submit_research_section", {"result": {
-                "instrument_id": "xlk", "section": section, "status": "completed", "summary": "明确待验证的投资影响。",
-                "source_ids": ["text:retained-version"], field: review[field]}}))
+            task = mcp.request("tasks", {"role": section, "instrument_id": "xlk", "instruction": "明确待验证的投资影响"})
+            mcp.request(f"tasks/{task['task_id']}/result", {"result": {
+                "status": "completed", "summary": "明确待验证的投资影响。",
+                "source_ids": ["text:retained-version"], field: review[field]}})
             session.refresh(run)
-        run.context_json = {**run.context_json, "execution": {"attempt": 1, "research_section": "overview"}}
-        session.commit()
-        handoff = sections.section_context(run.context_json, "xlk", "overview")
-    review["events"] = deepcopy(handoff["section_results"]["recent_updates"]["events"])
-    review["themes"] = deepcopy(handoff["section_results"]["themes"]["themes"])
+            selected = mcp.request("read", {"resource": "context", "section": "task_results", "path": [task["task_id"], "result"]})
+            handoff[field] = selected["data"][field]
+    review["events"] = deepcopy(handoff["events"])
+    review["themes"] = deepcopy(handoff["themes"])
     review["research"]["investment_view"] = {"risk": "投入回报尚待兑现。", "assumptions": ["投入计划持续执行。"],
         "source_ids": ["text:retained-version"]}
     result = asyncio.run(mcp.mcp.call_tool("submit_research_review", {"result": draft}))

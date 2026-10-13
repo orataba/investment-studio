@@ -18,7 +18,7 @@ from watchlist_app.services.price_risk import period_loss_readings, period_rule_
 
 from studio_identity import current_principal
 from watchlist_app.services.research_access import require_topic_access, require_entry_access, visible_topics, require_portfolio
-from watchlist_app.services.research_sections import SectionSubmission
+from watchlist_app.services.research_tasks import ResearchTaskInput, TaskResultInput, TaskFailureInput
 
 router = APIRouter()
 
@@ -155,7 +155,7 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
     common = {"sector_run", "research_run", "risk_run", "run_id", "cutoff", "input_snapshot_cutoff", "instrument_ids", "initialization", "execution"}
     fields = common | ({"question", "page_context", "referenced_research_update", "referenced_research_versions",
         "referenced_risk_case", "history", "conversation", "evidence", "watchlists", "limitations", "data_gaps",
-        "incremental_trigger", "research_working_sets", "section_results", "analyst_focus", "user_records", "team_publication_instructions", "market_coverage", "market_queries",
+        "incremental_trigger", "research_working_sets", "research_tasks", "analyst_focus", "user_records", "team_publication_instructions", "market_coverage", "market_queries",
         "catalogue", "tool_evidence", "computed_metrics", "topic_id", "as_of_date", "requested_at", "selected_instrument_ids",
         "watchlist_id", "portfolio_id", "team_id", "visibility", "risk_inputs", "risk_scope", "prior_inputs"}
         if request.resource == "context" else
@@ -169,6 +169,8 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
         # value. Other retained conversations, figures and risk snapshots cannot
         # contribute to this page and need not be decoded on every page request.
         fields = common | ({request.section} if request.section in fields else set())
+        if request.section == "task_results":
+            fields.add("research_tasks")
         if request.section in {"initialization", "initialization_candidates"}:
             fields.add("market_queries")
         if request.section == "initialization_candidates":
@@ -278,7 +280,7 @@ def research_section_context(run_id: str, request: SectionContextInput,
     from watchlist_app.services.research_sections import section_context
     from watchlist_app.services.research_run_context import load_run_fields
     record = load_run_fields(session, run_id, {"instrument_ids", "research_dossiers", "research_working_sets",
-        "section_results", "input_snapshot_cutoff", "cutoff", "execution", "sector_run",
+        "research_tasks", "input_snapshot_cutoff", "cutoff", "execution", "sector_run",
         "prior_events", "incremental_trigger", "last_successful_review_cutoff",
         "data_gaps", "market_coverage", "initialization"})
     record.context_json["computed_metrics"] = load_run_fields(session, run_id, {"computed_metrics"}, summary_only=True).context_json.get("computed_metrics", [])
@@ -296,17 +298,73 @@ def research_section_context(run_id: str, request: SectionContextInput,
         raise HTTPException(422, str(error)) from error
 
 
-@router.post("/research/runs/{run_id}/section-report")
-def research_section_report(run_id: str, request: SectionSubmission, session: Session = Depends(get_db_session)):
+def _task_context_page(context, task_id, *, offset=0, limit=20, path=None):
+    from watchlist_app.services.research_tasks import assigned_context
+    from watchlist_app.services.research_read_projection import checked_overview, read_page
+    result = assigned_context(context, task_id, full_results=bool(path))
+    if path or offset:
+        return read_page(result, {"task_id": task_id}, offset=offset, limit=limit, path=path)
+    return checked_overview(result, pageable_fields=[([key], {"tool": "read_assigned_context",
+        "path": [key]}) for key in result])
+
+
+@router.post("/research/runs/{run_id}/tasks")
+def create_research_task(run_id: str, request: ResearchTaskInput, session: Session = Depends(get_db_session)):
     from watchlist_app.api.routes.sector_research import current_run
-    from watchlist_app.services.research_sections import save_section_result
+    from watchlist_app.services.research_tasks import create_task
     run = current_run(session, run_id, writing=True)
     try:
-        result = save_section_result(session, run, request)
+        result = create_task(session, run, request)
+        result["context"] = _task_context_page(run.context_json, result["task_id"])
+        return result
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
-    session.commit()
-    return result
+
+
+@router.get("/research/runs/{run_id}/tasks/{task_id}/context")
+def research_task_context(run_id: str, task_id: str, offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=20, ge=1, le=100), path: str | None = None,
+        session: Session = Depends(get_db_session)):
+    import json
+    from watchlist_app.services.research_run_context import load_run_fields
+    record = load_run_fields(session, run_id, {"instrument_ids", "research_dossiers", "research_working_sets",
+        "research_tasks", "input_snapshot_cutoff", "cutoff", "execution", "sector_run", "prior_events",
+        "incremental_trigger", "last_successful_review_cutoff", "data_gaps", "market_coverage", "initialization"})
+    record.context_json["computed_metrics"] = load_run_fields(session, run_id, {"computed_metrics"}, summary_only=True).context_json.get("computed_metrics", [])
+    from watchlist_app.services.research_run_evidence import attach_computed_sources
+    record.context_json = attach_computed_sources(session, run_id, record.context_json, metadata_only=True)
+    try:
+        selector = json.loads(path) if path is not None else None
+        if selector is not None and (not isinstance(selector, list) or
+                any(type(item) not in (str, int) for item in selector)):
+            raise ValueError("path须为字符串或整数的JSON数组")
+        return _task_context_page(record.context_json, task_id, offset=offset, limit=limit, path=selector)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@router.post("/research/runs/{run_id}/tasks/{task_id}/result")
+def research_task_result(run_id: str, task_id: str, request: TaskResultInput,
+        session: Session = Depends(get_db_session)):
+    from watchlist_app.api.routes.sector_research import current_run
+    from watchlist_app.services.research_tasks import save_task_result
+    run = current_run(session, run_id, writing=True)
+    try:
+        return save_task_result(session, run, task_id, request.result)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@router.post("/research/runs/{run_id}/tasks/{task_id}/failure")
+def research_task_failure(run_id: str, task_id: str, request: TaskFailureInput,
+        session: Session = Depends(get_db_session)):
+    from watchlist_app.api.routes.sector_research import current_run
+    from watchlist_app.services.research_tasks import fail_task
+    run = current_run(session, run_id, writing=True)
+    try:
+        return fail_task(session, run, task_id, request.message)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
 
 
 @router.get("/research/catalogue")

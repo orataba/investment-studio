@@ -51,7 +51,7 @@ def test_review_must_read_specialist_counterevidence_before_accepting_synthesis(
     proposed = [{"instrument_id": "asset", "events": [], "themes": [], "research": None,
         "summary": "", "coverage": []}]
     _bound(monkeypatch, tmp_path, {"draft_reviews": proposed, "sources": [],
-        "specialist_findings": [{"instrument_id": "asset", "section": "quantitative",
+        "specialist_findings": [{"instrument_id": "asset", "task_id": "counter-check", "role": "quantitative",
             "summary": "The weighting method is missing; constituent count alone does not establish concentration.",
             "limitations": ["No actual constituent weights."], "source_ids": []}]})
     _complete_read(review_mcp.read_review_context, section="draft_reviews")

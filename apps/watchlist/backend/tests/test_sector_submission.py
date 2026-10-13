@@ -199,17 +199,16 @@ def test_automatic_submission_accepts_optional_reflection(client, submission, mi
         assert session.get(ResearchEntry, rid).context_json["submitted_draft"]["reviews"][0]["reflection"]["status"] == status
 
 
-def test_automatic_submission_requires_specialists_for_every_instrument(client, submission):
+def test_automatic_submission_waits_for_delegated_tasks(client, submission):
     rid, draft = submission
     with get_session_factory()() as session:
-        session.add(InstrumentDetail(instrument_id="xlf", instrument_type="etf", detail_view_type="etf",
-                                     instrument_name="XLF", metadata_json={}))
         run = session.get(ResearchEntry, rid)
-        run.context_json = {**run.context_json, "instrument_ids": ["xlk", "xlf"]}
+        run.context_json = {**run.context_json, "research_tasks": {"pending": {
+            "task_id": "pending", "instrument_id": "xlk", "role": "themes", "status": "running",
+            "input_snapshot_cutoff": run.context_json["input_snapshot_cutoff"]}}}
         session.commit()
-    draft["reviews"].append({"instrument_id": "xlf"})
     response = client.post(f"/api/research/runs/{rid}/sector-draft", json=draft)
-    assert response.status_code == 422 and "xlf" in response.json()["detail"]
+    assert response.status_code == 422 and "pending" in response.json()["detail"]
     with get_session_factory()() as session:
         assert "submitted_draft" not in session.get(ResearchEntry, rid).context_json
 
