@@ -153,6 +153,14 @@ Reproduce the locked Python environment (including test tooling):
 infra/scripts/sync_python_env.sh
 ```
 
+Each staged release must own its `.venv`; reuse the package download cache, not
+another release's virtual environment. Editable package paths belong to the
+release that installed them. A service-level `PYTHONPATH` override does not fix
+research children launched with a clean environment. Before switching, verify
+that those children resolve their Python modules inside the staged release with
+`PYTHONPATH` absent. Do not retarget or reinstall a virtual environment still used
+by an active research process; let that process finish before switching workers.
+
 Provision the six runtime environment files directly from the approved secret
 manager. They live outside the worktree; backend `.env` files and symlinks are
 not supported. Repository `.env.example` files are key-name templates only and
