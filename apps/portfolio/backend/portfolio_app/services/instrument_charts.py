@@ -1084,7 +1084,9 @@ def build_instrument_price_chart_from_detail(
         market_calendar_sessions(calendar_name, visible_points[0]["date"], as_of_date)
         if calendar_name and visible_points else None
     )
-    comparable_levels = len({point.get("chart_segment", point.get("return_segment")) for point in visible_points}) <= 1
+    # Missing observations interrupt the drawn path, not comparability of
+    # confirmed total-return levels within the same economic segment.
+    comparable_levels = len({point.get("return_segment") for point in visible_points}) <= 1
     visible_points = _downsample_points(visible_points, max_points=max_points)
     point_values = [float(point["value"]) for point in visible_points]
     first_value = point_values[0] if point_values else None
@@ -1144,8 +1146,10 @@ def build_instrument_price_chart_from_detail(
             {
                 "date": point["date_iso"],
                 "value": float(point["value"]),
-                **({"segment_id": point.get("chart_segment", point.get("return_segment"))}
-                   if price_mode == "return" and ("chart_segment" in point or "return_segment" in point) else {}),
+                **({"segment_id": point["return_segment"]}
+                   if price_mode == "return" and "return_segment" in point else {}),
+                **({"chart_segment_id": point["chart_segment"]}
+                   if price_mode == "return" and "chart_segment" in point else {}),
             }
             for point in visible_points
         ],

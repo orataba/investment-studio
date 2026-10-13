@@ -945,6 +945,7 @@ class InstrumentPriceChartPoint(BaseModel):
     date: date
     value: float
     segment_id: str | None = None
+    chart_segment_id: str | None = None
 
 
 class InstrumentPriceChartSummary(BaseModel):

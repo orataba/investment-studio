@@ -167,7 +167,7 @@ Holdings 列表、单持仓详情与 Concentration 共用日期解析：晚于�
 - 风险与研究使用有明确 `(start_date, date]` 的收益区间，`value` 是小数形式的简单收益，`return_measure=simple`；`log_return=log(1+value)` 为独立字段，不能代入简单收益的财富连乘、现金 P&L 或组合加权。每条来源合同保留 `quote_basis / return_kind / currency`，Research 存档还保留实际起止日与输入合同；货币转换后继续披露原币、基准币和 FX 来源。
 - `total_return_segments` 的两端为可比较 level 的闭区间；`total_return_unavailable_intervals` 为不可确认收益的 `(start_date,end_date]`。跨段收益保留空值与原因，不删掉后再求变化。风险对齐、FX 转换和研究重放在实际区间上继续检查，端点收益和回撤也不能跨独立归一的段；区间外旧缺口不否定后续完整窗口。
 - 价格图的 `price_mode=return` 为默认分析曲线，保留来源口径及稳定 `segment_id`；显式 `raw` 展示真实估值报价。`front/back` 只把同一已确认 TR 乘法链缩放到截至 as-of 完整历史末/首个共同原始价格锚点，显示窗口不改变锚点，且只展示锚点所在连续段。前复权必须有最新 raw 报价同日的可靠 TR，不能拿较旧锚点冒充最新价格；请求范围没有点就返回空序列。返回 `adjustment_method=total_return_reinvestment` 和锚点日期；无可靠 TR 时不可用，不以 raw 或供应商加法复权替代。这些衍生价格不参与账面估值。
-- 缺少预期交易日观察时，跨缺口区间保留 unavailable，日频波动率与路径回撤不跨缺口推断；TR 端点仍在同一可比较段时可以保留端点收益，观察缺口随 `observation_coverage` 披露。请求截止日之前尚未补齐的交易日也使当前路径风险不可用，已确认休市日不视为缺口。
+- 缺少预期交易日观察时，跨缺口区间保留 unavailable，日频波动率与路径回撤不跨缺口推断；TR 端点仍在同一可比较 `segment_id` 时保留端点收益及已观察高低值，绘图另用 `chart_segment_id` 断开缺口，不能将画线中断误当作经济收益段重置。观察缺口随 `observation_coverage` 披露。请求截止日之前尚未补齐的交易日也使当前路径风险不可用，已确认休市日不视为缺口。
 - chart / sparkline 必须展示实际采用的 quote basis。basis 缺失时，图表可以降级为 `partial / unavailable`，不能静默换基准。
 
 #### Portfolio 中的基金分红处理

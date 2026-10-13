@@ -193,6 +193,7 @@ export type PortfolioReturnSemantics = 'unknown' | 'price_return' | 'total_retur
 
 export type PortfolioInstrumentPriceChartPoint = {
   segment_id?: string | null
+  chart_segment_id?: string | null
   date: string
   value: number
 }

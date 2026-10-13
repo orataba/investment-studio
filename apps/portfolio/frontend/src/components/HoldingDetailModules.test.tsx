@@ -131,6 +131,20 @@ describe('Holding detail investment semantics', () => {
     expect(document.querySelector('.price-chart-area')!.getAttribute('d')!.match(/Z/g)).toHaveLength(2)
   })
 
+  it('retains comparable endpoint returns across an observation gap while breaking the path and withholding drawdown', () => {
+    const missingObservation = { ...chart,
+      points: chart.points.map((point, index) => ({ ...point, segment_id: 'confirmed-chain', chart_segment_id: index < 2 ? 'before-gap' : 'after-gap' })),
+      observation_coverage: { start_date: '2026-07-01', end_date: '2026-07-15', gap_dates: ['2026-07-03'], gap_detection_basis: 'market_calendar:XNYS' },
+    }
+    render(<InstrumentPriceChart chart={missingObservation} loading={false} error={null} rangeKey="1y" onRangeChange={vi.fn()} variant="instrument" />)
+    expect(document.querySelector('.price-chart-readout')).toHaveTextContent('0.00%')
+    expect(screen.getByText('Selected-period high').parentElement).toHaveTextContent('$110.0000')
+    expect(screen.getByText('Selected-period low').parentElement).toHaveTextContent('$100.0000')
+    expect(screen.getByText('Observed max drawdown').parentElement).toHaveTextContent('—')
+    expect(document.querySelector('.price-chart-line')!.getAttribute('d')!.match(/M /g)).toHaveLength(2)
+    expect(document.querySelector('.price-chart-area')!.getAttribute('d')!.match(/Z/g)).toHaveLength(2)
+  })
+
   it('offers confirmed price modes and explains unavailable adjustments', async () => {
     const change = vi.fn()
     const security = { ...chart, instrument_core: instrumentFixture({ instrument_type: 'equity' }), price_mode: 'raw' as const,

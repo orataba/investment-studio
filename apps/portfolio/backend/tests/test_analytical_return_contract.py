@@ -122,7 +122,15 @@ def test_expected_calendar_gap_withholds_path_risk_without_erasing_comparable_en
     assert "2026-06-15" in display["observation_coverage"]["gap_dates"]
     before = next(point for point in display["points"] if point["date"] == "2026-06-12")
     after = next(point for point in display["points"] if point["date"] == "2026-06-16")
-    assert before["segment_id"] != after["segment_id"]
+    assert before.get("segment_id") == after.get("segment_id")
+    assert before["chart_segment_id"] != after["chart_segment_id"]
+    first, last = display["points"][0]["value"], display["points"][-1]["value"]
+    assert display["summary"]["change_pct"] == pytest.approx(last / first - 1)
+    assert display["summary"]["high"] == max(point["value"] for point in display["points"])
+    assert display["summary"]["low"] == min(point["value"] for point in display["points"])
+    from portfolio_app.api.contracts import InstrumentPriceChartResponse
+    response = InstrumentPriceChartResponse.model_validate({"portfolio_id": "test", **display})
+    assert len({point.chart_segment_id for point in response.points}) == 2
 
 
 def test_trailing_expected_session_gap_withholds_path_risk_but_holiday_does_not():

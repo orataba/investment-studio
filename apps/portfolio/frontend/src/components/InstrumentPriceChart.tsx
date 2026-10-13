@@ -10,6 +10,7 @@ import {
 } from '../lib/format'
 import type {
   PortfolioInstrumentChartRangeKey,
+  PortfolioInstrumentPriceChartPoint,
   PortfolioInstrumentPriceChartResponse,
   PortfolioPriceMode,
 } from '../lib/api'
@@ -26,6 +27,10 @@ const RANGE_OPTIONS: { key: PortfolioInstrumentChartRangeKey; label: string }[] 
 
 function formatChartDate(value: string) {
   return value
+}
+
+function sameChartSegment(left: PortfolioInstrumentPriceChartPoint, right: PortfolioInstrumentPriceChartPoint) {
+  return sameReturnSegment([left, right]) && (left.chart_segment_id ?? null) === (right.chart_segment_id ?? null)
 }
 
 type InstrumentPriceChartProps = {
@@ -118,12 +123,12 @@ export default function InstrumentPriceChart({
       }
     })
     const linePath = projectedPoints
-      .map((point, index) => `${index === 0 || !sameReturnSegment([projectedPoints[index - 1], point]) ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
+      .map((point, index) => `${index === 0 || !sameChartSegment(projectedPoints[index - 1], point) ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
       .join(' ')
     const segments: (typeof projectedPoints)[] = []
     for (const point of projectedPoints) {
       const segment = segments[segments.length - 1]
-      if (!segment || !sameReturnSegment([segment[segment.length - 1], point])) segments.push([point])
+      if (!segment || !sameChartSegment(segment[segment.length - 1], point)) segments.push([point])
       else segment.push(point)
     }
     const areaPath = segments.map(segment => {
