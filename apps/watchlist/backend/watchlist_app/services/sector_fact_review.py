@@ -281,8 +281,13 @@ hypothesis tests and causal claims; do not turn exploratory results into validat
 retain stable question keys and qualify unsupported claims as open questions or specific gaps.
 Do not turn the investment manager's view into a fact or rewrite shared methods. Source IDs in research
 and questions must be supplied original evidence. No new message does not refute an open question.
-Research is a sparse change to a continuing notebook. Correct only the supplied research fields
-and keyed items, including only supplied fields inside investment_view and each keyed item.
+Research is a sparse change to a continuing notebook. The recorded question's explicit correction
+and preservation scope takes precedence over general editorial guidance. Carrying an existing field
+to satisfy the schema or rebind a version does not authorize rewriting it. Compare such retained
+event, theme and notebook fields with their bound originals, and restore unauthorized draft changes
+through the existing correction receipts. Correct only supplied fields and keyed items to implement
+the requested change or restore its required preservation, including only supplied fields inside
+investment_view and each keyed item.
 You may add explicitly returned, nonempty source_ids at research level or to an already proposed investment_view or keyed item
 when supplied originals support it. This citation exception does not permit new items or default empty lists
 that erase earlier evidence. All added source IDs must remain in the supplied evidence and instrument scope.
@@ -350,11 +355,12 @@ opportunities/risks item and coverage_status/coverage_note against its linked ev
 sources. No news, a closed theme or event follow-up expiry cannot erase a retained risk. Check any removal's
 explicit basis. Empty lists do not establish no risk, and partial coverage cannot become a full quiet check.
 The current synthesis is derived last from the same research, not an independent recommendation.
-Keep investment_view.direction to one or two short decision-oriented sentences, aiming for about 100–140
-Chinese characters or 50–70 English words in total: current opportunity/risk balance and the main condition
-that could change it. Correct an overlong or enumerative direction through its existing correction receipt;
-do not accept it merely because its individual facts are supported or it uses only two long sentences.
-Do not list events, companies or numbers here. Detailed conditions already belong in explanation, next_watch
+For a newly written or substantively revised investment_view.direction, use one or two short
+decision-oriented sentences: current opportunity/risk balance and the main condition that could
+change it. Preserve a direction carried forward under a focused correction; length or style alone
+does not authorize changing its facts, recommendation or conditions.
+Avoid inventories of events, companies or supporting figures in those new or revised directions;
+retain exact dates or thresholds when they are necessary to the judgment. Detailed conditions belong in explanation, next_watch
 and linked event/theme fields. Move source inventory, tool steps and supporting explanations to their existing
 evidence fields. Opportunities/risks titles are concise
 judgments; their explanations retain the complete reasoning. Do not remove a material qualification
@@ -388,9 +394,9 @@ including inherited premises it still depends on, rather than checking edited se
 When a premise changes, reconcile every dependent proposed claim: facts, modules, theme synthesis and
 next_check, questions, conditions, risks, current view, decision_brief, summary and coverage.
 Correcting one paragraph does not validate contradictions elsewhere. Keep corrections within the
-supplied fields and preserve historical versions. If a material inherited error is outside the draft's
-editable fields, identify its exact current location and evidence gap in coverage (and reflection if
-supplied), and reject proposed conclusions still relying on it. Do not claim that omission/rejection
+supplied fields and preserve historical versions. If a material inherited error is outside the question's
+permitted changes or the draft's editable fields, identify its exact current location and evidence gap
+in coverage (and reflection if supplied), and reject proposed conclusions still relying on it. Do not claim that omission/rejection
 repairs that old field: it preserves the existing notebook. Do not invent an unproposed patch or declare
 the whole prior view verified. A zero-change result with comparable coverage differs from an empty
 result with missing or incomparable coverage.

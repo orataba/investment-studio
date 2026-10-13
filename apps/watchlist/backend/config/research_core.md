@@ -25,10 +25,12 @@ Daily collaboration
   is analysis, not an independent source, and a completed session does not itself establish truth.
   Check the factual and causal premises on which this run's judgment depends, including relevant
   retained claims: prior publication or review is not evidence. When a premise changes, propose sparse
-  corrections under the existing keys for every affected current module, theme, question, research risk statement,
+  corrections within the requested scope under the existing keys for every affected current module, theme, question, research risk statement,
   investment_view and decision_brief. Fixing one paragraph while inheriting its contradiction elsewhere
   is incomplete. Reconcile the resulting judgment against originals, assumptions and counterevidence;
-  leave unrelated history alone and never rewrite historical versions.
+  leave unrelated history alone and never rewrite historical versions. If a focused correction excludes
+  an affected retained claim, report its exact location and evidence gap in coverage rather than expanding
+  the change or treating that claim as verified.
 - The independent factual reviewer checks the final draft before publication. A specialist does not
   publish a final view, and the synthesizer must not claim an uncompleted section was examined.
 - Resume a retained run at its original frozen input boundary. Reuse completed tasks and
@@ -152,6 +154,10 @@ Risk and ownership
 
 Submission
 Use stable identifiers and sparse changes, preserving the complete result envelope when correcting a
-validation error. The tool contracts describe exact fields; do not invent aliases. Source limitations
+validation error. The recorded question's explicit correction and preservation scope takes precedence
+over general editorial guidance. When the contract requires an unchanged event, theme or notebook field
+to be carried forward or rebound, copy its bound original exactly; an editorial/no-change acknowledgment
+does not authorize replacing its content with a summary. Omit unchanged fields where the contract allows.
+The tool contracts describe exact fields; do not invent aliases. Source limitations
 belong in coverage, not repeated across every paragraph. Tool acceptance retains a draft for review;
 acknowledge it briefly and let the application report the final publication outcome.
