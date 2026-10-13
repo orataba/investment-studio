@@ -157,9 +157,12 @@ export function apply(ctx) {
     name: 'read_assigned_context',
     description: 'Read your own assigned task, role skill, frozen instrument context and evidence pointers. Your identity is supplied by the runtime; you cannot select another task.',
     parameters: {
-      offset: { type: 'integer' },
-      limit: { type: 'integer' },
-      path: { type: 'array', items: { oneOf: [{ type: 'string' }, { type: 'integer' }] } },
+      type: 'object', additionalProperties: false,
+      properties: {
+        offset: { type: 'integer' },
+        limit: { type: 'integer' },
+        path: { type: 'array', items: { oneOf: [{ type: 'string' }, { type: 'integer' }] } },
+      },
     }, output, isConcurrencySafe: () => true,
     async execute(args, exec) {
       const task = await assigned(exec);
@@ -175,10 +178,14 @@ export function apply(ctx) {
     name: 'delegate_research',
     description: 'Delegate a concrete independent research question to a fresh specialist. Issue independent calls together to run them in parallel. Choose recent_updates, themes or quantitative; do not create a session for a trivial check or unchanged section. A themes specialist may delegate independent theme questions once more. Each child receives only its task context and role tools, shares this run’s retained evidence, and returns an unpublished proposal. Waits until the result is saved; the parent remains responsible for synthesis.',
     parameters: {
-      role: { type: 'string', enum: ['recent_updates', 'themes', 'quantitative'], required: true },
-      instrument_id: { type: 'string', required: true },
-      instruction: { type: 'string', required: true, description: 'The specific question, scope and expected useful result. Reuse an existing completed task instead of repeating it.' },
-      theme_ids: { type: 'array', items: { type: 'string' }, description: 'Existing theme IDs assigned to this task; omit for a new theme question.' },
+      type: 'object', additionalProperties: false,
+      required: ['role', 'instrument_id', 'instruction'],
+      properties: {
+        role: { type: 'string', enum: ['recent_updates', 'themes', 'quantitative'] },
+        instrument_id: { type: 'string' },
+        instruction: { type: 'string', description: 'The specific question, scope and expected useful result. Reuse an existing completed task instead of repeating it.' },
+        theme_ids: { type: 'array', items: { type: 'string' }, description: 'Existing theme IDs assigned to this task; omit for a new theme question.' },
+      },
     }, output, isConcurrencySafe: () => true,
     async execute(args, exec) {
       const id = agentId(exec.agent);

@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import threading
 
+from jsonschema import Draft202012Validator
 import pytest
 
 
@@ -282,6 +283,26 @@ def test_native_spawn_missing_structured_result_and_cancellation_dispose_child(t
 
 def test_production_native_bridge_saves_typed_children_with_runtime_parent_identity(tmp_path):
     requests, api_calls, _ = _run_native_probe(tmp_path, "parallel", production=True)
+    # Inspect the actual pinned Harness -> provider wire, including tools added
+    # by the production plugin and the native child structured-output tool.
+    for row in requests:
+        for tool in row["request"]["tools"]:
+            function = tool["function"]
+            parameters = function["parameters"]
+            assert parameters.get("type") == "object", function["name"]
+            assert isinstance(parameters.get("properties"), dict), function["name"]
+            Draft202012Validator.check_schema(parameters)
+            assert set(parameters.get("required", [])) <= parameters["properties"].keys()
+    root_tools = {tool["function"]["name"]: tool["function"]["parameters"]
+                  for tool in requests[0]["request"]["tools"]}
+    assert set(root_tools["delegate_research"]["required"]) == {"role", "instrument_id", "instruction"}
+    assert not root_tools["read_assigned_context"].get("required")
+    for row in requests:
+        if row["role"] == "main":
+            continue
+        structured = next(tool["function"]["parameters"] for tool in row["request"]["tools"]
+                          if tool["function"]["name"] == "structured_output")
+        assert {"status", "summary"} <= set(structured["required"])
     before_delegation = next(row["request"] for row in requests if row["role"] == "main" and row["step"] == 1)
     assert "belongs to an assigned research child" in json.dumps(before_delegation)
     created = [body for path, _, body in api_calls if path.endswith("/tasks")]
