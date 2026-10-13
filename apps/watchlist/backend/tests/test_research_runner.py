@@ -151,11 +151,12 @@ def test_failed_runner_retains_only_explicit_safe_error_marker(client, monkeypat
 
 
 @pytest.mark.parametrize("sector_run", [True, False])
-@pytest.mark.parametrize("provider_error", [
-    'dsh: QUOTA: Insufficient Balance',
-    'dsh: AUTH: 403: {"message":"private billing detail", "code":"insufficient_user_quota"}',
+@pytest.mark.parametrize("provider_error,error_type,explanation", [
+    ('dsh: QUOTA: Insufficient Balance', "InsufficientBalance", "余额不足"),
+    ('dsh: AUTH: 403: {"message":"private billing detail", "code":"insufficient_user_quota"}', "InsufficientBalance", "余额不足"),
+    ('dsh: SERVER: HTTP 500: {"message":"private provider config", "code":"channel:param_override_invalid"}', "ProviderConfigurationError", "供应商"),
 ])
-def test_insufficient_balance_is_explained_without_retaining_provider_stderr(client, monkeypatch, sector_run, provider_error):
+def test_provider_failure_is_explained_without_retaining_stderr(client, monkeypatch, sector_run, provider_error, error_type, explanation):
     with get_session_factory()() as session:
         session.add(ResearchTopic(topic_id="quota-topic", title="研究检查"))
         session.flush()
@@ -176,11 +177,14 @@ def test_insufficient_balance_is_explained_without_retaining_provider_stderr(cli
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, "quota-test")
         assert run.status == "failed"
-        assert run.context_json["runtime_error"]["type"] == "InsufficientBalance"
-        assert "余额不足" in run.body
+        assert run.context_json["runtime_error"]["type"] == error_type
+        assert explanation in run.body
+        if error_type == "ProviderConfigurationError":
+            assert run.context_json["runtime_error"]["retryable"] is False
         assert "事实核证失败" not in run.body
         assert "private-provider-data" not in json.dumps(run.context_json) + run.body
         assert "private billing detail" not in json.dumps(run.context_json) + run.body
+        assert "private provider config" not in json.dumps(run.context_json) + run.body
 
 
 def test_provider_model_failure_retains_only_a_safe_class():
@@ -188,6 +192,28 @@ def test_provider_model_failure_retains_only_a_safe_class():
     assert failure["type"] == "ModelUnavailable"
     assert "private-channel" not in json.dumps(failure)
     assert runner._provider_failure("a model response merely mentions insufficient_user_quota") is None
+
+
+@pytest.mark.parametrize("escaped", [False, True])
+def test_provider_parameter_override_failure_is_not_retried_or_exposed(escaped):
+    response = json.dumps({"error": {"code": "channel:param_override_invalid", "message":
+        "comparison failed for path max_tokens: unsupported comparison mode: missing; private-channel-detail"}})
+    errors = "dsh: SERVER: HTTP 500: " + (response.replace('"', '\\"') if escaped else response)
+    failure = runner._provider_failure(errors)
+    assert failure["type"] == "ProviderConfigurationError"
+    assert failure["retryable"] is False
+    assert "供应商" in failure["summary"] and "配置" in failure["summary"]
+    assert "private-channel-detail" not in json.dumps(failure)
+    assert "max_tokens" not in failure["summary"]
+
+
+@pytest.mark.parametrize("code", ["server_error", "service_unavailable", "channel:param_override_invalid_other"])
+def test_other_http_500_provider_failures_remain_retryable(code):
+    errors = 'dsh: SERVER: HTTP 500: ' + json.dumps({"error": {"code": code,
+        "message": "temporary provider failure mentioning max_tokens"}})
+    failure = runner._provider_failure(errors)
+    assert failure["type"] == "ProviderUnavailable"
+    assert failure["retryable"] is True
 
 
 @pytest.mark.parametrize("publication_state", ["published", "failed", "conflict"])

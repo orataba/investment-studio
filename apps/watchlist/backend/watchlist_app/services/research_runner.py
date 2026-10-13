@@ -106,7 +106,7 @@ def _provider_failure(errors):
         return {"type": "OutputLimitExceeded", "summary": "本次研究达到模型单次输出上限，尚未完成提交；已取得的证据和计算保留，可从原进度恢复。", "retryable": False}
     if 'RESEARCH_HARNESS_END {"reason":"content-filter"}' in text.splitlines():
         return {"type": "ProviderContentFilter", "summary": "模型服务中止了本次输出，研究尚未完成；已取得的证据和草稿已保留。", "retryable": False}
-    codes = set(re.findall(r'"code"\s*:\s*"([a-z_]+)"', text))
+    codes = set(re.findall(r'"code"\s*:\s*"([a-z_:]+)"', text))
     if codes.intersection({"insufficient_user_quota", "insufficient_quota"}) or any(
         line.strip() == "dsh: QUOTA: Insufficient Balance" for line in text.splitlines()
     ):
@@ -118,6 +118,8 @@ def _provider_failure(errors):
         return {"type": "ContextLimitExceeded", "summary": "本轮必要资料超过模型上下文容量，未发布研究；请检查证据装配与研究范围。", "retryable": False}
     if codes.intersection({"rate_limit_exceeded", "too_many_requests"}) or re.search(r"^dsh: (?:RATE_LIMIT|RATE):", text, re.M):
         return {"type": "ProviderRateLimit", "summary": "模型服务暂时限流，草稿与已有证据已保留。", "retryable": True}
+    if "channel:param_override_invalid" in codes:
+        return {"type": "ProviderConfigurationError", "summary": "模型供应商的通道参数覆盖配置无效，本次研究未完成；请联系供应商修复配置后再重试，草稿与已有证据已保留。", "retryable": False}
     if codes.intersection({"service_unavailable", "server_error", "overloaded_error"}) or re.search(
         r"^dsh: (?:NETWORK|SERVER|TRANSPORT|TIMEOUT|EMPTY_RESPONSE):", text, re.M):
         return {"type": "ProviderUnavailable", "summary": "模型服务或网络暂时不可用，草稿与已有证据已保留。", "retryable": True}
@@ -531,7 +533,7 @@ def _execute_analysis(run_id: str, *, execution_authorization=None, attempt=None
                 runtime_error = {**provider_error, "exit_code": returncode}
                 if provider_error["type"] in {"OutputLimitExceeded", "ProviderContentFilter"}:
                     runtime_error["stage"] = "review" if resume_review else "generation"
-            outcome = ("事实核证失败：" if runtime_error["type"] not in {"ProcessExit", "InsufficientBalance", "ModelUnavailable", "MissingResearchDraft", "OutputLimitExceeded", "ProviderContentFilter"} else "") + runtime_error["summary"]
+            outcome = ("事实核证失败：" if runtime_error["type"] not in {"ProcessExit", "InsufficientBalance", "ModelUnavailable", "ProviderConfigurationError", "MissingResearchDraft", "OutputLimitExceeded", "ProviderContentFilter"} else "") + runtime_error["summary"]
             if sector_run and reply.strip():
                 rejected_reply = reply.strip()
         elif risk_run and risk_checkpoint is None and not _accepted_submission(run_id, attempt, risk_run=True):
