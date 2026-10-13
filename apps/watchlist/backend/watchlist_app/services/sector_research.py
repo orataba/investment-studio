@@ -1351,6 +1351,13 @@ def validate_result(session, run, parsed: ReviewResult):
         themes, existing_events = validate_review_updates(session, run, review, notebook_evidence, sources)
         if context.get("sector_run"):
             dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
+            previous_view = (dossier.get("notebook") or {}).get("investment_view") or {}
+            if ((context.get("initialization") or {}).get("requested")
+                    and (not (previous_view.get("direction") or "").strip()
+                         or previous_view.get("coverage_status") == "not_established")):
+                view = review.research.investment_view if review.research is not None else None
+                if view is None or not view.direction.strip():
+                    raise ValueError("首次研究基线须提交明确的 research.investment_view.direction，不能仅交摘要或 research=null；证据不足可以明确无法判断及覆盖限制，不要求虚构结论。")
             checked_ids = {themes[update.theme_key]["theme_id"] for update in review.themes}
             working = (context.get("research_working_sets") or {}).get(review.instrument_id)
             required = (set(working["affected_theme_ids"]) if working is not None else
