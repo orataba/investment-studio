@@ -26,6 +26,7 @@ export const researchMessages: LanguageMessages = {
   '打开研究助手': 'Open research assistant',
 
   "价格与收益历史": "Price and return history",
+  "价格与收益历史图": "Price and return history chart",
   "历史数值口径": "Historical series basis",
   "原始价格": "Raw price",
   "收益路径": "Return path",

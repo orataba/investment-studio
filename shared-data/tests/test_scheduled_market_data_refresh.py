@@ -965,7 +965,9 @@ def test_batch_acceptance_retains_starting_window_after_failed_capture_publishes
     assert summary["listed_close_coverage"]["failed_count"] == 1
     checked = summary["listed_close_coverage"]["results"][0]
     assert checked["baseline_close_date"] == "2026-10-05"
-    assert checked["expected_close_date"] == checked["latest_close_date"] == "2026-10-08"
+    assert checked["expected_close_date"] == "2026-10-07"
+    assert checked["latest_closed_session"] == checked["latest_close_date"] == "2026-10-08"
+    assert checked["awaiting_publication_dates"] == []
     assert checked["missing_session_dates"] == ["2026-10-06", "2026-10-07"]
     assert summary["updated_instrument_ids"] == [instrument_id]
     assert summary["downstream_refresh"] is True

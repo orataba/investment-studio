@@ -37,7 +37,7 @@ export default function ResearchCurrentNumbers({ instrumentId }: { instrumentId:
   const points = allPoints.filter(point => !months || !cutoff || Date.parse(point.date) >= cutoff.getTime())
   const first = points[0]
   const lo = Math.min(...points.map(point => point.value)); const hi = Math.max(...points.map(point => point.value))
-  const x = (date: string) => 60 + (Date.parse(date) - Date.parse(first!.date)) / (Date.parse(points[points.length - 1]!.date) - Date.parse(first!.date) || 1) * 680
+  const x = (date: string) => 100 + (Date.parse(date) - Date.parse(first!.date)) / (Date.parse(points[points.length - 1]!.date) - Date.parse(first!.date) || 1) * 640
   const y = (value: number) => 215 - (value - lo) / (hi - lo || 1) * 185
   const paths: string[] = []
   points.forEach((point, index) => { const previous = points[index - 1]; if (!previous || point.segment_id !== previous.segment_id) paths.push(`M ${x(point.date)} ${y(point.value)}`); else paths[paths.length - 1] += ` L ${x(point.date)} ${y(point.value)}` })
@@ -52,11 +52,11 @@ export default function ResearchCurrentNumbers({ instrumentId }: { instrumentId:
     <div className="research-event-filters" aria-label="历史数值口径"><button type="button" aria-pressed={!showingReturn} onClick={() => setPreferredSeries("price")}>原始价格</button><button type="button" disabled={!chart?.return_series?.wealth_points.length} aria-pressed={showingReturn} onClick={() => setPreferredSeries("return")}>收益路径</button></div>
     {!showingReturn && last && <p className="sector-research-note">原始价格可能包含拆股、分红等机械变化，不能直接据此判断投资回报。</p>}
     {last && <p className="sector-research-note">{priceLabel}{!showingReturn && <> · {series?.currency || chart?.currency}</>} · <time dateTime={last.date}>{last.date}</time> · {number(last.value)}</p>}
-    {points.length > 1 ? <svg className="research-price-chart" viewBox="0 0 780 260" role="img" aria-label={`${showingReturn ? "收益历史" : "价格历史"} ${first!.date} 至 ${points[points.length - 1]!.date}`}>
-      {[0, 0.5, 1].map(fraction => { const value = lo + (hi - lo) * fraction; return <g key={fraction}><line x1="60" x2="740" y1={y(value)} y2={y(value)} stroke="var(--line)" /><text x="52" y={y(value) + 4} textAnchor="end">{axisNumber(value)}</text></g> })}
+    {points.length > 1 ? <div className="research-quant-plot" role="region" aria-label="价格与收益历史图" tabIndex={0}><svg className="research-price-chart" viewBox="0 0 780 260" role="img" aria-label={`${showingReturn ? "收益历史" : "价格历史"} ${first!.date} 至 ${points[points.length - 1]!.date}`}>
+      {[0, 0.5, 1].map(fraction => { const value = lo + (hi - lo) * fraction; return <g key={fraction}><line x1="100" x2="740" y1={y(value)} y2={y(value)} stroke="var(--line)" /><text x="92" y={y(value) + 4} textAnchor="end">{axisNumber(value)}</text></g> })}
       {paths.map((path, index) => <path key={index} d={path} fill="none" stroke="var(--studio-chart-primary)" strokeWidth="1.8" />)}
-      <text x="60" y="245">{first!.date}</text><text x="740" y="245" textAnchor="end">{points[points.length - 1]!.date}</text>
-    </svg> : current && <p className="sector-research-note">尚无足够的价格历史。缺失数据不作为零值。</p>}
+      <text x="100" y="245">{first!.date}</text><text x="740" y="245" textAnchor="end">{points[points.length - 1]!.date}</text>
+    </svg></div> : current && <p className="sector-research-note">尚无足够的价格历史。缺失数据不作为零值。</p>}
     {points.length > 0 && <div className="research-quant-history-links"><ResearchReadingAside label={showingReturn ? "收益历史数据" : "价格历史数据"}><HorizontalTableScroll><table><thead><tr><th>日期</th><th>{showingReturn ? "收益指数" : `价格（${series?.currency || chart?.currency}）`}</th></tr></thead><tbody>{[...points].reverse().map(point => <tr key={point.date}><td>{point.date}</td><td>{number(point.value)}</td></tr>)}</tbody></table></HorizontalTableScroll></ResearchReadingAside></div>}
     <div className="research-quant-history-links"><ResearchReadingAside label="基本面与成份历史" title="基本面与成份历史"><ResearchFundamentalNumbers instrumentId={instrumentId} /></ResearchReadingAside>
     <ResearchReadingAside label="分析师预期变化与历史" title="分析师预期变化与历史"><EstimateHistoryPanel instrumentId={instrumentId} language={language} /></ResearchReadingAside></div>
