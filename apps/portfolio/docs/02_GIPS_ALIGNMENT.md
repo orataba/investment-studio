@@ -109,7 +109,7 @@ Calculation 的 group axis 包括 instrument、instrument type、currency、acco
 
 Holdings 只作为当前持仓状态表。资产级 TWR、区间 contribution、realized gain、income 和 closed positions 必须从 `Performance` 或 security detail 读取，避免把 current holdings 和 period performance 混成一个口径。
 
-Holdings 中允许出现 `Chart 1M / 3M / 6M / 1Y`、`1W / 1M / 3M / 6M / MTD / YTD / 1Y Return`、Volatility 和 Drawdown。标的 Return / Volatility / Drawdown 只使用 Registry 已确认的 total-return series，不读取组合现金流、数量、成本法或 realized / income events；Chart 可以使用明确标注的 price-return 或 total-return path，但不能反向成为分析字段输入。`Held Max DD` 是从当前最早开放持仓日起截断的 instrument-row 辅助指标，不合成 group。
+Holdings 中允许出现 `Chart 1M / 3M / 6M / 1Y`、`1W / 1M / 3M / 6M / MTD / YTD / 1Y Return`、Volatility 和 Drawdown。标的 Return / Volatility / Drawdown 只使用 Registry 已确认的 total-return series，不读取组合现金流、数量、成本法或 realized / income events；Chart 可以使用明确标注的 price-return 或 total-return path，但不能反向成为分析字段输入。`Held Max DD` 是从当前最早开放持仓日起截断的 instrument-row 辅助指标，不合成 group；其确认日缺口边界遵循 [`01_CALCULATION_SPEC.md`](./01_CALCULATION_SPEC.md)，不改变全历史来源覆盖。
 
 Holdings group / subtotal / total 的 Return 和 Risk 是当前 market-value 权重篮子在共同历史区间上的 theoretical / hypothetical 回看，不是实际组合 TWR、period contribution 或 GIPS-informed performance disclosure。它们必须以 `Current Basket` 明确标识，不得与实际组合收益链接成一条历史，也不得被描述为客户组合实际绩效。真实历史组合表现仍只来自 Overview / Performance；逐字段边界见 [`03_HOLDINGS_FIELD_REFERENCE.md`](./03_HOLDINGS_FIELD_REFERENCE.md)。
 

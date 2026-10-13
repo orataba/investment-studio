@@ -100,6 +100,83 @@ def test_full_return_history_coverage_uses_return_basis_not_valuation_or_holding
 
 
 @pytest.mark.parametrize(
+    ("holding_day", "missing_days", "expected_drawdown"),
+    [(24, (24,), 116 / 120 - 1), (25, (24,), 116 / 118 - 1),
+     (23, (24,), None), (24, (24, 26), None)],
+)
+def test_held_history_excludes_only_gaps_on_or_before_recognition(
+    monkeypatch, holding_day, missing_days, expected_drawdown,
+) -> None:
+    sessions = [date(2026, 6, day) for day in (23, 24, 25, 26, 29, 30)]
+    monkeypatch.setattr(risk_basis, "_market_calendar_sessions", lambda *_args: sessions)
+    levels = {23: 120, 25: 118, 26: 116, 29: 119, 30: 121}
+    detail = _detail([
+        _point("total_return_nav", f"2026-06-{day}", str(value))
+        for day, value in levels.items() if day not in missing_days
+    ], instrument_type="private_fund")
+    detail["source_settings"] = {"expected_frequency": "daily", "market_calendar": "XSHG"}
+    detail["quote_selection_policy"]["total_return"] = ["total_return_nav"]
+    for point in detail["market_data"]:
+        point["metric_family"] = "nav"
+    original = deepcopy(detail)
+
+    profile = build_instrument_holdings_market_profile_from_detail(
+        detail, instrument_id="fund", as_of_date=date(2026, 6, 30),
+        holding_start_date=date(2026, 6, holding_day),
+    )
+
+    if expected_drawdown is None:
+        assert profile["instrument_holding_max_drawdown"] is None
+    else:
+        assert profile["instrument_holding_max_drawdown"] == pytest.approx(expected_drawdown)
+    holding = profile["instrument_holding_return_series"]
+    assert holding["observation_coverage"]["start_date"] == f"2026-06-{holding_day}"
+    assert holding["observation_coverage"]["gap_dates"] == [
+        f"2026-06-{day}" for day in missing_days if day > holding_day
+    ]
+    if holding_day == 24:
+        # Keep the actual prior NAV and first post-confirmation change, rather
+        # than silently restarting at June 25 or inventing a June 24 NAV.
+        first = holding["points"][0]
+        assert first["start_date"] == "2026-06-23"
+        assert first["date"] == "2026-06-25"
+        assert first["value"] == pytest.approx(118 / 120 - 1)
+        assert first["status"] == "complete"
+    if 26 in missing_days:
+        assert next(point for point in holding["points"] if point["date"] == "2026-06-29")["status"] != "complete"
+    full = profile["instrument_return_series_all"]
+    assert full["observation_coverage"]["gap_dates"] == [f"2026-06-{day}" for day in missing_days]
+    assert full["points"][0]["status"] != "complete"
+    assert profile["instrument_max_drawdown"] is None
+    assert detail == original
+
+
+def test_held_history_keeps_interval_break_without_explicit_source_gap() -> None:
+    points = tuple({
+        "date": date(2026, 6, day), "date_iso": f"2026-06-{day}", "value": value,
+        **({"risk_break_reason": "missing_observation_interval"} if day == 25 else {}),
+    } for day, value in ((23, 120), (25, 118), (26, 116)))
+    selection = instrument_charts.ChartSeriesSelection(
+        points=points, selected_basis="total_return_nav",
+        return_metadata={"observation_coverage": {
+            "start_date": "2026-06-23", "end_date": "2026-06-26", "gap_dates": [],
+            "gap_detection_basis": "schedule_unverified",
+        }},
+    )
+
+    profile = instrument_charts._build_instrument_trend_metrics_from_selection(
+        selection, as_of_date=date(2026, 6, 26), holding_start_date=date(2026, 6, 24),
+        calculation_frequency="daily", source_settings={},
+    )
+
+    assert profile["instrument_holding_max_drawdown"] is None
+    first = profile["instrument_holding_return_series"]["points"][0]
+    assert first["status"] == "unavailable"
+    assert first["reason"] == "missing_observation_interval"
+    assert selection.points[1]["risk_break_reason"] == "missing_observation_interval"
+
+
+@pytest.mark.parametrize(
     "scenario",
     ["different_bases", "full_history", "split", "unconfirmed_split", "duplicate", "empty"],
 )

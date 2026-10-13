@@ -810,7 +810,22 @@ def _build_instrument_trend_metrics_from_selection(
 
     end_point = selected_points[-1]
     end_date = end_point.get("date") if isinstance(end_point.get("date"), date) else as_of_date
-    holding_points = _points_since(selected_points, start_date=holding_start_date) if holding_start_date else []
+    source_coverage = (selection.return_metadata or {}).get("observation_coverage") or {}
+    source_gaps = sorted(source_coverage.get("gap_dates", []))
+    holding_coverage = dict(source_coverage)
+    holding_points = []
+    if holding_start_date:
+        # Keep the real preceding NAV as the opening anchor, including the
+        # first post-recognition return. A missing observation on/before the
+        # recognition date is not a gap in the subsequent holding period.
+        holding_points = [dict(point) for point in _points_since(selected_points, start_date=holding_start_date)]
+        holding_gaps = [day for day in source_gaps if day > holding_start_date.isoformat()]
+        holding_coverage.update(start_date=holding_start_date.isoformat(), gap_dates=holding_gaps)
+        for previous, current in zip(holding_points, holding_points[1:]):
+            if (current.get("risk_break_reason") in {"missing_expected_observation", "missing_observation_interval"}
+                    and bisect_right(source_gaps, current["date_iso"]) > bisect_right(source_gaps, previous["date_iso"])
+                    and bisect_right(holding_gaps, current["date_iso"]) == bisect_right(holding_gaps, previous["date_iso"])):
+                current.pop("risk_break_reason")
 
     result = {
         "instrument_trend_as_of_date": end_date.isoformat(),
@@ -926,7 +941,8 @@ def _build_instrument_trend_metrics_from_selection(
     for key, payload in result.items():
         if (key.startswith("instrument_return_series_") or key == "instrument_holding_return_series") and isinstance(payload, dict):
             payload.update(selection.return_metadata or {})
-    source_coverage = (selection.return_metadata or {}).get("observation_coverage") or {}
+            if key == "instrument_holding_return_series" and holding_start_date:
+                payload["observation_coverage"] = holding_coverage
     if any(day > end_date.isoformat() for day in source_coverage.get("gap_dates", [])):
         for key in result:
             if key.startswith("instrument_volatility_") or key in {

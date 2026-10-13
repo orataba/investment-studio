@@ -798,6 +798,8 @@ Overview 展示 `Monthly Return Matrix`，按 year x month 展示月度 TWR。�
 
 Overview 的组合经营收益与 TWR chart 使用 operational `daily_twr`；1M / 3M VOL、risk drawdown 和 benchmark risk compare 使用 `market_risk_daily_return`。两条链使用同一个 fresh complete as-of 作为窗口终点，不得混用。若组合最新物化日期中只有部分持仓资产更新，Overview 不得使用该日期计算组合层 return / risk。单资产 Holdings Return / Volatility / Drawdown 使用其 confirmed total-return series，窗口仍由请求的 Holdings `as_of_date` 锚定，实际终点取不晚于该日期的最新有效点；Chart 可以沿用策略允许且明确标注 semantics 的展示序列。
 
+`Held Max DD` 与持有期标的收益序列保留持有起点当日或之前最近的真实净值作为基准，实际观测日期不改写，以包含首个持有后观测的变化。购入／份额确认当天及之前缺少净值不作为持有后缺口；只有来源明确列举的这些缺点造成的区间断点才可在持有期副本中解除，未知来源断点、确认日之后的真实缺口和不可比收益段仍使受影响的计算不可用。全历史来源覆盖保持原样，交易估值不替代供应商 total-return NAV。
+
 Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要结构为：
 
 - `Return & Risk Metrics`：组合级区间 TWR，以及满足条件时的 annualized TWR、IRR / MWR；风险统计基于 `Market Risk Return`。operational carrying-basis 区间保留经营收益，但不发布 annualized TWR / XIRR，也不与 benchmark 比 return；risk compare 要求 benchmark 覆盖整个所选期间的 market-risk eligible dates；

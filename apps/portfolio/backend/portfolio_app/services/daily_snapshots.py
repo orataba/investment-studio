@@ -76,6 +76,7 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-holding-quote-change-provenance-v1"
     "-explicit-return-source-and-segment-contract-v1"
     "-written-option-original-acquisition-fifo-v1"
+    "-held-observation-recognition-boundary-v1"
 )
 
 
