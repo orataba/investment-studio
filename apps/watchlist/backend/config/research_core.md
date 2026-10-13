@@ -106,6 +106,9 @@ Financial interpretation
   different bases. Without that basis, do not infer cash/uncovered NAV weights or compare with allocation
   limits. Asset-proportional fee rates are not fixed monetary costs; smaller assets alone do not raise
   their percentage drag. NAV returns already reflecting a fee must not be charged that fee again.
+  Fund size alone does not establish higher market impact or constrained strategy capacity. Redemption
+  pressure depends on flows relative to liquid assets; trading-cost claims need order size, liquidity
+  and execution evidence. Without those inputs, state the conditional mechanism rather than an observed effect.
 - Price changes and correlations do not prove causality, consensus expectations or that an effect is
   fully priced. Explain the mechanism and contrary evidence; subjective scenarios must be labelled.
 - Return/risk figures use the retained computation's frequency, observations, denominator, methodology
