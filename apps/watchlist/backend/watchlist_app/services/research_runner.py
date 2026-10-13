@@ -180,7 +180,8 @@ def automatic_retry_due(context, completed_at, body, *, now=None):
             and (now or datetime.now(UTC)) >= ended + timedelta(seconds=60 if attempt == 1 else 300))
 
 
-def queue_retry(session, run, *, now=None, manual=False, recheck_review=False):
+def queue_retry(session, run, *, now=None, manual=False, recheck_review=False,
+                review_guidance: str | None = None):
     """Requeue an authorized failed research/risk run without rebinding its evidence.
 
     Automatic recovery is bounded to two retries of an identified transient fault.
@@ -188,6 +189,8 @@ def queue_retry(session, run, *, now=None, manual=False, recheck_review=False):
     publication still verifies the studied dossier versions and current access.
     Explicit manual rechecking retains the accepted draft and all old receipts,
     but only checkpoints written after that request may be reused.
+    Optional operator guidance belongs only to that explicit recheck, not to
+    the frozen question, draft or evidence.
     The caller holds the same instrument/topic lock used by begin_run.
     """
     session.refresh(run, with_for_update=True)
@@ -210,6 +213,9 @@ def queue_retry(session, run, *, now=None, manual=False, recheck_review=False):
             or not context.get("submitted_draft") or not context.get("input_snapshot_cutoff")
             or not context.get("cutoff")):
         return False
+    if review_guidance is not None and (not manual or not recheck_review
+            or not isinstance(review_guidance, str) or not review_guidance.strip()):
+        return False
     execution = dict(context.get("execution") or {})
     attempt = _failed_attempt(context, run.body)
     error = context.get("runtime_error") or {}
@@ -231,7 +237,8 @@ def queue_retry(session, run, *, now=None, manual=False, recheck_review=False):
         recheck = {"after_evidence_count": len(context.get("web_evidence", [])),
             "requested_at": (now or datetime.now(UTC)).isoformat(), "failed_attempt": attempt,
             "publication_error": str(validation_error or "").split("\n", 1)[0][:1000]}
-        execution["review_recheck"] = recheck
+        execution["review_recheck"] = {**recheck,
+            **({"review_guidance": review_guidance} if review_guidance is not None else {})}
         failure["review_recheck"] = recheck
     execution["failures"] = [*execution.get("failures", []), failure]
     execution.update(attempt=attempt, stage="queued", resume=True)

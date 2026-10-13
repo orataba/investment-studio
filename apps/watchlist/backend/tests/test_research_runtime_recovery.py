@@ -196,8 +196,51 @@ def test_explicit_recheck_keeps_initiator_authorization(client, monkeypatch):
     monkeypatch.setattr(runner, "current_principal", lambda: Principal("other", "Other", "default"))
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, "recovery")
-        assert not runner.queue_retry(session, run, manual=True, recheck_review=True)
+        assert not runner.queue_retry(session, run, manual=True, recheck_review=True,
+            review_guidance="Verify the retained source clock before accepting this claim.")
         assert run.status == "failed" and run.context_json == context
+
+
+@pytest.mark.parametrize("manual,recheck,guidance", [
+    (False, False, "Check the stated denominator."),
+    (False, True, "Check the stated denominator."),
+    (True, False, "Check the stated denominator."),
+    (True, True, " \n "),
+    (True, True, {"text": "Check the stated denominator."}),
+])
+def test_review_guidance_requires_explicit_manual_recheck_without_mutating_inputs(client, manual, recheck, guidance):
+    context = {"sector_run": True, "submitted_draft": {"reviews": []},
+        "input_snapshot_cutoff": "clock", "cutoff": "clock",
+        "runtime_error": {"type": "ProviderUnavailable", "retryable": True}}
+    save_run(context, completed=datetime.now(UTC) - timedelta(hours=1))
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "recovery")
+        retained = deepcopy(run.context_json)
+        assert not runner.queue_retry(session, run, manual=manual,
+            recheck_review=recheck, review_guidance=guidance)
+        assert run.status == "failed" and run.context_json == retained
+
+
+def test_manual_recheck_guidance_is_separate_from_frozen_inputs_and_old_receipts(client):
+    guidance = "Check whether the holdings date is an observation clock, not a disclosure date."
+    draft = {"reviews": [{"instrument_id": "xlk", "research": {"facts": []}}]}
+    context = {"sector_run": True, "question": "Original research request",
+        "submitted_draft": draft, "input_snapshot_cutoff": "clock", "cutoff": "clock",
+        "instrument_inputs": [{"instrument_id": "xlk", "held_as_of": "2026-09-30"}],
+        "computed_metrics": [{"source_id": "computed:retained", "data": {"value": 7}}],
+        "web_evidence": [{"review": {"checkpoint": {"draft": deepcopy(draft),
+            "cutoff": "clock", "result": {"reviews": []}}}}], "execution": {"attempt": 4}}
+    save_run(context)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "recovery")
+        assert runner.queue_retry(session, run, manual=True, recheck_review=True, review_guidance=guidance)
+        retained = run.context_json
+        assert retained["execution"]["review_recheck"]["review_guidance"] == guidance
+        assert "review_guidance" not in retained["execution"]["failures"][-1]["review_recheck"]
+        assert runner.review_checkpoint(retained) is None
+        for key in ("question", "submitted_draft", "input_snapshot_cutoff", "cutoff",
+                    "instrument_inputs", "computed_metrics", "web_evidence"):
+            assert retained[key] == context[key]
 
 
 def test_explicit_recheck_retains_history_and_new_checkpoint_recovers_without_rechecking(client, monkeypatch):

@@ -155,6 +155,7 @@ def test_explicit_recheck_uses_real_context_boundary_and_feeds_prior_publication
             "identifiers": [{"identifier_type": "provider_symbol", "identifier_value": f"fmp:{iid.upper()}", "is_primary": True}]})
 
     original = draft()
+    guidance = "Check whether the retained holdings date establishes a disclosure date."
     context = review._api_request("test-run", "context?originals=true")
     context.update(submitted_draft=original, input_snapshot_cutoff=context["cutoff"],
         validation_error="events[event_key=oil-rsi].published_at must match the cited original",
@@ -175,7 +176,7 @@ def test_explicit_recheck_uses_real_context_boundary_and_feeds_prior_publication
                             status="failed", context_json=context)
         session.add(run)
         session.flush()
-        assert queue_retry(session, run, manual=True, recheck_review=True)
+        assert queue_retry(session, run, manual=True, recheck_review=True, review_guidance=guidance)
         session.commit()
 
     reads, captures, packets = [], [], []
@@ -198,7 +199,13 @@ def test_explicit_recheck_uses_real_context_boundary_and_feeds_prior_publication
     diagnostic = packets[0]["acquisition"]["review_recheck"]
     assert diagnostic["after_evidence_count"] == len(context["web_evidence"])
     assert diagnostic["publication_error"] == context["validation_error"]
+    assert diagnostic["review_guidance"] == guidance
     assert "不是投资证据" in diagnostic["note"]
+    assert "不是事实、结论、来源或发布批准" in diagnostic["note"]
+    assert guidance not in json.dumps(packets[0]["sources"], ensure_ascii=False)
+    assert packets[0]["draft_reviews"] == [item for item in original["reviews"]
+        if item["instrument_id"] in {row["instrument_id"] for row in packets[0]["draft_reviews"]}]
+    assert packets[0]["cutoff"] == context["cutoff"]
     assert "rejected_reply" not in json.dumps(packets[0])
     assert context["rejected_reply"] not in json.dumps(packets[0])
     assert output["reviews"][0]["events"] == []
