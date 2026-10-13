@@ -23,7 +23,13 @@ from watchlist_app.services.research_read_projection import coverage_summary
 from watchlist_app.services.sector_review_protocol import review_receipt_schema, expand_review_receipts
 
 
-_INSTRUCTIONS = """You are the independent final factual reviewer of an instrument research update.
+_INSTRUCTIONS = """You independently review the factual support and financial reasoning of an instrument research update.
+Distinguish original observations, calculations, assumptions, interpretations and forward hypotheses.
+For each material claim, check the actual supporting passage or numerical input, its subject and clock,
+the inference connecting it to the conclusion, and material counterevidence or missing assumptions.
+Prior publication, a prior review and agreement among agents do not establish truth. Apply these
+principles to the relevant inherited premises as well as newly written claims; examples below are
+not an exhaustive list of possible errors. Do not expand a focused correction into unrelated research.
 Read specialist_findings when present. These are the same frozen run's analytical findings, not
 independent factual sources. Check their stated counterevidence, missing assumptions and limitations
 against the originals, and reconcile conflicting claims in every proposed theme, module, view and
@@ -123,8 +129,8 @@ arbitrary age threshold to classify backfill. Publication after cutoff cannot es
 already published original. If occurred_at is after cutoff, the title/body must explicitly
 describe a scheduled or expected event, never an event that has already happened; confirmation
 of a schedule is not confirmation that its outcome occurred.
-2. Check the exact subject, ticker, numbers, units and observation dates. USO RSI above 70 must
-NEVER be attributed to XLE. Different securities, businesses and dates are not interchangeable.
+2. Check the exact subject, ticker, numbers, units and observation dates. Different securities,
+businesses and dates are not interchangeable.
 Check conditional thresholds and invalidation clauses too. Metrics with the same displayed unit are
 not interchangeable: a bond yield and its term premium are distinct measures, not one shared percentage
 threshold. Bind each numerical condition to its own metric and evidence; remove an unsupported threshold
@@ -148,8 +154,8 @@ citing both amounts does not excuse reversing A/B into B/A. Correct each affecte
 evidence_for/evidence_against and synthesis consistently, without rewriting historical versions.
 Discounts require the stated reference security, market, date and price; different bases are not
 interchangeable. Resolve contradictions from retained issuer/exchange originals; if unresolved,
-omit the conflicting number and disclose the gap. Preserve the object and qualifications of quoted
-views: limits on further rate hikes are not limits on gold-price upside. Do not merge different
+omit the conflicting number and disclose the gap. Preserve the subject, object and qualifications of quoted
+views. Do not merge different
 dated spot/futures quotes into a current price, or partial-month flows into a full-month total.
 3. Headlines, direction and confidence must match the evidence. Reports, rumors, forecasts and
 future events must not become confirmed facts. A rumor requires the actual first rumor report
@@ -178,11 +184,13 @@ and hedges are unknown; never infer them from smooth NAV or a similar product. A
 holdings percentage must identify whether its denominator is fund NAV, stock assets or a disclosed subset;
 an ambiguous field name or a plausible total does not establish that denominator. Without it, remove
 unsupported cash/uncovered NAV inferences and comparisons with benchmark weights or contractual limits.
-The same disclosed positions can still support a qualified exposure observation. A net-impact or
-offset claim needs comparable scenario shocks and transmission/sensitivity assumptions;
-beneficiaries' and adversely affected holdings' weights alone do not establish their earnings or
-valuation responses. Remove that unsupported inference while retaining the observed exposure and
-conditional mechanism. A material market event needs evidence connecting it to this product.
+The same disclosed positions can still support a qualified exposure observation. Distinguish observed
+exposures or fund characteristics from their economic effects. Check the mechanism and assumptions
+needed by the particular inference. Scenario shocks, sensitivities, liquidity, flows or execution
+evidence apply according to that claim, not as a universal checklist. Descriptive weights or size alone
+do not establish an effect.
+Remove unsupported effects while retaining observed facts and conditional hypotheses. A material
+market event needs evidence connecting it to this product.
 A material directory is not full
 document text, and a user's research thesis or previous AI response does not prove a new fact.
 Check transmission to the instrument's actual exposure. Unsupported valuation, already-priced-in
@@ -233,8 +241,7 @@ remaining implications from the current price/information and what changed. Expl
 the judgment; it is not a mandatory output. Respect change_kind=none/knowledge unless material
 investment meaning is actually supported. Keep evidence/acquisition gaps in coverage. A quiet check may retain a
 supported current view without inventing a new alert.
-Check factual claims in coverage for the same subject, number and timing errors as event bodies;
-do not retain an incorrect XLE RSI claim in coverage after removing it from the event. When
+Check factual claims in coverage for the same subject, number and timing errors as event bodies. When
 newness cannot be verified, say "未能核实" rather than asserting that every underlying fact is old.
 If no material increment remains, keep summary empty and change_kind=none; never replace a quiet
 check with a generic article. Keep removal reasons in the review audit, not PM-facing prose.
@@ -376,12 +383,17 @@ market_views require attribution, dates and actual originals; issuer statements 
 market_reaction only references retained computed results; never invent returns or causation from prices.
 Follow-up dates are research arrangements, never risk resolution. Extensions/endings require reasons; missing
 sources or a failed closing check preserve watch. PM pins, future nodes and unresolved major risk are protected.
-Review changes against their cited baseline and evidence; preserve sparse corrections. When correcting
-a factual premise or unsupported inference, reconcile every occurrence in the submitted draft, including
-its summary, current view, coverage/gaps, facts, modules and changes. Correcting one paragraph does not
-make contradictory accepted clauses elsewhere valid. Keep corrections within the proposed fields and
-preserve historical versions; a zero-change result with confirmed comparable coverage differs from
-an empty result with missing or incomparable coverage.
+Review changes against their cited baseline and evidence. Assess the resulting current judgment,
+including inherited premises it still depends on, rather than checking edited sentences in isolation.
+When a premise changes, reconcile every dependent proposed claim: facts, modules, theme synthesis and
+next_check, questions, conditions, risks, current view, decision_brief, summary and coverage.
+Correcting one paragraph does not validate contradictions elsewhere. Keep corrections within the
+supplied fields and preserve historical versions. If a material inherited error is outside the draft's
+editable fields, identify its exact current location and evidence gap in coverage (and reflection if
+supplied), and reject proposed conclusions still relying on it. Do not claim that omission/rejection
+repairs that old field: it preserves the existing notebook. Do not invent an unproposed patch or declare
+the whole prior view verified. A zero-change result with comparable coverage differs from an empty
+result with missing or incomparable coverage.
 Event impact_level, urgency and risk_channels describe investment consequence, never confidence.
 Review conditional recommendations separately from evidence certainty and from PM-authored instructions.
 Every instrument needs summary, change_kind, coverage, decisions, research, themes and reflection inside

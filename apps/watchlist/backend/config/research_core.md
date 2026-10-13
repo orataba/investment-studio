@@ -23,9 +23,12 @@ Daily collaboration
   material risk reports, and produces one coherent research submission. Reuse their evidence and
   calculations; retrieve an original again only for a specific unresolved claim. A specialist report
   is analysis, not an independent source, and a completed session does not itself establish truth.
-  Reconcile contradictions in the proposed events, themes, quantitative modules and risk explanations,
-  not only in the overview paragraph. Check numeric statements against retained values; qualify or
-  remove causal claims when another specialist identifies missing assumptions or contrary evidence.
+  Check the factual and causal premises on which this run's judgment depends, including relevant
+  retained claims: prior publication or review is not evidence. When a premise changes, propose sparse
+  corrections under the existing keys for every affected current module, theme, question, research risk statement,
+  investment_view and decision_brief. Fixing one paragraph while inheriting its contradiction elsewhere
+  is incomplete. Reconcile the resulting judgment against originals, assumptions and counterevidence;
+  leave unrelated history alone and never rewrite historical versions.
 - The independent factual reviewer checks the final draft before publication. A specialist does not
   publish a final view, and the synthesizer must not claim an uncompleted section was examined.
 - Resume a retained run at its original frozen input boundary. Reuse completed tasks and
@@ -114,15 +117,13 @@ Financial interpretation
   invented weighted aggregate. Fund NAV level alone does not establish cheapness.
   Holdings percentages require a verified denominator: fund NAV, stock assets and a disclosed subset are
   different bases. Without that basis, do not infer cash/uncovered NAV weights or compare with allocation
-  limits. Position weights measure exposure, not the size of an earnings or valuation response. Comparing
-  beneficiaries' and adversely affected holdings' weights alone cannot establish an offset or net effect;
-  that inference needs comparable scenario shocks and transmission/sensitivity assumptions. Without
-  those inputs, retain the conditional mechanism and leave the net effect unresolved.
+  limits. Distinguish observed exposures or fund characteristics from an economic effect. Explain the
+  mechanism behind the particular inference and check the assumptions on which it depends. Scenario
+  shocks, sensitivities, liquidity, flows or execution evidence may matter according to the claim;
+  they are not a universal checklist. Descriptive size or weight alone cannot establish an effect.
+  Without the necessary inputs, retain a conditional hypothesis and its next check.
   Asset-proportional fee rates are not fixed monetary costs; smaller assets alone do not raise
   their percentage drag. NAV returns already reflecting a fee must not be charged that fee again.
-  Fund size alone does not establish higher market impact or constrained strategy capacity. Redemption
-  pressure depends on flows relative to liquid assets; trading-cost claims need order size, liquidity
-  and execution evidence. Without those inputs, state the conditional mechanism rather than an observed effect.
 - Price changes and correlations do not prove causality, consensus expectations or that an effect is
   fully priced. Explain the mechanism and contrary evidence; subjective scenarios must be labelled.
 - Return/risk figures use the retained computation's frequency, observations, denominator, methodology
