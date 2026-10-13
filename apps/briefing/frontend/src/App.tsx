@@ -243,7 +243,7 @@ export default function App() {
   const [sourceError, setSourceError] = useState('')
   const [sourceRevision, setSourceRevision] = useState(0)
   const [comparison, setComparison] = useState<Source | null>(null)
-  const focusEdition = useRef(false)
+  const pendingFocusReportId = useRef<string | null>(null)
   const generateButton = useRef<HTMLButtonElement>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -285,7 +285,7 @@ export default function App() {
         else if (window.location.hash) navigateToSection(window.location.hash.slice(1), false)
         return
       }
-      focusEdition.current = true
+      pendingFocusReportId.current = route.selected || null
       if (route.kind === 'industry') setLoading(false)
       else if (route.kind !== kind) setLoading(true)
       if (route.kind !== kind) setLimit(30)
@@ -334,8 +334,8 @@ export default function App() {
   useEffect(() => {
     if (!detail) return
     if (window.location.hash) navigateToSection(window.location.hash.slice(1), false)
-    else if (focusEdition.current) navigateToSection('edition-heading', false)
-    focusEdition.current = false
+    else if (pendingFocusReportId.current === detail.report_id) navigateToSection('edition-heading', false)
+    if (pendingFocusReportId.current === detail.report_id) pendingFocusReportId.current = null
   }, [detail?.report_id])
   useEffect(() => {
     const restoreAnchor = () => { if (window.location.hash && typeof window.history.state?.readingScrollY !== 'number') navigateToSection(window.location.hash.slice(1), false) }
@@ -363,7 +363,7 @@ export default function App() {
   }, [rows, detail?.status, kind, modelWork?.paused])
   function choose(id: string, replace = false) {
     if (id === selected) return
-    focusEdition.current = !replace
+    pendingFocusReportId.current = replace ? null : id
     setSelected(id); setDetail(null); closeSource(); setError(''); setDetailError('')
     const url = new URL(window.location.href); url.searchParams.set('report', id); url.searchParams.set('type', kind)
     if (!replace) url.hash = ''

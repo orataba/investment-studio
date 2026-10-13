@@ -114,7 +114,7 @@ QUOTE_BASIS_LABELS = {
     "official_nav": "Unit NAV",
     "close": "Close",
     "last": "Last Price",
-    "total_return_nav": "Cumulative NAV",
+    "total_return_nav": "Dividend-Reinvested Total Return NAV",
     "adjusted_close": "Adjusted Close",
 }
 # Percentile/rank output needs at least four independent peers. Smaller

@@ -551,6 +551,26 @@ it('opens and focuses a directly linked source section after its edition loads',
   expect(document.activeElement).toBe(container.querySelector('#source-coverage summary'))
 })
 
+it('focuses a requested edition when it is selected immediately after the previous edition mounts', async () => {
+  const failed = { ...detail, report_id: 'failed-v2', version: 2, status: 'failed', error: 'No draft', report: null }
+  window.history.replaceState(null, '', '/?lang=en&report=failed-v2')
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status') ? { harness_available: false, can_generate: false, can_read_sources: false }
+    : url.includes('/reports?') ? { rows: [failed, detail], total: 2 } : url.endsWith('/failed-v2') ? failed : detail })))
+  // Select between the previous edition's DOM commit and its passive focus effect.
+  const observer = new MutationObserver(() => {
+    const button = screen.queryByRole('button', { name: 'Read available edition · 2026-09-07 · v1' })
+    if (!button) return
+    observer.disconnect()
+    fireEvent.click(button)
+  })
+  observer.observe(document.body, { subtree: true, childList: true })
+  try {
+    page(<App />)
+    await screen.findByRole('heading', { name: '央行继续观察就业' })
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Daily research briefing | 2026-09-07' })))
+  } finally { observer.disconnect() }
+})
+
 it('groups versions by date, keeps failed attempts and offers the same-day readable edition', async () => {
   const older = { ...detail, report_id: 'older-v1', report_date: '2026-09-06' }
   const failed = { ...detail, report_id: 'failed-v2', version: 2, status: 'failed', error: 'No draft', report: null }

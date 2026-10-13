@@ -376,7 +376,7 @@ const TAB_LABELS: Record<DetailTab, LocalizedText> = {
 const NAV_BASIS_LABELS: Record<string, LocalizedText> = {
   auto: { en: 'Auto', zh: '自动' },
   nav_with_dividend: {
-    en: 'Cumulative NAV',
+    en: 'Dividend-Reinvested Total Return NAV',
     zh: '复权累计净值',
   },
   nav: { en: 'Unit NAV', zh: '单位净值' },
@@ -413,7 +413,7 @@ const PRIVATE_FUND_PEOPLE_FIELDS: PeopleOverviewField[] = [
 const QUOTE_BASIS_LABELS: Record<QuoteBasis, LocalizedText> = {
   nav: { en: 'Unit NAV', zh: '单位净值' },
   nav_with_dividend: {
-    en: 'Cumulative NAV',
+    en: 'Dividend-Reinvested Total Return NAV',
     zh: '复权累计净值',
   },
 }
