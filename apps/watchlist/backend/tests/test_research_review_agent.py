@@ -242,6 +242,44 @@ def test_reviewer_rejects_directory_only_acceptance_and_accepts_original_passage
     assert "response_schema" not in (tmp_path / "reads.jsonl").read_text()
 
 
+def test_source_directory_reaches_late_text_without_paging_large_metadata_or_bypassing_review(monkeypatch, tmp_path):
+    # Real retained articles place text after 30 metadata fields. The original
+    # remains unchanged; the directory should route straight to its body.
+    fields = ("version_id document_id source_id channel_id source_name title url information_type status "
+              "published_at published_at_precision occurred_at occurred_at_precision observed_at received_at "
+              "body_sha256 raw_sha256 raw_format content_completeness content_warnings provenance withdrawn "
+              "entities event_ids source_type retrieved_at discovered_at time_status coverage body_available").split()
+    source = {key: None for key in fields}
+    source.update(source_id="original", source_type="public_source", version_id="original-v1",
+                  published_at="2026-09-25T00:00:00Z", provenance={"retained_metadata": "x" * 60000},
+                  text="The original fact, its scope and qualifying context.")
+    assert len(source) == 31 and list(source)[-1] == "text"
+    proposed = {"instrument_id": "asset", "summary": "", "events": [], "coverage": [],
+        "research": {"investment_view": {"direction": "Conditional view"}, "source_ids": ["original"]},
+        "themes": [], "reflection": None}
+    state = _bound(monkeypatch, tmp_path, {"draft_reviews": [proposed], "sources": [source]})
+    receipts = review_mcp.read_review_context()["receipt_contract"]["receipt_shape_example"]
+    _complete_read(review_mcp.read_review_context, section="draft_reviews")
+    directory = review_mcp.read_review_context(section="sources")
+    indexed = directory["data"][0]
+    selector = indexed["evidence_reads"][0]
+    assert selector == {"tool": "read_review_source", "source_id": "original", "path": ["text"]}
+    assert indexed["published_at"] == source["published_at"]
+    assert indexed["version_id"] == "original-v1"
+    assert "text" not in indexed and "provenance" not in indexed
+    assert not directory["deferred"] and directory["next_offset"] is None
+    with pytest.raises(ValueError, match="substantive original"):
+        review_mcp.submit_review_receipts(receipts)
+    page = review_mcp.read_review_source(**{key: value for key, value in selector.items() if key != "tool"})
+    assert page["data"] == source["text"] and page["next_offset"] is None
+    reads = [json.loads(line) for line in (tmp_path / "reads.jsonl").read_text().splitlines()]
+    original_reads = [row for row in reads if row.get("source_id") == "original"]
+    assert len(original_reads) == 1 and original_reads[0]["path"] == ["text"]
+    assert original_reads[0]["version_id"] == "original-v1"
+    assert review_mcp.submit_review_receipts(receipts)["accepted"]
+    assert json.loads((tmp_path / "packet.json").read_text()) == state
+
+
 @pytest.mark.parametrize("body,path", [
     ({"text": "A claim and its qualifying original context."}, ["text"]),
     ({"snapshot": {"risk": {"drawdown_pct": -4.5}}}, ["snapshot"]),
@@ -257,6 +295,8 @@ def test_missing_original_error_points_to_actual_evidence_without_accepting_a_di
     _bound(monkeypatch, tmp_path, {"draft_reviews": [proposed], "sources": [source]})
     receipts = review_mcp.read_review_context()["receipt_contract"]["receipt_shape_example"]
     _complete_read(review_mcp.read_review_context, section="draft_reviews")
+    indexed = review_mcp.read_review_context(section="sources")["data"][0]
+    assert indexed["evidence_reads"] == [{"tool": "read_review_source", "source_id": "original", "path": path}]
     review_mcp.read_review_source("original", limit=1)
     with pytest.raises(ValueError, match="substantive original") as error:
         review_mcp.submit_review_receipts(receipts)
@@ -325,6 +365,8 @@ def test_complete_empty_estimate_comparison_is_evidence_but_an_empty_table_or_me
         "reflection": {"status": "reviewed", "summary": "Retained comparison and limitations were checked.",
                        "reviewed_update_ids": [], "source_ids": [source["source_id"]]}}
     _bound(monkeypatch, tmp_path, {"draft_reviews": [proposed], "sources": [source]})
+    assert review_mcp.read_review_context(section="sources")["data"][0]["evidence_reads"] == [
+        {"tool": "read_review_source", "source_id": source["source_id"], "path": []}]
     receipts = {"reviews": [{"instrument_id": "aapl", "summary": {"decision": "accept"},
         "change_kind": {"decision": "accept"}, "coverage": {"decision": "accept"},
         "decisions": [], "research": None, "themes": [], "reflection": {"decision": "accept"}}]}
