@@ -1,5 +1,5 @@
 """Requested coverage is checked before an intersection can erase a missing day."""
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -8,7 +8,8 @@ from watchlist_app.services.calculation_frequency import build_calculation_frequ
 from watchlist_app.services.research_workbench import compare_series
 
 
-CUTOFF = datetime(2026, 10, 9, tzinfo=UTC)
+# October 8 is due after New York's local midnight, not UTC midnight.
+CUTOFF = datetime(2026, 10, 9, 4, tzinfo=UTC)
 DAYS = ["2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08"]
 
 
@@ -42,21 +43,46 @@ def test_complete_historical_window_is_not_blocked_by_a_later_source_gap_or_curr
     assert any("不表示全历史完整" in value for value in result["limitations"])
 
 
-@pytest.mark.parametrize("calendar,days,end,before,after", [
-    ("XNYS", ["2026-11-24", "2026-11-25"], "2026-11-27", "2026-11-27T17:59:00+00:00", "2026-11-27T18:00:00+00:00"),
-    ("XHKG", ["2026-12-22", "2026-12-23"], "2026-12-24", "2026-12-24T04:09:00+00:00", "2026-12-24T04:10:00+00:00"),
-    ("24/7", ["2026-10-09", "2026-10-10"], "2026-10-11", "2026-10-11T23:59:00+00:00", "2026-10-12T00:00:00+00:00"),
+@pytest.mark.parametrize("calendar,days,end,before,closed,due", [
+    ("XNYS", ["2026-11-24", "2026-11-25"], "2026-11-27", "2026-11-27T17:59:00+00:00", "2026-11-27T18:00:00+00:00", "2026-11-28T05:00:00+00:00"),
+    ("XHKG", ["2026-12-22", "2026-12-23"], "2026-12-24", "2026-12-24T04:09:00+00:00", "2026-12-24T04:10:00+00:00", "2026-12-24T16:00:00+00:00"),
+    ("24/7", ["2026-10-09", "2026-10-10"], "2026-10-11", "2026-10-11T23:59:00+00:00", "2026-10-12T00:00:00+00:00", "2026-10-12T00:00:00+00:00"),
 ])
-def test_frozen_cutoff_honors_early_close_hk_auction_and_utc_day(calendar, days, end, before, after):
+def test_frozen_cutoff_separates_actual_close_from_publication_deadline(calendar, days, end, before, closed, due):
     item = series(days, calendar=calendar)
     args = ({"asset": item}, date.fromisoformat(days[0]), date.fromisoformat(end))
-    pending = compare_series(*args, cutoff=datetime.fromisoformat(before))
-    assert pending["rows"] and not pending["excluded"]
-    assert pending["window_coverage"]["asset"]["not_yet_due_dates"] == [end]
-    assert any("尚未收盘或尚未到披露期限" in value for value in pending["limitations"])
-    missing = compare_series(*args, cutoff=datetime.fromisoformat(after))
+    for clock in (datetime.fromisoformat(before), datetime.fromisoformat(due) - timedelta(microseconds=1)):
+        pending = compare_series(*args, cutoff=clock)
+        assert pending["rows"] and not pending["excluded"]
+        assert pending["sample_end"] == days[-1]
+        assert pending["window_coverage"]["asset"]["missing_dates"] == []
+        assert pending["window_coverage"]["asset"]["not_yet_due_dates"] == [end]
+        assert any("尚未收盘或尚未到披露期限" in value for value in pending["limitations"])
+    missing = compare_series(*args, cutoff=datetime.fromisoformat(due))
     assert not missing["rows"]
     assert missing["window_coverage"]["asset"]["missing_dates"] == [end]
+    assert missing["window_coverage"]["asset"]["not_yet_due_dates"] == []
+
+    # Publication allowance never admits an unclosed bar or discards a real close.
+    published_args = ({"asset": series([*days, end], calendar=calendar)}, *args[1:])
+    unclosed = compare_series(*published_args, cutoff=datetime.fromisoformat(before))
+    assert not unclosed["rows"] and "尚未完成交易时段" in unclosed["excluded"][0]["reason"]
+    published = compare_series(*published_args, cutoff=datetime.fromisoformat(closed))
+    assert published["rows"] and not published["excluded"]
+    assert published["sample_end"] == end
+    assert published["window_coverage"]["asset"]["not_yet_due_dates"] == []
+
+
+def test_same_day_publication_wait_does_not_hide_an_older_gap_before_intersection():
+    missing = series([day for day in DAYS if day not in {DAYS[2], DAYS[-1]}])
+    result = compare_series({"complete": series(DAYS), "missing": missing},
+        date(2026, 10, 1), date(2026, 10, 8), "complete", "missing",
+        cutoff=datetime(2026, 10, 9, tzinfo=UTC))  # Still October 8 in New York.
+    assert [row["instrument_id"] for row in result["rows"]] == ["complete"]
+    assert result["sample_end"] == DAYS[-1]
+    assert result["rows"][0]["excess_return_pp"] is None
+    assert result["window_coverage"]["missing"]["missing_dates"] == [DAYS[2]]
+    assert result["window_coverage"]["missing"]["not_yet_due_dates"] == [DAYS[-1]]
 
 
 def test_unclosed_bar_is_not_a_complete_observation_even_when_present():
@@ -298,7 +324,11 @@ def test_month_interval_index_preserves_all_evidence_and_rejects_incomplete_pair
     assert rows[1]["month"] == "2026-06" and rows[1]["status"] == "complete"
 
 
-def test_calendar_batch_without_oldest_history_still_verifies_each_supported_later_window(monkeypatch):
+@pytest.mark.parametrize("cutoff,june_status", [
+    (datetime(2026, 7, 1, 12, tzinfo=UTC), "unavailable"),
+    (datetime(2027, 7, 1, 12, tzinfo=UTC), "complete"),
+])
+def test_calendar_batch_without_oldest_history_requires_known_publication_schedule(monkeypatch, cutoff, june_status):
     from studio_market import calendars
     from watchlist_app.services.calculation_frequency import _market_calendar_sessions
     from watchlist_app.services.risk_performance import _month_periods, _points
@@ -309,6 +339,10 @@ def test_calendar_batch_without_oldest_history_still_verifies_each_supported_lat
     def limited_calendar(calendar, start, end, now):
         return None if start < date(2026, 5, 1) else original(calendar, start, end, now)
     monkeypatch.setattr(calendars, "closed_market_sessions", limited_calendar)
-    rows = _month_periods(_points(item), item, cutoff=datetime(2026, 7, 1, 12, tzinfo=UTC))
-    assert rows[0]["status"] == "unavailable" and rows[0]["return_pct"] is None
-    assert rows[1]["status"] == "complete" and rows[1]["return_pct"] is not None
+    rows = _month_periods(_points(item), item, cutoff=cutoff)
+    assert rows[0]["month"] == "2026-05" and rows[0]["status"] == "unavailable" and rows[0]["return_pct"] is None
+    # The 2026 cutoff's publication probe also crosses the unsupported range.
+    # Only the 2027 cutoff has a verified current schedule; June can then use
+    # its supported window while May's missing historical calendar still fails.
+    assert rows[1]["month"] == "2026-06" and rows[1]["status"] == june_status
+    assert (rows[1]["return_pct"] is not None) == (june_status == "complete")
