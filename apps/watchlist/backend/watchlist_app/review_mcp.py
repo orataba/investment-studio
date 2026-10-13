@@ -284,7 +284,7 @@ def submit_review_receipts(receipts: dict) -> dict:
     """Submit the complete bound_draft_v1 receipt after factual and cross-object checks. The full response_schema is always validated, but only specific correction branches need to be read. Fix validation errors and resubmit the complete object. This stages a review; it cannot publish or change a draft, evidence, PM instruction or research history."""
     import jsonschema
     from watchlist_app.services.sector_review_protocol import expand_review_receipts
-    from watchlist_app.services.sector_fact_review import _Checks
+    from watchlist_app.services.sector_fact_review import _Checks, _apply_checks
     from watchlist_app.services.sector_research import validate_event_source_consistency
     state = _state()
     schema = state["response_schema"]
@@ -355,6 +355,10 @@ def submit_review_receipts(receipts: dict) -> dict:
             if decision.event is not None:
                 event_sources = {sid: originals[sid] for sid in state["packet"]["event_source_ids"] if sid in originals}
                 validate_event_source_consistency(decision.event, event_sources, cutoff, review.instrument_id)
+    # Reject invalid corrections while the reviewer can still repair them. The
+    # application repeats this same pure validation before publishing the result.
+    _apply_checks({"reviews": state["packet"]["draft_reviews"]}, result,
+                  state["packet"]["sources"], state["packet"].get("research_dossiers", []))
     output = Path(os.environ["INVESTMENT_STUDIO_REVIEW_RESULT"])
     temporary = output.with_suffix(".tmp")
     temporary.write_text(json.dumps({"receipts": receipts, "result": result}, ensure_ascii=False))

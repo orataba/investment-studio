@@ -821,7 +821,10 @@ def _reviewed_delta(proposed: dict, corrected: ResearchNotebook) -> ResearchNote
                             original = original_items[item["key"]]
                             for reference in ("event_keys", "theme_ids"):
                                 if item.get(reference, []) != original.get(reference, []):
-                                    raise ValueError("Fact review cannot retarget opportunity or risk references")
+                                    index = list(original_items).index(item["key"])
+                                    raise ValueError("Fact review cannot retarget opportunity or risk references: "
+                                        f"investment_view.{attention}[{index}].{reference}; "
+                                        "preserve this field from the frozen draft (index is its original position).")
             else:
                 value.pop(field)
         elif value.get(field) is None and proposed.get(field) is not None:

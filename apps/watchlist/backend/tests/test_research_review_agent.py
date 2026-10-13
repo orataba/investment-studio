@@ -49,7 +49,7 @@ def test_review_tool_schema_does_not_share_mutable_registration_or_packet_metada
 def test_review_must_read_specialist_counterevidence_before_accepting_synthesis(monkeypatch, tmp_path):
     from .test_sector_review_protocol import accepted
     proposed = [{"instrument_id": "asset", "events": [], "themes": [], "research": None,
-        "summary": "", "coverage": []}]
+        "summary": "Check the specialist findings.", "coverage": []}]
     _bound(monkeypatch, tmp_path, {"draft_reviews": proposed, "sources": [],
         "specialist_findings": [{"instrument_id": "asset", "task_id": "counter-check", "role": "quantitative",
             "summary": "The weighting method is missing; constituent count alone does not establish concentration.",
@@ -61,6 +61,43 @@ def test_review_must_read_specialist_counterevidence_before_accepting_synthesis(
     assert not (tmp_path / "result.json").exists()
     _complete_read(review_mcp.read_review_context, section="specialist_findings")
     assert review_mcp.submit_review_receipts(receipts)["accepted"]
+
+
+@pytest.mark.parametrize("reference", ["theme_ids", "event_keys"])
+def test_reviewer_repairs_attention_references_before_acceptance(monkeypatch, tmp_path, reference):
+    from .test_sector_review_protocol import accepted
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    item = {"key": "private-item-name", "title": "Private draft title",
+        "explanation": "The retained original supports this observation.", "next_watch": "Next disclosure",
+        "source_ids": ["original"], reference: []}
+    proposed = [{"instrument_id": "asset", "summary": "Retained observation", "events": [], "themes": [],
+        "research": {"investment_view": {"opportunities": [item]}}}]
+    state = _bound(monkeypatch, tmp_path, {"draft_reviews": proposed, "sources": [{
+        "source_id": "original", "source_type": "public_source", "instrument_id": "asset",
+        "text": "The retained original observation."}]})
+    _complete_read(review_mcp.read_review_context, section="draft_reviews")
+    review_mcp.read_review_source("original")
+    receipts = accepted(proposed)
+    corrected = {**item, reference: ["private-retarget-id"]}
+    receipts["reviews"][0]["research"] = {"decision": "correct", "reason": "Factual correction",
+        "omit_fields": [],
+        "patch": {"investment_view": {"decision": "correct", "reason": "Factual correction",
+            "omit_fields": [], "patch": {"opportunities": [corrected]}}}}
+
+    async def submit():
+        return await review_mcp.mcp.call_tool("submit_review_receipts", {"receipts": receipts})
+
+    with pytest.raises(ToolError) as rejected:
+        asyncio.run(submit())
+    assert f"investment_view.opportunities[0].{reference}" in str(rejected.value)
+    assert all(value not in str(rejected.value) for value in (item["key"], item["title"], "private-retarget-id"))
+    assert not (tmp_path / "result.json").exists()
+    corrected[reference] = []
+    assert asyncio.run(submit()).structured_content["accepted"]
+    stored = json.loads((tmp_path / "result.json").read_text())["result"]["reviews"][0]["research"]
+    assert stored["investment_view"]["opportunities"][0][reference] == []
+    assert json.loads((tmp_path / "packet.json").read_text()) == state
 
 
 def test_reviewer_stdio_advertises_bound_schema_and_preserves_submission_checks(monkeypatch, tmp_path):
@@ -281,14 +318,15 @@ def test_source_directory_reaches_late_text_without_paging_large_metadata_or_byp
 
 
 @pytest.mark.parametrize("body,path", [
-    ({"text": "A claim and its qualifying original context."}, ["text"]),
-    ({"snapshot": {"risk": {"drawdown_pct": -4.5}}}, ["snapshot"]),
-    ({"data": {"metrics": [{"name": "return", "value": 2.5, "unit": "percent"}]}}, ["data"]),
+    ({"source_type": "public_source", "text": "A claim and its qualifying original context."}, ["text"]),
+    ({"source_type": "instrument_snapshot", "snapshot": {"risk": {"drawdown_pct": -4.5}}}, ["snapshot"]),
+    ({"source_type": "computed_metric", "methodology": {"method": "retained calculation"}, "as_of": "2026-09-25",
+      "data": {"metrics": [{"name": "return", "value": 2.5, "unit": "percent"}]}}, ["data"]),
     ({"source_type": "analyst_estimate_changes", "changes": [{"metric": "eps", "change_pct": 2.5}],
-      "observations": [], "unmatched": []}, ["changes"]),
+      "current_snapshot": {"eps": 4.1}, "observations": [], "unmatched": []}, ["changes"]),
 ])
 def test_missing_original_error_points_to_actual_evidence_without_accepting_a_directory(monkeypatch, tmp_path, body, path):
-    source = {"source_id": "original", **body}
+    source = {"source_id": "original", "instrument_id": "asset", **body}
     proposed = {"instrument_id": "asset", "summary": "", "events": [], "coverage": [],
         "research": {"investment_view": {"direction": "Conditional view"}, "source_ids": ["original"]},
         "themes": [], "reflection": None}
@@ -491,7 +529,7 @@ def test_missing_review_receipt_names_required_fields_without_echoing_values(mon
 
 def test_review_schema_reports_all_invalid_objects_without_exposing_content_and_accepts_complete_repair(monkeypatch, tmp_path):
     state = _bound(monkeypatch, tmp_path, {'draft_reviews': [
-        {'instrument_id': 'asset', 'summary': '', 'events': [], 'coverage': []}], 'sources': []})
+        {'instrument_id': 'asset', 'summary': 'Review the summary.', 'events': [], 'coverage': []}], 'sources': []})
     valid = {'reviews': [{'instrument_id': 'asset', 'summary': {'decision': 'accept'},
         'change_kind': {'decision': 'accept'}, 'coverage': {'decision': 'accept'},
         'decisions': [], 'research': None, 'themes': [], 'reflection': None}]}
@@ -520,7 +558,7 @@ def test_review_schema_reports_all_invalid_objects_without_exposing_content_and_
 
 def test_review_schema_reports_both_bound_review_errors_without_treating_union_alternatives_as_required(monkeypatch, tmp_path):
     _bound(monkeypatch, tmp_path, {'draft_reviews': [
-        {'instrument_id': iid, 'summary': '', 'events': [], 'coverage': []} for iid in ('first', 'second')], 'sources': []})
+        {'instrument_id': iid, 'summary': 'Review the summary.', 'events': [], 'coverage': []} for iid in ('first', 'second')], 'sources': []})
     valid = {'reviews': [{'instrument_id': iid, 'summary': {'decision': 'accept'},
         'change_kind': {'decision': 'accept'}, 'coverage': {'decision': 'accept'},
         'decisions': [], 'research': None, 'themes': [], 'reflection': None} for iid in ('first', 'second')]}
