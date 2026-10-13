@@ -85,13 +85,30 @@ def _delivered(value, path, reads):
     return False
 
 
+_EVIDENCE_FIELDS = ("text", "content_text", "body", "snapshot", "data", "input_series", "company", "financials",
+                    "changes", "observations", "unmatched", "background", "event", "timeline", "analysis", "lesson", "outcome")
+
+
+def _evidence_read_paths(source):
+    # Hints identify existing original fields only; they do not mark a read or
+    # decide whether the contents support a claim. Empty estimate comparisons
+    # need the complete coverage/clocks/limitations, not another empty row page.
+    if (source.get("source_type") == "analyst_estimate_changes"
+            and all(source.get(key) == [] for key in ("changes", "observations", "unmatched"))
+            and isinstance(source.get("coverage"), dict) and bool(source["coverage"])
+            and all(key in source for key in ("status", "current_snapshot", "previous_snapshot", "gaps", "semantics"))):
+        return [[]]
+    return [[key] for key in _EVIDENCE_FIELDS if (
+        isinstance(source.get(key), (dict, list)) and bool(source[key]) or
+        key in {"text", "content_text", "body"} and isinstance(source.get(key), str) and bool(source[key].strip()))]
+
+
 def _evidence_read(source, reads):
     # These pages describe a resolved input, not the locator in the local packet.
     # Keep their audit receipts without walking nonexistent local original paths
     # or counting a locator as delivery of its original.
     reads = [row for row in reads if not row.get("retained_input")]
-    fields = {"text", "content_text", "body", "snapshot", "data", "input_series", "company", "financials", "changes", "observations", "unmatched",
-              "background", "event", "timeline", "analysis", "lesson", "outcome"}
+    fields = _EVIDENCE_FIELDS
     # This checks delivery, not whether a passage proves the proposed claim.
     # The reviewer still owns that judgment. Complete draft/acquisition coverage
     # uses _complete separately; citing a passage does not assert a whole article
@@ -321,7 +338,11 @@ def submit_review_receipts(receipts: dict) -> dict:
     missing = [sid for sid in sorted(notebook_source_ids(result))
                if sid not in originals or not _evidence_read(originals[sid], [row for row in reads if row.get("source_id") == sid])]
     if missing:
-        raise ValueError("Read substantive original evidence (not its directory) for supported citations, or correct/remove unsupported claims: " + ", ".join(missing))
+        selectors = [{"source_id": sid, "paths": _evidence_read_paths(originals.get(sid, {}))} for sid in missing]
+        raise ValueError("Read substantive original evidence (not its directory) for supported citations, or correct/remove unsupported claims. "
+            "Use read_review_source with the same source_id and a claim-relevant path below; follow next_offset and deferred.path "
+            "for required context. Empty estimate comparisons require the complete source at path=[]; no listed path means no substantive original is available: "
+            + json.dumps(selectors, ensure_ascii=False))
     cutoff = datetime.fromisoformat(state["packet"]["cutoff"])
     for review in checked.reviews:
         for decision in review.decisions:

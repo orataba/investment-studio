@@ -242,6 +242,47 @@ def test_reviewer_rejects_directory_only_acceptance_and_accepts_original_passage
     assert "response_schema" not in (tmp_path / "reads.jsonl").read_text()
 
 
+@pytest.mark.parametrize("body,path", [
+    ({"text": "A claim and its qualifying original context."}, ["text"]),
+    ({"snapshot": {"risk": {"drawdown_pct": -4.5}}}, ["snapshot"]),
+    ({"data": {"metrics": [{"name": "return", "value": 2.5, "unit": "percent"}]}}, ["data"]),
+    ({"source_type": "analyst_estimate_changes", "changes": [{"metric": "eps", "change_pct": 2.5}],
+      "observations": [], "unmatched": []}, ["changes"]),
+])
+def test_missing_original_error_points_to_actual_evidence_without_accepting_a_directory(monkeypatch, tmp_path, body, path):
+    source = {"source_id": "original", **body}
+    proposed = {"instrument_id": "asset", "summary": "", "events": [], "coverage": [],
+        "research": {"investment_view": {"direction": "Conditional view"}, "source_ids": ["original"]},
+        "themes": [], "reflection": None}
+    _bound(monkeypatch, tmp_path, {"draft_reviews": [proposed], "sources": [source]})
+    receipts = review_mcp.read_review_context()["receipt_contract"]["receipt_shape_example"]
+    _complete_read(review_mcp.read_review_context, section="draft_reviews")
+    review_mcp.read_review_source("original", limit=1)
+    with pytest.raises(ValueError, match="substantive original") as error:
+        review_mcp.submit_review_receipts(receipts)
+    assert json.dumps({"source_id": "original", "paths": [path]}) in str(error.value)
+    assert not (tmp_path / "result.json").exists()
+    assert "Conditional view" not in str(error.value)
+    review_mcp.read_review_source("original", path=path)
+    assert review_mcp.submit_review_receipts(receipts)["accepted"]
+
+
+def test_receipt_example_does_not_allow_themes_or_reflection_inside_research(monkeypatch, tmp_path):
+    from .test_sector_review_protocol import proposed, SOURCE
+    rows = proposed()
+    _bound(monkeypatch, tmp_path, {"draft_reviews": rows, "sources": [SOURCE]})
+    receipts = review_mcp.read_review_context()["receipt_contract"]["receipt_shape_example"]
+    _complete_read(review_mcp.read_review_context, section="draft_reviews")
+    review_mcp.read_review_source("original", path=["text"])
+    invalid = deepcopy(receipts)
+    row = invalid["reviews"][0]
+    row["research"].update({field: row.pop(field) for field in ("themes", "reflection")})
+    with pytest.raises(ValueError, match="missing fields: themes, reflection"):
+        review_mcp.submit_review_receipts(invalid)
+    assert not (tmp_path / "result.json").exists()
+    assert review_mcp.submit_review_receipts(receipts)["accepted"]
+
+
 @pytest.mark.parametrize("text", ["", " \t\n" * 9000])
 def test_review_text_exposure_does_not_count_metadata_or_whitespace(monkeypatch, tmp_path, text):
     source = {"source_id": "original", "source_type": "public_source", "text": text, "title": "Metadata only"}
@@ -292,8 +333,9 @@ def test_complete_empty_estimate_comparison_is_evidence_but_an_empty_table_or_me
     for path in (["status"], ["coverage"], ["changes"]):
         page = review_mcp.read_review_source(source["source_id"], path=path)
         assert not page["deferred"]
-        with pytest.raises(ValueError, match="substantive original"):
+        with pytest.raises(ValueError, match="substantive original") as error:
             review_mcp.submit_review_receipts(receipts)
+        assert json.dumps({"source_id": source["source_id"], "paths": [[]]}) in str(error.value)
     full = review_mcp.read_review_source(source["source_id"], limit=100)
     assert not full["deferred"] and full["next_offset"] is None
     assert full["data"]["status"] == status and full["data"]["gaps"] == source["gaps"]

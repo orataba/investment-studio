@@ -143,7 +143,7 @@ def review_receipt_contract(reviewed, schema):
     object identities and paths needed when it does find a factual correction,
     without requiring it to traverse every optional correction branch first.
     """
-    reviews = []
+    reviews, receipt_shape = [], []
     for index, row in enumerate(reviewed):
         base = ["properties", "reviews", "items", *(["oneOf", index] if len(reviewed) > 1 else [])]
         candidate = schema
@@ -172,8 +172,16 @@ def review_receipt_contract(reviewed, schema):
                     item["proposal"] = "null" if value is None else "object"
                 entry["research_fields"][field] = item
         reviews.append(entry)
+        receipt_shape.append({"instrument_id": row["instrument_id"],
+            **{field: {"decision": "accept"} for field in ("summary", "change_kind", "coverage")},
+            "decisions": [{"event_key": item["event_key"], "decision": "accept"} for item in row.get("events", [])],
+            "research": {"decision": "accept"} if row.get("research") is not None else None,
+            "themes": [{"theme_key": item["theme_key"], "decision": "accept"} for item in row.get("themes", [])],
+            "reflection": {"decision": "accept"} if row.get("reflection") is not None else None})
     return {"protocol": "bound_draft_v1", "reviews": reviews,
+        "receipt_shape_example": {"reviews": receipt_shape},
         "rules": [
+            "receipt_shape_example shows valid nesting and bound identities, not a completed review. Replace its example verdicts with your evidence-based decisions. research, themes and reflection are siblings inside each reviews item, never inside one another or at the top level.",
             "Return {reviews: [...]} with every bound instrument and every required field. Decide each listed event_key/theme_key exactly once; an absent proposed research/reflection is null.",
             "Accept an unchanged object with {decision: 'accept'}. Add its event_key, theme_key, key or index when it is a member of a keyed receipt list. Acceptance requires factual checks, not merely a matching format.",
             "For summary/change_kind/coverage corrections use {decision: 'correct', reason: 'specific factual reason', value: corrected_value}.",

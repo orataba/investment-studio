@@ -44,6 +44,12 @@ def test_compact_contract_binds_objects_and_routes_corrections_to_exact_schema_b
     schema = review._review_schema(rows, [SOURCE])
     before = deepcopy(schema)
     contract = review_receipt_contract(rows, schema)
+    # The example demonstrates actual wire nesting for multiple instruments,
+    # keyed proposals and absent sections, without inventing acceptance defaults.
+    shape = contract["receipt_shape_example"]
+    assert shape == accepted(rows)
+    Draft202012Validator(schema).validate(shape)
+    assert "not a completed review" in contract["rules"][0]
     gold, other = contract["reviews"]
     assert gold["event_keys"] == ["disclosure"] and gold["theme_keys"] == ["question"]
     assert gold["research_fields"]["facts"]["identities"] == [0]
