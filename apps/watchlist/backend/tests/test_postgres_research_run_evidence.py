@@ -112,6 +112,13 @@ def test_figure_sql_projection_never_decodes_large_input_trees(postgres_watchlis
 
     engine = create_engine(get_engine().url, json_deserializer=deserialize,
         connect_args={"options": "-c search_path=watchlist,instrument_data,public"})
+    projections = []
+    def record_projection(_connection, _cursor, statement, parameters, *_args):
+        if (statement.startswith("SELECT") and "research_run_evidence" in statement
+                and "projection_has_data" in statement
+                and any(value == "figure-retained" for value in parameters.values() if isinstance(value, str))):
+            projections.append((statement, parameters))
+    event.listen(engine, "before_cursor_execute", record_projection)
     try:
         with principal_context(Principal("figure-reader", "Reader", "default")), Session(engine) as session:
             for kind in ("legacy", "retained"):
@@ -125,8 +132,71 @@ def test_figure_sql_projection_never_decodes_large_input_trees(postgres_watchlis
                 assert "points" not in figure["data"]["series"][0]
                 assert figure["data"]["observation_clocks"]["volume"]["current_date"] == "2026-09-29"
                 assert figure["methodology"] == {"description": "Observed endpoints"}
+        assert len(projections) == 2
+        with engine.connect() as connection:
+            for (statement, parameters), objects in zip(projections, (3, 8), strict=True):
+                # One shared root field extraction and two key-presence checks;
+                # the NUL-safe root must not expand once per displayed leaf.
+                assert statement.count("regexp_replace(") == 3
+                plan = connection.exec_driver_sql("EXPLAIN (ANALYZE, FORMAT JSON) " + statement, parameters).scalar_one()[0]["Plan"]
+                def nodes(node):
+                    yield node
+                    for child in node.get("Plans", []):
+                        yield from nodes(child)
+                scans = [node for node in nodes(plan) if node["Node Type"] == "Function Scan"
+                         and node.get("Alias", "").startswith("figure_object_")]
+                assert len(scans) == objects
+                assert all(node["Actual Loops"] == node["Actual Rows"] == 1 for node in scans)
+                if objects == 8:
+                    series = [node for node in nodes(plan) if node.get("Alias") == "figure_series_fields"]
+                    assert len(series) == 1 and series[0]["Actual Loops"] == 1
     finally:
         engine.dispose()
+
+
+def test_figure_projection_preserves_null_presence_strings_and_exact_nuls(postgres_watchlist_env):
+    from datetime import UTC, datetime
+    from watchlist_app.db.models.research_run_evidence import ResearchRunEvidence
+    from watchlist_app.services.research_figure_projection import SERIES_FIELDS, project_source
+
+    fixtures = [
+        {},
+        {"data": None, "methodology": None, "input_series": None},
+        {"data": {}, "methodology": {}, "input_series": []},
+        {"data": {"observations": 7}, "methodology": "Exact retained method"},
+        {"data": {}, "methodology": 7},
+        {"title": "before\x00after\\\x00literal\ufffd", "data": {"summary": "result\x00kept"},
+         "methodology": "method\x00kept"},
+        {"title": r"literal \u0000", "data": {"summary": r"literal \u0000"},
+         "input_snapshot": {"unselected": "old\x00source"}},
+        *({"data": {"series": [{**dict.fromkeys(SERIES_FIELDS), "series_id": f"{name}-{index}", "observations": index}
+                                for index in range(1, 3)]}} for name in ("first", "second")),
+    ]
+    originals = [{"source_id": f"computed:shape-{index}", "source_type": "computed_metric", **fields}
+                 for index, fields in enumerate(fixtures)]
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="projection-shapes", title="Shapes", visibility="team"))
+        session.flush()
+        session.add_all([ResearchEntry(entry_id=f"shapes-{kind}", topic_id="projection-shapes", title="Shapes",
+            kind="analysis", context_json={"computed_metrics": originals if kind == "legacy" else []})
+            for kind in ("legacy", "retained")])
+        session.flush()
+        session.add_all([ResearchRunEvidence(run_id="shapes-retained", source_id=original["source_id"], attempt=1,
+            source_json=original, index_json={}, recorded_at=datetime.now(UTC)) for original in originals])
+        session.commit()
+        for projection in ("classification", "figure"):
+            batch = evidence.retained_computed_sources(session, "shapes-retained", projection=projection)
+            assert [{key: value for key, value in row.items() if key != "retained_reference"} for row in batch] == [
+                project_source(original, projection) for original in originals]
+        for kind in ("legacy", "retained"):
+            for original in originals:
+                for projection in ("classification", "figure"):
+                    actual = evidence.read_computed_source(session, f"shapes-{kind}", original["source_id"], projection=projection)
+                    actual.pop("retained_reference")
+                    assert actual == project_source(original, projection)
+                assert evidence.read_computed_source(session, f"shapes-{kind}", original["source_id"])["source_id"] == original["source_id"]
+        assert session.scalar(select(ResearchEntry.context_json).where(ResearchEntry.entry_id == "shapes-legacy"))["computed_metrics"] == originals
+        assert list(session.scalars(select(ResearchRunEvidence.source_json).order_by(ResearchRunEvidence.source_id))) == originals
 
 
 def test_bound_answer_citations_do_not_decode_context(postgres_watchlist_env):

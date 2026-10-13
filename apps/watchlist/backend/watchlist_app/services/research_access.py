@@ -54,18 +54,24 @@ def _postgres_projection_context(json_column=None):
 
 def research_context_projection(session, fields, *, json_column=None):
     """Parse large PostgreSQL JSON once per row, returning only requested fields."""
-    from sqlalchemy import Boolean, JSON, column, func
+    from sqlalchemy import Boolean, JSON
     if session.get_bind().dialect.name == "postgresql":
         _, safe = _postgres_projection_context(json_column)
-        relation = func.json_to_record(safe).table_valued(
-            *(column(name, kind) for name, kind in fields.items())
-        ).render_derived(with_types=True).lateral("run_context")
-        return relation, {name: relation.c[name] for name in fields}
+        return postgres_record_projection(safe, fields, name="run_context")
     values = {}
     for name, kind in fields.items():
         value = (ResearchEntry.context_json if json_column is None else json_column)[name]
         values[name] = value if kind is JSON else value.as_boolean() if kind is Boolean else value.as_string()
     return None, values
+
+
+def postgres_record_projection(value, fields, *, name):
+    """Keep one JSON object parse behind a PostgreSQL Function Scan boundary."""
+    from sqlalchemy import column, func
+    relation = func.json_to_record(value).table_valued(
+        *(column(key, kind) for key, kind in fields.items())
+    ).render_derived(with_types=True).lateral(name)
+    return relation, {key: relation.c[key] for key in fields}
 
 
 def research_projection_rows(session, query, fields, *, json_column=None):

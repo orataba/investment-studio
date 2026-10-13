@@ -418,6 +418,15 @@ or download dependencies. Missing credentials or
 runtime disables assistant execution while saved research and risk records remain
 available. Do not copy local secrets over the server configuration during a release.
 
+Public-web search uses `INVESTMENT_STUDIO_WATCHLIST_TAVILY_API_KEY` in the
+target's private `watchlist.env`, owned by the service user with mode `0600`.
+Provision only an authorization approved for that environment. After changing
+the key, restart the Watchlist API and verify a public query using the service
+identity; restarting the research worker alone does not reload the API's key.
+The key stays in the API process and is not passed to the Harness, MCP or
+calculation sandbox. Search behavior and coverage limits are defined in the
+[Watchlist guide](../apps/watchlist/README.md).
+
 Optional Wind research reads use the API-only secret
 `INVESTMENT_STUDIO_WATCHLIST_WIND_API_KEY` in the target's private `watchlist.env`.
 Provision or reuse an authorization explicitly approved for that environment; keep

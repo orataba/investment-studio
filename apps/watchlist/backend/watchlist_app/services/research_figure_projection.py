@@ -6,7 +6,7 @@ existing original-source endpoint.
 """
 from copy import deepcopy
 
-from sqlalchemy import JSON, case, func, select, type_coerce
+from sqlalchemy import JSON, case, func, select, true, type_coerce
 
 from watchlist_app.services.research_read_projection import SOURCE_INDEX_FIELDS
 
@@ -93,32 +93,66 @@ def project_source(source, projection):
     return _finish(result, projection)
 
 
-def sql_columns(session, value, projection):
-    """Return only JSON leaves needed by the display; never select the root."""
+def sql_projection(session, value, projection):
+    """Share PostgreSQL object field extraction across display columns."""
     postgres = session.get_bind().dialect.name == "postgresql"
     kind = func.json_typeof if postgres else func.json_type
-    columns = []
-    for index, path in enumerate(_paths(projection)):
+    paths = _paths(projection)
+    joins, selected = [], {}
+    if postgres:
+        from watchlist_app.services.research_access import postgres_record_projection
+        required = [*paths, ("data",), ("methodology",)]
+        if projection == "figure":
+            required += [("data", "observations"), ("data", "series")]
+        parents = sorted({path[:depth] for path in required for depth in range(len(path))}, key=lambda path: (len(path), path))
+        for index, parent in enumerate(parents):
+            fields = dict.fromkeys((path[len(parent)] for path in required
+                if len(path) > len(parent) and path[:len(parent)] == parent), JSON)
+            node = selected[parent] if parent else value
+            # Missing/null/scalar containers have no object fields. In particular,
+            # a string methodology remains available separately as its original.
+            if parent:
+                node = case((kind(node) == "object", node))
+            relation, columns = postgres_record_projection(node, fields, name=f"figure_object_{index}")
+            joins.append(relation)
+            selected.update({(*parent, key): column for key, column in columns.items()})
+
+    def at(path):
+        if postgres:
+            return selected[path]
         item = value
         for key in path:
             item = item[key]
-        columns.append(item.label(f"projection_{index}"))
+        return item
+
+    columns = []
+    for index, path in enumerate(paths):
+        columns.append(at(path).label(f"projection_{index}"))
+    # json_to_record maps both an absent key and JSON null to SQL NULL. Keep the
+    # two key-presence checks so empty originals/classification markers stay exact.
     columns += [(kind(value["data"]) if postgres else kind(value, "$.data")).is_not(None).label("projection_has_data"),
                 (kind(value["input_series"]) if postgres else kind(value, "$.input_series")).is_not(None).label("projection_has_series")]
     if projection == "figure":
-        columns.append(type_coerce(case((kind(value["methodology"]).in_(("string", "text")), value["methodology"])), JSON).label("projection_method"))
-        observations = value["data"]["observations"]
+        method = at(("methodology",))
+        columns.append(type_coerce(case((kind(method).in_(("string", "text")), method)), JSON).label("projection_method"))
+        observations = at(("data", "observations"))
         columns.append(type_coerce(case((kind(observations).in_(("number", "integer", "real")), observations)), JSON).label("projection_count"))
         # SQL strips numeric-series input points before crossing the DB boundary.
-        series = value["data"]["series"]
+        series = at(("data", "series"))
         array = case((kind(series) == "array", series))
         rows = (func.json_array_elements(array) if postgres else func.json_each(array)).table_valued("value").alias("figure_series")
         row = type_coerce(rows.c.value, JSON)
-        pairs = [part for key in SERIES_FIELDS for part in (key, row[key])]
+        if postgres:
+            summary_row, values = postgres_record_projection(case((kind(row) == "object", row)),
+                dict.fromkeys(SERIES_FIELDS, JSON), name="figure_series_fields")
+            relation = rows.join(summary_row, true())
+        else:
+            relation, values = rows, {key: row[key] for key in SERIES_FIELDS}
+        pairs = [part for key in SERIES_FIELDS for part in (key, values[key])]
         summary = func.json_build_object(*pairs) if postgres else func.json_object(*pairs)
         aggregate = func.json_agg(summary) if postgres else func.json_group_array(summary)
-        columns.append(type_coerce(select(aggregate).select_from(rows).correlate_except(rows).scalar_subquery(), JSON).label("projection_series"))
-    return columns
+        columns.append(type_coerce(select(aggregate).select_from(relation).correlate_except(relation).scalar_subquery(), JSON).label("projection_series"))
+    return joins, columns
 
 
 def from_sql_row(row, projection):

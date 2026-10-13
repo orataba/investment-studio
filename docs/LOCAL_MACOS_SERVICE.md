@@ -146,6 +146,8 @@ PostgreSQL 备份还需要配套公开数据目录，详见 [Market Data Pipelin
 
 本地 Watchlist 研究工具默认回调 `8000`，并读取 Portfolio `8001` 与 Regime `3011` 的只读证据；Portfolio 标的风险默认连接 Watchlist `8000`。覆盖地址时使用各应用 `.env.example` 列出的命名空间配置。Watchlist 的本地 `watchlist.env` 可选，但开发命令直接启动 API 时仍需显式提供数据库 URL；常驻服务由安装器提供。Portfolio Research 在本地与云端默认启用并沿用逐组合权限；外部 `portfolio.env` 的 `INVESTMENT_STUDIO_PORTFOLIO_RESEARCH_ENABLED=false` 可显式关闭。升级时需清理此前为禁用入口而设置的旧值。
 
+Tavily 搜索密钥配置在 `~/.config/orataba/secrets/investment-studio/watchlist.env` 的 `INVESTMENT_STUDIO_WATCHLIST_TAVILY_API_KEY`，文件权限保持 `0600`。修改后重启 Watchlist API 才会生效；该密钥不进入 Harness、MCP 或计算沙箱。配置搜索不改变本地模型工作开关，云端凭据也需在对应环境单独更新。搜索合同见 [Watchlist](../apps/watchlist/README.md)。
+
 `research-worker` 使用 Watchlist 的数据库与外部配置，负责研究助手、标的研究和风险研判的执行，以及既有每日研究的排队调度。API 只保存队列请求；重启 API 不再将全部任务标为失败。数据库统一限制所有执行进程的并发，默认 1；增加本机 worker 实例不会增加此额度。`INVESTMENT_STUDIO_WATCHLIST_RESEARCH_WORKER_ENABLED=false` 只暂停每日调度，手动和受控批次仍由独立 worker 执行。直接启动开发 API 时，需要另外在相同环境运行 `python -m watchlist_app.research_worker` 才会消费队列。
 
 服务退出会终止所属 Harness 进程组；租约到期后最多恢复至第三次总尝试，沿用原输入与已受理草稿，并重新验证原发起人权限。完整执行合同见[投资研究系统](INVESTMENT_RESEARCH_SYSTEM.md#每轮检查与长期连续性)。研究执行日志单独位于 `research-worker.log` 和 `research-worker.error.log`；服务已启动不等于模型调用或研究质量已经验收。

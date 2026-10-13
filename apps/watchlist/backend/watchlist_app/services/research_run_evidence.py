@@ -67,8 +67,9 @@ def _array_query(session, run_id, path, *, source_id=None, source_ids=None, meta
     if metadata_only:
         columns = [value[key].label(key) for key in metadata_keys]
     elif projection is not None:
-        from watchlist_app.services.research_figure_projection import sql_columns
-        columns = sql_columns(session, value, projection)
+        from watchlist_app.services.research_figure_projection import sql_projection
+        projection_joins, columns = sql_projection(session, value, projection)
+        joins.extend(projection_joins)
     query = select(*columns).select_from(ResearchEntry)
     for rows in joins:
         query = query.join(rows, true())
@@ -173,16 +174,20 @@ def retained_computed_sources(session, run_id, *, metadata_only=False, source_id
     column = ResearchRunEvidence.index_json if metadata_only else ResearchRunEvidence.source_json
     columns = [column]
     affected = None
+    joins = []
     if projection is not None:
-        from watchlist_app.services.research_figure_projection import sql_columns
+        from watchlist_app.services.research_figure_projection import sql_projection
         value = ResearchRunEvidence.source_json
         if session.get_bind().dialect.name == "postgresql":
             from watchlist_app.services.research_access import _postgres_projection_context
             affected, value = _postgres_projection_context(value)
-        columns = sql_columns(session, value, projection)
+        joins, columns = sql_projection(session, value, projection)
         if affected is not None:
             columns.append(affected.label("_has_json_nul"))
-    query = select(*columns).where(ResearchRunEvidence.run_id == run_id).order_by(ResearchRunEvidence.recorded_at, ResearchRunEvidence.source_id)
+    query = select(*columns).select_from(ResearchRunEvidence)
+    for relation in joins:
+        query = query.join(relation, true())
+    query = query.where(ResearchRunEvidence.run_id == run_id).order_by(ResearchRunEvidence.recorded_at, ResearchRunEvidence.source_id)
     if source_ids is not None:
         query = query.where(ResearchRunEvidence.source_id.in_(source_ids))
     if projection is not None:
