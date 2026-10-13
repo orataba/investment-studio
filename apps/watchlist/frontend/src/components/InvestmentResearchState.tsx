@@ -59,9 +59,9 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
         {(brief.horizon || brief.next_decision) && <dl className="research-decision-conditions">{brief.horizon && <div><dt>建议期限</dt><dd translate="no">{brief.horizon}</dd></div>}{brief.next_decision && <div><dt>下一决策节点</dt><dd translate="no">{brief.next_decision}</dd></div>}</dl>}
       </div>}
       {!brief && <p className="research-recommendation-unavailable">无法判断 · 尚无投资建议</p>}
-      {view?.direction && <p className="research-current-summary-text" translate="no">{view.direction}</p>}
+      {!brief && view?.direction && <p className="research-current-summary-text" translate="no">{view.direction}</p>}
       {notebook.key_drivers.length > 0 && <ul className="research-lead-reasons">{notebook.key_drivers.map((text, index) => <li key={index} translate="no">{text}</li>)}</ul>}
-      {view && <details className="research-dossier-record"><summary>机会、风险与改判条件</summary><ViewBody view={view} sources={sources} /></details>}
+      {view && <details className="research-dossier-record"><summary>机会、风险与改判条件</summary>{brief && view.direction && <><h4>完整投资判断</h4><p className="research-dossier-text" translate="no">{view.direction}</p></>}<ViewBody view={view} sources={sources} /></details>}
       <div className="research-judgment-tools">
       <ResearchReadingAside label="判断依据与适用范围">
         {view?.coverage_note && <p className="sector-research-note" translate="no">{view.coverage_note}</p>}

@@ -35,6 +35,7 @@ export const researchMessages: LanguageMessages = {
   "原始价格可能包含拆股、分红等机械变化，不能直接据此判断投资回报。": "Raw prices can include mechanical changes from splits and distributions, and do not directly measure investment returns.",
 
   "机会、风险与改判条件": "Opportunities, risks and reassessment conditions",
+  "完整投资判断": "Full investment assessment",
   "查看依据": "View evidence",
   "分析样本截至": "Analysis sample through",
   "基本面与成份历史": "Fundamentals and holdings history",

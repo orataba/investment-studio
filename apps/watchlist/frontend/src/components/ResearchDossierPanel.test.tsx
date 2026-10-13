@@ -550,14 +550,38 @@ it('does not present unavailable research as an empty assessment while the dossi
   expect(screen.getByText('研究基线待建立')).toBeTruthy()
 })
 
-it('shows the recommendation and its reasoning directly in overview', async () => {
+it('keeps a current recommendation primary and the full assessment in the existing disclosure', async () => {
   const brief = { recommendation: '维持', rationale: '收入兑现仍不足以覆盖资本投入。', conditions: ['资本开支回落且回款改善'], horizon: '未来一季', next_decision: '下季财报', source_ids: ['original-1'], updated_at: '2026-09-10T08:00:00Z' }
-  request.mockResolvedValue({ ...dossier(), notebook: { ...notebook, version_id: 'decision-notebook', decision_brief: brief } })
+  const view = { direction: '完整判断保留资本回报与执行风险的权衡，不能仅凭收入增长提高预期。', horizon: '未来一季', attractiveness: '回款改善需要验证。', risk: '资本投入仍高。', invalidation: '现金回报持续超过新增投入。', conviction: '', assumptions: ['当前业务结构未发生重大变化'], source_ids: ['original-1'], updated_at: brief.updated_at, version_id: 'current-view' }
+  request.mockResolvedValue({ ...dossier(), notebook: { ...notebook, version_id: 'decision-notebook', decision_brief: brief, investment_view: view } })
   render(<ResearchDossierPanel instrumentId="fund-1" />)
   const overview = await screen.findByRole('region', { name: '总览' })
   expect(within(overview).getByText('维持')).toBeTruthy()
   expect(within(overview).getByText(brief.rationale)).toBeTruthy()
+  expect(within(overview).getByText(brief.next_decision).closest('details')).toBeNull()
   expect(within(overview).getByText('客户现金回报')).toBeTruthy()
+  const fullAssessment = within(overview).getByText(view.direction)
+  const disclosure = fullAssessment.closest('details')!
+  expect(disclosure.open).toBe(false)
+  expect(within(disclosure).getByText('机会、风险与改判条件')).toBeTruthy()
+  fireEvent.click(within(disclosure).getByText('机会、风险与改判条件'))
+  expect(disclosure.open).toBe(true)
+  expect(within(disclosure).getByText(view.invalidation)).toBeTruthy()
+  expect(within(overview).getAllByText(view.direction)).toHaveLength(1)
+  fireEvent.click(within(overview).getByRole('button', { name: '判断依据与适用范围' }))
+  const basis = screen.getByRole('dialog', { name: '判断依据与适用范围' })
+  expect(within(basis).getByText(brief.conditions[0])).toBeTruthy()
+  expect(within(basis).getByText(view.assumptions[0])).toBeTruthy()
+  expect(within(basis).getByText('公司原始报告')).toBeTruthy()
+})
+
+it('keeps the full current assessment primary when no recommendation exists', async () => {
+  const view = { direction: '已有当前判断，但建议仍需进一步证据。', horizon: '本月', attractiveness: '', risk: '收入回款不确定', conviction: '', assumptions: [], source_ids: [], updated_at: '2026-09-24T08:00:00Z' }
+  request.mockResolvedValue({ ...dossier(), notebook: { ...notebook, investment_view: view } })
+  render(<ResearchDossierPanel instrumentId="fund-1" />)
+  const overview = await screen.findByRole('region', { name: '总览' })
+  expect(within(overview).getByText(view.direction).closest('details')).toBeNull()
+  expect(within(overview).queryByText('完整投资判断')).toBeNull()
 })
 
 it('never promotes an unreconciled earlier recommendation after the investment assessment changes', async () => {
@@ -567,6 +591,7 @@ it('never promotes an unreconciled earlier recommendation after the investment a
   await expandArchive()
   fireEvent.click(screen.getByText('当前判断与修订历史'))
   const current = screen.getByRole('region', { name: '当前投资判断' }); expect(within(current).getByText('当前转为审慎。')).toBeTruthy()
+  expect(within(current).getByText('当前转为审慎。').closest('.research-dossier-record')).toBeNull()
   expect(screen.queryByText(brief.recommendation)).toBeNull()
   expect(within(current).getByText('投资判断已变化，原建议待复核。')).toBeTruthy()
   fireEvent.click(within(current).getByRole('button', { name: '查看原建议' }))
