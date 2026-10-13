@@ -325,7 +325,10 @@ def read_research_numbers(action: Literal["catalogue", "series", "compare", "pri
                           benchmark_id: str | None = None, event_date: str | None = None,
                           event_timing: Literal["date_only", "before_open", "after_close"] = "date_only",
                           source_id: ExactSourceId | None = None, section: Literal["overview", "data", "sources", "evidence"] = "overview",
-                          offset: int = 0, limit: int = 100, path: list[str | int] | None = None) -> dict:
+                          offset: Annotated[int, Field(ge=0)] = 0,
+                          limit: Annotated[int, Field(ge=1, le=100,
+                              description="Page size for array rows/object fields. Text page length is chosen by the runtime; follow its returned next_offset, not a character count in limit.")] = 100,
+                          path: list[str | int] | None = None) -> dict:
     """Read source-versioned macro/market series, retained provider originals, or calculated instrument risk.
     Start with catalogue, then select an actual dataset and at most 6 series IDs per call. series/compare require
     explicit YYYY-MM-DD start/end; no fills or inferred missing values. price_risk requires an
@@ -578,7 +581,9 @@ def list_wind_tools(domain: WindDomain, offset: Annotated[int, Field(ge=0)] = 0,
 
 
 @mcp.tool(structured_output=False, annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))
-def query_wind_data(instrument_id: str, domain: WindDomain, tool: str, arguments: dict) -> str:
+def query_wind_data(instrument_id: Annotated[str, Field(
+        description="Copy the internal instrument_id from this run's assigned/bound context. This binds evidence to the research subject; it is not a Wind code or a constituent symbol. Put the supplier's query entities/codes in arguments.")],
+        domain: WindDomain, tool: str, arguments: dict) -> str:
     """Read Wind for a specific missing fact using a tool/schema returned by list_wind_tools.
     Send only public entities, fields and dates; never portfolio positions, account or private text.
     Reuse retained evidence before querying. Completed identical requests in this run reuse their result;

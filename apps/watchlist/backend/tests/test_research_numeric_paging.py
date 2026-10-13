@@ -110,6 +110,26 @@ def wire(tool, arguments):
     return result.structured_content
 
 
+def test_numeric_mcp_pagination_matches_read_api_boundaries(monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+    tool = next(item for item in asyncio.run(mcp.mcp.list_tools()) if item.name == "read_research_numbers")
+    fields = tool.input_schema["properties"]
+    backend = workbench.ComputedReadInput.model_json_schema()["properties"]
+    assert fields["limit"]["minimum"] == backend["limit"]["minimum"] == 1
+    assert fields["limit"]["maximum"] == backend["limit"]["maximum"] == 100
+    assert fields["offset"]["minimum"] == backend["offset"]["minimum"] == 0
+    calls = []
+    monkeypatch.setattr(mcp, "request", lambda suffix, payload: calls.append(payload) or {"data": []})
+    base = {"source_id": "computed:retained", "section": "data"}
+    asyncio.run(mcp.mcp.call_tool("read_research_numbers", {**base, "limit": 100, "offset": 0}))
+    assert calls[0]["limit"] == 100
+    calls.clear()
+    for invalid in ({"limit": 4000}, {"limit": 0}, {"offset": -1}):
+        with pytest.raises(ToolError):
+            asyncio.run(mcp.mcp.call_tool("read_research_numbers", {**base, **invalid}))
+    assert calls == []
+
+
 def complete(tool, source_id, section, path=None):
     offset, value = 0, None
     while offset is not None:

@@ -596,15 +596,19 @@ def prepare_initialization_searches(run_id):
 class PublicMarketView(BaseModel):
     model_config = ConfigDict(extra="forbid")
     publisher: str = Field(min_length=1, max_length=200)
-    published_at: str | None = None
+    published_at: str | None = Field(default=None,
+        description="Copy the publication date/time returned by a cited original, preserving its precision. Use null when unknown; retrieval time is not publication time.")
     view: str = Field(min_length=1, max_length=2000)
-    source_ids: list[str] = Field(min_length=1)
+    source_ids: list[str] = Field(min_length=1,
+        description="Cite originals whose relevant body was actually read. Search snippets, source directories and numerical snapshots cannot establish a public opinion.")
 
 
 class EventMarketReaction(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    status: Literal["available", "partial", "unavailable", "pending"]
-    figure_source_ids: list[str] = Field(default_factory=list)
+    status: Literal["available", "partial", "unavailable", "pending"] = Field(
+        description="When citing a calculation, copy its retained status; otherwise explain why the reaction is unavailable or pending.")
+    figure_source_ids: list[str] = Field(default_factory=list,
+        description="Only cite this instrument's read_research_numbers(action=event_reaction) computation for the event date. Ordinary returns, risk statistics and holdings calculations are not event-window reactions.")
     explanation: str = Field(default="", max_length=2000)
 
 
@@ -623,7 +627,8 @@ class SectorEvent(BaseModel):
     importance_score: int | None = Field(default=None, ge=1, le=5, strict=True)
     importance_reason: str = Field(default="", max_length=1500)
     market_views: list[PublicMarketView] = Field(default_factory=list)
-    market_reaction: EventMarketReaction | None = None
+    market_reaction: EventMarketReaction | None = Field(default=None,
+        description="Optional daily-price event-window reaction. Omit or use null for public/private fund NAVs or when no applicable reaction calculation was obtained; describe other observed returns in the analysis instead.")
     analysis_depth: Literal["brief", "analysis"] = "analysis"
     theme_ids: list[str] = Field(default_factory=list)
     confidence: Literal["confirmed", "reported", "unverified"]
@@ -638,7 +643,8 @@ class SectorEvent(BaseModel):
     event_category: Literal["news", "opinion", "earnings", "meeting", "other"] = "other"
     recording_type: Literal["new", "update", "backfill"]
     progress_kind: Literal["material", "editorial"] = "material"
-    published_at: str | None = None
+    published_at: str | None = Field(default=None,
+        description="Copy the publication date/time returned by a cited original, preserving its precision. Use null when unknown; discovery, ingestion and research times are not publication times.")
     occurred_at: str | None = None
     source_ids: list[str] = Field(min_length=1)
 
