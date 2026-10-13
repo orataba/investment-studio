@@ -17,10 +17,11 @@ import urllib3
 
 
 class IdentityError(Exception):
-    def __init__(self, status_code: int, detail: str):
+    def __init__(self, status_code: int, detail: str, *, retryable: bool = False):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+        self.retryable = retryable
 
 
 @dataclass(frozen=True)
@@ -169,10 +170,16 @@ def _call(path: str, credential: str, payload=None, *, service_token=None):
                     detail = value
             except (ValueError, TypeError, AttributeError):
                 pass
-            raise IdentityError(response.status if response.status in {401, 403, 404, 409, 422, 503} else 503, detail)
+            raise IdentityError(response.status if response.status in {401, 403, 404, 409, 422, 503} else 503, detail,
+                                retryable=response.status in {429, 500, 502, 503, 504})
         return json.loads(body) if body else {}
     except (urllib3.exceptions.HTTPError, OSError, ValueError) as error:
-        raise IdentityError(503, "统一账号服务暂时不可用") from error
+        # Keep transport outages distinct from configuration, TLS and malformed
+        # responses. Consumers may use their existing bounded recovery policy;
+        # this client never retries a request or supplies a substitute identity.
+        transient = isinstance(error, (urllib3.exceptions.TimeoutError, urllib3.exceptions.ProtocolError,
+                                       ConnectionError, TimeoutError))
+        raise IdentityError(503, "统一账号服务暂时不可用", retryable=transient) from error
 
 
 def resolve_token(token: str, audience: str) -> Principal:

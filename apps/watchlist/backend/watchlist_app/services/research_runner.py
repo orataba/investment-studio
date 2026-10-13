@@ -335,7 +335,8 @@ def _fail_authorization(run_id, error, *, attempt):
     # private provider details. A generic message alone cannot distinguish a
     # rejected credential/scope from an unavailable identity service afterwards.
     _fail_run(run_id, message, attempt=attempt, runtime_error={"type": "AuthorizationUnavailable",
-        "status_code": error.status_code, "summary": message})
+        "status_code": error.status_code, "summary": message,
+        **({"retryable": True} if isinstance(error, IdentityError) and error.retryable else {})})
 
 
 def _fail_run(run_id, message, *, attempt, runtime_error=None):

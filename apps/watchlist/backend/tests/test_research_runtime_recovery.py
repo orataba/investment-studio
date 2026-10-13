@@ -91,6 +91,35 @@ def test_deterministic_fault_or_exhausted_retry_requires_manual_recovery(client,
         assert run.context_json["execution"]["failures"][0]["manual_recovery"]
 
 
+@pytest.mark.parametrize("retryable", [False, True])
+def test_authorization_outage_uses_bounded_recovery_without_changing_evidence(client, retryable):
+    from studio_identity import IdentityError
+    context = {"sector_run": True, "execution": {"attempt": 1},
+        "cutoff": "2026-09-23T00:00:00Z", "input_snapshot_cutoff": "2026-09-23T00:00:00Z",
+        "submitted_draft": {"reviews": []}}
+    save_run(context, status="running")
+    runner._fail_authorization("recovery", IdentityError(503, "private-provider-details", retryable=retryable), attempt=1)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "recovery")
+        assert run.status == "failed"
+        assert "private-provider-details" not in json.dumps(run.context_json)
+        ended = run.completed_at.replace(tzinfo=UTC)
+        assert not runner.queue_retry(session, run, now=ended + timedelta(seconds=59))
+        assert runner.queue_retry(session, run, now=ended + timedelta(seconds=60)) is retryable
+        assert run.context_json["cutoff"] == context["cutoff"]
+        assert run.context_json["submitted_draft"] == context["submitted_draft"]
+        if retryable:
+            run.status = "running"
+            run.context_json = {**run.context_json, "execution": {"attempt": 3}}
+            session.commit()
+    if retryable:
+        runner._fail_authorization("recovery", IdentityError(503, "outage", retryable=True), attempt=3)
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, "recovery")
+            assert not runner.queue_retry(session, run,
+                now=run.completed_at.replace(tzinfo=UTC) + timedelta(seconds=300))
+
+
 @pytest.mark.parametrize("manual", [False, True])
 def test_risk_retry_redelivers_frozen_inputs_and_requires_a_new_proposal(client, monkeypatch, manual):
     from studio_identity import current_principal

@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import ssl
 import urllib3
 import pytest
 import studio_identity as identity
@@ -46,6 +47,48 @@ def test_unavailable_identity_never_creates_local_user(monkeypatch):
     with pytest.raises(identity.IdentityError) as caught:
         identity.resolve_token("present", "watchlist")
     assert caught.value.status_code == 503
+
+
+@pytest.mark.parametrize("status,retryable", [
+    (401, False), (403, False), (422, False), (429, True), (500, True),
+    (501, False), (502, True), (503, True), (504, True),
+])
+def test_remote_identity_outage_is_distinct_from_access_denial(monkeypatch, status, retryable):
+    monkeypatch.setenv("INVESTMENT_STUDIO_AUTH_URL", "http://127.0.0.1:8002/api/auth")
+    monkeypatch.setattr(identity._http, "request", lambda *args, **kwargs:
+        SimpleNamespace(status=status, data=b'{"detail":"unavailable"}'))
+    with pytest.raises(identity.IdentityError) as caught:
+        identity.resolve_token("present", "watchlist")
+    assert caught.value.retryable is retryable
+
+
+@pytest.mark.parametrize("error,retryable", [
+    (urllib3.exceptions.ReadTimeoutError(None, "/introspect", "timeout"), True),
+    (urllib3.exceptions.NewConnectionError(None, "connection refused"), True),
+    (urllib3.exceptions.ProtocolError("connection reset"), True),
+    (urllib3.exceptions.SSLError("invalid certificate"), False),
+    (ssl.SSLError("invalid certificate"), False),
+    (PermissionError("unreadable certificate"), False),
+    (ConnectionRefusedError("connection refused"), True),
+    (ValueError("malformed response"), False),
+])
+def test_identity_transport_failure_retains_recovery_class(monkeypatch, error, retryable):
+    monkeypatch.setenv("INVESTMENT_STUDIO_AUTH_URL", "http://127.0.0.1:8002/api/auth")
+    def fail(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(identity._http, "request", fail)
+    with pytest.raises(identity.IdentityError) as caught:
+        identity.resolve_token("present", "watchlist")
+    assert caught.value.status_code == 503
+    assert caught.value.retryable is retryable
+
+
+def test_missing_identity_configuration_is_not_a_transient_outage(monkeypatch):
+    monkeypatch.delenv("INVESTMENT_STUDIO_AUTH_URL", raising=False)
+    with pytest.raises(identity.IdentityError) as caught:
+        identity.resolve_token("present", "watchlist")
+    assert caught.value.status_code == 503
+    assert not caught.value.retryable
 
 
 def test_task_regrant_sends_backend_identity_only_to_home(monkeypatch):
