@@ -19,6 +19,8 @@ Notation: **PK** = primary key, **FK** = foreign key, `?` = nullable, JSON field
 
 The `instrument_id` values stored in Portfolio are logical references to reusable market assets in shared Instrument Data. Portfolio deliberately snapshots `instrument_ref_json` on those transaction facts for audit continuity; downstream code must not replace that snapshot with an invented name or type. FCNs and options instead use Portfolio-local `derivative_contract_id` records; their underlyings and deliverables may reference Instrument Data market assets.
 
+Current holdings and position-detail display codes use the shared Registry identifiers; historical transaction references and snapshot accounting type, currency, and financial values remain unchanged.
+
 ## Portfolio schema
 
 ### `portfolio.portfolio_record`

@@ -41,6 +41,7 @@ from portfolio_app.services.ledger import (
 from portfolio_app.services.instrument_registry import (
     InstrumentRegistryError,
     get_registry_instrument_details,
+    get_registry_instrument_metadata,
 )
 from portfolio_app.services.instrument_event_tasks import instrument_event_task_quality_warnings
 from portfolio_app.services.performance import (
@@ -356,6 +357,7 @@ def _public_holdings_workspace_response(
     include_position_cycles: bool = True,
 ) -> dict[str, object]:
     workspace.pop("_forward_risk_covariance", None)
+    _refresh_display_identifiers(workspace)
     rows = workspace.get("rows")
     row_items = rows if isinstance(rows, list) else []
     enrich_derivative_holding_risk(
@@ -531,6 +533,30 @@ def _instrument_ids_from_holdings_workspace(workspace: dict[str, object]) -> lis
         if instrument_id and instrument_id not in instrument_ids:
             instrument_ids.append(instrument_id)
     return instrument_ids
+
+
+def _refresh_display_identifiers(workspace: dict[str, object]) -> None:
+    # Current labels follow Registry metadata; ledger and valuation snapshots
+    # retain their original references, including accounting type and currency.
+    instrument_ids = _instrument_ids_from_holdings_workspace(workspace)
+    if not instrument_ids:
+        return
+    try:
+        metadata = get_registry_instrument_metadata(instrument_ids)
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    for row in workspace.get("rows", []):
+        core = row.get("instrument_core") if isinstance(row, dict) else None
+        if not isinstance(core, dict):
+            continue
+        if _holding_is_derivative(row) or is_pending_monetary_holding(row):
+            continue
+        current = metadata.get(str(core.get("instrument_id") or ""))
+        if current is not None:
+            row["instrument_core"] = {
+                **core,
+                "identifiers": deepcopy(current["identifiers"]),
+            }
 
 
 def _holdings_workspace_has_market_profile(
@@ -1356,6 +1382,7 @@ def position_holding_projection(
             detail="Materialized holding projection is unavailable for the requested date.",
         )
 
+    _refresh_display_identifiers(response)
     rows = response.get("rows")
     row_items = rows if isinstance(rows, list) else []
     resolved_as_of_date = _parse_iso_date(response.get("as_of_date")) or effective_date

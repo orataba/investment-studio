@@ -4,12 +4,16 @@ from copy import deepcopy
 from datetime import date
 from types import SimpleNamespace
 
+from sqlalchemy import select
+
+from investment_studio_instrument_core.db_models import InstrumentIdentifier
 from portfolio_app.services import holdings_workspace as workspace_routes
 from portfolio_app.db.models import (
     DerivativeContractRecordModel,
     PortfolioCalculationStateModel,
     PortfolioDailyHoldingSnapshotModel,
     PortfolioDailySnapshotModel,
+    TransactionRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import (
@@ -488,6 +492,78 @@ def test_position_holding_projection_skips_portfolio_wide_analytics(client, monk
     assert "instrument_return_series_all" not in payload["rows"][0]
     assert "forward_risk_share" not in payload["rows"][0]
     assert len(response.content) < 5_000
+
+
+def test_current_holdings_display_corrected_identifiers_without_rewriting_snapshots(client) -> None:
+    params = {"portfolio_id": "investment-studio", "as_of_date": "2026-04-15"}
+    before = client.get("/api/workspace/holdings", params={**params, "include_details": True})
+    assert before.status_code == 200
+    old_row = next(row for row in before.json()["rows"]
+                   if (row.get("instrument_core") or {}).get("instrument_id") == "equity-us-abbv")
+    with get_session_factory()() as session:
+        original_refs = deepcopy(list(session.scalars(select(TransactionRecordModel.instrument_ref_json))))
+        original_snapshots = deepcopy(list(session.scalars(select(PortfolioDailyHoldingSnapshotModel.holding_json))))
+        ticker = session.scalar(select(InstrumentIdentifier).where(
+            InstrumentIdentifier.instrument_id == "equity-us-abbv",
+            InstrumentIdentifier.identifier_type == "ticker",
+        ))
+        ticker.identifier_value = "ABBV-CORRECTED"
+        session.commit()
+
+    for include_details in (True, False):
+        response = client.get("/api/workspace/holdings", params={**params, "include_details": include_details})
+        assert response.status_code == 200
+        row = next(row for row in response.json()["rows"]
+                   if (row.get("instrument_core") or {}).get("instrument_id") == "equity-us-abbv")
+        assert next(item["identifier_value"] for item in row["instrument_core"]["identifiers"]
+                    if item["is_primary"]) == "ABBV-CORRECTED"
+        assert {key: value for key, value in row["instrument_core"].items() if key != "identifiers"} == {
+            key: value for key, value in old_row["instrument_core"].items() if key != "identifiers"
+        }
+        if include_details:
+            assert {key: value for key, value in row.items() if key != "instrument_core"} == {
+                key: value for key, value in old_row.items() if key != "instrument_core"
+            }
+    position = client.get("/api/workspace/holdings/position", params={
+        **params, "position_reference_id": "equity-us-abbv",
+    })
+    assert position.status_code == 200
+    assert next(item["identifier_value"] for item in position.json()["rows"][0]["instrument_core"]["identifiers"]
+                if item["is_primary"]) == "ABBV-CORRECTED"
+    with get_session_factory()() as session:
+        assert list(session.scalars(select(TransactionRecordModel.instrument_ref_json))) == original_refs
+        assert list(session.scalars(select(PortfolioDailyHoldingSnapshotModel.holding_json))) == original_snapshots
+
+
+def test_display_identifier_overlay_batches_and_preserves_accounting_identity(monkeypatch) -> None:
+    old_core = {"instrument_id": "fund", "instrument_name": "Recorded name",
+                "instrument_type": "private_fund", "currency": "USD",
+                "identifiers": [{"identifier_type": "fund_name", "identifier_value": "Recorded name", "is_primary": True}]}
+    original_core = deepcopy(old_core)
+    cash_core = {"instrument_id": "cash:USD", "instrument_type": "cash", "identifiers": []}
+    rows = [{"instrument_core": old_core, "quantity": 7}, {"instrument_core": old_core, "quantity": 9},
+            {"instrument_core": cash_core},
+            {"instrument_core": old_core, "holding_kind": "pending_purchase"},
+            {"instrument_core": old_core, "derivative_contract": {"derivative_contract_id": "option", "contract_type": "option"}}]
+    identifiers = [{"identifier_type": "ticker", "identifier_value": "AFG53B", "is_primary": True}]
+    calls = []
+
+    def read_metadata(ids):
+        calls.append(ids)
+        return {"fund": {"instrument_name": "Current name", "instrument_type": "other",
+                         "currency": "CNY", "identifiers": identifiers}}
+
+    monkeypatch.setattr(workspace_routes, "get_registry_instrument_metadata", read_metadata)
+    workspace_routes._refresh_display_identifiers({"rows": rows})
+    assert calls == [["fund"]]
+    for row in rows[:2]:
+        assert row["instrument_core"] == {**original_core, "identifiers": identifiers}
+    assert [row["quantity"] for row in rows[:2]] == [7, 9]
+    assert old_core == original_core
+    assert rows[2]["instrument_core"] is cash_core
+    assert all(row["instrument_core"] is old_core for row in rows[3:])
+    rows[0]["instrument_core"]["identifiers"].clear()
+    assert rows[1]["instrument_core"]["identifiers"] == identifiers
 
 
 def test_position_holding_projection_maps_registry_enrichment_failure_to_502(
