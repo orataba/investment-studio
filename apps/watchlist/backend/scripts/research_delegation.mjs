@@ -176,7 +176,7 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'delegate_research',
-    description: 'Delegate a concrete independent research question to a fresh specialist. Issue independent calls together to run them in parallel. Choose recent_updates, themes or quantitative; do not create a session for a trivial check or unchanged section. A themes specialist may delegate independent theme questions once more. Each child receives only its task context and role tools, shares this run’s retained evidence, and returns an unpublished proposal. Waits until the result is saved; the parent remains responsible for synthesis.',
+    description: 'Delegate a concrete independent research question to a fresh specialist. Issue independent calls together to run them in parallel. Choose recent_updates for external event proposals, themes for theme updates, or quantitative for numerical findings and retained computation source_ids; quantitative results do not contain event, theme or facts publication objects. A themes specialist or the coordinator incorporates quantitative findings into the final research. Do not create a session for a trivial check or unchanged section. A themes specialist may delegate independent theme questions once more. Each child receives only its task context and role tools, shares this run’s retained evidence, and returns an unpublished proposal. Waits until the result is saved; the parent remains responsible for synthesis.',
     parameters: {
       type: 'object', additionalProperties: false,
       required: ['role', 'instrument_id', 'instruction'],
@@ -184,7 +184,7 @@ export function apply(ctx) {
         role: { type: 'string', enum: ['recent_updates', 'themes', 'quantitative'] },
         instrument_id: { type: 'string' },
         instruction: { type: 'string', description: 'The specific question, scope and expected useful result. Reuse an existing completed task instead of repeating it.' },
-        theme_ids: { type: 'array', items: { type: 'string' }, description: 'Existing theme IDs assigned to this task; omit for a new theme question.' },
+        theme_ids: { type: 'array', items: { type: 'string' }, description: 'Existing theme IDs, only when role is themes; omit for a new theme question. For recent_updates or quantitative, omit or use an empty list; describe any relevant theme background in instruction.' },
       },
     }, output, isConcurrencySafe: () => true,
     async execute(args, exec) {
