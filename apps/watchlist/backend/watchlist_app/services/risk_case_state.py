@@ -107,12 +107,17 @@ def risk_state_projection(case, *, recover_history=False):
 
 
 def _ordinary_numeric_update(previous, item, sources):
-    if not previous or not sources or any(row.get("source_type") != "computed_metric" or row.get("withdrawn") for row in sources):
+    if not previous or not sources or any(not _internal_numeric_source(row) or row.get("withdrawn") for row in sources):
         return False
     fields = ("direction", "impact_level", "urgency", "risk_channels", "impact_analysis", "action_condition",
               "information_type", "confidence", "withdrawal_reason")
     return (bool(previous.get("withdrawn")) == bool(item.get("withdrawn"))
             and all(previous.get(key) == item.get(key) for key in fields))
+
+
+def _internal_numeric_source(source):
+    return (source.get("source_type") == "computed_metric"
+            and (source.get("analysis_kind") or (source.get("data") or {}).get("analysis_kind")) != "provider_snapshot")
 
 
 def should_refer_event(case, item, sources, *, material_change):
@@ -127,7 +132,7 @@ def should_refer_event(case, item, sources, *, material_change):
             (item.get("direction") == "uncertain" and (item.get("importance_score") or 0) >= 4
              and item.get("impact_level") in {"material", "major"})):
         return False
-    numeric_only = bool(sources) and all(row.get("source_type") == "computed_metric" for row in sources)
+    numeric_only = bool(sources) and all(_internal_numeric_source(row) for row in sources)
     if not numeric_only:
         return True
     previous = _value(case, "evidence_json", {}) or {}

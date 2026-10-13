@@ -328,6 +328,7 @@ def test_production_native_bridge_saves_typed_children_with_runtime_parent_ident
         tools = {tool["function"]["name"] for tool in initial[role]["tools"]}
         assert "mcp__research__submit_research_review" not in tools
         assert "mcp__research__submit_research_section" not in tools
+        assert {"mcp__research__list_wind_tools", "mcp__research__query_wind_data"} <= tools
         assert ("delegate_research" in tools) is (role == "themes")
         assert "read_assigned_context" in tools
 

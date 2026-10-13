@@ -5,7 +5,8 @@ export const inject = ['tools', 'subagents', 'llm'];
 
 const common = ['read_research_instrument', 'read_research_dossier',
   'read_market_source', 'read_public_source', 'read_sector_source',
-  'read_quant_analysis', 'read_research_numbers', 'compare_instruments'];
+  'read_quant_analysis', 'read_research_numbers', 'compare_instruments',
+  'list_wind_tools', 'query_wind_data'];
 const information = ['search_market_information', 'search_public_information', 'search_sector_information'];
 const roleTools = {
   recent_updates: [...information, 'read_sector_company'],

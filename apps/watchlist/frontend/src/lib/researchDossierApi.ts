@@ -129,6 +129,7 @@ export type ResearchCatalyst = {
 
 export type NotebookSource = {
   observation_domain?: 'market' | 'fundamental' | 'unclassified'
+  analysis_kind?: string; provider?: string
   source_id: string; title?: string; url?: string; source?: string
   document_id?: string; version_id?: string; instrument_id?: string
   source_type?: string; as_of?: string | null; run_cutoff?: string | null
@@ -272,6 +273,7 @@ export type SavedResearchSource = NotebookSource & EventSource & {
   snapshot?: Record<string, unknown>; company?: Record<string, unknown>
   data?: SavedComparison & Record<string, unknown> & {
     analysis_kind?: string; summary?: string; metrics?: Record<string, unknown>; tables?: ResearchQuantTable[]; charts?: ResearchQuantChart[]
+    payload?: unknown
     history?: Array<{ date: string; volatility_pct: number | null }>
     current?: { date: string; volatility_pct: number } | null
     previous?: { date: string; volatility_pct: number } | null
@@ -285,6 +287,9 @@ export type SavedResearchSource = NotebookSource & EventSource & {
   }
   methodology?: ({ half_life_sessions?: number; annualization?: number } & Record<string, unknown>) | string
 }
+
+export const isProviderSnapshot = (source: NotebookSource & { data?: { analysis_kind?: string } }) =>
+  source.analysis_kind === 'provider_snapshot' || source.data?.analysis_kind === 'provider_snapshot'
 
 export function saveResearchMandate(instrumentId: string, mandate: ResearchMandateInput) {
   return fetchJson<ResearchMandate>(`${dossierPath(instrumentId)}/mandate`, { method: 'PUT', body: JSON.stringify(mandate) })

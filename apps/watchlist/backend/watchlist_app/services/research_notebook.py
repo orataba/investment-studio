@@ -468,7 +468,7 @@ def dossier_outline(dossier: dict) -> dict:
     return {**{key: value for key, value in dossier.items() if key != "review_agenda"},
         **({"mandate": index_versions(dossier["mandate"])} if dossier.get("mandate") else {}),
         "version_history_note": "旧版本仅列版本与保存时间；需要当时的完整观点或研究记录时，调用read_research_dossier(instrument_id=当前标的, version_id=所选版本)。当前正文保持完整，旧版本不补入后来资料。",
-        "prior_sources": [{k: s.get(k) for k in ("source_id", "document_id", "version_id", "title", "url", "published_at", "retrieved_at", "source_run_id")} | {"body_available": s.get("body_available", bool(s.get("text")))}
+        "prior_sources": [{k: s.get(k) for k in ("source_id", "document_id", "version_id", "title", "url", "published_at", "retrieved_at", "source_run_id", "analysis_kind", "provider")} | {"body_available": s.get("body_available", bool(s.get("text")))}
                           for s in dossier.get("prior_sources", [])],
         "prior_sources_note": "已取得原文的索引，不表示已核实其主张。按source_id重读正文与日期；原报告失败或撤回不影响原文留存。",
         "materials": [{k: v for k, v in m.items() if k != "body"} | {"body_available": bool(m.get("body"))}
@@ -476,7 +476,7 @@ def dossier_outline(dossier: dict) -> dict:
         "historical_cases": [{k: c.get(k) for k in ("source_id", "case_id", "case_title", "role", "current_use", "limitations")}
                              for c in dossier.get("historical_cases", []) if c.get("source_type") != "research_review"],
         "notebook": {**{key: value for key, value in notebook.items() if key != "method_plan"}, "sources": [{k: s.get(k) for k in
-            ("source_id", "title", "url", "source_type", "source_run_id", "published_at", "retrieved_at", "run_cutoff")}
+            ("source_id", "title", "url", "source_type", "source_run_id", "published_at", "retrieved_at", "run_cutoff", "analysis_kind", "provider")}
             for s in notebook.get("sources", [])]} if notebook else None}
 
 

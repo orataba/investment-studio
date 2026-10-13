@@ -87,3 +87,35 @@ it('retains a readable complete calculation for evidence outside the existing su
   expect(await screen.findByText(/1.234567890123/)).toBeTruthy()
   expect(screen.getByText(/observed-calculation/)).toBeTruthy()
 })
+
+it('labels provider snapshots by acquisition time and preserves the complete raw response without interpreting units or retrieval snippets as full text', async () => {
+  const provider = { source_id: 'computed:wind-original', source_type: 'computed_metric', analysis_kind: 'provider_snapshot',
+    provider: 'wind', title: 'Wind 返回', instrument_id: 'fund', retrieved_at: '2026-10-13T06:30:00Z', as_of: '2026-10-12' }
+  const payload = { content: [{ type: 'text', text: '检索摘要，非全文' }], structuredContent: {
+    rows: [{ value: '0.11613277847670744', unit: '%', source_date: '2026-10-09' }, { value: '1500000', unit: '股', source_date: null }],
+    content_completeness: 'rag_excerpt', next_page: 'page-2',
+  } }
+  request.mockResolvedValue({ ...provider, methodology: { operation: 'provider_read', provider: 'wind', no_calculation: true },
+    data: { analysis_kind: 'provider_snapshot', payload } })
+  render(<SourceList sources={[provider]} instrumentId="fund" versionId="original-version" />)
+  expect(screen.getByText(/供应商原件 · 取得时间/).textContent).toContain('2026-10-13 06:30:00 UTC')
+  expect(screen.queryByText(/计算截至/)).toBeNull()
+  expect(screen.queryByText('2026-10-12')).toBeNull()
+  fireEvent.click(screen.getByText('查看已保存的供应商原件'))
+  await screen.findByText('供应商原件')
+  expect(screen.getByText(/不代表已取得原文全文/)).toBeTruthy()
+  expect(screen.getByText(/"content_completeness"/).textContent).toBe(JSON.stringify(payload, null, 2))
+  expect(screen.queryByText('完整计算记录与输入依据')).toBeNull()
+  expect(screen.queryByRole('table')).toBeNull()
+  expect(screen.queryByRole('img')).toBeNull()
+  expect(request).toHaveBeenCalledWith('/api/research/instruments/fund/dossier?source_id=computed%3Awind-original&version_id=original-version', expect.anything())
+  expect(request).toHaveBeenCalledTimes(1)
+})
+
+it('does not use a provider observation date as an unknown acquisition timestamp', () => {
+  render(<SourceList sources={[{ source_id: 'computed:wind-undated', source_type: 'computed_metric', analysis_kind: 'provider_snapshot',
+    title: '未留存获取时钟', as_of: '2026-10-12' }]} instrumentId="fund" />)
+  expect(screen.getByText(/供应商原件 · 取得时间/).textContent).toContain('时间未知')
+  expect(screen.queryByText('2026-10-12')).toBeNull()
+  expect(screen.queryByText(/计算/)).toBeNull()
+})

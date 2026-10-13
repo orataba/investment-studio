@@ -7,6 +7,20 @@ import type { SavedResearchSource } from '../lib/researchDossierApi'
 afterEach(cleanup)
 const source = (): SavedResearchSource => ({ source_id: 'computed:quant', source_type: 'computed_metric', data: { analysis_kind: 'python_quant', summary: '使用留存共同样本。', tables: [{ key: 'observed', title: '实际观测', columns: [{ key: 'date', label: '日期' }, { key: 'return', label: '累计收益', unit: '%' }], rows: [{ date: '2026-01-01', return: 10 }, { date: '2026-01-02', return: 11 }, { date: '2026-01-11', return: 12 }] }], charts: [{ key: 'returns', title: '留存收益路径', kind: 'line', table_key: 'observed', x_key: 'date', series: [{ key: 'return', label: '累计收益' }], y_label: '%' }] } })
 
+it('keeps a provider response as an inspectable original even when its shape resembles a computed chart', () => {
+  const saved = source()
+  saved.data!.analysis_kind = 'provider_snapshot'
+  saved.data!.payload = { rows: [{ raw_value: '1.234567890123', raw_unit: '亿元', source_date: '2026-06-30' }] }
+  saved.methodology = { provider: 'wind', operation: 'provider_read', no_calculation: true }
+  const { container } = render(<><EvidenceFigure source={saved} /><ResearchQuantFigure source={saved} /></>)
+  expect(container.querySelector('svg')).toBeNull()
+  expect(screen.queryByRole('img')).toBeNull()
+  expect(screen.queryByText('实际观测 · 3 条观测')).toBeNull()
+  expect(screen.queryByText(/计算依据/)).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '查看供应商原件' }))
+  expect(within(screen.getByRole('dialog')).getByText(/"raw_value"/).textContent).toBe(JSON.stringify(saved.data!.payload, null, 2))
+})
+
 it('keeps the volume comparison dates distinct from the figure as-of date', () => {
   render(<ResearchQuantFigure source={{ source_id: 'computed:observations', source_type: 'computed_metric',
     as_of: '2026-10-08', display_projection: 'figure', data: { analysis_kind: 'watchlist_observations',

@@ -56,6 +56,7 @@ class _ResearchMCPServer(MCPServer):
             allowed = {"read_research_context", "read_research_section", "read_research_instrument",
                 "read_research_dossier", "read_market_source", "read_public_source", "read_sector_source",
                 "search_market_information", "search_public_information", "search_sector_information",
+                "list_wind_tools", "query_wind_data",
                 "read_sector_company", "read_research_numbers", "read_stored_market_data", "compare_instruments",
                 "read_quant_capability", "read_quant_inputs", "run_quant_analysis", "read_quant_analysis",
                 "submit_research_review"}
@@ -325,7 +326,7 @@ def read_research_numbers(action: Literal["catalogue", "series", "compare", "pri
                           event_timing: Literal["date_only", "before_open", "after_close"] = "date_only",
                           source_id: ExactSourceId | None = None, section: Literal["overview", "data", "sources", "evidence"] = "overview",
                           offset: int = 0, limit: int = 100, path: list[str | int] | None = None) -> dict:
-    """Read source-versioned macro/market series or calculated instrument risk from either entrance.
+    """Read source-versioned macro/market series, retained provider originals, or calculated instrument risk.
     Start with catalogue, then select an actual dataset and at most 6 series IDs per call. series/compare require
     explicit YYYY-MM-DD start/end; no fills or inferred missing values. price_risk requires an
     instrument_id and returns EWMA with its exact half-life, return basis, dates and limitations.
@@ -552,6 +553,41 @@ def search_sector_information(query: str) -> dict:
         return request("sector-evidence", {"operation": "search", **result})
     except SectorWebError as error:
         return request("sector-evidence", {"operation": "error", "query": query, "coverage": [str(error)]})
+
+
+WindDomain = Literal["financial_docs", "fund_data", "stock_data", "index_data", "economic_data"]
+
+
+@mcp.tool(structured_output=False, annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))
+def list_wind_tools(domain: WindDomain, offset: Annotated[int, Field(ge=0)] = 0,
+                    limit: Annotated[int, Field(ge=1, le=100)] = 20,
+                    path: list[str | int] | None = None) -> str:
+    """Discover actual Wind read tools and input schemas for one needed domain.
+    financial_docs searches announcements/news; fund/stock/index/economic supply their respective
+    data. Select only the domain needed for a concrete evidence gap, then follow next_offset and
+    deferred.path to read the selected tool's exact schema. This is a capability directory, not
+    financial evidence or a quota/balance check. Never guess parameter names or Wind identifiers.
+    """
+    return compact_json_result(request("wind-tools", {"domain": domain, "offset": offset,
+        "limit": limit, "path": path}))
+
+
+@mcp.tool(structured_output=False, annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))
+def query_wind_data(instrument_id: str, domain: WindDomain, tool: str, arguments: dict) -> str:
+    """Read Wind for a specific missing fact using a tool/schema returned by list_wind_tools.
+    Send only public entities, fields and dates; never portfolio positions, account or private text.
+    Reuse retained evidence before querying. Completed identical requests in this run reuse their result;
+    querying a different question may consume the account's quota. No bulk universe/history scans.
+    Authentication, quota and provider failures are coverage gaps, not reasons to switch tools and retry.
+    Read the returned source_id with read_research_numbers(section=data/evidence) and its pagination;
+    the receipt is not the full original. The provider snapshot is not an internal calculation or
+    verified finding. Preserve original units, magnitude, period and publication/observation dates;
+    the collection timestamp does not establish when a fact became known. News/announcement RAG may
+    contain excerpts, not full documents. Structured originals can feed run_quant_analysis through
+    read_quant_inputs. This tool never changes canonical prices, holdings, NAVs or transactions.
+    """
+    return compact_json_result(request("wind-query", {"instrument_id": instrument_id,
+        "domain": domain, "tool": tool, "arguments": arguments}))
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))

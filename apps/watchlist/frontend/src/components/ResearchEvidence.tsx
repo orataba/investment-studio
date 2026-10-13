@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { researchStamp } from '../../../../../packages/ui/src/ResearchRunStatus'
 import type { EventSource } from '../lib/researchDossierApi'
 import { API_BASE_URL } from '../lib/api'
-import { getSavedResearchSource, type NotebookSource, type SavedComparison, type SavedResearchSource } from '../lib/researchDossierApi'
+import { getSavedResearchSource, isProviderSnapshot, type NotebookSource, type SavedComparison, type SavedResearchSource } from '../lib/researchDossierApi'
 
 export const hasTimeZone = (value: string) => /(Z|[+-]\d{2}:\d{2})$/i.test(value)
 
@@ -40,6 +40,7 @@ function ComparisonEvidence({ comparison }: { comparison: SavedComparison }) {
 
 export function ComputedEvidence({ source }: { source: SavedResearchSource }) {
   const [showOriginal, setShowOriginal] = useState(false)
+  if (isProviderSnapshot(source)) return <ProviderEvidence source={source} />
   const data = source.data
   const method = typeof source.methodology === 'object' ? source.methodology : null
   const number = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 6 })
@@ -81,6 +82,20 @@ export function ComputedEvidence({ source }: { source: SavedResearchSource }) {
   </div>
 }
 
+export function ProviderEvidence({ source }: { source: SavedResearchSource }) {
+  const method = typeof source.methodology === 'object' ? source.methodology : null
+  const provider = source.provider || (typeof method?.provider === 'string' ? method.provider : undefined)
+  const retrievedAt = source.retrieved_at || source.recorded_at
+  return <div className="research-provider-evidence">
+    <p><strong>供应商原件</strong>{provider && <> · <span translate="no">{provider}</span></>}</p>
+    <p className="sector-research-note">取得时间 <time dateTime={retrievedAt || undefined}>{dateLabel(retrievedAt)}</time></p>
+    <p className="sector-research-note">以下为供应商的完整返回，保留原始数值、单位与来源日期，未经计算。返回若为检索片段或摘要，仅代表该片段或摘要，不代表已取得原文全文。</p>
+    {source.data && 'payload' in source.data
+      ? <pre className="research-dossier-text" translate="no">{JSON.stringify(source.data.payload, null, 2)}</pre>
+      : <p className="sector-research-note">此来源未留存可读的供应商返回。</p>}
+  </div>
+}
+
 function FinancialEvidence({ company }: { company: Record<string, unknown> }) {
   type Row = Record<string, unknown>
   const rows = (value: unknown): Row[] => Array.isArray(value) ? value.filter((row): row is Row => Boolean(row) && typeof row === 'object') : []
@@ -115,7 +130,8 @@ export function SavedEvidence({ source, instrumentId, versionId }: { source: Not
   const [expanded, setExpanded] = useState(false)
   const [saved, setSaved] = useState<SavedResearchSource | null>(null)
   const [error, setError] = useState('')
-  const computed = source.source_type === 'computed_metric'
+  const provider = isProviderSnapshot(saved || source)
+  const computed = source.source_type === 'computed_metric' && !provider
   useEffect(() => {
     if (!expanded || saved !== null) return
     const controller = new AbortController()
@@ -128,10 +144,10 @@ export function SavedEvidence({ source, instrumentId, versionId }: { source: Not
   const body = saved?.text || saved?.body
   const snapshot = saved?.snapshot || saved?.company
   const financialPage = saved?.company && ['statements', 'facts'].includes(String(saved.company.page_kind))
-  return <details onToggle={event => setExpanded(event.currentTarget.open)}><summary>{computed ? '查看已保存的计算依据' : '查看已保存的原文'}</summary>
-    <p className="sector-research-note">{computed ? '对应此项判断当时引用的计算结果，未用后来数据重新计算。' : '对应此项研究所引用的原文版本；外部链接可能已发生修改。'}</p>
+  return <details onToggle={event => setExpanded(event.currentTarget.open)}><summary>{provider ? '查看已保存的供应商原件' : computed ? '查看已保存的计算依据' : '查看已保存的原文'}</summary>
+    <p className="sector-research-note">{provider ? '对应此项判断引用时取得的供应商返回，未重新查询或补入后来资料。' : computed ? '对应此项判断当时引用的计算结果，未用后来数据重新计算。' : '对应此项研究所引用的原文版本；外部链接可能已发生修改。'}</p>
     {saved?.provenance?.raw_capture_kind === 'author_provided_text' && <p className="sector-research-note">{saved.provenance.body_kind === 'original_excerpt' ? '作者留存的原文摘录，非全文。' : '作者留存的原文。'}{saved.provenance.locator && <span translate="no"> {saved.provenance.locator}</span>}</p>}
-    {error ? <p role="alert">{error}</p> : saved === null ? <p role="status">正在读取依据…</p> : computed ? <ComputedEvidence source={saved} /> : financialPage ? <FinancialEvidence company={saved.company!} /> : body ? <p className="research-dossier-text" translate="no">{body}</p> : snapshot ? <pre className="research-dossier-text" translate="no">{JSON.stringify(snapshot, null, 2)}</pre> : <p className="sector-research-note">此来源没有可读正文。</p>}
+    {error ? <p role="alert">{error}</p> : saved === null ? <p role="status">正在读取依据…</p> : provider ? <ProviderEvidence source={saved} /> : computed ? <ComputedEvidence source={saved} /> : financialPage ? <FinancialEvidence company={saved.company!} /> : body ? <p className="research-dossier-text" translate="no">{body}</p> : snapshot ? <pre className="research-dossier-text" translate="no">{JSON.stringify(snapshot, null, 2)}</pre> : <p className="sector-research-note">此来源没有可读正文。</p>}
   </details>
 }
 
@@ -173,11 +189,13 @@ export function SourceList({ sources, instrumentId, versionId }: { sources: Arra
     const href = sourceUrl(source.url || source.source)
     const publishedAt = source.published_at || source.metadata?.published_at
     const retrievedAt = source.retrieved_at || source.recorded_at
+    const provider = isProviderSnapshot(source)
     return <li key={`${source.source_id}:${source.version_id || ''}:${versionId || ''}`}>{href ? <a href={href} target="_blank" rel="noopener noreferrer" translate="no">{source.title || '原始资料'}</a> : <span translate="no">{source.title || source.source || '已保存的来源记录'}</span>}
-      {source.source_type === 'computed_metric' ? <small>计算截至 <time dateTime={source.as_of || undefined}>{dateLabel(source.as_of)}</time></small>
+      {provider ? <small>供应商原件 · 取得时间 <time dateTime={retrievedAt || undefined}>{dateLabel(retrievedAt)}</time></small>
+        : source.source_type === 'computed_metric' ? <small>计算截至 <time dateTime={source.as_of || undefined}>{dateLabel(source.as_of)}</time></small>
         : ['instrument_snapshot', 'sector_snapshot', 'company_snapshot'].includes(source.source_type || '') ? <small>研究快照截至 <time dateTime={source.run_cutoff || undefined}>{dateLabel(source.run_cutoff)}</time></small>
         : source.source_type === 'analyst_estimate_changes' ? null : <small>发布 <time dateTime={publishedAt || undefined}>{dateLabel(publishedAt)}</time> · 取得 <time dateTime={retrievedAt || undefined}>{dateLabel(retrievedAt)}</time></small>}
-      <SourceMetrics source={source} />
+      {!provider && <SourceMetrics source={source} />}
       {source.pm_binding_note && <small translate="no">{source.pm_binding_note}</small>}
       {(versionId || ['computed_metric', 'company_snapshot', 'instrument_snapshot', 'sector_snapshot'].includes(source.source_type || '') || (source.document_id && source.version_id)) && (instrumentId || source.instrument_id) && <SavedEvidence source={source} instrumentId={(instrumentId || source.instrument_id)!} versionId={versionId} />}
     </li>

@@ -16,7 +16,7 @@ from watchlist_app.services.research_read_projection import source_index
 
 REFERENCE_KEY = "retained_reference"
 INDEX_KEYS = ("source_id", "source_type", "title", "instrument_id", "scope", "as_of", "run_cutoff",
-              "published_at", "retrieved_at", "source_run_id", "role", "time_status", "observation_domain")
+              "published_at", "retrieved_at", "source_run_id", "role", "time_status", "observation_domain", "analysis_kind", "provider")
 SOURCE_PATHS = (
     ("computed_metrics", "*"), ("financial_sources", "*"), ("market_text_sources", "*"),
     ("web_evidence", "*", "sources", "*"),

@@ -204,6 +204,7 @@ Explicitly accept a fully supported event without copying it; otherwise correct 
 fields. event_key and action are bound and cannot be patched. Cite only supplied source_ids. At least one fetched original must support the
 claim, except a measured risk/change may cite the supplied computed_metric evidence, or a
 consensus-estimate change may cite analyst_estimate_changes with nonempty computed changes.
+computed_metric with analysis_kind=provider_snapshot is a supplier original, not an internal calculation or independent verification; read its exact payload and original units/dates, and treat news/announcement retrieval fragments as excerpts rather than the full document.
 Estimate changes compare the SAME company, frequency,
 fiscal period, metric and known currency across actual collection times. Baseline snapshots,
 new coverage, rolled fiscal periods and currency-unverified observations do not establish

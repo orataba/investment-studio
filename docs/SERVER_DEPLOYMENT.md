@@ -418,6 +418,17 @@ or download dependencies. Missing credentials or
 runtime disables assistant execution while saved research and risk records remain
 available. Do not copy local secrets over the server configuration during a release.
 
+Optional Wind research reads use the API-only secret
+`INVESTMENT_STUDIO_WATCHLIST_WIND_API_KEY` in the target's private `watchlist.env`.
+Provision or reuse an authorization explicitly approved for that environment; keep
+the existing service owner and `0600` mode. The Harness receives only its bound
+research token, never this key. No Wind desktop, OpenD, CLI skill or additional
+service is required. Verify a small read with the target service identity and
+retained source before treating it as available; tool discovery does not establish
+data coverage or remaining quota. Failed authentication or quota is reported without
+changing endpoints or retrying a broader query. Wind financial search does not
+replace the separately configured public-web search capability.
+
 Watchlist's retained-data Python analysis also requires the separately provisioned
 [quantitative execution image](../infra/research-quant/README.md). Build that image
 from the staged release before switching services, and verify the kernel-boundary

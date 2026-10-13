@@ -1,13 +1,14 @@
 from pathlib import Path
 from functools import lru_cache
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     research_portfolio_api_url: str | None = None
     research_regime_api_url: str | None = None
+    wind_api_key: SecretStr | None = Field(default=None, repr=False)
 
     app_name: str = "Investment Studio Watchlist API"
     app_version: str = "1.2.7"

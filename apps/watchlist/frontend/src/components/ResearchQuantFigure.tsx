@@ -1,4 +1,4 @@
-import type { ResearchQuantChart, ResearchQuantTable, SavedResearchSource } from '../lib/researchDossierApi'
+import { isProviderSnapshot, type ResearchQuantChart, type ResearchQuantTable, type SavedResearchSource } from '../lib/researchDossierApi'
 import ResearchReadingAside from './ResearchReadingAside'
 
 // Display labels are separate from retained computation keys; unknown fields stay in evidence.
@@ -94,6 +94,7 @@ function Chart({ chart, table, showTitle }: { chart: ResearchQuantChart; table: 
 }
 
 export default function ResearchQuantFigure({ source, captioned = false, hideSummary = false }: { source: SavedResearchSource; captioned?: boolean; hideSummary?: boolean }) {
+  if (isProviderSnapshot(source)) return null
   const data = source.data
   const volatility = isVolatilityFigure(source)
   const history: ResearchQuantTable | null = volatility && data?.history?.length ? {

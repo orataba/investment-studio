@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { getSavedResearchSource, type AskResearchAssistant, type NotebookSource, type ResearchPlan, type SavedResearchNotebook, type SavedResearchSource } from '../lib/researchDossierApi'
-import { ComputedEvidence, SourceList, dateLabel } from './ResearchEvidence'
+import { getSavedResearchSource, isProviderSnapshot, type AskResearchAssistant, type NotebookSource, type ResearchPlan, type SavedResearchNotebook, type SavedResearchSource } from '../lib/researchDossierApi'
+import { ComputedEvidence, ProviderEvidence, SourceList, dateLabel } from './ResearchEvidence'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import ResearchQuantFigure, { isVolatilityFigure } from './ResearchQuantFigure'
@@ -23,6 +23,10 @@ type ReportSection = 'fundamentals' | 'quantitative' | 'events'
 const reportSection = (key: string): ReportSection => key === 'market-quantitative' ? 'quantitative' : key === 'events-expectations' ? 'events' : 'fundamentals'
 // Only saved numeric results choose the figure; prose cannot supply chart values or markup.
 export function EvidenceFigure({ source, hideSummary = false }: { source: SavedResearchSource; hideSummary?: boolean }) {
+  if (isProviderSnapshot(source)) return <section className="research-evidence-figure">
+    <h4 translate="no">{source.title || '供应商原件'}</h4>
+    <ResearchReadingAside label="查看供应商原件"><ProviderEvidence source={source} /></ResearchReadingAside>
+  </section>
   const quantitative = quantAnalysis(source.data?.analysis_kind) || isVolatilityFigure(source)
   const fixedObservations = source.data?.analysis_kind === 'watchlist_observations'
   const snapshot = source.snapshot
@@ -82,6 +86,7 @@ export function SavedFigure({ instrumentId, notebookVersionId, themeVersionId, e
     }).catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '数值依据读取失败') })
     return () => controller.abort()
   }, [instrumentId, versionId, source.source_id])
+  if (saved && isProviderSnapshot(saved)) return <SourceList sources={[saved]} instrumentId={instrumentId} versionId={versionId} />
   const reference = { instrument_id: instrumentId, ...versionReference, theme_id: themeId, source_ids: [source.source_id] }
   const background = `图表：${source.title || '研究图表'}\n资料截至：${source.as_of || saved?.as_of || '未标注'}${saved?.data?.summary ? `\n${saved.data.summary}` : ''}`
   return error ? <p role="alert">数值依据暂时无法读取：{error}</p> : saved ? <div className="research-saved-figure"><EvidenceFigure source={saved} hideSummary={hideSummary} />

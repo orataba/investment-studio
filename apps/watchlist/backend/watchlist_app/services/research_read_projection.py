@@ -87,7 +87,7 @@ def read_page(value, metadata, *, offset=0, limit=20, path=None, resolve=None):
 SOURCE_INDEX_FIELDS = frozenset({"source_id", "source_type", "title", "url", "instrument_id", "instrument_ids", "document_id",
         "version_id", "source_run_id", "run_cutoff", "information_cutoff", "published_at", "occurred_at",
         "observed_at", "received_at", "retrieved_at", "recorded_at", "collected_at", "as_of", "as_of_date",
-        "body_sha256", "content_hash", "body_available", "status", "time_status", "provider", "currency", "unit"})
+        "body_sha256", "content_hash", "body_available", "status", "time_status", "provider", "analysis_kind", "currency", "unit"})
 BROWSER_SOURCE_FIELDS = frozenset({"source", "scope", "published_at_raw", "discovered_at", "time_status",
     "measurement", "methodology", "pm_binding_note", "current_snapshot", "previous_snapshot", "changes"})
 

@@ -1,7 +1,7 @@
 from datetime import date, datetime, UTC
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import AwareDatetime, BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from watchlist_app.db.session import get_db_session
@@ -14,6 +14,7 @@ from watchlist_app.services.research_quant import QuantAnalysisInput
 from watchlist_app.api.research_presentation import review_status_view
 from watchlist_app.services.research_imports import ResearchImport, ImportPublication
 from watchlist_app.services.research_data import StoredDataRequest
+from watchlist_app.services.research_wind import WindDomain
 
 router = APIRouter()
 
@@ -172,6 +173,77 @@ def current_run(session, run_id, *, writing=False):
     if writing and run.status not in {"queued", "running"}:
         raise HTTPException(409, "本轮检查已经结束")
     return run
+
+
+class WindToolsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    domain: WindDomain
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+    path: list[str | int] | None = None
+
+
+class WindQueryInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    instrument_id: str = Field(min_length=1)
+    domain: WindDomain
+    tool: str = Field(min_length=1)
+    arguments: dict[str, JsonValue]
+
+
+def _wind_run(session, run_id, instrument_id=None):
+    run = current_run(session, run_id, writing=True)
+    context = run.context_json
+    if context.get("risk_run") or (context.get("execution") or {}).get("stage") in {"review", "publication"}:
+        raise HTTPException(422, "风控及独立核证使用已绑定的证据，不在此阶段补取 Wind 数据。")
+    if instrument_id is not None and instrument_id not in context.get("instrument_ids", []):
+        raise HTTPException(422, "请先读取并绑定本轮目录中的标的；不能查询其他标的或私人组合范围。")
+    return run
+
+
+@router.post("/research/runs/{run_id}/wind-tools")
+def wind_tools(run_id: str, request: WindToolsInput, session: Session = Depends(get_db_session)):
+    from watchlist_app.services import research_wind as wind
+    from watchlist_app.services.research_read_projection import read_page
+    _wind_run(session, run_id)
+    session.rollback()  # Tool discovery has no run mutation; release its short lock.
+    try:
+        result = wind.list_tools(request.domain)
+        return read_page(result["tools"], {key: value for key, value in result.items() if key != "tools"},
+            offset=request.offset, limit=request.limit, path=request.path)
+    except wind.WindError as error:
+        raise HTTPException(error.status_code, str(error)) from None
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+
+
+@router.post("/research/runs/{run_id}/wind-query")
+def wind_query(run_id: str, request: WindQueryInput, session: Session = Depends(get_db_session)):
+    from watchlist_app.services import research_wind as wind
+    from watchlist_app.services.research_run_evidence import retain_computed_source
+    run = _wind_run(session, run_id, request.instrument_id)
+    original = wind.reusable_source(session, run, request.instrument_id, request.domain, request.tool, request.arguments)
+    if original is not None:
+        session.rollback()
+        return wind.receipt(original, reused=True)
+    session.rollback()  # A slow vendor request must not lock out other specialists.
+    try:
+        payload = wind.query(request.domain, request.tool, request.arguments)
+    except wind.WindError as error:
+        raise HTTPException(error.status_code, str(error)) from None
+    original = wind.source(request.instrument_id, request.domain, request.tool, request.arguments, payload)
+    run = _wind_run(session, run_id, request.instrument_id)  # Recheck the current attempt grant after I/O.
+    prior = wind.reusable_source(session, run, request.instrument_id, request.domain, request.tool, request.arguments)
+    if prior is not None:
+        session.rollback()
+        return wind.receipt(prior, reused=True)
+    context = run.context_json
+    # The acquisition clock advances knowledge, never the frozen input sample.
+    run.context_json = {**context, "input_snapshot_cutoff": context.get("input_snapshot_cutoff", context["cutoff"]),
+        "cutoff": max(datetime.fromisoformat(context["cutoff"]), datetime.fromisoformat(original["retrieved_at"])).isoformat()}
+    retained = retain_computed_source(session, run, original)
+    session.commit()
+    return wind.receipt(retained)
 
 
 class SourceCapture(BaseModel):
