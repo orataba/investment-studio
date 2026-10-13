@@ -134,7 +134,10 @@ for scope, channel, hour, minute in (
     assert environment["INVESTMENT_STUDIO_LOCAL_REFRESH_RUN_KIND"] == "primary"
     assert environment["INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR"] == str(hour)
     assert environment["INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE"] == str(minute)
-    if channel == "market" and scope in {"hk", "us"}:
+    if channel == "market" and scope == "cn":
+        assert scoped["StartCalendarInterval"] == [{"Hour": 8, "Minute": 15}, {"Hour": 15, "Minute": 30}]
+        assert "INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE" not in environment
+    elif channel == "market" and scope in {"hk", "us"}:
         assert scoped["StartCalendarInterval"] == {"Minute": 30}
     elif scope == "us":
         assert scoped["StartCalendarInterval"] == [{"Minute": 0}, {"Minute": 30}]

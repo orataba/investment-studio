@@ -73,13 +73,14 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 
 | 任务后缀 | 通道 / 市场 | 运行时间 |
 | --- | --- | --- |
-| `cn-market-data-refresh` | `market / cn` | 上海 15:30 |
+| `cn-market-data-refresh` | `market / cn` | 上海 08:15、15:30 |
 | `hk-market-data-refresh` | `market / hk` | 港股实际收盘后 30 分钟；交易日 23:30 核对晚到行情及无成交日报 |
 | `us-market-data-refresh` | `market / us` | 美股实际收盘后 30 分钟 |
 | `cn-hk-reference-data-refresh` | `reference / cn-hk` | 上海 08:00 |
 | `market-data-refresh` | `settlement` | 上海 21:00；失败时 23:00 补跑 |
 
 市场任务按标的配置的交易日历选择资产并跳过休市市场。盘后行情使用标的已配置的数据来源；
+中国市场沿用同一任务在 08:15 补齐晚到的前一交易日收盘数据，15:30 保留盘后刷新。两次均为独立正常运行，不因上午成功跳过下午；08:00 资料任务仍共用既有写锁和等待上限。盘前仅要求已结束交易日的数据，不要求尚未开盘的当日收盘，也不改来源披露延迟。
 盘前资料任务仅采集 Tushare 参考资料；FMP 登记资产投影由公共数据到达流水线统一更新并保存失败状态；同市场 08:30 的研究优先读取共享原文及事件包，并按需要补充检索。
 Watchlist 不依赖外部 DuckDB。港股和美股盘后任务在每小时 `:30` 检查实际交易日历，
 在当天真实收盘后 30 分钟起的半小时内执行，港股另在同一交易日 23:30–24:00 核对晚到数据，覆盖半日市及休市日；两端共用
@@ -91,8 +92,8 @@ Mac 在日历时间睡眠时，`launchd` 会在唤醒后合并触发；盘后港
 定时刷新共用独占写锁，默认最多等待 900 秒；runner 可通过进程环境变量 `INVESTMENT_STUDIO_LOCAL_REFRESH_LOCK_WAIT_SECONDS` 覆盖。等待写入日志，超时明确返回 75，不启动并行写入或伪报成功。
 注销或关机期间用户级任务不运行，锁屏不影响调度。
 
-晚间 `settlement` 更新 FMP 目录、Tushare 基金净值、邮件净值、FX 和私募基金投影，
-不重复扫描全市场股票行情与参考资料。条目失败沿用两次重试；21:00 完整成功时，23:00
+晚间 `settlement` 更新 FMP 目录、已配置 Tushare 标的（含基金净值与上市行情）、邮件净值、FX 和私募基金投影，
+不重复采集 FMP 股票收盘价或参考资料。条目失败沿用两次重试；21:00 完整成功时，23:00
 仅检查运行状态并退出。行情或净值成功写入后，Portfolio 同步刷新快照，Watchlist 持久化
 重算 job 后由后台 worker 完成物化；reference 批次不触发无关的价格重算或组合审计。
 

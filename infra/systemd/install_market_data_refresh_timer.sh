@@ -21,7 +21,7 @@ fi
 if [[ -n "$MARKET_SCOPE" ]]; then
   DEFAULT_RESTART_ON_FAILURE=false
   case "$CHANNEL:$MARKET_SCOPE" in
-    market:cn) DEFAULT_ON_CALENDAR="*-*-* 15:30 Asia/Shanghai" ;;
+    market:cn) DEFAULT_ON_CALENDAR=$'*-*-* 08:15 Asia/Shanghai\n*-*-* 15:30 Asia/Shanghai' ;;
     market:hk) DEFAULT_ON_CALENDAR="*-*-* *:30 Asia/Shanghai" ;;
     market:us) DEFAULT_ON_CALENDAR="*-*-* *:30 America/New_York" ;;
     reference:cn-hk) DEFAULT_ON_CALENDAR="*-*-* 08:00 Asia/Shanghai" ;;
@@ -248,7 +248,7 @@ cat > "$TIMER_FILE" <<EOF
 Description=Run Investment Studio market data refresh
 
 [Timer]
-OnCalendar=$ON_CALENDAR
+$(printf '%s\n' "$ON_CALENDAR" | sed 's/^/OnCalendar=/')
 Persistent=$PERSISTENT
 AccuracySec=1min
 Unit=$UNIT_NAME.service

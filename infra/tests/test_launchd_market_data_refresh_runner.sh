@@ -171,6 +171,37 @@ if [[ ! -e "$CAPTURE_PATH" || ! -e "$AUDIT_CAPTURE_PATH" ]]; then
   exit 1
 fi
 
+# CN uses the same primary job before and after the close. A successful morning
+# run must not suppress the afternoon run or turn either into a full-history fetch.
+for scheduled_now in 2026-07-22T08:15:00+08:00 2026-07-22T15:30:00+08:00; do
+  rm -f "$CAPTURE_PATH" "$AUDIT_CAPTURE_PATH"
+  INVESTMENT_STUDIO_LOCAL_DATABASE_URL="postgresql+psycopg://explicit/local" \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL=market \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE=cn \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR=15 \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE=30 \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_RUN_KIND=primary \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_NOW="$scheduled_now" \
+    "$REPOSITORY_ROOT/infra/launchd/run_market_data_refresh.sh" \
+    "$PROJECT_ROOT" "$(command -v python3)" "$LOCK_PATH" "$ENV_ROOT"
+  test -f "$CAPTURE_PATH"
+  test -f "$AUDIT_CAPTURE_PATH"
+  python3 - <<'PY_CN'
+import json
+import os
+from pathlib import Path
+
+arguments = json.loads(Path(os.environ["CAPTURE_PATH"]).read_text())["argv"]
+assert arguments[arguments.index("--channel") + 1] == "market"
+assert arguments[arguments.index("--market-scope") + 1] == "cn"
+assert "--full-history" not in arguments
+state = json.loads((Path(os.environ["INVESTMENT_STUDIO_STATE_DIR"]) / "cn-market-data-refresh-run-state.json").read_text())
+assert state["status"] == "succeeded"
+assert state["run_kind"] == "primary"
+assert state["scheduled_date"] == "2026-07-22"
+PY_CN
+done
+
 # The remaining pre-open reference acquisition runs only inside its Shanghai window.
 for scheduled_now in 2026-01-05T08:00:00+08:00 2026-07-22T08:00:00+08:00; do
   rm -f "$CAPTURE_PATH" "$AUDIT_CAPTURE_PATH"

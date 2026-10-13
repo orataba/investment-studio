@@ -820,11 +820,16 @@ Shared market pipeline definition generation never starts its timers.
 
 | Channel / market scope | Schedule |
 | --- | --- |
-| `market / cn` | 15:30 Asia/Shanghai |
+| `market / cn` | 08:15 and 15:30 Asia/Shanghai |
 | `market / hk` | Actual Hong Kong session close + 30 minutes |
 | `market / us` | Actual US session close + 30 minutes |
 | `reference / cn-hk` | 08:00 Asia/Shanghai |
 | `settlement` | 21:00 Asia/Shanghai; conditional retry at 23:00 |
+
+The existing CN service runs at 08:15 to collect late arrivals for the preceding trading session and
+again at 15:30 after the close. Both slots run independently; morning success does not suppress the
+afternoon run. The pre-open batch expects only completed sessions and retains configured publication
+lags. It shares the existing writer lock and wait limit with the 08:00 reference batch.
 
 IANA timezones handle US daylight saving time. The shared runner selects instruments by their configured
 market calendars and skips closed markets. Hong Kong and US post-close timers check at each hour
@@ -836,8 +841,9 @@ The pre-open reference batch only acquires Tushare reference inputs. FMP referen
 projected after successful public collection or replica arrival, with failures retained in pipeline status.
 The matching market's research starts at 08:30 and collects current news and event evidence. Collect the initial references before
 activating research on a new release. Watchlist reads these snapshots without an external DuckDB source.
-Nightly settlement covers the FMP catalogue, Tushare fund NAVs, email NAVs, FX and private-fund projections,
-without repeating equity closing-price or reference collection.
+Nightly settlement covers the FMP catalogue, configured Tushare instruments (including fund NAVs and
+listed prices), email NAVs, FX and private-fund projections. It does not repeat FMP equity closing-price
+or reference collection.
 
 All batches retain the shared exclusive `fcntl` lock. Scheduled refreshes wait up to `LOCK_WAIT_SECONDS` (default 900 seconds) for the current writer; waiting is logged and expiry remains an explicit exit 75. This bounded wait covers overlap between source acquisition and settlement without running simultaneous writers. Each schedule has its own log and atomic summary
 under `~/.local/state/investment-studio`. Missing required closes, item failures and downstream failures remain

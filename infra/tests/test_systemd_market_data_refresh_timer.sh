@@ -137,6 +137,12 @@ for schedule in \
   service_file="$TEST_ROOT/config/systemd/user/$unit_name.service"
   timer_file="$TEST_ROOT/config/systemd/user/$unit_name.timer"
   grep -Fq "OnCalendar=*-*-* $expected_time" "$timer_file"
+  if [[ "$channel:$market_scope" == "market:cn" ]]; then
+    grep -Fxq 'OnCalendar=*-*-* 08:15 Asia/Shanghai' "$timer_file"
+    test "$(grep -c '^OnCalendar=' "$timer_file")" -eq 2
+  else
+    test "$(grep -c '^OnCalendar=' "$timer_file")" -eq 1
+  fi
   grep -Fq -- "--channel $channel --market-scope $market_scope" "$service_file"
   grep -Fq -- "$market_scope-$channel-data-refresh-summary.json" "$service_file"
   grep -Fxq 'Restart=no' "$service_file"
@@ -151,6 +157,16 @@ for schedule in \
   fi
   grep -Fq "enable $unit_name.timer" "$SYSTEMCTL_CALLS"
 done
+
+# An explicit single-slot schedule replaces both default CN slots.
+HOME="$TEST_ROOT/home" XDG_CONFIG_HOME="$TEST_ROOT/config" PATH="$MOCK_BIN:$PATH" \
+PROJECT_ROOT="$PROJECT_ROOT" BACKEND_ROOT="$BACKEND_ROOT" \
+PYTHON_BIN="$(command -v python3)" ENV_ROOT="$ENV_ROOT" CHANNEL=market MARKET_SCOPE=cn \
+ON_CALENDAR='*-*-* 09:00 Asia/Shanghai' \
+  "$REPOSITORY_ROOT/infra/systemd/install_market_data_refresh_timer.sh"
+cn_timer_file="$TEST_ROOT/config/systemd/user/investment-studio-cn-market-data-refresh.timer"
+grep -Fxq 'OnCalendar=*-*-* 09:00 Asia/Shanghai' "$cn_timer_file"
+test "$(grep -c '^OnCalendar=' "$cn_timer_file")" -eq 1
 
 # Explicit non-settlement restart overrides keep their existing start-rate limit.
 HOME="$TEST_ROOT/home" XDG_CONFIG_HOME="$TEST_ROOT/config" PATH="$MOCK_BIN:$PATH" \

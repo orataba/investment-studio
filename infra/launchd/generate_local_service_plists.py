@@ -173,7 +173,9 @@ def main() -> int:
             "INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE": str(minute),
         }
         calendar = {"Hour": hour, "Minute": minute}
-        if channel == "market" and market_scope in {"hk", "us"}:
+        if channel == "market" and market_scope == "cn":
+            calendar = [{"Hour": 8, "Minute": 15}, calendar]
+        elif channel == "market" and market_scope in {"hk", "us"}:
             calendar = {"Minute": 30}
         if timezone == "America/New_York":
             # launchd follows the Mac timezone; the hourly close check resolves
