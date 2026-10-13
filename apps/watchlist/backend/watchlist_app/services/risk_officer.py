@@ -1,5 +1,6 @@
 """A scoped risk officer reads retained research, quantitative triggers and holdings."""
 from datetime import UTC, date, datetime
+import json
 import math
 from urllib.parse import quote
 from uuid import uuid4
@@ -452,8 +453,13 @@ class Priority(BaseModel):
     analysis: str = Field(min_length=1, max_length=6000)
     instrument_ids: list[str] = Field(default_factory=list)
     holding_ids: list[str] = Field(default_factory=list)
-    case_ids: list[str] = Field(default_factory=list)
-    source_ids: list[str] = Field(default_factory=list)
+    case_ids: list[str] = Field(default_factory=list, description=
+        "Use the case_id of a current bound risk case to cite that case and its underlying originals. "
+        "The source_ids nested inside a case are evidence for that case, not direct priority source_ids.")
+    source_ids: list[str] = Field(default_factory=list, description=
+        "Only cite current risk-scope IDs returned by performance_evidence, comparisons, research_context.records "
+        "or portfolio sources. Cite research cases through case_ids; do not copy their nested original "
+        "text:/computed: source_ids here. With case_ids, this list may be empty.")
     next_watch: str = Field(min_length=1, max_length=2000)
 
 
@@ -494,7 +500,7 @@ def validate_result(run, result: RiskReview):
     if missing:
         raise ValueError("case_assessments 缺少待风控复核的研究上报：" + ", ".join(missing)
                          + "。请逐项绑定事件原版本并说明结论；证据不足可明确保留 pending 并说明原因。")
-    for priority in result.priorities:
+    for priority_index, priority in enumerate(result.priorities):
         if (not set(priority.instrument_ids).issubset(ids) or not set(priority.case_ids).issubset(cases)
                 or not set(priority.holding_ids).issubset(holdings)):
             raise ValueError("研判引用了当前范围快照以外的标的或风险事项。")
@@ -502,8 +508,16 @@ def validate_result(run, result: RiskReview):
             raise ValueError("引用风险事项与研判涉及标的不一致。")
         if not priority.case_ids and not priority.source_ids:
             raise ValueError("独立研判需要引用本次真实业绩或持仓来源。")
-        if not set(priority.source_ids).issubset(sources):
-            raise ValueError("研判引用了当前范围快照以外的业绩或持仓来源。")
+        unknown_sources = sorted(set(priority.source_ids) - sources.keys())
+        if unknown_sources:
+            raise ValueError(
+                f"priorities[{priority_index}].source_ids 引用了当前范围快照以外的直接来源："
+                f"{json.dumps(unknown_sources, ensure_ascii=False)}。"
+                f"本轮允许的直接 source_ids：{json.dumps(sorted(sources), ensure_ascii=False)}。"
+                "研究事件及其原件请通过该事件的 case_id 填入 case_ids；"
+                "不要将事件内部的 text:/computed: 等原件编号复制到本字段。"
+                "已有 case_ids 时 source_ids 可以为 []；独立业绩或持仓研判仍须保留其合法来源。"
+                "修正此字段并重新提交完整 result，本次未保存结果。")
         if any(sources[source_id].get("instrument_id") and sources[source_id]["instrument_id"] not in priority.instrument_ids for source_id in priority.source_ids):
             raise ValueError("引用业绩来源与研判涉及标的不一致。")
         for source_id in priority.source_ids:

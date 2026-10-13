@@ -676,7 +676,7 @@ def test_performance_without_trigger_or_peers_still_supports_independent_priorit
         assert performance["comparisons"] == [] and "未配置基准" in performance["limitations"][0]
         run, _ = service.begin_run(session, instrument_id="risk-a")
         run.context_json = {**run.context_json, "risk_inputs": snapshot}
-        with pytest.raises(ValueError, match="业绩或持仓来源"):
+        with pytest.raises(ValueError, match=r"priorities\[0\]\.source_ids"):
             service.apply_result(session, run, reply(case_ids=[], source_ids=["invented-benchmark"]))
         with pytest.raises(ValueError, match="独立研判需要引用"):
             service.apply_result(session, run, reply(case_ids=[]))

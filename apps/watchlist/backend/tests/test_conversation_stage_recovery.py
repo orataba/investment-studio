@@ -114,11 +114,12 @@ def test_plain_private_answer_never_starts_review_or_publication(private_run, mo
 def test_review_deadline_preserves_answer_and_explicit_failed_publication(private_run, monkeypatch):
     update_context(private_run, conversation_answer=ANSWER, submitted_draft=DRAFT,
                    execution={"attempt": 1, "resume": True})
-    ticks = iter([0, 0, 1801])
+    stage_timeout = runner.get_settings().research_stage_timeout_seconds
+    ticks = iter([0, 0, stage_timeout + 1])
     monkeypatch.setattr(runner, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
     def timeout(**kw):
         assert kw["timeout"] == 2
-        raise subprocess.TimeoutExpired("review", 1800)
+        raise subprocess.TimeoutExpired("review", kw["timeout"])
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **kw: SimpleNamespace(communicate=timeout, returncode=-15, args=a[0]))
     monkeypatch.setattr(runner, "_stop_process_group", lambda *a: None)
     monkeypatch.setattr(sector_research, "apply_result", lambda *a: pytest.fail("Timeout is not accepted review"))
@@ -128,6 +129,7 @@ def test_review_deadline_preserves_answer_and_explicit_failed_publication(privat
     publication = context["research_publication"]
     assert publication["status"] == "failed" and publication["stage"] == "review"
     assert publication["automatic_retry"] is False and publication["error"]["type"] == "TimeoutExpired"
+    assert publication["error"]["timeout_seconds"] == stage_timeout
 
 
 def test_reviewer_resume_restores_private_answer_instead_of_blank_stdin(monkeypatch, capsys):
