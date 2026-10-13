@@ -319,14 +319,14 @@ def read_market_state() -> dict:
 @compact_read_tool
 def read_research_numbers(action: Literal["catalogue", "series", "compare", "price_risk", "observations", "event_reaction"] = "catalogue",
                           instrument_id: str | None = None, dataset: str | None = None,
-                          series_ids: list[str] | None = None, field: str | None = None,
+                          series_ids: Annotated[list[str], Field(max_length=6)] | None = None, field: str | None = None,
                           start: str | None = None, end: str | None = None,
                           benchmark_id: str | None = None, event_date: str | None = None,
                           event_timing: Literal["date_only", "before_open", "after_close"] = "date_only",
                           source_id: ExactSourceId | None = None, section: Literal["overview", "data", "sources", "evidence"] = "overview",
                           offset: int = 0, limit: int = 100, path: list[str | int] | None = None) -> dict:
     """Read source-versioned macro/market series or calculated instrument risk from either entrance.
-    Start with catalogue, then select an actual dataset and series IDs. series/compare require
+    Start with catalogue, then select an actual dataset and at most 6 series IDs per call. series/compare require
     explicit YYYY-MM-DD start/end; no fills or inferred missing values. price_risk requires an
     instrument_id and returns EWMA with its exact half-life, return basis, dates and limitations.
     Overview keeps actual values, changes and risk measures. To read full points/history/raw
@@ -398,11 +398,13 @@ def read_quant_inputs(instrument_id: str, offset: int = 0, limit: int = 30,
 
 
 @compact_read_tool
-def run_quant_analysis(instrument_id: str, title: str, source_ids: list[str], code: str,
+def run_quant_analysis(instrument_id: str, title: str,
+                       source_ids: Annotated[list[str], Field(min_length=1, max_length=12)], code: str,
                        methodology: str, params: dict | None = None, version_id: str | None = None,
                        observation_domain: Literal["market", "fundamental", "unclassified"] = "unclassified") -> dict:
     """Run Python in the checked OS sandbox over selected retained inputs; save reproducible evidence.
-    Read read_quant_capability for the exact output schema. Python receives inputs={source_id: full
+    Select 1–12 retained source IDs per call; retained intermediate calculations can be inputs to a
+    subsequent calculation. Read read_quant_capability for the exact output schema. Python receives inputs={source_id: full
     source snapshot} and params, with installed numpy/pandas/scipy as reported. Set result to a plain
     JSON-compatible dict containing summary, metrics, tables, charts and limitations. Charts reference
     table columns, never HTML/SVG/image paths. Convert NumPy scalars and DataFrames to ordinary values.

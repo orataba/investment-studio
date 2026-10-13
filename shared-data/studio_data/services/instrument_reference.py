@@ -206,6 +206,22 @@ def get_instrument_reference_data(instrument_id: str, *, public_store: NumericSt
                 instrument_type=instrument_type,
                 provider_symbol=provider_symbol,
             )
+            if instrument_type in {"etf", "public_fund"}:
+                source["field_semantics"] = {"holdings": {
+                    "provider": "datahub:tushare", "api": "fund_portfolio",
+                    "documentation_url": "https://tushare.pro/document/2?doc_id=121",
+                    "fields": {
+                        "stk_mkv_ratio": {"description": "占股票市值比", "unit": "%",
+                            "denominator": "基金持有股票市值，不是基金资产净值（NAV）"},
+                        "mkv": {"description": "持有股票市值", "unit": "元"},
+                        "amount": {"description": "持有股票数量", "unit": "股"},
+                        "ann_date": {"description": "公告日期", "format": "YYYYMMDD"},
+                        "end_date": {"description": "报告期末日期", "format": "YYYYMMDD"},
+                    },
+                    "selection": {"report_period": "最新 end_date", "order": "stk_mkv_ratio 降序",
+                        "row_limit": 100, "scope": "最多100条原始披露行，未去重，不保证全量持仓。"},
+                    "limitation": "不能由披露比例合计推断股票仓位、现金比例或完整性；换算NAV须有同报告期的股票资产占NAV依据。",
+                }}
         else:
             errors["reference"] = "The instrument has no Tushare code identifier."
     elif source_profile == "fmp" or _identifier(

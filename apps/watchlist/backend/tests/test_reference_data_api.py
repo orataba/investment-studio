@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from copy import deepcopy
 from contextlib import nullcontext
 from datetime import UTC, datetime
 
@@ -12,7 +13,7 @@ from watchlist_app.api.routes import funds
 def test_current_reference_separates_nav_source_and_scan_from_old_reference(monkeypatch, route_instrument):
     from investment_studio_instrument_core.db_models import InstrumentReferenceSnapshot
     from watchlist_app.services import shared_instrument_registry as registry
-    snapshot = {"fetched_at": "2026-09-04T10:00:00Z", "source": {"refresh_status": "no_new_data",
+    snapshot = {"fetched_at": "2026-09-04T10:00:00Z", "source": {"refresh_status": "no_new_data", "refresh_message": "old check",
         "market_data_updated_at": "2026-09-04T10:00:00Z"}, "sections": {"profile": {"name": "Original"}}}
     nav = {"metric_family": "nav", "quote_basis": "official_nav", "currency": "CNY",
         "as_of_date": "2026-10-09", "status": "complete", "provider": "email-route:20562",
@@ -42,6 +43,8 @@ def test_current_reference_separates_nav_source_and_scan_from_old_reference(monk
     assert result["sections"] == snapshot["sections"]
     assert result["source"]["source_location"] == "INBOX"
     assert "refresh_status" not in result["source"]
+    assert "refresh_message" not in result["source"]
+    assert "market_data_updated_at" not in result["source"]
     assert "email_sender_whitelist" not in result["source"]
     current = result["current_data"]
     assert current["last_checked_at"] == "2026-10-12T19:06:28Z"
@@ -78,6 +81,34 @@ def test_current_nav_remains_available_without_a_reference_snapshot(monkeypatch)
     assert result["current_data"]["latest_nav"]["as_of_date"] == "2026-10-09"
     assert result["current_data"]["latest_nav"]["imported_at"] is None
     assert result["current_data"]["last_checked_at"] is None
+
+
+@pytest.mark.parametrize("provider,source", [
+    ("datahub:tushare", {"field_semantics": {"holdings": {"provider": "datahub:tushare", "api": "fund_portfolio"}}}),
+    ("fmp", {"storage": "studio_market", "section_sources": {"holdings": [{"source_id": "numeric:saved:0"}]}}),
+    ("unknown", {}),
+])
+def test_reference_source_metadata_survives_current_configuration_changes(monkeypatch, provider, source):
+    from watchlist_app.services import shared_instrument_registry as registry
+    snapshot = {"provider": provider, "fetched_at": "2026-09-04T10:00:00Z",
+        "source": {**source, "source_api_profile": provider, "refresh_status": "old"},
+        "sections": {"holdings": [{"weightPercentage": 5.2}]}}
+    before = deepcopy(snapshot)
+    monkeypatch.setattr(registry, "get_shared_instrument", lambda _: {"instrument_id": "asset-1",
+        "source_settings": {"source_api_profile": "new-configuration", "source_location": "current"}})
+    monkeypatch.setattr(registry, "get_session_factory", lambda: lambda: nullcontext(SimpleNamespace(
+        get=lambda *_: SimpleNamespace(value_json=snapshot), scalar=lambda _: SimpleNamespace(value_json=snapshot))))
+    current = registry.get_shared_reference_data("asset-1")
+    assert current["provider"] == provider
+    assert current["source"]["source_api_profile"] == "new-configuration"
+    for key, value in source.items():
+        assert current["source"][key] == value
+    assert "refresh_status" not in current["source"]
+    if provider != "datahub:tushare":
+        assert "field_semantics" not in current["source"]
+    historical = registry.get_shared_reference_data("asset-1", as_of=datetime(2026, 9, 5, tzinfo=UTC))
+    assert historical == before
+    assert snapshot == before
 
 
 def test_reference_data_uses_the_watchlist_read_api(client, monkeypatch):

@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 
 from fastapi import HTTPException
+from mcp.server.mcpserver.exceptions import ToolError
 import pytest
 from studio_identity import current_principal, principal_context
 
@@ -303,6 +304,42 @@ def test_api_ends_run_writes_and_reports_unavailable_explicitly(monkeypatch, bou
     with pytest.raises(HTTPException) as error:
         routes.run_quant(record.entry_id, request(), session)
     assert error.value.status_code == 409 and session.commits == 0
+
+
+@pytest.mark.parametrize("tool_name,field,model,limit,arguments", [
+    ("run_quant_analysis", "source_ids", quant.QuantAnalysisInput, 12,
+     {"instrument_id": "xlk", "title": "Observed values", "code": "result={}", "methodology": "Observed inputs"}),
+    ("read_research_numbers", "series_ids", routes.NumericResearchInput, 6,
+     {"action": "series", "dataset": "us_eod_daily", "field": "adjusted_close",
+      "start": "2026-03-02", "end": "2026-10-12"}),
+])
+def test_actual_mcp_source_limits_match_backend_and_reject_before_request(
+        monkeypatch, tool_name, field, model, limit, arguments):
+    tool = next(item for item in asyncio.run(mcp.mcp.list_tools()) if item.name == tool_name)
+    schema = tool.input_schema["properties"][field]
+    array = next(item for item in schema.get("anyOf", [schema]) if item.get("type") == "array")
+    backend = model.model_json_schema()["properties"][field]
+    assert array["maxItems"] == backend["maxItems"] == limit
+    assert array.get("minItems") == backend.get("minItems")
+    calls = []
+    def api(suffix, payload, **kwargs):
+        calls.append(payload)
+        return {"source_id": "computed:retained", "summary": "Observed inputs"}
+    monkeypatch.setattr(mcp, "request", api)
+    ids = [f"source-{index}" for index in range(limit)]
+    asyncio.run(mcp.mcp.call_tool(tool_name, {**arguments, field: ids}))
+    assert calls[0][field] == ids
+    calls.clear()
+    with pytest.raises(ToolError, match="at most"):
+        asyncio.run(mcp.mcp.call_tool(tool_name, {**arguments, field: [*ids, "one-too-many"]}))
+    assert calls == []
+
+
+def test_quant_capability_publishes_actual_input_limit(monkeypatch, bound_quant_api):
+    monkeypatch.setattr(quant_sandbox, "availability", lambda: {"available": True})
+    record = run()
+    capability = routes.quant_availability(record.entry_id, Session(record))
+    assert capability["input_limits"]["max_source_ids"] == quant.QuantAnalysisInput.model_json_schema()["properties"]["source_ids"]["maxItems"]
 
 
 def test_mcp_execution_and_reads_share_one_retained_source_without_rerun(monkeypatch, bound_quant_api):

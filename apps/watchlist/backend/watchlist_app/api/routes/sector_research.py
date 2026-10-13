@@ -398,6 +398,7 @@ def quant_availability(run_id: str, session: Session = Depends(get_db_session)):
     from watchlist_app.services.research_run_evidence import locked_computation_run
     locked_computation_run(session, run_id)
     return {**availability(), "output_schema": QuantOutput.model_json_schema(),
+            "input_limits": {"max_source_ids": QuantAnalysisInput.model_json_schema()["properties"]["source_ids"]["maxItems"]},
             "input_contract": "inputs[source_id] holds the exact retained source; params holds explicit assumptions. Define result as a JSON-compatible dictionary. No network, host files or package installation."}
 
 

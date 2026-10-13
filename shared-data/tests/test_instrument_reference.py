@@ -186,6 +186,7 @@ def test_fmp_reference_reads_shared_versions_without_refreshing_the_clock(monkey
     assert result["sections"] == {"saved": [{"value": 10}]}
     assert result["fetched_at"] == "2026-09-01T08:00:00Z"
     assert result["source"]["storage"] == "studio_market"
+    assert "field_semantics" not in result["source"]
 
 
 def test_tushare_etf_reference_uses_fund_profile_and_holdings_endpoints(
@@ -222,6 +223,33 @@ def test_tushare_etf_reference_uses_fund_profile_and_holdings_endpoints(
     assert calls == ["fund_basic", "fund_portfolio"]
     assert set(result["sections"]) == {"fund_info", "holdings"}
     assert result["section_errors"] == {}
+
+
+@pytest.mark.parametrize("kind", ["public_fund", "etf"])
+def test_tushare_holdings_retains_field_contract_and_original_selection(monkeypatch, kind):
+    monkeypatch.setattr(instrument_reference, "get_instrument", lambda _: _instrument(
+        kind, source_profile="tushare", identifier="000940.OF"))
+    rows = [{"ts_code": "000940.OF", "symbol": f"{index // 2:06}.SH", "ann_date": "20260831",
+        "end_date": "20260630", "stk_mkv_ratio": str(103 - index), "mkv": "12345.67", "amount": "890.0"}
+        for index in range(103)]
+    rows.append({**rows[0], "end_date": "20260331", "stk_mkv_ratio": "999"})
+    before = deepcopy(rows)
+    monkeypatch.setattr(instrument_reference, "_datahub_rows", lambda **kwargs:
+        deepcopy(rows) if kwargs["api_name"] == "fund_portfolio" else [{"name": "Fund"}])
+    result = instrument_reference.get_instrument_reference_data("test-" + kind)
+    assert result["sections"]["holdings"] == before[:100]
+    assert rows == before  # Repeated symbols, original types, amounts and clocks stay untouched.
+    contract = result["source"]["field_semantics"]["holdings"]
+    assert (contract["provider"], contract["api"]) == ("datahub:tushare", "fund_portfolio")
+    assert contract["documentation_url"] == "https://tushare.pro/document/2?doc_id=121"
+    fields = contract["fields"]
+    assert fields["stk_mkv_ratio"]["unit"] == "%"
+    assert fields["stk_mkv_ratio"]["denominator"] == "基金持有股票市值，不是基金资产净值（NAV）"
+    assert fields["mkv"]["unit"] == "元" and fields["amount"]["unit"] == "股"
+    assert fields["ann_date"]["description"] == "公告日期"
+    assert fields["end_date"]["description"] == "报告期末日期"
+    assert contract["selection"] == {"report_period": "最新 end_date", "order": "stk_mkv_ratio 降序",
+        "row_limit": 100, "scope": "最多100条原始披露行，未去重，不保证全量持仓。"}
 
 
 def test_tushare_index_reference_uses_index_profile(

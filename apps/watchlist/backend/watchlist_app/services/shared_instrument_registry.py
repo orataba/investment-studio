@@ -126,10 +126,12 @@ def get_shared_reference_data(instrument_id: str, *, as_of: datetime | None = No
             # Current operational facts do not share the reference collection
             # clock. Historical research must keep its frozen source context.
             settings = instrument.get("source_settings") or {}
-            result["source"] = {key: settings.get(key) for key in (
+            retained_source = {key: value for key, value in (result.get("source") or {}).items()
+                if key not in {"refresh_status", "refresh_message", "market_data_updated_at"}}
+            result["source"] = {**retained_source, **{key: settings.get(key) for key in (
                 "source_mode", "source_location", "source_api_profile",
                 "expected_frequency", "market_calendar", "release_lag_days",
-            )}
+            )}}
             result["current_data"] = _current_source_data(session, instrument)
         return result
 
