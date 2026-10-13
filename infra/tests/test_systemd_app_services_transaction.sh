@@ -36,6 +36,14 @@ touch \
 cp "$REPOSITORY_ROOT/infra/launchd/load_runtime_env.sh" \
   "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 cp "$REPOSITORY_ROOT/infra/market_pipeline_actions.txt" "$PROJECT_ROOT/infra/market_pipeline_actions.txt"
+cp "$REPOSITORY_ROOT/infra/scripts/check_regime_public.py" "$PROJECT_ROOT/infra/scripts/check_regime_public.py"
+mkdir -p "$PROJECT_ROOT/deploy/regime-ui"
+printf '%s\n' '<h1 id="dashboard-title">Regime</h1><div id="latest-grid"></div><link rel="stylesheet" href="/static/styles.css"><script src="/static/app.js"></script>' > "$PROJECT_ROOT/deploy/regime-ui/index.html"
+cp "$PROJECT_ROOT/deploy/regime-ui/index.html" "$PROJECT_ROOT/deploy/regime-ui/audit.html"
+printf '%s\n' 'body {}' > "$PROJECT_ROOT/deploy/regime-ui/styles.css"
+printf '%s\n' 'let regime = {};' > "$PROJECT_ROOT/deploy/regime-ui/app.js"
+chmod 755 "$PROJECT_ROOT" "$PROJECT_ROOT/deploy" "$PROJECT_ROOT/deploy/regime-ui"
+chmod 644 "$PROJECT_ROOT/deploy/regime-ui/"*
 
 printf '%s\n' \
   '#!/usr/bin/env bash' \
@@ -592,5 +600,29 @@ for replay_failure in false true; do
   fi
 done
 
+# A healthy API cannot compensate for absent/inaccessible Nginx-served Regime UI.
+# Reject both packaging failures before stopping services or creating backups.
+for packaging_failure in missing-regime private-root; do
+  PACKAGE_CASE="$TEST_ROOT/$packaging_failure"
+  prepare_case "$PACKAGE_CASE"
+  if [[ "$packaging_failure" == missing-regime ]]; then
+    mv "$PROJECT_ROOT/deploy/regime-ui" "$PROJECT_ROOT/deploy/regime-ui-retained"
+  else
+    chmod 700 "$PROJECT_ROOT"
+  fi
+  if CASE_RUN_MIGRATIONS=false run_case "$PACKAGE_CASE" > "$PACKAGE_CASE/output" 2>&1; then
+    echo "Application-only installation accepted $packaging_failure." >&2
+    exit 1
+  fi
+  if [[ "$packaging_failure" == missing-regime ]]; then
+    mv "$PROJECT_ROOT/deploy/regime-ui-retained" "$PROJECT_ROOT/deploy/regime-ui"
+  else
+    chmod 755 "$PROJECT_ROOT"
+  fi
+  test ! -s "$PACKAGE_CASE/events"
+  grep -q 'Regime readiness failed' "$PACKAGE_CASE/output"
+  assert_original_state_restored "$PACKAGE_CASE"
+  grep -Fxq pre-install-record "$PACKAGE_CASE/database"
+done
 
 echo "systemd app install transaction and fail-closed rollback test passed."

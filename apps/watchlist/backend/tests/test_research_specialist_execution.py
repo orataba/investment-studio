@@ -66,9 +66,13 @@ def test_recovery_with_all_sections_complete_enters_synthesis_without_another_ca
     running_run()
     for section in ("recent_updates", "themes", "quantitative"):
         complete(section)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "specialists")
+        run.context_json = {**run.context_json, "execution": {"attempt": 2, "resume": True}}
+        session.commit()
     def unexpected_launch(section):
         raise AssertionError(f"Already retained section launched: {section}")
-    assert runner._run_specialists("specialists", 1, unexpected_launch) is None
+    assert runner._run_specialists("specialists", 2, unexpected_launch) is None
     with get_session_factory()() as session:
         assert session.get(ResearchEntry, "specialists").context_json["execution"]["research_section"] == "overview"
 
@@ -85,4 +89,6 @@ def test_specialist_tools_are_distinct_and_cannot_publish_or_modify_pm_views(mon
     assert "run_quant_analysis" in tools["quantitative"]
     assert "search_market_information" not in tools["quantitative"]
     assert "submit_research_review" in tools["overview"]
+    assert "compare_instruments" in tools["overview"]
+    assert "read_portfolio_holdings" not in tools["overview"]
     assert all("submit_research_review" not in tools[role] for role in ("recent_updates", "themes", "quantitative"))

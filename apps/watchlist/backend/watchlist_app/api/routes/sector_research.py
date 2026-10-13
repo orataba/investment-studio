@@ -379,7 +379,7 @@ def submit_draft(run_id: str, request: service.ReviewResult, session: Session = 
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     # A private conversation may read every authorized asset, but sending a
-    # shared draft into independent model review requires current Invested status.
+    # shared draft into independent model review requires current Proposed or Invested status.
     # Human imports have a separate route and do not start that model work.
     from watchlist_app.services.research_policy import require_instrument_research
     require_instrument_research(session, [review.instrument_id for review in request.reviews],

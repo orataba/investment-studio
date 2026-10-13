@@ -38,6 +38,7 @@ def _responses():
         "/static/app.js?v=release": (200, {"Content-Type": "application/javascript"}, b"let app = {};"),
         "/static/audit.html": (302, {"Location": "/audit"}, b""),
         "/audit": (302, {"Location": "https://home.example/login?next=https://regime.example/audit"}, b""),
+        "/api/audit/runs?market=kweb&limit=1": (401, {"Content-Type": "application/json"}, b'{"error":"unauthorized"}'),
         "/api/health": _json({"ok": True, "status": "healthy", "all_markets_fresh": True}),
         "/api/markets": _json({"default": "us", "markets": [{"id": "us"}]}),
         "/api/latest?market=us": _json({"latest": [{"symbol": "SPY"}], "row_count": 1, "latest_date": "2026-09-18"}),
@@ -97,6 +98,7 @@ def test_public_checks_actual_html_assets_data_and_anonymous_audit_boundary(caps
     ("/static/audit.html", (200, {"Content-Type": "text/html"}, AUDIT.encode()), "protected /audit route"),
     ("/audit", (200, {"Content-Type": "text/html"}, AUDIT.encode()), "require authentication"),
     ("/audit", (302, {"Location": "/audit"}, b""), "require authentication"),
+    ("/api/audit/runs?market=kweb&limit=1", _json({"runs": []}), "reject anonymous data access"),
     ("/api/health", _json({"ok": False, "status": "unavailable"}), "data service is unavailable"),
     ("/api/markets", _json({"default": "us", "markets": [{"id": "hk"}]}), "missing default market"),
     ("/api/latest?market=us", _json({"latest": [], "row_count": 0}), "latest rows"),
@@ -123,11 +125,14 @@ def test_freshness_is_reported_separately_from_public_availability(capsys):
 def _stage(tmp_path):
     directory = tmp_path / "release" / "deploy" / "regime-ui"
     directory.mkdir(parents=True)
+    for parent in (directory, directory.parent, directory.parent.parent):
+        parent.chmod(0o755)
     for name, body in {
         "index.html": INDEX, "audit.html": AUDIT, "styles.css": "body {}",
         "studio.js": "let studio = {};", "app.js": "let app = {};", "audit.js": "let audit = {};",
     }.items():
         (directory / name).write_text(body)
+        (directory / name).chmod(0o644)
     return tmp_path / "release", directory
 
 
@@ -164,6 +169,31 @@ def test_staged_can_check_current_user_without_privilege_escalation(tmp_path):
     release, _ = _stage(tmp_path)
     result = MODULE.check_staged(release, pwd.getpwuid(os.geteuid()).pw_name)
     assert result["readable_files"] == 6
+
+
+def test_installer_file_check_requires_public_package_without_changing_modes(tmp_path):
+    release, directory = _stage(tmp_path)
+    private = release / "private.env"
+    private.write_text("not a public asset")
+    private.chmod(0o600)
+    assert MODULE.check_release_files(release) == {"check": "release_files", "public_files": 6}
+    assert private.stat().st_mode & 0o777 == 0o600
+    release.chmod(0o700)
+    with pytest.raises(MODULE.CheckError, match="not traversable"):
+        MODULE.check_release_files(release)
+    assert release.stat().st_mode & 0o777 == 0o700
+    release.chmod(0o755)
+    (directory / "audit.js").chmod(0o600)
+    with pytest.raises(MODULE.CheckError, match="not world-readable"):
+        MODULE.check_release_files(release)
+
+
+def test_installer_rejects_missing_regime_tree_even_with_other_apps_present(tmp_path, capsys):
+    release = tmp_path / "release"
+    (release / "home/frontend/dist").mkdir(parents=True)
+    (release / "home/frontend/dist/index.html").write_text("healthy Home")
+    assert MODULE.main(["--release-files", str(release)]) == 1
+    assert "regime-ui/index.html" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("asset", ["https://example.com/app.js", "//example.com/app.js", "/static/../secret", "/static/%2e%2e/secret"])

@@ -2822,13 +2822,15 @@ export default function FundDetailPage({
   const benchmarkInputRef = useRef<HTMLInputElement>(null)
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkSearchFocused, setBenchmarkSearchFocused] = useState(false)
-  const [benchmarkNavSeries, setBenchmarkNavSeries] = useState<FundNavSeriesResponse | null>(null)
+  const [benchmarkNavSnapshot, setBenchmarkNavSeries] = useState<FundNavSeriesResponse | null>(null)
+  const benchmarkNavSeries = benchmarkNavSnapshot?.fund_id === benchmarkFundId ? benchmarkNavSnapshot : null
   const [registryBenchmarkOptions, setRegistryBenchmarkOptions] = useState<InstrumentLibraryItem[]>([])
   const [benchmarkSearchError, setBenchmarkSearchError] = useState<string | null>(null)
   const [benchmarkLoadError, setBenchmarkLoadError] = useState<string | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [benchmarkLoadRetryToken, setBenchmarkLoadRetryToken] = useState(0)
   const [savingDefaultBenchmark, setSavingDefaultBenchmark] = useState(false)
+  const [showAllMetricPeriods, setShowAllMetricPeriods] = useState(false)
   const [performanceMatrixMode, setPerformanceMatrixMode] =
     useState<PerformanceMatrixMode>('values')
   const [rollingRiskSettings, setRollingRiskSettings] = useState<WatchlistRollingRiskSettings>(
@@ -3300,6 +3302,7 @@ export default function FundDetailPage({
         return
       }
 
+      setBenchmarkNavSeries(null)
       setBenchmarkLoadError(null)
       setBenchmarkLoading(true)
       try {
@@ -4624,7 +4627,7 @@ export default function FundDetailPage({
   )
   const fundSourceFacts = fundType === 'private_fund'
     ? [
-        { label: 'NAV source', value: bundle.reference?.source.source_location || '—' },
+        { label: language === 'zh-Hans' ? '配置来源' : 'Configured source', value: bundle.reference?.source.source_location || '—' },
         { label: 'Ingestion mode', value: bundle.reference?.source.source_mode || '—' },
         { label: 'Expected cadence', value: bundle.reference?.source.expected_frequency || '—' },
         {
@@ -4633,8 +4636,6 @@ export default function FundDetailPage({
             ? '—'
             : `${bundle.reference.source.release_lag_days} day(s)`,
         },
-        { label: 'Latest source status', value: bundle.reference?.source.refresh_status || '—' },
-        { label: 'Last data update', value: formatDateTime(bundle.reference?.source.market_data_updated_at) },
       ]
     : [
         { label: 'Reference provider', value: bundle.reference?.provider || '—' },
@@ -4644,6 +4645,20 @@ export default function FundDetailPage({
         { label: 'Benchmark', value: getString(fundReferenceInfo.benchmark) || '—' },
         { label: 'Inception', value: formatDate(fundReferenceInfo.inceptionDate || fundReferenceInfo.found_date) },
       ]
+  const currentNavData = bundle.reference?.current_data
+  const collectionTime = (value: string | null | undefined) => value && Number.isFinite(Date.parse(value)) ? `${new Date(value).toISOString().slice(0, 19).replace('T', ' ')} UTC` : '—'
+  const currentNavCheckLabels: Record<string, string> = language === 'zh-Hans' ? { no_new_data: '检查完成，未发现新数据', no_match: '未找到匹配资料', imported: '已导入', refreshed: '已刷新', failed: '检查失败', blocked: '检查受阻', idle: '空闲' } : { no_new_data: 'Checked; no new data', no_match: 'No matching material', imported: 'Imported', refreshed: 'Refreshed', failed: 'Check failed', blocked: 'Check blocked', idle: 'Idle' }
+  const actualNavProvider = currentNavData?.latest_nav?.provider
+  const currentNavFacts = [
+    { label: language === 'zh-Hans' ? '最新净值日期' : 'Latest NAV date', value: formatDate(currentNavData?.latest_nav?.as_of_date) },
+    { label: language === 'zh-Hans' ? '实际来源' : 'Actual source', value: actualNavProvider?.startsWith('email-route:') ? (language === 'zh-Hans' ? '邮件导入' : 'Email import') : actualNavProvider || '—', title: actualNavProvider || undefined },
+    { label: language === 'zh-Hans' ? '来源文件夹' : 'Source folder', value: currentNavData?.latest_nav?.source_folder || '—' },
+    { label: language === 'zh-Hans' ? '来源附件' : 'Source attachment', value: currentNavData?.latest_nav?.source_attachment || '—' },
+    { label: language === 'zh-Hans' ? '邮件发送时间' : 'Email sent', value: collectionTime(currentNavData?.latest_nav?.source_sent_at) },
+    { label: language === 'zh-Hans' ? '导入时间' : 'Imported at', value: collectionTime(currentNavData?.latest_nav?.imported_at) },
+    { label: language === 'zh-Hans' ? '最近检查时间' : 'Last checked', value: collectionTime(currentNavData?.last_checked_at) },
+    { label: language === 'zh-Hans' ? '最近检查结果' : 'Last check result', value: currentNavData?.check_status ? currentNavCheckLabels[currentNavData.check_status] || currentNavData.check_status : '—' },
+  ]
   const priceOverviewMap = price.overview || {}
   const providerFeeFacts = fundType === 'public_fund'
     ? [
@@ -5072,6 +5087,10 @@ export default function FundDetailPage({
       ),
     }
   })
+  const visibleMetricPeriodIndexes = performancePeriodSnapshots.flatMap((period, index) => showAllMetricPeriods || ['1M', 'YTD', '3M', '6M', '1Y', 'SI'].includes(period.key) ? [index] : [])
+  const relativeMetricKeys = new Set(['excess_return', 'information_ratio', 'tracking_error', 'beta', 'upside_capture', 'downside_capture'])
+  const visibleMetricRows = performanceMetricMatrixRows.filter(row => selectedBenchmark || !relativeMetricKeys.has(row.key))
+  const comparisonPending = hasBenchmarkSelection && (benchmarkLoading || (!benchmarkNavSeries && !benchmarkLoadError))
   const riskCalculationSeries = fundPathRiskAvailable ? calculationBasisSeries : []
   const returnDrawdownSeries = buildDrawdownSeries(riskCalculationSeries)
   const rollingRiskWindowLabel =
@@ -6655,6 +6674,7 @@ export default function FundDetailPage({
                 </div>
               </div>
               <div className="instrument-performance-matrix-controls">
+                <button type="button" className="button-subtle" aria-pressed={showAllMetricPeriods} onClick={() => setShowAllMetricPeriods(value => !value)}>{language === 'zh-Hans' ? showAllMetricPeriods ? '常用周期' : '全部周期' : showAllMetricPeriods ? 'Core periods' : 'All periods'}</button>
                 <div className="instrument-performance-view-toggle" role="group" aria-label="Metrics matrix view">
                   {PERFORMANCE_MATRIX_MODE_OPTIONS.map((option) => (
                     <button
@@ -6672,7 +6692,7 @@ export default function FundDetailPage({
               </div>
             </div>
             <div className="instrument-performance-section-body">
-              <p className="fund-overview-date-note" role="note">{selectedBenchmark
+              <p className="fund-overview-date-note" role={comparisonPending ? "status" : "note"}>{comparisonPending ? (language === 'zh-Hans' ? '正在读取比较数据，完成后显示共同观察区间。' : 'Loading comparison data; common observation windows will appear when ready.') : benchmarkLoadError ? benchmarkStatusText : selectedBenchmark
                 ? language === 'zh-Hans'
                   ? `比较矩阵：所有周期按共同观察日计算，截至 ${comparisonReferenceEndDate || '尚无共同日期'}；覆盖不足的周期不展示独立最新值。标的独立最新指标及月表截至 ${performanceReferenceEndDate || '—'}。`
                   : `Comparison matrix: all periods use common observation dates through ${comparisonReferenceEndDate || 'no common date'}. Periods without coverage are unavailable. Standalone instrument metrics and the monthly table are through ${performanceReferenceEndDate || '—'}.`
@@ -6680,24 +6700,24 @@ export default function FundDetailPage({
               <p className="fund-overview-date-note" role="note">{language === 'zh-Hans'
                 ? '每个窗口独立核验观察完整性；缺失交易日、收益区间证据或未确认交易日历时该窗口不可用。历史问题不代表近期完整窗口不可用。'
                 : 'Each window requires complete interval evidence and a confirmed calendar for daily data. Missing observations make that window unavailable; older gaps do not invalidate a later complete window.'}</p>
-              {selectedBenchmark && <p className="fund-overview-date-note" role="note">{language === 'zh-Hans'
+              {selectedBenchmark && !comparisonPending && !benchmarkLoadError && <p className="fund-overview-date-note" role="note">{language === 'zh-Hans'
                 ? `回撤与标的自身风险保留共同首尾内各自完整路径；相关风险按共同相邻区间对齐，不删点掩盖缺口。披露频率：标的 ${calculationFrequencyProfile.resolved_frequency} / 基准 ${benchmarkNavSeries?.calculation_frequency_profile.resolved_frequency || '未确认'}。`
                 : `Drawdown and each instrument's risk retain their full paths between common endpoints; relative risk uses common intervals after completeness checks. Observation frequency: instrument ${calculationFrequencyProfile.resolved_frequency} / benchmark ${benchmarkNavSeries?.calculation_frequency_profile.resolved_frequency || 'unconfirmed'}.`}</p>}
               {activePerformanceMatrixMode !== 'values' && <p className="fund-overview-date-note" role="note">{language === 'zh-Hans'
                 ? '同类比较仅使用实际起止日、币种、频率和收益口径一致的固定区间收益；成立以来收益和风险指标不参与排名或中位数比较。'
                 : 'Peer comparisons use fixed-window returns with matching actual start/end dates, currency, frequency and return basis. Since-inception returns and risk metrics are excluded from ranks and medians.'}</p>}
               <HorizontalTableScroll className="table-shell instrument-performance-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-metrics-table">
+                <table aria-busy={comparisonPending} className={`terminal-table terminal-table-compact instrument-metrics-table${showAllMetricPeriods ? '' : ' instrument-metrics-table-core'}`}>
                   <thead>
                     <tr>
                       <th>Metric</th>
-                      {performancePeriodSnapshots.map((period) => (
-                        <th key={period.key}>{period.label}<small className="instrument-metric-dates">{period.effectiveDates ? <><time dateTime={period.effectiveDates.anchor}>{period.effectiveDates.anchor}</time><span aria-hidden="true"> → </span><time dateTime={period.effectiveDates.end}>{period.effectiveDates.end}</time>{period.limitation && <span>{language === 'zh-Hans' ? ' · 观察不完整或未确认' : ' · Incomplete or unconfirmed observations'}</span>}</> : language === 'zh-Hans' ? '区间覆盖不足' : 'Insufficient coverage'}</small></th>
-                      ))}
+                      {visibleMetricPeriodIndexes.map(index => { const period = performancePeriodSnapshots[index]; return (
+                        <th key={period.key}>{period.label}<small className="instrument-metric-dates">{comparisonPending ? (language === 'zh-Hans' ? '读取中…' : 'Loading…') : benchmarkLoadError ? '—' : period.effectiveDates ? <><time dateTime={period.effectiveDates.anchor}>{period.effectiveDates.anchor}</time><span aria-hidden="true"> → </span><time dateTime={period.effectiveDates.end}>{period.effectiveDates.end}</time>{period.limitation && <span>{language === 'zh-Hans' ? ' · 观察不完整或未确认' : ' · Incomplete or unconfirmed observations'}</span>}</> : language === 'zh-Hans' ? '区间覆盖不足' : 'Insufficient coverage'}</small></th>
+                      )})}
                     </tr>
                   </thead>
                   <tbody>
-                    {performanceMetricMatrixRows.map((row) => (
+                    {visibleMetricRows.map((row) => (
                       <tr
                         key={row.key}
                         className={
@@ -6707,25 +6727,26 @@ export default function FundDetailPage({
                         }
                       >
                         <td className="instrument-metrics-row-label">{row.label}</td>
-                        {row.cells.map((cell, index) => (
-                          <td key={`${row.key}-${PERFORMANCE_METRIC_PERIODS[index]?.key || index}`} title={performancePeriodSnapshots[index]?.effectiveDates ? `${performancePeriodSnapshots[index].effectiveDates?.anchor} → ${performancePeriodSnapshots[index].effectiveDates?.end}` : language === 'zh-Hans' ? '区间覆盖不足' : 'Insufficient coverage'}>
+                        {visibleMetricPeriodIndexes.map(index => { const cell = row.cells[index]; return (
+                          <td key={`${row.key}-${PERFORMANCE_METRIC_PERIODS[index]?.key || index}`} title={comparisonPending ? (language === 'zh-Hans' ? '正在读取比较数据' : 'Loading comparison data') : benchmarkLoadError ? benchmarkStatusText : performancePeriodSnapshots[index]?.effectiveDates ? `${performancePeriodSnapshots[index].effectiveDates?.anchor} → ${performancePeriodSnapshots[index].effectiveDates?.end}` : language === 'zh-Hans' ? '区间覆盖不足' : 'Insufficient coverage'}>
                             <div
                               className={`instrument-metrics-cell${
                                 'tone' in cell ? ` instrument-metrics-cell-${cell.tone}` : ''
                               }`}
                             >
-                              <strong>{cell.primary}</strong>
-                              {cell.secondary ? (
+                              <strong>{comparisonPending ? '…' : benchmarkLoadError ? '—' : cell.primary}</strong>
+                              {!comparisonPending && !benchmarkLoadError && cell.secondary ? (
                                 <span className="instrument-metrics-cell-note">{cell.secondary}</span>
                               ) : null}
                             </div>
                           </td>
-                        ))}
+                        )})}
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </HorizontalTableScroll>
+              {!selectedBenchmark && <p className="fund-overview-date-note">{language === 'zh-Hans' ? '选择比较基准后，展示超额收益、跟踪误差及其他相对指标；双方须有相同收益口径和完整共同区间。' : 'Select a benchmark to see excess return, tracking error and other relative metrics. Matching return bases and complete common intervals are required.'}</p>}
             </div>
           </section>
 
@@ -7574,9 +7595,14 @@ export default function FundDetailPage({
             </section>
           ) : null}
         <section className="fund-disclosure-record">
+          {fundType === 'private_fund' && <section aria-label={language === 'zh-Hans' ? '当前净值与来源' : 'Current NAV and provenance'}>
+            <h3>{language === 'zh-Hans' ? '当前净值与来源' : 'Current NAV and provenance'}</h3>
+            <div className="fund-archive-facts">{currentNavFacts.map(fact => <div key={fact.label}><span>{fact.label}</span><strong translate="no" title={fact.title}>{fact.value}</strong></div>)}</div>
+            {currentNavData?.check_message && <p>{currentNavData.check_message}</p>}
+          </section>}
           <div className="fund-archive-facts">
             {fundSourceFacts.map((fact) => <div key={fact.label}><span>{fact.label}</span><strong>{String(fact.value || '—')}</strong></div>)}
-            <div><span>{language === 'zh-Hans' ? '净值截至' : 'NAV as of'}</span><strong>{formatDate(latestNavRecord?.as_of_date || null)}</strong></div>
+            {fundType !== 'private_fund' && <div><span>{language === 'zh-Hans' ? '净值截至' : 'NAV as of'}</span><strong>{formatDate(latestNavRecord?.as_of_date || null)}</strong></div>}
             <div><span>{language === 'zh-Hans' ? '持仓披露截至' : 'Holdings as of'}</span><strong>{formatDate(holdings.snapshot_metadata?.as_of_date || portfolio.snapshot_metadata?.as_of_date || null)}</strong></div>
             <div><span>{language === 'zh-Hans' ? '业绩数据截至' : 'Performance as of'}</span><strong>{formatDate(performance.snapshot_metadata?.as_of_date || null)}</strong></div>
             <div><span>{language === 'zh-Hans' ? '风险数据截至' : 'Risk as of'}</span><strong>{formatDate(risk.snapshot_metadata?.as_of_date || null)}</strong></div>

@@ -50,7 +50,7 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
   const policy = policySnapshot?.query === query ? policySnapshot.data : null
   const paused = policy?.model_work?.paused === true
   const admission = policy?.instruments?.find(item => item.instrument_id === instrumentId)
-  const pauseReason = paused ? policy?.model_work.message || '研究已暂停，已保存的内容仍可查看。' : admission?.eligible === false ? admission.reason || '仅当前在投且有效的标的可更新共享研究。' : null
+  const pauseReason = paused ? policy?.model_work.message || '研究已暂停，已保存的内容仍可查看。' : admission?.eligible === false ? admission.reason || '仅当前拟投或在投且有效的权益类标的可更新共享研究。' : null
   const hasRunningReview = data?.sectors.some((sector) => running(sector.latest_review?.status))
   const awaitingSubmittedRun = Boolean(submittedRun) && !data?.sectors.some((sector) => sector.latest_review?.run_id === submittedRun)
   const busy = !paused && (starting || hasRunningReview || awaitingSubmittedRun)

@@ -1,5 +1,9 @@
 // System UI copy only. User content must be marked translate="no".
 export const systemMessages: Record<string, string> = {
+  "First triggered": "首次触发",
+  "Triggered": "触发",
+  "Condition cleared": "条件解除",
+  "Triggered again": "再次触发",
   "Only current invested and active instruments can update shared research.": "仅当前在投且有效的标的可更新共享研究。",
   "Only current invested and active instruments may update shared research; other records remain readable and editable.": "仅允许当前在投且有效的标的更新共享研究；其他标的资料仍可阅读和维护。",
   "Research paused": "研究已暂停",

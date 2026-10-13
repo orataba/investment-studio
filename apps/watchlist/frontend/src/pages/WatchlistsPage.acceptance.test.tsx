@@ -305,3 +305,36 @@ it('explains business measurement fields without adding implementation hints to 
   expect(await screen.findByText('Currency of prices and NAVs; returns are not converted to another currency.')).toBeTruthy()
   expect(screen.queryByText('Internal read model detail')).toBeNull()
 })
+
+it.each(['CSV', 'Excel'])('exports the full searched set in saved filter/sort order for %s, independent of rendered rows', async format => {
+  const allRows = Array.from({ length: 269 }, (_, i) => ({ ...rows[0], instrument_id: `asset-${268 - i}`, instrument_name: `Asset ${268 - i}`, ticker_or_isin: `CODE-${268 - i}` }))
+  api.getWatchlistDetail.mockResolvedValue({ ...detail, item_count: 269, views: [{ ...view, default_filters: { currency: ['USD'] }, default_sort: [{ field: 'instrument_name', direction: 'desc' }] }] })
+  api.runScreenerQuery.mockImplementation(async () => result(allRows))
+  const created = vi.fn((_blob: Blob) => 'blob:filtered-export')
+  const oldCreate = URL.createObjectURL; const oldRevoke = URL.revokeObjectURL
+  URL.createObjectURL = created; URL.revokeObjectURL = vi.fn()
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+  try {
+    show()
+    await screen.findByRole('checkbox', { name: /Select Asset 268/ })
+    for (const [query, count, first, last] of [['Asset', 269, 'asset-268', 'asset-0'], ['CODE-268', 1, 'asset-268', 'asset-268']] as const) {
+      created.mockClear()
+      fireEvent.change(screen.getByRole('searchbox', { name: 'Search this watchlist' }), { target: { value: query } })
+      fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: format }))
+      await waitFor(() => expect(created).toHaveBeenCalledOnce())
+      const file = await readExport(created.mock.calls[0][0], format === 'Excel')
+      const exported = format === 'Excel' ? xlsxRows(file as ArrayBuffer) : csvRows(file as string)
+      expect(exported).toHaveLength(count + 1)
+      expect(exported[1][0]).toBe(first)
+      expect(exported[exported.length - 1][0]).toBe(last)
+    }
+    expect(api.runScreenerQuery).toHaveBeenLastCalledWith(expect.objectContaining({ fetch_all: true, filters: { currency: ['USD'] }, sort: [{ field: 'instrument_name', direction: 'desc' }] }), undefined)
+    created.mockClear()
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search this watchlist' }), { target: { value: 'no-matching-instrument' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+    const option = screen.queryByRole('menuitem', { name: format })
+    if (option) fireEvent.click(option)
+    expect(created).not.toHaveBeenCalled()
+  } finally { click.mockRestore(); URL.createObjectURL = oldCreate; URL.revokeObjectURL = oldRevoke }
+})

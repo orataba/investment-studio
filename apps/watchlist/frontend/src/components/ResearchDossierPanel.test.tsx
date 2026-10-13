@@ -38,7 +38,7 @@ it('localizes loading, failure, read-only retry and empty research without start
   request.mockResolvedValue({ ...dossier(), notebook: null })
   fireEvent.click(within(alert).getByRole('button'))
   expect(await screen.findByText('Research text and quotations retain their original language.')).toBeTruthy()
-  expect(screen.getByText(/An investment recommendation is not yet available/)).toBeTruthy()
+  expect(screen.getByText(/No investment recommendation yet/)).toBeTruthy()
   expect(request.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true)
   fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
   await screen.findByText('研究正文和引用保留原语言。')
@@ -547,7 +547,7 @@ it('does not present unavailable research as an empty assessment while the dossi
   expect(screen.queryByText(/尚未形成/)).toBeNull()
   expect(screen.queryByTestId('themes-panel')).toBeNull()
   await act(async () => resolve({ ...dossier(), notebook: null }))
-  expect(screen.getByText('无法判断')).toBeTruthy()
+  expect(screen.getByText('研究基线待建立')).toBeTruthy()
 })
 
 it('shows the recommendation and its reasoning directly in overview', async () => {

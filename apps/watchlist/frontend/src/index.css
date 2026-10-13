@@ -8191,3 +8191,6 @@ input[type='checkbox'] {
 .instrument-performance-table-shell th { font-size: 12px; font-weight: 400; }
 
 .listed-data-table th { font-size: 12px; font-weight: 400; line-height: 1.4; }
+
+.instrument-metrics-table-core { min-width: 900px; }
+.instrument-metrics-table-core th:not(:first-child), .instrument-metrics-table-core td:not(:first-child) { width: auto; }

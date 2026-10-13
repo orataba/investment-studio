@@ -62,7 +62,7 @@ def asset_path(url: str) -> PurePosixPath:
     return PurePosixPath(*path.parts[2:])
 
 
-def check_staged(release_root: Path, nginx_user: str) -> dict:
+def public_files(release_root: Path) -> set[Path]:
     static_root = release_root / "deploy" / "regime-ui"
     files = {static_root / "index.html", static_root / "audit.html"}
     for name in ("index.html", "audit.html"):
@@ -70,6 +70,32 @@ def check_staged(release_root: Path, nginx_user: str) -> dict:
             (static_root / name).read_text(encoding="utf-8"), dashboard=name == "index.html"
         )
         files.update(static_root / asset_path(asset) for asset in assets)
+    for path in files:
+        if not path.is_file() or path.stat().st_size == 0:
+            raise CheckError(f"missing or empty public file: {path}")
+    return files
+
+
+def check_release_files(release_root: Path) -> dict:
+    """Validate the package before an unprivileged installer changes services.
+
+    Public Unix modes are the deployment contract. This does not substitute for
+    the separate worker-identity check, which also covers ancestors and ACLs.
+    """
+    files = public_files(release_root)
+    directories = {release_root}
+    for path in files:
+        if not path.stat().st_mode & 0o004:
+            raise CheckError(f"public file is not world-readable: {path}")
+        directories.update(parent for parent in path.parents if parent.is_relative_to(release_root))
+    for directory in directories:
+        if not directory.stat().st_mode & 0o001:
+            raise CheckError(f"public release directory is not traversable: {directory}")
+    return {"check": "release_files", "public_files": len(files)}
+
+
+def check_staged(release_root: Path, nginx_user: str) -> dict:
+    files = public_files(release_root)
     try:
         worker = pwd.getpwnam(nginx_user)
     except KeyError as exc:
@@ -77,8 +103,6 @@ def check_staged(release_root: Path, nginx_user: str) -> dict:
     if os.geteuid() != worker.pw_uid and os.geteuid() != 0:
         raise CheckError("run preflight as root or as the actual Nginx worker user")
     for path in sorted(files):
-        if not path.is_file() or path.stat().st_size == 0:
-            raise CheckError(f"missing or empty public file: {path}")
         # Use the worker's real access rights, including traversal of every parent
         # and any symlink target. Checking mode bits as root misses this failure.
         command = ["test", "-r", str(path)]
@@ -140,12 +164,13 @@ class PublicReader:
         if status != 302 or target != self.origin + "/audit":
             raise CheckError("/static/audit.html must redirect to the protected /audit route")
         status, headers, _ = self.get("/audit")
-        if status in {401, 403}:
-            return
         target = urlsplit(urljoin(self.origin, headers.get("Location", "")))
-        if status == 302 and target.scheme in {"http", "https"} and target.path == "/login":
-            return
-        raise CheckError("/audit must require authentication for an anonymous request")
+        login_redirect = status == 302 and target.scheme in {"http", "https"} and target.path == "/login"
+        if status not in {401, 403} and not login_redirect:
+            raise CheckError("/audit must require authentication for an anonymous request")
+        status, _, _ = self.get("/api/audit/runs?market=kweb&limit=1")
+        if status not in {401, 403}:
+            raise CheckError("/api/audit/runs must reject anonymous data access")
 
 
 def check_public(origin: str, timeout: float) -> dict:
@@ -181,6 +206,7 @@ def check_public(origin: str, timeout: float) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--release-files", type=Path, help="installer check of packaged public files and modes")
     mode.add_argument("--release-root", type=Path)
     mode.add_argument("--url")
     parser.add_argument("--nginx-user", help="actual Nginx worker account; required for staged checks")
@@ -188,15 +214,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.release_root and not args.nginx_user:
         parser.error("--release-root requires --nginx-user")
-    if args.url and args.nginx_user:
+    if (args.url or args.release_files) and args.nginx_user:
         parser.error("--nginx-user applies only to --release-root")
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
     try:
-        result = (
-            check_staged(args.release_root.absolute(), args.nginx_user)
-            if args.release_root else check_public(args.url, args.timeout)
-        )
+        if args.release_files:
+            result = check_release_files(args.release_files.absolute())
+        elif args.release_root:
+            result = check_staged(args.release_root.absolute(), args.nginx_user)
+        else:
+            result = check_public(args.url, args.timeout)
     except (CheckError, OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"Regime readiness failed: {exc}", file=sys.stderr)
         return 1

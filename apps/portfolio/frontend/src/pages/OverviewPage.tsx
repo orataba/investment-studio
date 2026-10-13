@@ -13,6 +13,7 @@ import BenchmarkSearchBox, {
 import CalculationStatus from '../components/CalculationStatus'
 import ConcentrationAlerts from '../components/ConcentrationAlerts'
 import InfoHint from '../components/InfoHint'
+import MonthlyReturnMatrix from '../components/MonthlyReturnMatrix'
 import OverviewAssetMix from '../components/OverviewAssetMix'
 import PerformanceNavChart from '../components/PerformanceNavChart'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
@@ -33,7 +34,6 @@ import {
   type PortfolioInstrumentPriceChartResponse,
   type PortfolioHoldingRow,
   type PortfolioDailyPerformancePoint,
-  type PortfolioPerformanceCoverageState,
   type PortfolioPerformanceResponse,
   type PortfolioTaxonomyAssignmentRecord,
   type PortfolioTaxonomyCatalogResponse,
@@ -44,7 +44,6 @@ import {
 import {
   formatCurrency,
   formatLabel,
-  formatNumber,
   formatPercent,
   formatQuantity,
   formatSignedCurrency,
@@ -64,7 +63,7 @@ import {
   holdingDayChangeUnavailable,
   holdingUsesEventValuation,
 } from '../lib/holdingPresentation'
-import { buildMonthlyBuckets, buildMonthlyReturnMatrixRows, MONTH_LABELS } from '../lib/monthlyReturns'
+import { buildMonthlyBuckets, buildMonthlyReturnMatrixRows } from '../lib/monthlyReturns'
 import {
   buildPortfolioValueChartPoints,
   buildTwrIndexPoints,
@@ -198,10 +197,6 @@ function signedPercent(value: number | null | undefined, digits = 2) {
     return `-${absolute}`
   }
   return absolute
-}
-
-function coverageClassName(coverageState: PortfolioPerformanceCoverageState) {
-  return coverageState === 'complete' ? 'coverage-pill-live' : 'coverage-pill-warning'
 }
 
 function dateFromString(date: string) {
@@ -1790,58 +1785,7 @@ export default function OverviewPage() {
                 <div className="portfolio-detail-toolbar portfolio-section-toolbar overview-section-toolbar">
                   <div className="panel-title">Monthly Return Matrix</div>
                 </div>
-                <HorizontalTableScroll className="table-shell">
-                  <table className="transactions-table performance-return-matrix-table">
-                    <thead>
-                      <tr>
-                        <th>Year</th>
-                        {MONTH_LABELS.map((monthLabel) => (
-                          <th key={monthLabel}>{monthLabel}</th>
-                        ))}
-                        <th title="Requires year-start anchor.">YTD</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {monthlyMatrixRows.length ? (
-                        monthlyMatrixRows.map((row) => (
-                          <tr key={row.year}>
-                            <th scope="row">
-                              <span>{row.year}</span>
-                              <span className={`coverage-dot ${coverageClassName(row.coverageState)}`} />
-                            </th>
-                            {row.months.map((bucket, index) => (
-                              <td
-                                key={`${row.year}:${MONTH_LABELS[index]}`}
-                                className={`performance-cell-number performance-return-cell ${signedValueClass(
-                                  bucket?.cumulative_twr,
-                                )}`}
-                                title={
-                                  bucket
-                                    ? `${bucket.start_date} to ${bucket.end_date}; ${formatLabel(
-                                        bucket.coverage_state,
-                                      )}; ${formatNumber(bucket.observation_count, 0)} observations${
-                                        bucket.unavailable_reason ? `; ${bucket.unavailable_reason}` : ''
-                                      }`
-                                    : undefined
-                                }
-                              >
-                                {signedPercent(bucket?.cumulative_twr)}
-                              </td>
-                            ))}
-                            <td
-                              className={`performance-cell-number performance-return-cell ${signedValueClass(row.ytd)}`}
-                              title={row.hasYearStartAnchor ? `${row.year} YTD` : 'No year-start anchor.'}
-                            >
-                              {signedPercent(row.ytd)}
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <TableStatusRow colSpan={14} label="No monthly returns." />
-                      )}
-                    </tbody>
-                  </table>
-                </HorizontalTableScroll>
+                <MonthlyReturnMatrix key={portfolioId} rows={monthlyMatrixRows} asOfDate={benchmarkEndDate} />
               </section>
 
               <div className="overview-panel-grid">
@@ -1877,6 +1821,7 @@ export default function OverviewPage() {
                     <RiskRankedBars
                       items={topHoldingBarItems}
                       ariaLabel="Top holdings ranked by current weight"
+                      barColor="var(--studio-chart-primary)"
                       emptyLabel="No holdings."
                     />
                   ) : (

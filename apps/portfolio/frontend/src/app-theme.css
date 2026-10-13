@@ -82,46 +82,6 @@
   color: var(--portfolio-faint);
 }
 
-.portfolio-selector-row {
-  gap: 15px;
-  padding: 0;
-  border-bottom: 1px solid var(--portfolio-line);
-}
-
-.portfolio-selector-row .workspace-selector-chip {
-  min-height: 31px;
-  padding: 5px 0 7px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--portfolio-muted);
-}
-
-.portfolio-selector-row .workspace-selector-chip-inactive:hover {
-  border-color: transparent;
-  border-bottom-color: var(--portfolio-line-strong);
-  background: transparent;
-  color: var(--portfolio-ink);
-}
-
-.portfolio-selector-row .workspace-selector-chip-active {
-  border-color: transparent;
-  border-bottom-color: var(--portfolio-accent);
-  background: transparent;
-  color: var(--portfolio-ink);
-}
-
-.portfolio-selector-row .workspace-selector-chip-label-active,
-.portfolio-selector-row .workspace-selector-chip-active .workspace-selector-menu-trigger {
-  color: var(--portfolio-ink);
-}
-
-.workspace-create-link {
-  padding: 5px 0 7px;
-  color: var(--portfolio-accent);
-}
-
 .workspace-selector-menu,
 .portfolio-nav-settings-panel,
 .research-bounds-menu,
@@ -294,7 +254,6 @@
 }
 
 .portfolio-entry-create-button { margin-left: auto; flex-shrink: 0; }
-.portfolio-compact-selector { display: none; }
 
 .performance-block-grid,
 .performance-section-stack,
@@ -908,11 +867,6 @@
 }
 .research-run-unavailable { margin: 8px 0; color: var(--portfolio-muted); font-size: 13px; }
 @media (max-width: 900px) {
-  .portfolio-selector-row { display: none; }
-  .portfolio-compact-selector { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  .portfolio-compact-selector label { color: var(--portfolio-muted); font-size: 13px; }
-  .portfolio-compact-selector select { flex: 1; min-width: 0; max-width: 360px; height: 30px; }
-  .portfolio-compact-selector a { flex-shrink: 0; font-size: 13px; }
   .portfolio-header-row { min-height: 0; padding: 10px 0; gap: 8px; }
   .portfolio-topbar .workspace-breadcrumbs > a:not(:first-child),
   .portfolio-topbar .workspace-breadcrumbs > .workspace-breadcrumb-separator:not(:nth-child(2)),
@@ -994,3 +948,37 @@
 .portfolio-nav-value, .portfolio-change-value { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .portfolio-header-row { border-bottom: 0; }
 .performance-follow-latest { display: inline-flex; align-items: center; gap: 0.45rem; font-size: 0.8rem; white-space: nowrap; }
+
+/* Portfolio identity stays compact regardless of the number of accessible portfolios. */
+.portfolio-switcher-row { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 8px 0; border-bottom: 1px solid var(--portfolio-line); }
+.portfolio-switcher-row > a { flex-shrink: 0; font-size: 12px; color: var(--portfolio-muted); }
+.portfolio-switcher { position: relative; min-width: 0; max-width: min(440px, 65vw); }
+.portfolio-switcher-trigger { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 160px; max-width: 100%; padding: 6px 10px; border: 1px solid var(--portfolio-line-strong); background: #fff; text-align: left; }
+.portfolio-switcher-trigger > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.portfolio-switcher-popover { position: absolute; z-index: 50; top: calc(100% + 5px); left: 0; width: min(440px, calc(100vw - 130px)); padding: 8px; border: 1px solid var(--portfolio-line-strong); background: #fff; box-shadow: 0 8px 24px #17282b18; }
+.portfolio-switcher-popover > input { width: 100%; min-width: 0; height: 34px; margin-bottom: 6px; }
+.portfolio-switcher-options { max-height: min(320px, 50vh); overflow-y: auto; }
+.portfolio-switcher-options button { display: flex; flex-direction: column; width: 100%; padding: 8px 10px; border: 0; background: transparent; text-align: left; gap: 3px; }
+.portfolio-switcher-options button > span { overflow-wrap: anywhere; }
+.portfolio-switcher-options small { color: var(--portfolio-muted); font-size: 11px; }
+.portfolio-switcher-options .portfolio-switcher-option-active { background: var(--portfolio-band); }
+.portfolio-switcher-options [aria-selected="true"] { box-shadow: inset 2px 0 var(--portfolio-accent); }
+.portfolio-monthly-matrix td { min-width: 69px; }
+.portfolio-monthly-matrix td.positive-cell { background: color-mix(in srgb, var(--portfolio-positive) 7%, white); }
+.portfolio-monthly-matrix td.negative-cell { background: color-mix(in srgb, var(--portfolio-negative) 7%, white); }
+.portfolio-monthly-matrix td small { display: block; color: var(--portfolio-muted); font-size: 10px; line-height: 1.4; margin-top: 3px; font-weight: 400; }
+.portfolio-monthly-matrix .monthly-return-future { color: var(--portfolio-faint); }
+.portfolio-monthly-matrix td:focus-visible { outline: 2px solid var(--portfolio-accent); outline-offset: -2px; }
+.monthly-return-detail { min-height: 2.6em; margin: 8px 0 0; color: var(--portfolio-muted); font-size: 12px; line-height: 1.4; }
+.research-taxonomy-choice { min-width: 0; }
+.research-taxonomy-choice > a { display: block; margin-top: 6px; font-size: 12px; line-height: 1.4; }
+.overview-key-metrics-table tbody td.positive-cell,
+.overview-key-metrics-table tbody td.positive-cell strong { color: var(--portfolio-positive); }
+.overview-key-metrics-table tbody td.negative-cell,
+.overview-key-metrics-table tbody td.negative-cell strong { color: var(--portfolio-negative); }
+.portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-drawdown-header strong.negative-cell { color: var(--portfolio-negative); }
+.portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-drawdown-header strong.neutral-cell { color: var(--portfolio-ink); }
+.portfolio-name { overflow-wrap: anywhere; }
+
+.portfolio-workspace-page .portfolio-nav-value-tag-drawdown.negative-cell rect { fill: var(--portfolio-negative); }
+.portfolio-workspace-page .portfolio-nav-value-tag-drawdown.neutral-cell rect { fill: var(--portfolio-muted); }

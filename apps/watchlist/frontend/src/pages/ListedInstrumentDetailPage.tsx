@@ -1249,7 +1249,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             <MetricCard label="YTD" value={returnsPending ? loadingLabel : percentValue(overviewYtd)} tone={signedValueClass(overviewYtd)} />
             <MetricCard label="1 Year" value={returnsPending ? loadingLabel : percentValue(overviewOneYear)} tone={signedValueClass(overviewOneYear)} />
             <MetricCard label={zh ? '当前回撤' : 'Current Drawdown'} value={pending.risk ? loadingLabel : percentValue(displayRiskStats.currentDrawdown)} tone={signedValueClass(displayRiskStats.currentDrawdown)} note={pending.risk ? undefined : riskAsOfNote} />
-            <MetricCard label={usesCanonicalPriceSeries ? '1 Month' : zh ? '成交量' : 'Volume'} value={(usesCanonicalPriceSeries ? pending.performance : pending.bars) ? loadingLabel : usesCanonicalPriceSeries ? percentValue(displayReturns.oneMonth) : compactValue(latestPriceBar?.volume ?? null, 2)} />
+            <MetricCard tone={usesCanonicalPriceSeries ? signedValueClass(displayReturns.oneMonth) : undefined} label={usesCanonicalPriceSeries ? '1 Month' : zh ? '成交量' : 'Volume'} value={(usesCanonicalPriceSeries ? pending.performance : pending.bars) ? loadingLabel : usesCanonicalPriceSeries ? percentValue(displayReturns.oneMonth) : compactValue(latestPriceBar?.volume ?? null, 2)} />
           </section>
           {standardizedError && <p className="listed-overview-quality" role="status">{zh ? '部分绩效或风险数据无法读取，相应指标暂不展示。' : standardizedError}</p>}
           {summary?.freshness.staleness_reason && <p className="listed-overview-quality" role="status"><FreshnessNote reason={summary.freshness.staleness_reason} observationDate={chart?.date_range?.end || latest?.date} /></p>}

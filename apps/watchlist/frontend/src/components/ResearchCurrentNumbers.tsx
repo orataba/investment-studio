@@ -41,6 +41,7 @@ export default function ResearchCurrentNumbers({ instrumentId }: { instrumentId:
   const paths: string[] = []
   points.forEach((point, index) => { const previous = points[index - 1]; if (!previous || point.segment_id !== previous.segment_id) paths.push(`M ${x(point.date)} ${y(point.value)}`); else paths[paths.length - 1] += ` L ${x(point.date)} ${y(point.value)}` })
   const number = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 4 })
+  const axisNumber = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: Math.min(6, Math.max(0, 1 - Math.floor(Math.log10((hi - lo) / 2 || 1)))) })
   return <div className="research-current-numbers">
     {!current && <p className="sector-research-note" role="status">正在读取量化数据…</p>}
     {current?.errors.map((error, index) => <p role="alert" key={index}>{error}</p>)}
@@ -51,7 +52,7 @@ export default function ResearchCurrentNumbers({ instrumentId }: { instrumentId:
     {!showingReturn && last && <p className="sector-research-note">原始价格可能包含拆股、分红等机械变化，不能直接据此判断投资回报。</p>}
     {last && <p className="sector-research-note">{priceLabel}{!showingReturn && <> · {series?.currency || chart?.currency}</>} · <time dateTime={last.date}>{last.date}</time> · {number(last.value)}</p>}
     {points.length > 1 ? <svg className="research-price-chart" viewBox="0 0 780 260" role="img" aria-label={`${showingReturn ? "收益历史" : "价格历史"} ${first!.date} 至 ${points[points.length - 1]!.date}`}>
-      {[0, 0.5, 1].map(fraction => { const value = lo + (hi - lo) * fraction; return <g key={fraction}><line x1="60" x2="740" y1={y(value)} y2={y(value)} stroke="var(--line)" /><text x="52" y={y(value) + 4} textAnchor="end">{number(value)}</text></g> })}
+      {[0, 0.5, 1].map(fraction => { const value = lo + (hi - lo) * fraction; return <g key={fraction}><line x1="60" x2="740" y1={y(value)} y2={y(value)} stroke="var(--line)" /><text x="52" y={y(value) + 4} textAnchor="end">{axisNumber(value)}</text></g> })}
       {paths.map((path, index) => <path key={index} d={path} fill="none" stroke="var(--studio-chart-primary)" strokeWidth="1.8" />)}
       <text x="60" y="245">{first!.date}</text><text x="740" y="245" textAnchor="end">{points[points.length - 1]!.date}</text>
     </svg> : current && <p className="sector-research-note">尚无足够的价格历史。缺失数据不作为零值。</p>}

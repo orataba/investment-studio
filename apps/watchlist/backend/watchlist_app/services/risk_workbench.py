@@ -17,6 +17,31 @@ def event(case: RiskCase, action: str, detail: str):
     case.history_json = [*(case.history_json or []), {"at": now().isoformat(), "action": action, "detail": detail}]
 
 
+def _coverage_fact(evidence: dict, observed_on: date | None):
+    """Identify a confirmed gap, excluding clocks that only describe recalculation."""
+    freshness = evidence.get("freshness") or {}
+    expected = freshness.get("expected_latest_date")
+    revision = freshness.get("last_fact_update_at")
+    if not observed_on or not expected or not revision:
+        return None
+    return (observed_on, expected, revision, freshness.get("data_freshness_status"),
+            evidence.get("data_quality") or {})
+
+
+def _previous_coverage_case(session: Session, instrument_id: str, observed_on: date | None, evidence: dict):
+    fact = _coverage_fact(evidence, observed_on)
+    if fact is None:
+        return None
+    # Instrument locking in refresh_risk_cases also serializes reactivation.
+    # Retain existing case identities: saved research and PM follow-ups refer to them.
+    candidates = session.scalars(select(RiskCase).where(
+        RiskCase.instrument_id == instrument_id, RiskCase.signal == "data_coverage",
+        RiskCase.trigger_active.is_(False), RiskCase.observed_on == observed_on,
+    ).order_by(RiskCase.created_at.desc(), RiskCase.case_id).with_for_update()
+        .execution_options(populate_existing=True))
+    return next((case for case in candidates if _coverage_fact(case.evidence_json, case.observed_on) == fact), None)
+
+
 def refresh_risk_cases(session: Session, instrument_ids: list[str] | None = None):
     session.flush()
     query = select(InstrumentDetail).where(InstrumentDetail.is_active.is_(True))
@@ -88,6 +113,12 @@ def refresh_risk_cases(session: Session, instrument_ids: list[str] | None = None
         for signal, reading in signals.items():
             reading_date = reading.get("observed_on", observed_on)
             case = active.pop(signal, None)
+            if case is None and signal == "data_coverage":
+                case = _previous_coverage_case(session, iid, reading_date, reading["evidence"])
+                if case is not None:
+                    case.trigger_active = True
+                    case.resolved_at = None
+                    event(case, "reactivated", "同一数据缺口再次触发；原跟进状态和记录保留。")
             if case is None:
                 case = RiskCase(case_id=uuid4().hex, instrument_id=iid, signal=signal, title=reading["title"], body=reading["body"], severity=reading["severity"], trigger_active=True, status="open", evidence_json=reading["evidence"], history_json=[], observed_on=reading_date)
                 event(case, "triggered", reading["body"])

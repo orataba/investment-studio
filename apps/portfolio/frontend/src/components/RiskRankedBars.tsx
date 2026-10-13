@@ -14,9 +14,10 @@ type RiskRankedBarsProps = {
   items: RiskRankedBarItem[]
   ariaLabel: string
   emptyLabel: string
+  barColor?: string
 }
 
-export default function RiskRankedBars({ items, ariaLabel, emptyLabel }: RiskRankedBarsProps) {
+export default function RiskRankedBars({ items, ariaLabel, emptyLabel, barColor }: RiskRankedBarsProps) {
   const validItems = items.filter((item) => item.value > 0)
   const maxValue = validItems.reduce((currentMax, item) => Math.max(currentMax, item.value), 0)
 
@@ -39,7 +40,7 @@ export default function RiskRankedBars({ items, ariaLabel, emptyLabel }: RiskRan
                 className="risk-ranked-bar-fill"
                 style={{
                   width: `${Math.max((item.value / maxValue) * 100, 6)}%`,
-                  background: CHART_SERIES_COLORS[index % CHART_SERIES_COLORS.length],
+                  background: barColor ?? CHART_SERIES_COLORS[index % CHART_SERIES_COLORS.length],
                 }}
               />
             </div>

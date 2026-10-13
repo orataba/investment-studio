@@ -27,6 +27,9 @@ const statusLabels: Record<string, string> = {
   investigating: '跟进中',
   handled: '已处理',
 }
+const historyActionLabels: Record<string, string> = {
+  triggered: '触发', cleared: '条件解除', reactivated: '再次触发',
+}
 const due = (c: RiskCase) =>
   c.status !== 'handled' &&
   Boolean(c.follow_up_date && c.follow_up_date <= today())
@@ -234,6 +237,8 @@ function CaseRow({
           {retainedAssessment ? '此前判断保留原确认时点' : record.observed_on
             ? `依据日期 ${record.observed_on}`
             : '依据日期待核对'}
+          {record.signal === 'data_coverage' && record.created_at && <> · <span>首次触发</span>{' '}
+            <time dateTime={record.created_at} title={record.created_at}>{researchStamp(record.created_at)}</time></>}
           {record.follow_up_date && record.status !== 'handled' && (
             <span className={due(record) ? 'risk-due' : ''}>
               {' '}
@@ -333,7 +338,9 @@ function CaseRow({
         <ul className="risk-history">
           {history.map((item, i) => (
             <li key={i}>
-              <time title={item.at} dateTime={item.at}>{researchStamp(item.at)}</time> · {item.detail}
+              <time title={item.at} dateTime={item.at}>{researchStamp(item.at)}</time>
+              {item.action && historyActionLabels[item.action] && <> · <span>{historyActionLabels[item.action]}</span></>}
+              {item.detail && <> · <span translate="no">{item.detail}</span></>}
               {(item.run_id || item.risk_assessment?.run_id) && <details><summary>变更来源</summary><RiskChangeAudit change={item} /></details>}
             </li>
           ))}
@@ -604,7 +611,7 @@ function ScopedInstrumentRiskPanel({
   onAskAssistant,
   onChanged,
   attentionLabel = '风险关注',
-  scopeLabel = '当前标的',
+  scopeLabel,
   scopeNote,
   instrumentContext,
   heading = '近期风险与跟进',
@@ -773,7 +780,7 @@ function ScopedInstrumentRiskPanel({
         <div>
           {heading && <h2>{heading}</h2>}
           <p className="risk-scope-label">
-            <span translate="no">{scopeLabel}</span>
+            <span translate={scopeLabel ? 'no' : undefined}>{scopeLabel || '当前标的'}</span>
             {data ? ` · ${data.instruments.length} 个标的` : ''}
             {data && <InfoHint label="价格监测范围" detail={`已设复核线 ${data.instruments.filter((item) => item.drawdown_limit != null || Object.values(item.period_limits || {}).some((value) => value != null)).length}/${data.instruments.length}；可计算 ${data.instruments.filter((item) => !coverageFor(item)).length}/${data.instruments.length}。未触发提醒不代表风险低。`} />}
           </p>

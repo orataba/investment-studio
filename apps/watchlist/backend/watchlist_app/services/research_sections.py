@@ -86,6 +86,10 @@ def save_section_result(session, run, payload: SectionSubmission):
         raise ValueError("完成的专员研究须绑定实际读取的依据；资料不足请提交 limited 并说明限制")
     result = {**payload.model_dump(mode="json"), "attempt": execution.get("attempt", 0),
               "input_snapshot_cutoff": context["input_snapshot_cutoff"], "recorded_at": datetime.now(UTC).isoformat()}
+    # These are sparse write contracts: omitted fields must not become explicit
+    # nulls (or default values) when synthesis incorporates the accepted proposal.
+    result["events"] = [event.model_dump(mode="json", exclude_unset=True) for event in payload.events]
+    result["themes"] = [theme.model_dump(mode="json", exclude_unset=True) for theme in payload.themes]
     results = deepcopy(context.get("section_results") or {})
     results.setdefault(payload.instrument_id, {})[payload.section] = result
     run.context_json = {**context, "section_results": results}
@@ -158,11 +162,12 @@ def section_context(context, instrument_id, section):
             retained_computations_read={"tool": "read_research_context", "section": "computed_metrics"},
             data_gaps=deepcopy(context.get("data_gaps") or []))
     else:
-        base.update(section_results=deepcopy(results), prior_judgment=deepcopy(notebook.get("investment_view")),
+        base.update(retained_computations_read={"tool": "read_research_context", "section": "computed_metrics"},
+            section_results=deepcopy(results), prior_judgment=deepcopy(notebook.get("investment_view")),
             current_stance=deepcopy(dossier.get("current_stance")), pm_views=deepcopy(dossier.get("pm_views") or []),
             publication_requirements={
                 "required_event_ids": deepcopy(working.get("affected_event_ids", [])),
                 "required_theme_ids": deepcopy(working.get("affected_theme_ids", [])),
-                "instruction": "专员结果尚未发布。将外部事件及主题提案纳入最终reviews；量化发现纳入research.modules/facts并引用原始计算。各专员重要风险须综合到research.investment_view.risks及下一观察条件；不采纳的风险说明依据。不要把内部量化判断伪装成外部动态。风控读取最终investment_view的完整风险判断及外部风险事件。"},
+                "instruction": "专员结果尚未发布。events/themes 已通过结构和来源校验，纳入最终reviews时保留原字段、完整source_ids和新主题question；只修改需核实或协调的具体判断，不凭叙述重建提案。量化发现纳入research.modules/facts并引用原始计算。各专员重要风险须综合到research.investment_view.risks及下一观察条件；不采纳的风险说明依据。不要把内部量化判断伪装成外部动态。风控读取最终investment_view的完整风险判断及外部风险事件。"},
             overview_read={"tool": "read_research_dossier", "instrument_id": instrument_id, "section": "research_state"})
     return base

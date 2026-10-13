@@ -204,6 +204,24 @@ it('opens list risk directly without research execution controls', async () => {
   expect(request).toHaveBeenCalledWith('/api/risk?watchlist_id=sector-list&summary=true', undefined)
 })
 
+it('distinguishes historical coverage episodes and labels trigger transitions without stored prose', async () => {
+  request.mockResolvedValue({ instruments: [{ instrument_id: 'xlk-us', name: 'XLK' }], cases: [6, 7].map(day => ({
+    case_id: `coverage-${day}`, instrument_id: 'xlk-us', signal: 'data_coverage', title: '风险监测受限',
+    body: '最新数据停留在 2026-09-03', severity: 'coverage', status: 'handled', trigger_active: false,
+    observed_on: '2026-09-03', created_at: `2026-09-0${day}T00:00:00Z`, updated_at: `2026-09-0${day}T01:00:00Z`, evidence_json: {},
+    history_json: [{ at: `2026-09-0${day}T00:00:00Z`, action: 'triggered' },
+      { at: `2026-09-0${day}T01:00:00Z`, action: 'cleared' }],
+  })) })
+  const { container } = render(<InstrumentRiskPanel instrumentId="xlk-us" />)
+  await load()
+  fireEvent.click(screen.getByRole('button', { name: '全部记录 2' }))
+  expect(screen.getAllByText('首次触发')).toHaveLength(2)
+  expect([...container.querySelectorAll('.risk-case-meta time')].map(item => item.getAttribute('datetime')))
+    .toEqual(expect.arrayContaining(['2026-09-06T00:00:00Z', '2026-09-07T00:00:00Z']))
+  expect(screen.getAllByText('触发')).toHaveLength(2)
+  expect(screen.getAllByText('条件解除')).toHaveLength(2)
+})
+
 it('shows the persisted running stage and retry without treating elapsed time as failure', async () => {
   const data = payload('running')
   request.mockResolvedValue({ ...data, sectors: [{ ...data.sectors[0], latest_review: {

@@ -39,7 +39,7 @@ export default function EstimateHistoryPanel({ instrumentId, language }: { instr
     return () => { active = false }
   }, [instrumentId, zh])
   if (!evidence && !error) return null
-  const clock = (value: string | null | undefined) => value ? new Date(value).toLocaleString(zh ? 'zh-CN' : 'en-US') : (zh ? '未知' : 'Unknown')
+  const clock = (value: string | null | undefined) => value && Number.isFinite(Date.parse(value)) ? `${new Date(value).toLocaleString(zh ? 'zh-CN' : 'en-US', { timeZone: 'UTC', hour12: false })} UTC` : (zh ? '未记录采集时间' : 'Collection time not recorded')
   const state = !evidence ? (zh ? '读取中' : 'Loading')
     : evidence.status === 'not_applicable' ? (zh ? '不适用' : 'Not applicable')
     : !evidence.supported ? (zh ? '尚未覆盖' : 'Not covered')
@@ -56,7 +56,7 @@ export default function EstimateHistoryPanel({ instrumentId, language }: { instr
         <p className="listed-estimate-coverage">{evidence.coverage.current_company_count == null ? (zh ? '成份公司覆盖数量尚未确认。' : 'Constituent coverage count is unconfirmed.') : (zh ? `已留存 ${evidence.coverage.current_company_count} 家成份公司资料。` : `${evidence.coverage.current_company_count} constituent company records retained.`)}</p>
         <p>{zh ? '本次采集' : 'Current collection'}：{clock(evidence.current_snapshot?.collected_at)}<br />
           {zh ? '上次采集' : 'Previous collection'}：{evidence.previous_snapshot ? clock(evidence.previous_snapshot.collected_at) : (zh ? '尚无历史基线' : 'No earlier baseline')}<br />
-          {zh ? '采集历史起点' : 'Collection history begins'}：{clock(evidence.history_available_from)}<br />
+          {zh ? '采集历史起点' : 'Collection history begins'}：{evidence.history_available_from ? clock(evidence.history_available_from) : (zh ? '历史起始时间未记录' : 'History start time not recorded')}<br />
           {zh ? '源数据采集范围' : 'Source collection range'}：{clock(evidence.current_snapshot?.collected_at_min)} — {clock(evidence.current_snapshot?.collected_at_max)}</p>
         {evidence.status === 'no_snapshot' ? <p>{zh ? '后台首次采集资料后建立基线，此后每次采集都会保留历史，与是否运行研究无关。' : 'The first data collection establishes a baseline. Every later collection is retained, independently of research runs.'}</p> : null}
         {(evidence.observations.length > 0 || evidence.unmatched.length > 0) && <p className="listed-reference-limit">{zh ? `另有 ${evidence.observations.length} 项待核实数值差异、${evidence.unmatched.length} 项财期或覆盖变化，未计为预期上修或下修。` : `${evidence.observations.length} unverified differences and ${evidence.unmatched.length} period or coverage changes are excluded from revisions.`}</p>}

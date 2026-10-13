@@ -29,6 +29,12 @@ function renderOverviewChart(
 }
 
 describe('PerformanceNavChart Overview TWR boundaries', () => {
+  it.each([[110, 'neutral-cell'], [90, 'negative-cell']])('uses return semantics for a drawdown ending at %s', (endingValue, tone) => {
+    const { container } = renderOverviewChart([{ date: '2026-07-01', value: 100 }, { date: '2026-07-02', value: Number(endingValue) }])
+    expect(container.querySelector('.portfolio-nav-drawdown-header strong')).toHaveClass(String(tone))
+    expect(container.querySelector('.portfolio-nav-value-tag-drawdown')).toHaveClass(String(tone))
+  })
+
   it('includes funded inception BOD return but uses an EOD boundary after zooming', () => {
     render(<PerformanceNavChart currency="CNY" variant="overview" includeStartDateReturn points={[]}
       twrPoints={[{ date: '2026-07-01', value: 101.9301 }, { date: '2026-08-01', value: 102 }, { date: '2026-09-30', value: 102.5862 }]} />)

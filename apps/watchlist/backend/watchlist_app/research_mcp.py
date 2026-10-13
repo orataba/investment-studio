@@ -31,7 +31,7 @@ REFERENCE_TABLES = {"holdings", "financials", "key_metrics", "ratios", "dividend
 SearchClock = Annotated[AwareDatetime | None, Field(description=
     "ISO 8601 datetime with an explicit timezone, e.g. 2026-09-04T00:00:00Z or 2026-09-04T00:00:00+08:00. A date alone or a datetime without timezone is invalid. Omit when no time filter is intended.")]
 ExactSourceId = Annotated[str, Field(description=
-    "Copy the complete returned source_id verbatim, including comparison: or computed: prefixes. IDs are opaque; never shorten, reconstruct or infer them.")]
+    "Copy the complete returned source_id verbatim, including text:, comparison: or computed: prefixes. IDs are opaque; never shorten, reconstruct or infer them.")]
 
 
 class _SubmissionSchema(GenerateJsonSchema):
@@ -62,7 +62,7 @@ class _ResearchMCPServer(MCPServer):
                 "quantitative": {"read_sector_company", "read_research_numbers", "read_stored_market_data",
                     "compare_instruments", "read_quant_capability", "read_quant_inputs", "run_quant_analysis",
                     "read_quant_analysis", "search_public_information", "submit_research_section"},
-                "overview": {"read_quant_analysis", "read_research_numbers", "submit_research_review"},
+                "overview": {"read_quant_analysis", "read_research_numbers", "compare_instruments", "submit_research_review"},
             }
             if section not in section_tools:
                 raise ValueError("Unknown research specialist")
@@ -166,7 +166,7 @@ def submit_research_section(result: SectionSubmission) -> dict:
     submits events; only themes submits themes. Keep both arrays directly under result. Theme figure
     references must be retained numeric sources; article references belong in source_ids.
     """
-    return request("section-report", result.model_dump(mode="json"))
+    return request("section-report", result.model_dump(mode="json", exclude_unset=True))
 
 
 @compact_read_tool
@@ -541,9 +541,12 @@ def search_market_information(query: str = "", instrument_id: str | None = None,
 
 
 @compact_read_tool
-def read_market_source(document_id: str, version_id: str | None = None, offset: int = 0, limit: int = 20,
+def read_market_source(document_id: Annotated[str, Field(description="Use the returned document_id with version_id, or a complete returned text: source_id. A bare gvi-/studio-web- version_id is not a document_id; never strip text: from source_id.")],
+                       version_id: str | None = None, offset: int = 0, limit: int = 20,
                        path: list[str | int] | None = None) -> dict:
     """Read and retain one immutable shared original. Cite the returned source_id exactly.
+    For a specialist's text: source_id, pass that COMPLETE ID as document_id. For a search
+    result, copy document_id and version_id as returned. A version_id alone is not a document_id.
     First publication, occurrence, observation and local receipt times have distinct meanings.
     Unknown time stays unknown; a newly received old story is not a newly occurring event.
     Follow next_offset and every deferred.path with the SAME document_id and returned version_id;
@@ -651,7 +654,30 @@ def _submission_parent_contract(schema, location):
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False))
 def submit_research_review(result: SkipValidation[ReviewResult]) -> dict:
-    """Submit a research delta from either entrance. Automatic checks cover all requested instruments; conversations may update just studied instruments. reviews[] owns instrument_id, summary, themes, reflection, events and research as siblings. Under research, modules/questions/facts, decision_brief and investment_view are siblings. decision_brief belongs at reviews[].research.decision_brief, never reviews[].decision_brief; reflection belongs at reviews[].reflection, never research.reflection. events[].market_reaction accepts only status, figure_source_ids and explanation; source_ids is not a market_reaction field; coverage_note/coverage_status belong inside investment_view. Never put notebook fields inside investment_view. Only events explicitly affected in the CURRENT run's research_working_sets require follow-up receipts under reviews[].events, with original event_key even when the conclusion is unchanged. Required theme receipts from that same current working set belong in reviews[].themes (theme_id/theme_key), never research.themes. The dossier's historical working_set and review_agenda do not create obligations for a conversation. Otherwise submit only actual changes relevant to the user's request; omit untouched events/themes. Keep event titles/bodies about external developments, without internal checking, receipt or editing commentary. reflection.reviewed_update_ids accepts specific prior judgment/event update_ids, never theme version IDs. change_kind=none needs no summary/notebook; knowledge updates only changed fields; investment publishes material forward changes. Preserve stable keys and omit unchanged fields. On error resubmit the complete result envelope with sparse research deltas, not a copy of the whole notebook or only the last missing field. This only retains a draft for independent fact review, and does not publish conclusions or risk events. After success, do not serialize the draft again in prose."""
+    """Retain one sparse draft for independent verification; this does not publish it.
+    Follow the actual input schema. result.reviews[] owns instrument_id, summary, change_kind,
+    coverage, events, themes and research. research owns modules/questions/facts, decision_brief
+    and investment_view as siblings. investment_view owns risk (text, not risk_level), assumptions,
+    opportunities, risks, coverage_status and coverage_note. Do not move its fields into research.
+    Preserve validated specialist events/themes and exact source_ids when incorporating them;
+    edit only claims requiring reconciliation, rather than reconstructing their full payloads.
+    A NEW theme needs theme_key, title, question, priority_reason, synthesis, next_check and
+    source_ids; omission is only for unchanged fields of an existing theme. Theme figures use
+    numeric sources; articles stay in source_ids. Preserve text:/computed:/comparison: prefixes.
+    events[].market_reaction only accepts status, figure_source_ids and explanation. Every figure
+    there must be this instrument's event_market_reaction calculation with matching event date/status.
+    General NAV, risk or comparison figures belong in research.modules/facts, not market_reaction.
+    For unsupported fund NAV reactions, omit market_reaction or use unavailable with no figures.
+    Only events/themes affected in the CURRENT run's research_working_sets require receipts;
+    historical dossier working_set/review_agenda creates no obligation. Preserve event_key and
+    theme_id/theme_key, omit unrelated or unchanged objects, and keep internal checking/editing
+    commentary out of event titles/bodies. reflection, if explicitly needed, belongs at reviews[],
+    and its reviewed_update_ids are prior judgment/event update_ids, never theme version IDs.
+    change_kind=none needs no summary/notebook; knowledge updates changed fields; investment
+    publishes material forward changes. On error fix the reported fields while preserving valid
+    structure, then resubmit the complete result envelope with sparse research deltas. After success,
+    acknowledge acceptance briefly without serializing the draft again.
+    """
     # Validate raw arguments here: the SDK's default nested models can otherwise
     # silently discard notebook fields misplaced inside investment_view.
     try:

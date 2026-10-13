@@ -257,6 +257,13 @@ export type InstrumentReferenceData = {
     refresh_message?: string | null
     market_data_updated_at?: string | null
   }
+  current_data?: {
+    latest_nav: { as_of_date: string | null; provider: string | null; source_folder: string | null; source_attachment: string | null; source_sent_at: string | null; imported_at: string | null } | null
+    last_checked_at: string | null
+    check_status: string | null
+    check_message: string | null
+    canonical_updated_at: string | null
+  } | null
   sections: Record<string, unknown>
   section_errors: Record<string, string>
 }

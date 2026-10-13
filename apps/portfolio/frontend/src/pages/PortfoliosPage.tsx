@@ -14,7 +14,7 @@ import {
   type PortfolioEntryRecord,
   type SupportedPortfolioCurrency,
 } from '../lib/api'
-import { formatCurrency, formatDailyPercent, formatPercent, formatSignedCurrency } from '../lib/format'
+import { formatCurrency, formatDailyPercent, formatPercent, formatSignedCurrency, signedValueClass } from '../lib/format'
 import { buildPortfolioSectionPath, HOME_URL } from '../lib/navigation'
 import { usePortfolioSession } from '../components/PortfolioSessionProvider'
 import PortfolioMembersSettings from '../components/PortfolioMembersSettings'
@@ -462,7 +462,7 @@ export default function PortfoliosPage() {
               </div>
               <div className="portfolio-entry-card-metrics">
                 <strong>{formatCurrency(portfolio.nav, portfolio.base_currency)}</strong>
-                <span className={portfolio.day_change_value != null && portfolio.day_change_value < 0 ? 'portfolio-entry-change-negative' : 'portfolio-entry-change-positive'}>
+                <span className={signedValueClass(portfolio.day_change_value)}>
                   <span title="Daily investment P&L and cash-flow-adjusted daily return at the displayed valuation date">1D · </span>{formatSignedCurrency(portfolio.day_change_value, portfolio.base_currency)} ({formatDailyPercent(portfolio.day_change_pct)})
                 </span>
               </div>

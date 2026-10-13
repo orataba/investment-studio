@@ -362,7 +362,7 @@ it('shows generation progress beside edition status without inserting a notice p
     : url.includes('/reports?') ? { rows: [report], total: 1 } : report })))
   const { container } = page(<App />)
   await screen.findByRole('heading', { name: '投研日报 | 2026-09-07' })
-  expect(screen.getByRole('status').textContent).toBe('正在生成')
+  expect(within(container.querySelector('.edition-header') as HTMLElement).getByRole('status').textContent).toBe('正在生成')
   expect(container.querySelector('.notice')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: /生成进度:/ }))
   expect(screen.getByRole('tooltip').textContent).toContain('完成后此处自动更新')

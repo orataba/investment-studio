@@ -15,9 +15,12 @@ from watchlist_app.core.settings import get_settings
 @pytest.fixture(autouse=True)
 def enabled_automatic_research(client, monkeypatch):
     monkeypatch.setattr(get_settings(), "research_automatic_enabled", True)
+    # These scope/lifecycle tests run inside an admitted window. The clock
+    # boundary itself is covered by test_research_schedule and execution tests.
+    monkeypatch.setattr("watchlist_app.services.research_schedule.automatic_research_allowed", lambda now=None: True)
 
 
-def test_daily_scope_includes_all_current_invested_and_reloads_changes(client, monkeypatch):
+def test_daily_scope_includes_current_proposed_and_invested_and_reloads_changes(client, monkeypatch):
     monkeypatch.setattr(service, "_research_due", lambda market, now: True)
     monkeypatch.setattr(service, "_research_market", lambda session, iid: "us")
     rows = [
@@ -48,7 +51,7 @@ def test_daily_scope_includes_all_current_invested_and_reloads_changes(client, m
                 session.add(InstrumentAttributeValue(instrument_id=iid, attribute_key="coverage_status",
                     value_json=status, adopted_at=datetime.now(UTC) - timedelta(days=1)))
         session.commit()
-        assert service.daily_review_groups(session) == [[iid] for iid in ["invested"]]
+        assert service.daily_review_groups(session) == [[iid] for iid in ["invested", "proposed"]]
 
     # Use the same endpoint as Watchlist settings; old attribute history remains saved.
     for iid, status in [("proposed", "Watch"), ("watch", "Invested"), ("invested", "Exited"), ("public-proposed", "Invested")]:
@@ -57,7 +60,7 @@ def test_daily_scope_includes_all_current_invested_and_reloads_changes(client, m
         assert response.status_code == 200, response.text
     with get_session_factory()() as session:
         assert service.daily_review_groups(session) == [[iid] for iid in ["watch"]]
-        # Offline core construction stays available; actual dispatch still requires current Invested status.
+        # Offline core construction stays available; actual dispatch checks current eligibility.
         run, created = service.begin_run(session, ["proposed"])
         assert created and run.context_json["instrument_ids"] == ["proposed"]
 
@@ -201,7 +204,7 @@ def test_registered_catalogue_does_not_schedule_list_risk_but_invested_funds_sti
     assert {"watchlist_id": "all-instruments"} not in risk_scopes
 
 
-def test_new_instrument_requires_invested_then_initializes_once_on_weekend_with_original_window(client, monkeypatch):
+def test_new_proposed_or_invested_instrument_initializes_once_on_weekend_with_original_window(client, monkeypatch):
     from watchlist_app.services import research_runner, research_workbench, risk_officer
     now = datetime(2026, 9, 27, 1, tzinfo=UTC)
     class Clock(datetime):
@@ -219,7 +222,7 @@ def test_new_instrument_requires_invested_then_initializes_once_on_weekend_with_
         status.value_json = "Proposed"
         session.commit()
         assert service._research_due("us", now) is False
-        assert service.daily_review_groups(session, now=now) == []
+        assert service.daily_review_groups(session, now=now) == [["new-proposed"]]
         status.value_json = "Invested"
         session.commit()
         assert service.daily_review_groups(session, now=now) == [["new-proposed"]]

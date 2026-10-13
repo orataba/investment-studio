@@ -1,4 +1,4 @@
-"""Research admission follows current Invested status and active asset identity.
+"""Research admission follows current Proposed/Invested status and active identity.
 
 This is automatic/shared-research admission, not an investment status or an
 authorization rule. Existing ownership and evidence permissions still apply.
@@ -47,7 +47,8 @@ def research_capability(session, instrument_id=None, *, risk=False):
                func.coalesce(Instrument.lifecycle_state_json["status"].as_string(), "active") != "archived",
                latest.c.position == 1)
         .order_by(Instrument.instrument_id)).all()
-    eligible = {iid: kind for iid, kind, status in rows if status == "Invested"}
+    statuses = {"Invested"} if risk else {"Proposed", "Invested"}
+    eligible = {iid: kind for iid, kind, status in rows if status in statuses}
     if not risk:
         from watchlist_app.services.research_dossier import _registration
         from watchlist_app.services.research_applicability import investment_research_supported
@@ -59,7 +60,7 @@ def research_capability(session, instrument_id=None, *, risk=False):
         allowed = iid in eligible
         rows.append({"instrument_id": iid, "instrument_type": eligible.get(iid) or (detail.instrument_type if detail else None),
                      "eligible": allowed, "reason": None if allowed else
-                     ("仅当前在投且有效的标的可自动更新风险研判。" if risk else "共享投资研究目前覆盖在投且有效的股票及权益产品；其他资产保留风险监测和研究助手。")})
+                     ("仅当前在投且有效的标的可自动更新风险研判。" if risk else "共享投资研究覆盖拟投或在投且有效的股票及权益产品；其他资产保留风险监测和研究助手。")})
     return {"model_work": model_work_status(), "automatic_enabled": settings.research_automatic_enabled,
             "eligible_instruments": list(eligible), "instruments": rows}
 
@@ -85,7 +86,7 @@ def require_instrument_research(session, ids, *, scheduled=False, risk=False):
         raise HTTPException(409, "此环境未启用自动研究。")
     allowed = {row["instrument_id"] for row in policy["instruments"] if row["eligible"]}
     if not ids or not set(ids).issubset(allowed):
-        raise HTTPException(409, "仅当前在投且有效的标的可更新风险研判。" if risk else "共享投资研究目前覆盖在投且有效的股票及权益产品；其他资产保留风险监测和研究助手。")
+        raise HTTPException(409, "仅当前在投且有效的标的可更新风险研判。" if risk else "共享投资研究覆盖拟投或在投且有效的股票及权益产品；其他资产保留风险监测和研究助手。")
 
 
 def require_run_policy(session, run):

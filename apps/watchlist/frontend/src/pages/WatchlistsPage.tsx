@@ -2462,7 +2462,7 @@ export default function WatchlistsPage() {
   }, [activeView?.view_id, columnResizing, detailIsCurrent, loading, viewEdited, workingViewSignature])
 
   async function handleDownloadCurrentView(format: TableExportFormat) {
-    if (!baseScreenerPayload || !screenerResult?.total_rows) {
+    if (!baseScreenerPayload || !rowsAreCurrent || !searchedRows.length) {
       setNotice('No visible rows to export.')
       return
     }
@@ -2471,10 +2471,13 @@ export default function WatchlistsPage() {
     setError(null)
     setNotice(null)
     try {
-      const exportRows = await loadAllScreenerRows({
+      const allExportRows = await loadAllScreenerRows({
         ...baseScreenerPayload,
         selected_fields: [...new Set([...baseScreenerPayload.selected_fields, 'currency'])],
       })
+      // Search uses the displayed row projection; export-only metadata must not create matches.
+      const matchingIds = new Set(searchedRows.map(row => String(row.instrument_id)))
+      const exportRows = allExportRows.filter(row => matchingIds.has(String(row.instrument_id)))
       const includesEndpointSensitiveMetrics = visibleColumns.some(isMetricAsOfSensitiveField)
       const semanticColumns = includesEndpointSensitiveMetrics
         ? ['metric_as_of_date', 'metric_return_kind', 'metric_quote_basis', 'metric_series_type']

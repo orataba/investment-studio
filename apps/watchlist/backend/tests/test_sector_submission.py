@@ -62,16 +62,16 @@ def submission(client, monkeypatch):
 
 
 @pytest.mark.parametrize("conversation", [False, True])
-@pytest.mark.parametrize("restriction", ["paused", "inactive", "no_longer_invested"])
-def test_draft_admission_rechecks_model_pause_and_current_invested_without_saving(
+@pytest.mark.parametrize("restriction", ["paused", "inactive", "no_longer_eligible"])
+def test_draft_admission_rechecks_model_pause_and_current_eligibility_without_saving(
         client, submission, monkeypatch, conversation, restriction):
     rid, draft = submission
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, rid)
         run.context_json = {**run.context_json, "sector_run": not conversation, "research_run": conversation}
-        if restriction == "no_longer_invested":
+        if restriction == "no_longer_eligible":
             session.add(InstrumentAttributeValue(instrument_id="xlk", attribute_key="coverage_status",
-                value_json="Proposed", adopted_at=datetime.now(UTC)))
+                value_json="Watch", adopted_at=datetime.now(UTC)))
         elif restriction == "inactive":
             session.get(InstrumentDetail, "xlk").is_active = False
         session.commit()
@@ -86,8 +86,13 @@ def test_draft_admission_rechecks_model_pause_and_current_invested_without_savin
         assert session.scalars(select(RiskCase)).all() == []
 
 
-def test_submission_retains_structured_quotes_without_publishing(client, submission):
+@pytest.mark.parametrize("coverage_status", ["Proposed", "Invested"])
+def test_submission_retains_structured_quotes_without_publishing(client, submission, coverage_status):
     rid, draft = submission
+    with get_session_factory()() as session:
+        session.add(InstrumentAttributeValue(instrument_id="xlk", attribute_key="coverage_status",
+            value_json=coverage_status, adopted_at=datetime.now(UTC)))
+        session.commit()
     response = client.post(f"/api/research/runs/{rid}/sector-draft", json=draft)
     assert response.status_code == 200
     assert response.json()["status"] == "pending_fact_review"

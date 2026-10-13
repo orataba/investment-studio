@@ -33,6 +33,14 @@ touch \
 cp "$REPOSITORY_ROOT/infra/launchd/load_runtime_env.sh" \
   "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 cp "$REPOSITORY_ROOT/infra/market_pipeline_actions.txt" "$PROJECT_ROOT/infra/market_pipeline_actions.txt"
+cp "$REPOSITORY_ROOT/infra/scripts/check_regime_public.py" "$PROJECT_ROOT/infra/scripts/check_regime_public.py"
+mkdir -p "$PROJECT_ROOT/deploy/regime-ui"
+printf '%s\n' '<h1 id="dashboard-title">Regime</h1><div id="latest-grid"></div><link rel="stylesheet" href="/static/styles.css"><script src="/static/app.js"></script>' > "$PROJECT_ROOT/deploy/regime-ui/index.html"
+cp "$PROJECT_ROOT/deploy/regime-ui/index.html" "$PROJECT_ROOT/deploy/regime-ui/audit.html"
+printf '%s\n' 'body {}' > "$PROJECT_ROOT/deploy/regime-ui/styles.css"
+printf '%s\n' 'let regime = {};' > "$PROJECT_ROOT/deploy/regime-ui/app.js"
+chmod 755 "$PROJECT_ROOT" "$PROJECT_ROOT/deploy" "$PROJECT_ROOT/deploy/regime-ui"
+chmod 644 "$PROJECT_ROOT/deploy/regime-ui/"*
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' \
   > "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
 chmod +x "$PROJECT_ROOT/infra/scripts/migrate_all.sh"

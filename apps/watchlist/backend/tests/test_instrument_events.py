@@ -259,6 +259,7 @@ def test_non_sector_etf_singleton_keeps_its_instrument_sources(client, monkeypat
 def test_daily_research_orders_invested_assets_but_only_dispatches_new_information(client, monkeypatch):
     from threading import Event
     from watchlist_app.services import risk_officer
+    monkeypatch.setattr("watchlist_app.services.research_schedule.automatic_research_allowed", lambda now=None: True)
     seed_instruments(client, monkeypatch)
     seed_invested_research(monkeypatch, ["xlk", "event-equity", "event-index"])
     monkeypatch.setattr(service, "_research_due", lambda market, now: True)
@@ -306,6 +307,7 @@ def test_daily_risk_waits_for_invested_research_without_expanding_to_watchlists(
     from watchlist_app.core.settings import get_settings
     from watchlist_app.services import risk_officer
     from watchlist_app.db.models import Watchlist
+    monkeypatch.setattr("watchlist_app.services.research_schedule.automatic_research_allowed", lambda now=None: True)
     seed_instruments(client, monkeypatch)
     seed_invested_research(monkeypatch, ["event-equity", "event-index"])
     monkeypatch.setattr(get_settings(), "research_worker_concurrency", 1)

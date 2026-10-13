@@ -84,6 +84,13 @@ python3 "$release/infra/scripts/check_regime_public.py" \
   --release-root "$release" --nginx-user www-data
 ```
 
+The app-service installer also checks the packaged Regime pages, their referenced
+assets and public Unix modes before it changes any service or database, including
+app-only installs with migrations disabled. Missing `deploy/regime-ui` or a private
+release root aborts installation. It never fixes permissions automatically. This
+package check does not replace the actual Nginx-worker preflight above or the
+public HTTP and browser checks after switching the release.
+
 This read-only preflight checks both `index.html` and `audit.html`, including
 parent-directory and symlink-target access. It does not change permissions. If it
 fails, inspect the named path with `namei -l` and correct only the public path's
@@ -101,7 +108,7 @@ python3 "$release/infra/scripts/check_regime_public.py" \
 The anonymous GET check requires the actual dashboard HTML, its referenced JS/CSS
 with correct content types, and working health/market/latest-data endpoints. It
 also verifies that `/static/audit.html` redirects to `/audit` and the latter
-requires login; these expected redirects are not followed. Other redirects or
+requires login, and that the audit API rejects anonymous reads; these expected redirects are not followed. Other redirects or
 login HTML cannot satisfy readiness. Data freshness is reported separately: a
 `degraded` result with `all_markets_fresh: false` requires investigation under the
 existing market-freshness policy, even when public delivery passes. This check
@@ -662,7 +669,7 @@ PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
 Research publication is a separate acceptance step after service deployment.
 Use each environment's own service identity, database and retained materials;
 never transfer local research records into production. The current scope is all
-registered, active equity research instruments whose latest coverage status is `Invested`. Private strategies and other non-equity research remain deferred; their risk and assistant tools retain their existing scopes.
+registered, active equity research instruments whose latest coverage status is `Proposed` or `Invested`. Private strategies and other non-equity research remain deferred; their risk and assistant tools retain their existing scopes.
 The host model-work switch and current investment status remain authoritative; see
 [Model work control](#model-work-control).
 
@@ -911,7 +918,7 @@ capability, separate from the AI pause switch.
 Watchlist automatic research defaults off. Enable it with
 `INVESTMENT_STUDIO_WATCHLIST_RESEARCH_AUTOMATIC_ENABLED`. Investment research covers
 registered, active equity research instruments whose latest coverage status is
-Invested; private strategies and other non-equity assets retain automatic risk
+`Proposed` or `Invested`; private strategies and other non-equity assets retain automatic risk
 monitoring and the research assistant. No per-class quota or separate instrument
 list applies. Pending themes, retries, queue claims and
 actual launches recheck current eligibility. Enable automation only on the cloud;
@@ -926,6 +933,6 @@ manual recovery still checks policy, ownership, attempt and publication versions
 Preserve disabled worker and Briefing timer intent during releases; deployment
 does not authorize broadening automatic model work.
 
-Watchlist `GET /api/research-policy` exposes the operational switch and current Invested
-eligibility. Existing connection/capability/status endpoints expose `model_work`.
+Watchlist `GET /api/research-policy` exposes the operational switch and current Proposed/Invested
+research eligibility. Existing connection/capability/status endpoints expose `model_work`.
 UI capability is explanatory; backend admission remains authoritative.

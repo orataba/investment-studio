@@ -239,6 +239,10 @@ PY
 }
 
 validate_database_contract
+
+# Nginx serves Regime from this Studio release independently of API health.
+# Reject incomplete/private packages before touching units, schedules or data.
+"$PYTHON_BIN" "$PROJECT_ROOT/infra/scripts/check_regime_public.py" --release-files "$PROJECT_ROOT"
 DATABASE_URL="$INVESTMENT_STUDIO_DATA_DATABASE_URL"
 export INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data
 export INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion

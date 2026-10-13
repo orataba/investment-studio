@@ -637,7 +637,7 @@ function mergePatterns(patterns?: LanguagePatternMessages): LanguagePatternMessa
         { match: /^事实核证失败：(.+)$/, replace: (summary: string) => `Fact verification failed: ${systemEnglishLabels[summary] || summary.replace(/^研究证据接口返回 HTTP (\d+)。$/, 'The research evidence API returned HTTP $1.')}` },
         { match: /^研究证据接口返回 HTTP (\d+)。$/, replace: 'The research evidence API returned HTTP $1.' },
         { match: /^分类层级 (\d+)$/, replace: 'Taxonomy Level $1' },
-        { match: /^(\d+) 个标的$/, replace: '$1 instruments' },
+        { match: /^(\d+) 个标的$/, replace: (count: string) => `${count} ${count === '1' ? 'instrument' : 'instruments'}` },
         { match: /^(\d+) 项限制$/, replace: '$1 limitations' },
         { match: /^(\d+) 项$/, replace: '$1 items' },
         { match: /^(\d+) 次$/, replace: '$1 reviews' },

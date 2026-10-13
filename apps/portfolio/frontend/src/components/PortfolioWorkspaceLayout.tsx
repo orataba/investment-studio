@@ -36,6 +36,7 @@ import WorkspaceLoadingDrawer from '../../../../../packages/ui/src/WorkspaceLoad
 import { setRiskReferenceParams, type ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import { usePortfolioAccess } from './PortfolioAccessProvider'
 import PortfolioMembersSettings from './PortfolioMembersSettings'
+import PortfolioSwitcher from './PortfolioSwitcher'
 import { usePortfolioCapabilities } from './PortfolioCapabilitiesProvider'
 
 const PortfolioRiskDrawer = lazy(() => import('./PortfolioRiskDrawer'))
@@ -491,82 +492,21 @@ export default function PortfolioWorkspaceLayout({
               )}
             </div>
           </div>
-          <div className="portfolio-compact-selector">
-            <label htmlFor="portfolio-compact-choice">{language === 'zh-Hans' ? '组合' : 'Portfolio'}</label>
-            <select id="portfolio-compact-choice" value={resolvedPortfolioId} onChange={(event) => navigate(buildPortfolioSectionPath(event.target.value, '/overview'))}>
-              {selectorPortfolios.map((portfolio) => <option key={portfolio.portfolio_id} value={portfolio.portfolio_id} translate="no">{portfolio.portfolio_name}</option>)}
-            </select>
+          <div className="portfolio-switcher-row">
             <Link to="/portfolios">{language === 'zh-Hans' ? '全部组合' : 'All portfolios'}</Link>
-          </div>
-          <div className="portfolio-selector-row">
-            <Link className="workspace-selector-chip workspace-selector-chip-inactive workspace-selector-chip-home" to="/portfolios">
-              <span className="workspace-selector-home-icon" aria-hidden="true">
-                <svg viewBox="0 0 16 16">
-                  <path d="M2.5 7.2 8 2.8l5.5 4.4v5.5H9.8V9.5H6.2v3.2H2.5Z" fill="currentColor" />
-                </svg>
-              </span>
-              <span className="workspace-selector-chip-label">All</span>
-            </Link>
-            {selectorPortfolios.map((portfolio) =>
-              portfolio.portfolio_id === resolvedPortfolioId ? (
-                <div className="workspace-selector-menu-shell" key={portfolio.portfolio_id} ref={selectorMenuRef}>
-                  <div className="workspace-selector-chip workspace-selector-chip-active">
-                    <Link
-                      className="workspace-selector-chip-label workspace-selector-chip-label-active"
-                      to={portfolioHomePath}
-                     translate="no">
-                      {portfolio.portfolio_name}
-                    </Link>
-                    <button
-                      type="button"
-                      className="workspace-selector-menu-trigger workspace-selector-menu-trigger-active"
-                      disabled={!access?.can_manage}
-                      onClick={() => setSelectorMenuOpen((current) => !current)}
-                      aria-label="Portfolio actions"
-                    >
-                      ...
-                    </button>
-                  </div>
-                  {selectorMenuOpen ? (
-                    <div className="workspace-selector-menu">
-                      <button type="button" disabled={!access?.can_edit || summaryBusy} onClick={() => {
-                        setSelectorMenuOpen(false)
-                        void handleOpenRiskSettings()
-                      }}>
-                        {language === 'zh-Hans' ? '重命名组合' : 'Rename Portfolio'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void handleSelectorAction('copy')
-                        }}
-                      >
-                        Copy Portfolio
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void handleSelectorAction('delete')
-                        }}
-                      >
-                        Delete Portfolio
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              ) : (
-                <Link
-                  className="workspace-selector-chip workspace-selector-chip-inactive"
-                  key={portfolio.portfolio_id}
-                  to={buildPortfolioSectionPath(portfolio.portfolio_id, '/overview')}
-                >
-                  <span className="workspace-selector-chip-label" translate="no">{portfolio.portfolio_name}</span>
-                </Link>
-              ),
-            )}
-            <Link className="workspace-create-link" to="/portfolios">
-              + Create Portfolio
-            </Link>
+            <PortfolioSwitcher portfolios={selectorPortfolios} currentId={resolvedPortfolioId} />
+            <div className="workspace-selector-menu-shell" ref={selectorMenuRef}>
+              <button type="button" className="workspace-selector-menu-trigger" disabled={!access?.can_manage}
+                onClick={() => setSelectorMenuOpen((current) => !current)} aria-label="Portfolio actions" aria-expanded={selectorMenuOpen}>…</button>
+              {selectorMenuOpen ? <div className="workspace-selector-menu">
+                <button type="button" disabled={!access?.can_edit || summaryBusy} onClick={() => {
+                  setSelectorMenuOpen(false)
+                  void handleOpenRiskSettings()
+                }}>{language === 'zh-Hans' ? '重命名组合' : 'Rename Portfolio'}</button>
+                <button type="button" onClick={() => void handleSelectorAction('copy')}>Copy Portfolio</button>
+                <button type="button" onClick={() => void handleSelectorAction('delete')}>Delete Portfolio</button>
+              </div> : null}
+            </div>
           </div>
           <div className="portfolio-header-row">
             <div className="portfolio-title-stack">

@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 
 from investment_studio_instrument_core import instrument_store as shared_store
-from sqlalchemy import select
+from sqlalchemy import DateTime, column, select, table
 
 from watchlist_app.db.session import get_session_factory
 from investment_studio_instrument_core.db_models import InstrumentReferenceObservation, InstrumentReferenceSnapshot
@@ -112,14 +112,60 @@ def get_shared_reference_data(instrument_id: str, *, as_of: datetime | None = No
         if snapshot is not None:
             # Historical reference observations can still contain the former
             # embedded packet. Current research reads canonical numeric batches.
-            return {**snapshot.value_json, "sections": {key: value for key, value in
+            result = {**snapshot.value_json, "sections": {key: value for key, value in
                 (snapshot.value_json.get("sections") or {}).items() if key != "sector_market_data"}}
+        else:
+            result = {
+                "instrument_id": canonical_id,
+                "instrument_type": instrument["instrument_type"],
+                "provider": "unavailable", "provider_symbol": None, "fetched_at": None,
+                "source": {}, "sections": {},
+                "section_errors": {"reference": "No retained reference data is available for the requested time."},
+            }
+        if as_of is None:
+            # Current operational facts do not share the reference collection
+            # clock. Historical research must keep its frozen source context.
+            settings = instrument.get("source_settings") or {}
+            result["source"] = {key: settings.get(key) for key in (
+                "source_mode", "source_location", "source_api_profile",
+                "expected_frequency", "market_calendar", "release_lag_days",
+            )}
+            result["current_data"] = _current_source_data(session, instrument)
+        return result
+
+
+def _current_source_data(session, instrument: dict) -> dict:
+    refresh = instrument.get("refresh_status") or {}
+    nav = max((row for row in instrument.get("market_data", [])
+        if row.get("metric_family") == "nav" and row.get("quote_basis") == "official_nav"
+        and row.get("status") == "complete" and row.get("currency") == instrument.get("currency")
+        and row.get("as_of_date")), key=lambda row: str(row["as_of_date"]), default=None)
+    latest = None
+    if nav is not None:
+        evidence = (nav.get("nav_lineage") or {}).get("evidence") or {}
+        latest = {
+            "as_of_date": nav["as_of_date"], "provider": nav.get("provider"),
+            "source_folder": evidence.get("email_folder"),
+            "source_attachment": evidence.get("email_attachment_name"),
+            "source_sent_at": evidence.get("email_sent_at"), "imported_at": None,
+        }
+        route_id = evidence.get("email_candidate_route_id")
+        if isinstance(route_id, int) and nav.get("provider") == f"email-route:{route_id}":
+            # Ingestion owns this clock. Watchlist's PostgreSQL search path
+            # intentionally excludes that schema, so qualify the narrow read.
+            routes = table("email_nav_candidate_route", column("email_nav_candidate_route_id"),
+                column("instrument_id"), column("imported_at", DateTime(timezone=True)),
+                schema="data_ingestion" if session.get_bind().dialect.name == "postgresql" else None)
+            imported_at = session.scalar(select(routes.c.imported_at).where(
+                routes.c.email_nav_candidate_route_id == route_id,
+                routes.c.instrument_id == instrument["instrument_id"]))
+            if imported_at is not None:
+                latest["imported_at"] = (imported_at if imported_at.tzinfo else imported_at.replace(tzinfo=UTC)).isoformat()
     return {
-        "instrument_id": canonical_id,
-        "instrument_type": instrument["instrument_type"],
-        "provider": "unavailable", "provider_symbol": None, "fetched_at": None,
-        "source": {}, "sections": {},
-        "section_errors": {"reference": "No retained reference data is available for the requested time."},
+        "latest_nav": latest,
+        "last_checked_at": refresh.get("requested_at"),
+        "check_status": refresh.get("status"), "check_message": refresh.get("message"),
+        "canonical_updated_at": instrument.get("market_data_updated_at"),
     }
 
 

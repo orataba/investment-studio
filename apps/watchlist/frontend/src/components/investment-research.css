@@ -53,7 +53,8 @@
 .research-method-plan > summary, .research-prior-analysis > summary { font-weight: 500; font-size: 13px; cursor: pointer; }
 .research-method-plan > summary span { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 12px; }
 .research-method-plan > section { margin-top: 22px; }
-.research-empty-judgment { padding: 18px 0; line-height: 1.8; color: var(--muted); }
+.research-empty-judgment { padding: 4px 0; line-height: 1.8; color: var(--muted); }
+.research-empty-judgment p { margin: 8px 0; }
 .investment-research-reading { width: 100%; margin: 16px 0 48px; }
 .investment-research-reading .sector-research-heading { border: 0; padding: 0 0 14px; }
 .research-holding-track { height: 14px; background: var(--studio-surface-soft); position: relative; }
@@ -392,3 +393,5 @@ body:has(.research-aside-backdrop) { overflow: hidden; }
 .research-theme-card-summary, .research-theme-card-next { max-width: 96ch; }
 
 .research-quant-history-links { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 12px 0; }
+
+.research-fundamental-table .research-numeric-cell { text-align: right; font-variant-numeric: tabular-nums; }

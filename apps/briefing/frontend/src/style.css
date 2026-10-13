@@ -89,7 +89,15 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; line-heig
 .all-sources { list-style: none; padding: 0; }
 .all-sources li { padding: 10px 0; border-top: 1px solid var(--studio-line); }
 .all-sources button { padding: 0; border: 0; color: var(--studio-accent); background: none; text-align: left; }
-.all-sources span { display: block; font-size: 12px; margin-top: 7px; }
+.all-sources li > span { display: block; font-size: 12px; margin-top: 7px; }
+.source-directory { margin-top: 22px; }
+.source-directory-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px 18px; }
+.source-directory-controls label { display: grid; gap: 6px; font-size: 12px; min-width: 0; }
+.source-directory-controls input, .source-directory-controls select { min-height: 30px; border: 1px solid var(--studio-line-strong); background: #fff; padding: 5px 8px; max-width: 100%; }
+.source-directory-controls input { width: min(320px, 75vw); }
+.source-directory-pagination { display: flex; align-items: center; gap: 16px; margin: 16px 0; font-size: 12px; }
+.coverage-records { margin: 18px 0; }
+.coverage-records > summary { color: var(--studio-muted); cursor: pointer; }
 .error { padding: 15px 18px; background: var(--studio-negative-soft); line-height: 1.7; margin: 18px 0; color: var(--studio-negative); border-left: 2px solid var(--studio-negative); }
 .generate-panel { background: var(--studio-surface-soft); padding: 24px; margin-bottom: 24px; max-width: 750px; }
 .generate-panel h2 { font-size: 17px; }

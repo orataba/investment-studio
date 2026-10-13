@@ -26,6 +26,8 @@
 - `/api/research/runs/{run_id}/context`、`/tools` 只向绑定运行的受限工具提供证据；运行失败保留输入，服务重启将未完成运行标为失败。
 - `/api/risk` 只读当前事项；`/api/risk/rules/{instrument_id}`、`/api/risk/cases` 和单事项更新接口管理复核与跟进。
 
+`/api/instruments/{instrument_id}/reference-data` 的参考资料仍保留原 `fetched_at` 和章节快照；当前读取另带 `current_data`，区分最新正式净值日期、实际来源与导入时间、最近采集检查。邮件来源来自该净值的留存 lineage，导入时钟按相同标的和 route 精确读取 `data_ingestion.email_nav_candidate_route`，不以行情事实更新时间代替。`source` 只展示当前配置来源，可能与最新一条事实的实际文件夹不同。`no_new_data` 表示检查完成但没有新增，不表示旧净值失效。内部按 `as_of` 读取的历史研究不附加这些当前状态，继续使用当时留存的来源上下文。
+
 价格复核的 `price_rule_summary` 与事项计数分开：`configured` 为启用复核线数，`evaluable` 为当前数据满足要求的启用规则数，`triggered` 为其中越线数，`unavailable` 为缺读数、样本不足或数据覆盖不合格的启用规则数；没有配置的规则是 `not_configured`，不会记为“未触发”。同一 `period_loss` 事项可以对应多条越线规则，`quantitative` 事项数为零不等于没有默认阈值或没有风险。每条规则保留正数损失限额、实际读数、窗口观察数及起止日，另带来源 `default` / `custom` / `unknown`：未修改的历史波动初值可确认为默认；新手改只把改变的字段标为自定义；旧记录只有“曾手改”标记而无逐项来源时不猜测。高点回撤线没有系统默认，非空时为自定义。
 
 `prepare_run` 将规则摘要、校准与实际观察值一同冻结在现有 `risk_inputs`，工具 `read_risk_instrument(s)` 读取这份快照，根索引提供 `price_rule_counts`。规则的 `settings_updated_at` 表示当前保存配置生效的时间，并非行情日期；任务编号、冻结时刻和完整参数共同确定当时版本，`contract_version` 仅表示摘要结构版本。研判展示投影保存同一份规则事实，运行中更改设置只影响新输入和过期提示。旧报告缺少摘要时保留原结论与原始证据，显示未记录，禁止用当前规则倒填历史。GET 不生成初值、不补写来源。普通市场滚动窗口为 1/5/21/63 个收益观察值，24/7 市场为 1/7/30/90，均非本周／本月累计收益。
@@ -209,6 +211,8 @@ canonical recalc 在同一事务内写入两个 payload。`sparklines` 固定保
 stale read repair 也只会写 job，不会直接在 Web 请求里补算；后台 worker 会异步消费这些 queued jobs。
 
 风险事项刷新使用 PostgreSQL `FOR NO KEY UPDATE` 串行化同一资产的风险写入，事项行本身仍使用 `FOR UPDATE` 保留人工跟进历史。刷新不更改资产身份键，因此不会阻塞 `recalc_job` 外键检查所需的 `KEY SHARE` 锁；批量行情通知可在风险扫描期间提交队列。`POST /api/recalc/bulk` 的成功响应表示持久入队或已有未完成任务，不表示重算完成；客户端超时也不能据此推断服务器事务已撤销，任务终态以持久队列为准。
+
+数据覆盖事项解除后，同一观察日、预期日、事实修订及缺口质量再次触发时续写最近的原事项和复发记录，保留人工状态及跟进；新缺口另建事项，已有历史触发区间与其引用不物理合并。
 
 Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会分页对账源版本与本地 materialization cutoff，并通过同一条 durable、per-instrument 串行队列修复漏通知。
 

@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type M
 
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
-import { formatCurrency, formatNumber, formatPercent, formatSignedCurrency } from '../lib/format'
+import { formatCurrency, formatNumber, formatPercent, formatSignedCurrency, signedValueClass } from '../lib/format'
 import { rebasePerformanceSeriesTo100 } from '../lib/performanceSeries'
 
 export type PerformanceNavChartPoint = {
@@ -1039,7 +1039,7 @@ export default function PerformanceNavChart({
           {isOverview ? (
             <div className="portfolio-nav-drawdown-header">
               <span>{useTwrDrawdown ? 'Portfolio TWR Drawdown' : 'Portfolio NAV Drawdown'}</span>
-              <strong className="portfolio-nav-chart-change-negative">{formatPercent(activeDrawdown)}</strong>
+              <strong className={signedValueClass(activeDrawdown)}>{formatPercent(activeDrawdown)}</strong>
               <em>
                 {useTwrDrawdown ? 'Based on TWR' : 'Based on NAV'} · Max {formatPercent(maxDrawdown)}
               </em>
@@ -1125,7 +1125,7 @@ export default function PerformanceNavChart({
                 y2={DRAWDOWN_CHART_HEIGHT - DRAWDOWN_CHART_PADDING.bottom}
               />
               {isOverview && latestDrawdownTag ? (
-                <g className="portfolio-nav-value-tag portfolio-nav-value-tag-drawdown">
+                <g className={`portfolio-nav-value-tag portfolio-nav-value-tag-drawdown ${signedValueClass(latestDrawdownPoint?.drawdown)}`}>
                   <rect
                     x={latestDrawdownTag.x}
                     y={latestDrawdownTag.y}

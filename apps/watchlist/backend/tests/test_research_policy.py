@@ -62,14 +62,30 @@ def test_all_same_class_invested_assets_are_eligible_without_an_allowlist(invest
                    if row["instrument_id"] in {"xlf", "xlk"})
 
 
-@pytest.mark.parametrize("status", ["Watch", "Proposed", "Paused", "Exited"])
-def test_latest_non_invested_status_excludes_a_formerly_invested_asset(invested, status):
+@pytest.mark.parametrize("status", ["Watch", "Paused", "Exited"])
+def test_latest_out_of_scope_status_excludes_a_formerly_invested_asset(invested, status):
     with get_session_factory()() as session:
         set_status(session, "xlf", status)
         assert policy.automatic_research_ids(session) == ["xlk"]
         with pytest.raises(HTTPException) as error:
             policy.require_instrument_research(session, ["xlf"])
         assert error.value.status_code == 409
+
+
+def test_proposed_research_is_admitted_without_changing_risk_scope_or_business_status(invested):
+    with get_session_factory()() as session:
+        set_status(session, "xlf", "Proposed")
+        assert policy.automatic_research_ids(session) == ["xlf", "xlk"]
+        policy.require_instrument_research(session, ["xlf"], scheduled=True)
+        policy.require_instrument_research(session, ["xlf"])
+        assert policy.automatic_risk_ids(session) == ["xlk"]
+    save_run("proposed", "xlf")
+    queue.enqueue_run(current_principal(), "proposed")
+    claim = queue.claim_next("owner")
+    assert claim and claim.run_id == "proposed"
+    with get_session_factory()() as session:
+        policy.require_run_policy(session, session.get(ResearchEntry, "proposed"))
+        assert policy.research_capability(session, "xlf")["instruments"][0]["eligible"] is True
 
 
 @pytest.mark.parametrize("boundary", ["canonical_archived", "detail_inactive", "mismatched_type"])
@@ -126,7 +142,7 @@ def test_paused_requests_save_no_run_and_theme_can_still_be_saved(invested, monk
 
 def test_excluded_scope_cannot_enqueue_or_retry(invested, monkeypatch):
     with get_session_factory()() as session:
-        set_status(session, "xlf", "Proposed")
+        set_status(session, "xlf", "Watch")
     save_run("excluded", "xlf")
     monkeypatch.setattr(runner, "authorize_run", lambda *a, **kw: pytest.fail("No grant for excluded assets"))
     with pytest.raises(ModelWorkPaused):

@@ -10,6 +10,10 @@ from watchlist_app import research_mcp as mcp
 
 
 @pytest.mark.parametrize('review,expected', [
+    ({'instrument_id': 'xlk', 'research': {'investment_view': {'risk_level': 'high'}}},
+     {('result', 'reviews', 0, 'research', 'investment_view', 'risk_level')}),
+    ({'instrument_id': 'xlk', 'research': {'assumptions': ['PRIVATE_ASSUMPTION']}},
+     {('result', 'reviews', 0, 'research', 'assumptions')}),
     ({'instrument_id': 'xlk', 'research': {'investment_view': {
         'direction': 'PRIVATE_DIRECTION', 'questions': [{'key': 'retained-question', 'assessment': 'PRIVATE_EVIDENCE'}]}}},
      {('result', 'reviews', 0, 'research', 'investment_view', 'questions')}),

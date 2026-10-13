@@ -15,6 +15,15 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe('DOM translation context', () => {
+  it('translates instrument scope and uses singular counts while preserving a supplied name', async () => {
+    render(<LanguageProvider><p><span>当前标的</span>{' · 1 个标的'}</p>
+      <p>2 个标的</p><span translate="no">当前标的 · 原始名称</span></LanguageProvider>)
+    await screen.findByText('Current instrument')
+    await waitFor(() => expect(screen.getByText('Current instrument').parentElement?.textContent).toBe('Current instrument · 1 instrument'))
+    expect(screen.getByText('2 instruments')).toBeTruthy()
+    expect(screen.getByText('当前标的 · 原始名称')).toBeTruthy()
+  })
+
   it('translates a typed confirmation as an instruction and preserves the exact name across language switches', async () => {
     const onConfirm = vi.fn()
     render(<LanguageProvider>

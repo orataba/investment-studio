@@ -12,6 +12,7 @@ import { resolveWorkspaceUrl, withLanguage } from '../../../../packages/ui/src/n
 import type { CitedItem, MacroRelease, ReportDetail, ReportSummary, ReportType, Source } from './types'
 import { safeUrl, SourceEvidence } from './SourceEvidence'
 import GenerateEditionForm from './GenerateEditionForm'
+import SourceDirectory from './SourceDirectory'
 import { EvidenceTime, ExternalLinkIcon, navigateToSection, quoteUnit } from './reading'
 
 const api = (import.meta.env.VITE_API_BASE_URL || '/api/briefing').replace(/\/$/, '')
@@ -79,8 +80,10 @@ function Coverage({ detail }: { detail: ReportDetail }) {
   const numericStatus: Record<string, string> = { historical_price_window_unverified: copy('旧版报告未核验行情交易日期间；保留原始结果，不作为当前算法结果', 'Historical price windows were not session-verified; original results are retained as historical evidence'), available: copy('已覆盖', 'Available'), insufficient_history: copy('可比较历史不足', 'Insufficient history'), missing_comparable_prices: copy('缺少可比较价格', 'Comparable prices missing'), unavailable: copy('尚无可用数据', 'Unavailable'), unresolved_security: copy('尚未匹配到明确的上市证券', 'No confirmed listed security'), missing_expected_observations: copy('应有交易日行情缺失，涨跌幅不可用', 'Expected session prices missing; return unavailable'), observation_schedule_unverified: copy('交易日历尚未确认，涨跌幅不可用', 'Session calendar unverified; return unavailable'), security_type_unverified: copy('证券类型尚未确认', 'Security type unverified') }
   const channelStatus: Record<string, string> = { active: copy('可用', 'Available'), succeeded: copy('成功', 'Succeeded'), failed: copy('失败', 'Failed'), partial: copy('部分完成', 'Partially completed'), skipped: copy('本轮跳过', 'Skipped this run') }
   return <>
-    <dl className="source-dates"><div><dt>{copy('最近接收时间', 'Latest receipt')}</dt><dd><EvidenceTime value={typeof text.latest_received_at === 'string' ? text.latest_received_at : undefined} timezone={detail.window.timezone} /></dd></div><div><dt>{copy('最新来源采集时间', 'Latest source observation')}</dt><dd><EvidenceTime value={typeof text.latest_source_observed_at === 'string' ? text.latest_source_observed_at : undefined} timezone={detail.window.timezone} /></dd></div><div><dt>{copy('已接收资料包', 'Received packages')}</dt><dd>{String(text.bundle_count || 0)}</dd></div></dl>
     {documents && <><p>{copy('本期发布或采集的资料', 'Published or source-observed this period')} {documents.current ?? 0} · {copy('本期补录的历史资料', 'Historical material received this period')} {documents.late_received ?? 0}</p><p>{copy('完整正文', 'Full text')} {documents.by_completeness?.full_text ?? 0} · {copy('来源节选', 'Source excerpts')} {documents.by_completeness?.source_excerpt ?? 0} · {copy('正文不可用', 'Content unavailable')} {documents.by_completeness?.unavailable ?? 0}</p></>}
+    <details className="coverage-records"><summary>{copy('数据与采集记录', 'Data and collection records')}</summary>
+    <dl className="source-dates"><div><dt>{copy('最近接收时间', 'Latest receipt')}</dt><dd><EvidenceTime value={typeof text.latest_received_at === 'string' ? text.latest_received_at : undefined} timezone={detail.window.timezone} /></dd></div><div><dt>{copy('最新来源采集时间', 'Latest source observation')}</dt><dd><EvidenceTime value={typeof text.latest_source_observed_at === 'string' ? text.latest_source_observed_at : undefined} timezone={detail.window.timezone} /></dd></div><div><dt>{copy('已接收资料包', 'Received packages')}</dt><dd>{String(text.bundle_count || 0)}</dd></div></dl>
+
     {notes.length > 0 && <><h3>{copy('数值数据覆盖', 'Numeric coverage')}</h3><ul>{notes.map((note, index) => <li key={index}>{typeof note === 'string' ? note : [note.symbol || note.dataset, note.message || note.reason || note.note || numericStatus[note.status] || note.status, note.effective_date || note.latest_date, Array.isArray(note.missing_dates) && note.missing_dates.length ? `${copy('缺失日期', 'Missing dates')}: ${note.missing_dates.join(', ')}` : null].filter(Boolean).join(' · ')}</li>)}</ul></>}
     {channels.length > 0 && <><h3>{copy('资讯渠道', 'News channels')}</h3><ul>{channels.map((channel, index) => {
       const discovery = channel.latest_discovery as { status?: string; failure_reason?: string } | undefined
@@ -95,6 +98,7 @@ function Coverage({ detail }: { detail: ReportDetail }) {
         {reason && <p className="muted">{reason.includes('HTTP 402') ? copy('来源服务额度不足，未取得本轮资料。', 'Source service quota is insufficient; no material was retrieved this run.') : reason}</p>}
       </li>
     })}</ul></>}
+    </details>
   </>
 }
 
@@ -427,7 +431,7 @@ export default function App() {
         {detail.status === 'failed' && <div className="error" role="alert"><p>{t(detail.error || copy('这次生成未形成可读报告。', 'This attempt did not produce a readable report.'))}</p>{readableAlternative && <button onClick={() => choose(readableAlternative.report_id)}>{copy('阅读可用版本', 'Read available edition')} · {readableAlternative.report_date} · v{readableAlternative.version}</button>}</div>}
         <CoverageSummary detail={detail} />
         {detail.report && <ReportBody detail={detail} onSource={showSource} canReadSources={canReadSources} />}
-        <details className="coverage" id="source-coverage"><summary>{copy('来源与覆盖范围', 'Sources and coverage')}</summary><p>{copy('报告保留生成时使用的原文与数值版本；日期未知与未覆盖内容不会被补写为事实。', 'Each edition retains its original evidence and numeric versions. Unknown dates and missing coverage remain explicit.')}</p><p>{copy('原始材料', 'Original materials')} · {detail.source_count} · {detail.window.timezone}</p>{canReadSources && <Coverage detail={detail} />}<ul className="all-sources">{detail.sources.filter(item => item.source_type === 'public_document').map(item => <li key={item.source_id}>{safeUrl(item.url) ? <a href={safeUrl(item.url)} target="_blank" rel="noreferrer" translate="no">{item.title} <ExternalLinkIcon /></a> : <span translate="no">{item.title}</span>}<span>{item.source_name} · {item.published_at ? <EvidenceTime value={item.published_at} timezone={detail.window.timezone} /> : copy('首发时间未知', 'Publication time unknown')}{canReadSources && <> · <button onClick={() => showSource(item.source_id)}>{copy('留存版本', 'Retained version')}</button></>}</span></li>)}</ul></details>
+        <details className="coverage" id="source-coverage"><summary>{copy('来源与覆盖范围', 'Sources and coverage')}</summary><p>{copy('报告保留生成时使用的原文与数值版本；日期未知与未覆盖内容不会被补写为事实。', 'Each edition retains its original evidence and numeric versions. Unknown dates and missing coverage remain explicit.')}</p><p>{copy('原始材料', 'Original materials')} · {detail.source_count} · {detail.window.timezone}</p>{canReadSources && <Coverage detail={detail} />}<SourceDirectory key={detail.report_id} sources={detail.sources} timezone={detail.window.timezone} canReadSources={canReadSources} onSource={showSource} /></details>
       </>}
       </div>
     </div>}
