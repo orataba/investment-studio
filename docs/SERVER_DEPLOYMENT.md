@@ -695,6 +695,45 @@ compressed; do not blanket-recompress dumps, Parquet files or gzip archives. Whe
 estimating cleanup savings, account for shared hard links and confirm actual free
 space afterward with `df`; summed directory sizes can count the same blocks twice.
 
+### Production backup volume
+
+The production host mounts its separate 40 GiB ext4 volume at `/data`, using UUID
+`1e759157-d157-45f8-97c9-36ac3a5fbe68` in `/etc/fstab`. The mount uses `nofail` so
+an unavailable backup volume does not prevent the host and live applications from
+booting. Run `systemctl daemon-reload` after editing fstab; do not reboot or
+restart database services merely to load a new backup mount definition.
+
+Database recovery archives live under `/data/investment-studio/backups/recovery/`.
+Their original archive and sidecar paths remain symlinks, preserving existing
+recovery receipts. The default
+`~/.local/state/investment-studio/postgres-backups` directory is also a symlink to
+`/data/investment-studio/backups/postgres-backups`, so both the normal installer
+and restore safety backups use the data volume without a shell-profile override.
+Keep the destination directories private (`0700`) and retain each file's original
+owner and restrictive mode. Do not replace an unavailable symlink with a local
+directory or write a fallback backup to the system disk.
+
+Before creating any backup, verify the actual mounted filesystem, not just the
+existence of `/data`. This is especially necessary when explicitly setting
+`INVESTMENT_STUDIO_SYSTEMD_BACKUP_ROOT` or `INVESTMENT_STUDIO_RESTORE_BACKUP_DIR`:
+
+```bash
+test "$(findmnt -n --mountpoint /data -o UUID)" = 1e759157-d157-45f8-97c9-36ac3a5fbe68
+findmnt --mountpoint /data -o TARGET,SOURCE,FSTYPE,UUID,OPTIONS
+df -h / /data
+```
+
+Explicit release backup directories should be created beneath
+`/data/investment-studio/backups/releases/` after that check. Check the two
+filesystems' available capacity separately. Live PostgreSQL volumes, public
+market objects, and hard-linked object recovery snapshots remain at their
+existing locations; moving a snapshot alone across filesystems can duplicate
+its entire object store without freeing the live source files. A closed archive
+can be moved without stopping applications: verify the copied bytes against its
+existing checksum, preserve its schema manifest and permissions, confirm service
+user access, and only then replace the original path. Migration receipts belong
+in the private host operations directory, outside the repository.
+
 Use native journald limits in a system configuration drop-in under `[Journal]`:
 `SystemMaxUse=512M`, `SystemKeepFree=5G`, and `MaxRetentionSec=30day`.
 After applying it, verify the effective configuration with
