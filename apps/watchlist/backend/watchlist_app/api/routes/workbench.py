@@ -14,7 +14,7 @@ from watchlist_app.db.models.workbench import ResearchTopic, ResearchEntry, Risk
 from watchlist_app.services.read_models import serialize_payload
 from watchlist_app.services.research_workbench import catalogue, portfolio_options, external_json, conversation_context, compare_series
 from watchlist_app.services.risk_workbench import refresh_risk_cases, event, now
-from watchlist_app.services.price_risk import period_rule_sources
+from watchlist_app.services.price_risk import period_rule_sources, rule_configuration, record_rule_revision, rule_version
 
 from studio_identity import current_principal
 from watchlist_app.services.research_access import require_topic_access, require_entry_access, visible_topics, require_portfolio
@@ -152,7 +152,7 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
     from urllib.parse import parse_qs, urlsplit
     from watchlist_app.services.research_run_context import load_run_fields, load_run_list_item
     from watchlist_app.services import research_tool_projection as projection
-    common = {"sector_run", "research_run", "risk_run", "run_id", "cutoff", "input_snapshot_cutoff", "instrument_ids", "initialization", "execution", "research_guidance"}
+    common = {"sector_run", "research_run", "risk_run", "run_id", "cutoff", "input_snapshot_cutoff", "instrument_ids", "initialization", "execution", "research_guidance", "risk_guidance"}
     fields = common | ({"question", "page_context", "referenced_research_update", "referenced_research_versions",
         "referenced_risk_case", "history", "conversation", "evidence", "watchlists", "limitations", "data_gaps",
         "incremental_trigger", "research_working_sets", "research_tasks", "analyst_focus", "user_records", "team_publication_instructions", "market_coverage", "market_queries", "fmp_inputs",
@@ -1040,6 +1040,9 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
 class RuleInput(BaseModel):
     drawdown_limit: float | None = Field(default=None, gt=0, le=100)
     period_limits: dict[Literal["day", "week", "month", "quarter"], Annotated[float, Field(gt=0, le=100)] | None] | None = None
+    severities: dict[Literal["drawdown", "day", "week", "month", "quarter"], Literal["attention", "severe"]] | None = None
+    change_reason: str = Field(default="人工修改监测规则", max_length=1000)
+    expected_rule_version: str | None = None
 
 
 class RiskInput(BaseModel):
@@ -1060,9 +1063,9 @@ class RiskFollowUp(BaseModel):
 
 @router.get("/risk/alerts")
 def risk_alerts(limit: int = Query(default=3, ge=1, le=10), offset: int = Query(default=0, ge=0),
-                session: Session = Depends(get_db_session)):
+                all: bool = False, session: Session = Depends(get_db_session)):
     from watchlist_app.services.risk_alerts import important_risk_alerts
-    return important_risk_alerts(session, limit=limit, offset=offset)
+    return important_risk_alerts(session, limit=None if all else limit, offset=0 if all else offset)
 
 
 @router.get("/risk")
@@ -1086,9 +1089,12 @@ def set_rule(instrument_id: str, request: RuleInput, session: Session = Depends(
     if instrument is None:
         raise HTTPException(404, "Record not found")
     rule = session.get(RiskReviewRule, instrument_id, populate_existing=True)
+    if "expected_rule_version" in request.model_fields_set and request.expected_rule_version != rule_version(rule):
+        raise HTTPException(409, "监测规则已由其他操作修改，请刷新当前版本后再保存。")
     if rule is None:
         rule = RiskReviewRule(instrument_id=instrument_id)
         session.add(rule)
+    previous = rule_configuration(rule)
     if "drawdown_limit" in request.model_fields_set:
         rule.drawdown_limit = request.drawdown_limit
     if request.period_limits is not None:
@@ -1100,9 +1106,32 @@ def set_rule(instrument_id: str, request: RuleInput, session: Session = Depends(
             sources.update({key: "custom" for key, value in limits.items() if value != prior_limits.get(key)})
             rule.calibration_json = {**calibration, "manually_edited": True, "rule_sources": sources}
         rule.period_limits_json = limits
+    if request.severities is not None:
+        calibration = rule.calibration_json or {}
+        rule.calibration_json = {**calibration, "severities": {**(calibration.get("severities") or {}), **request.severities}}
+    record_rule_revision(rule, previous=previous, actor=current_principal().user_id,
+                         reason=request.change_reason, at=now())
     refresh_risk_cases(session, [instrument_id])
     session.commit()
     return dump(rule)
+
+
+@router.post("/risk/rules/{instrument_id}/preview")
+def preview_rule(instrument_id: str, request: RuleInput, session: Session = Depends(get_db_session)):
+    from watchlist_app.db.models import InstrumentRiskReadModel
+    from watchlist_app.services.price_risk import rule_version
+    from watchlist_app.services.risk_monitoring import preview_rule_changes
+    require(session, InstrumentDetail, instrument_id)
+    rule = session.get(RiskReviewRule, instrument_id)
+    previous = rule_configuration(rule) if rule else {"drawdown_limit": None, "period_limits": {}, "severities": {}}
+    proposed = {**previous}
+    if "drawdown_limit" in request.model_fields_set:
+        proposed["drawdown_limit"] = request.drawdown_limit
+    if request.period_limits is not None:
+        proposed["period_limits"] = request.period_limits
+    record = session.get(InstrumentRiskReadModel, instrument_id)
+    snapshot = (record.payload_json.get("monitoring") or {}) if record else {}
+    return {**preview_rule_changes(snapshot, previous, proposed), "rule_version": rule_version(rule)}
 
 
 @router.post("/risk/cases", status_code=201)

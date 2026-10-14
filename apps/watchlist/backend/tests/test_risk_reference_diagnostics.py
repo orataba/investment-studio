@@ -28,7 +28,7 @@ def bound_run():
 
 
 def review_payload():
-    return {"summary": "PRIVATE_SUMMARY", "limitations": [], "priorities": [
+    return {"notice_items": [], "summary": "PRIVATE_SUMMARY", "limitations": [], "priorities": [
         {"title": "Performance", "analysis": "PRIVATE_ANALYSIS", "instrument_ids": ["fund"],
          "source_ids": ["risk-performance:fund"], "next_watch": "Next observation"},
         {"title": "Research event", "analysis": "PRIVATE_EVENT_ANALYSIS", "instrument_ids": ["fund"],

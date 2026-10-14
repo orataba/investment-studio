@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -83,7 +84,7 @@ def submit_review(run_id: str, request: service.RiskReview, session: Session = D
     missing = missing_required_reads(run.context_json)
     if missing:
         raise HTTPException(422, {"error": "risk_reads_incomplete", "missing_reads": missing,
-            "next_action": "按missing_reads的工具与参数补读全部缺页；完成后重新提交完整summary、priorities、limitations。本次未保存结果。"})
+            "next_action": "按missing_reads的工具与参数补读全部缺页；完成后重新提交完整notice_items与case_assessments及已有内部分析。本次未保存结果。"})
     run.read_state.submitted_review = request.model_dump(mode="json")
     session.commit()
     return {"run_id": run_id, "status": "accepted"}
@@ -179,3 +180,35 @@ def start_review(request: ScopeInput, session: Session = Depends(get_db_session)
         attempt = run_attempt(run)
         enqueue_run(current_principal(), run.entry_id, attempt=attempt)
     return {"run_id": run.entry_id, "status": run.status}
+
+
+
+class NoticeCorrection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_notice_version: int = Field(ge=1)
+    level: Literal["high", "medium", "low"]
+    title: str = Field(min_length=1, max_length=180)
+    body: str = Field(min_length=1, max_length=1200)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+@router.patch("/risk/notices/{run_id}/{notice_id}")
+def correct_risk_notice(run_id: str, notice_id: str, request: NoticeCorrection, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.risk_notice_actions import correct_notice
+    return correct_notice(session, run_id, notice_id, request)
+
+
+class NoticeReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    notice_id: str
+    notice_version: str | int
+    run_id: str | None = None
+    action: Literal["read", "mute", "unmute"]
+    muted_until: datetime | None = None
+    rule_versions: dict[str, str] = Field(default_factory=dict)
+
+
+@router.put("/risk/notices/receipt")
+def record_risk_notice_receipt(request: NoticeReceipt, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.risk_notice_actions import save_receipt
+    return save_receipt(session, request)

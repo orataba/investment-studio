@@ -471,7 +471,7 @@ it('polls a pending deep-linked edition even when it is outside the loaded index
   page(<App />)
   await screen.findByRole('heading', { name: 'Daily research briefing | 2026-09-07' })
   expect(screen.getByText('Generating')).toBeTruthy()
-  expect(interval.mock.calls.some(([, milliseconds]) => milliseconds === 5000)).toBe(true)
+  await waitFor(() => expect(interval.mock.calls.some(([, milliseconds]) => milliseconds === 5000)).toBe(true))
 })
 
 it('keeps source failures and effective price dates visible before opening coverage', async () => {

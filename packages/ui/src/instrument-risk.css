@@ -320,40 +320,8 @@
   margin-top: 8px;
   line-height: 1.7;
 }
-.risk-readings {
-  padding-top: 12px;
-  border-top: 1px solid #e3e9ed;
-}
-.risk-reading-asset {
-  padding: 8px 0;
-  border-bottom: 1px solid #edf0f3;
-}
-.risk-reading-asset > summary {
-  display: list-item;
-}
-.risk-reading-asset > summary small {
-  display: block;
-  padding-left: 16px;
-  font-variant-numeric: tabular-nums;
-}
-.risk-reading-summary {
-  display: flex;
-  gap: 10px 24px;
-  flex-wrap: wrap;
-  padding: 12px 0;
-  color: #647886;
-  font-size: 12px;
-}
 .risk-period-evidence {
   display: block;
-}
-.risk-period-table td:first-child small {
-  display: block;
-  margin-top: 3px;
-  font-size: 10px;
-}
-.risk-period-table .risk-period-breached td {
-  color: #a56b2b;
 }
 .risk-price-settings {
   border-top: 1px solid #e3e9ed;
@@ -385,13 +353,11 @@
 .risk-settings-save [role='alert'] {
   color: #a55140;
 }
-.risk-initial-method,
-.risk-history-readings {
+.risk-initial-method {
   margin-top: 8px;
   color: #73838f;
 }
-.risk-initial-method summary,
-.risk-history-readings summary {
+.risk-initial-method summary {
   font-size: 12px;
 }
 .risk-coverage-note {

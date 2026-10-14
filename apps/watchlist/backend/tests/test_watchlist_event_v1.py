@@ -1,7 +1,6 @@
 """V1 event publication, chronology and risk ownership through persisted paths."""
 import json
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -198,8 +197,9 @@ def test_risk_officer_owns_activation_and_stale_or_private_assessment_cannot_pub
         snapshot = {"scope": {"kind": "instrument", "id": "xlk"}, "input_as_of": None,
             "instrument_ids": ["xlk"], "instruments": [], "limitations": [],
             "research": [{"case_id": case.case_id, "instrument_id": "xlk", "signal": case.signal, "evidence_json": dict(case.evidence_json)}], "quantitative": [], "coverage": []}
-        officer = SimpleNamespace(entry_id="officer", context_json={"risk_inputs": snapshot})
-        payload = {"summary": "复核完毕", "priorities": [], "limitations": [], "case_assessments": [
+        officer, _ = risk_officer.begin_run(session, instrument_id="xlk")
+        officer.context_json = {**officer.context_json, "risk_inputs": snapshot}
+        payload = {"summary": "复核完毕", "priorities": [], "limitations": [], "notice_items": [], "case_assessments": [
             {"case_id": case.case_id, "event_version_id": version, "status": "active", "reason": "原文证据明确支持持续风险，需要保持关注。"}]}
         risk_officer.apply_result(session, officer, payload)
         assert case.trigger_active and case.status == "open"

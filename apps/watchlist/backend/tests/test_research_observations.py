@@ -325,7 +325,7 @@ def test_instrument_observation_reads_actual_retained_market_versions_in_batches
             for symbol in ("FIXTURE", "S0", "S1", "S2") for index, day in enumerate(days)])
         result = observations.instrument_observations(session, "fixture-etf", as_of=cutoff, store=store)
         basket = result["data"]["observations"]["basket"]
-        assert result["data"]["method_version"] == "watchlist-observations/v5"
+        assert result["data"]["method_version"] == "watchlist-observations/v6"
         assert result["data"]["information_cutoff_at"] == cutoff.isoformat()
         assert basket["price_as_of_date"] == "2026-09-25"
         assert basket["information_as_of_date"] == "2026-09-27"

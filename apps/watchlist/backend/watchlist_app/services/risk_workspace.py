@@ -10,6 +10,7 @@ from watchlist_app.db.models.workbench import RiskCase, RiskReviewRule
 from watchlist_app.services.research_workbench import catalogue
 from watchlist_app.services.price_risk import (
     period_loss_readings, price_rule_summary, series_limitation, recent_price_risk_points,
+    rule_version,
 )
 
 
@@ -41,7 +42,11 @@ def read_risk_workspace(session: Session, *, instrument_id: str | None = None,
         iid = item["instrument_id"]
         risk = risks.get(iid)
         rule = rules.get(iid)
-        payload = ({key: getattr(risk, key) for key in RISK_FIELDS} if summary else risk.payload_json) if risk else None
+        # Curves belong to the dedicated monitoring endpoint; research snapshots
+        # and workspace consumers share the bounded, versioned metric summary.
+        payload = ({key: getattr(risk, key) for key in RISK_FIELDS} if summary else {
+            key: value for key, value in risk.payload_json.items() if key != "monitoring"
+        }) if risk else None
         item["risk"] = payload
         item["freshness"] = risk.data_freshness_status if risk else "missing"
         item["drawdown_limit"] = rule.drawdown_limit if rule else None
@@ -51,6 +56,7 @@ def read_risk_workspace(session: Session, *, instrument_id: str | None = None,
         points = series.get("points") or []
         item["period_limits"] = rule.period_limits_json if rule else {}
         item["price_risk_calibration"] = rule.calibration_json if rule else {}
+        item["rule_version"] = rule_version(rule)
         item["period_readings"] = period_loss_readings(series, item["period_limits"])
         item["price_rule_summary"] = price_rule_summary(item, rule.updated_at if rule else None)
         minimum_returns = 90 if (series.get("frequency") or {}).get("gap_detection_basis") == "market_calendar:24/7" else 63
@@ -66,4 +72,3 @@ def read_risk_workspace(session: Session, *, instrument_id: str | None = None,
                 item["previous_observation_date"] = points[-2]["date"]
     cases = case_summary_rows(session, ids) if summary else [case_detail(case) for case in session.scalars(cases_query)]
     return {"instruments": instruments, "cases": cases}
-

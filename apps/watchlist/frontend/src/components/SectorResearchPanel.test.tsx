@@ -181,7 +181,7 @@ it('shows a shared risk case as withdrawn, with the incorrect body kept in read-
   expect(screen.queryByText(original.body)).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: '全部记录 1' }))
   expect(screen.getByText('已撤回')).toBeTruthy()
-  expect(screen.getByText('原文未支持旧稿，已撤回。').closest('details')).toBeNull()
+  expect(screen.getByText('原文未支持旧稿，已撤回。').closest('details')?.className).toBe('risk-case-workpapers')
   expect(screen.queryByText('当前未触发')).toBeNull()
   expect(screen.queryByText('已处理')).toBeNull()
   const history = screen.getByText('撤回前记录与来源').closest('details')!

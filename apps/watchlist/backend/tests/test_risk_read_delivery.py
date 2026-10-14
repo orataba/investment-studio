@@ -63,7 +63,7 @@ def read(client, run_id, instruction):
                        json={key: value for key, value in instruction.items() if key != "tool"})
 
 
-RESULT = {"summary": "保留范围与证据限制。", "priorities": [], "limitations": []}
+RESULT = {"summary": "保留范围与证据限制。", "priorities": [], "limitations": [], "notice_items": []}
 # Bound research referrals must have individual versioned assessments; these
 # delivery tests reject only unread pages, not an incomplete risk proposal.
 REFERRAL_RESULT = {**RESULT, "case_assessments": [{"case_id": f"case-{i}",
@@ -283,3 +283,14 @@ def test_original_reads_resolve_only_bound_source_positions(client, monkeypatch)
     assert response.status_code == 200 and response.json()["data"] == spoof
     assert len(resolved) == 2  # The arbitrary JSON lookalike was not followed.
     assert state(rid)["risk_inputs"] == context["risk_inputs"]
+
+
+def test_both_risk_guidance_layers_are_delivered_by_actual_context_route(client):
+    context = bound_context()
+    context["risk_guidance"] = {"general": {"text": "通用筛选指导", "version_id": "general:3"},
+        "instruments": {"risk-a": {"text": "专门指导", "version_id": "risk-a:2"}}, "constraints": ["不能覆盖严重规则"]}
+    rid = prepare_fixture(client, context)
+    response = client.post(f"/api/research/runs/{rid}/read", json={"resource": "context", "section": "overview"})
+    assert response.status_code == 200, response.text
+    assert "通用筛选指导" in response.text and "专门指导" in response.text
+    assert "general:3" in response.text and "risk-a:2" in response.text

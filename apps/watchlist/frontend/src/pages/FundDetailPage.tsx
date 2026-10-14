@@ -1,3 +1,4 @@
+import { downsideDeviation as getDownsideDeviation } from '../lib/performanceMetrics'
 import MonthlyReturnMatrix from '../components/MonthlyReturnMatrix'
 import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 import WorkspaceSwitcher from '../../../../../packages/ui/src/WorkspaceSwitcher'
@@ -2150,16 +2151,6 @@ function getAnnualizedReturnFromPoints(points: FundChartPoint[]) {
     (Math.pow(points[points.length - 1].value / points[0].value, 1 / years) - 1) *
     100
   )
-}
-
-function getDownsideDeviation(values: number[]) {
-  if (!values.some((value) => value < 0)) {
-    return null
-  }
-  const variance =
-    values.reduce((sum, value) => sum + (Math.min(value, 0) ** 2), 0) /
-    values.length
-  return Math.sqrt(Math.max(variance, 0))
 }
 
 function buildPeriodicReturnSeries(points: FundChartPoint[]) {

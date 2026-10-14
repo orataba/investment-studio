@@ -76,6 +76,7 @@ class WatchlistUserSettings(Base):
     __tablename__ = "watchlist_user_settings"
     user_id: Mapped[str] = mapped_column(primary_key=True)
     ordered_watchlist_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    risk_notice_preferences_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
 
 
 class WatchlistView(Base):

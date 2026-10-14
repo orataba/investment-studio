@@ -695,7 +695,7 @@ def test_portfolio_tools_partition_modules_and_bound_contracts(monkeypatch):
 
 
 def test_risk_submission_uses_structured_tool_arguments(monkeypatch):
-    result = mcp.RiskReview(summary='需要核对 "策略意图"。', priorities=[], limitations=[])
+    result = mcp.RiskReview(summary='需要核对 "策略意图"。', priorities=[], limitations=[], notice_items=[])
     calls = []
     monkeypatch.setattr(mcp, "request", server_projection(lambda suffix, payload: calls.append((suffix, payload)) or {"status": "accepted"}))
     assert mcp.submit_risk_review(result) == {"status": "accepted"}
@@ -708,24 +708,24 @@ def test_risk_submission_retry_requires_complete_result_and_never_saves_partial(
     calls = []
     monkeypatch.setattr(mcp, "request", server_projection(lambda suffix, payload: calls.append((suffix, payload)) or {"status": "accepted"}))
     drafts = [
-        ({"summary": "PRIVATE_SUMMARY_DO_NOT_ECHO", "priorities": []}, {("result", "limitations")}),
-        ({"limitations": []}, {("result", "summary"), ("result", "priorities")}),
-        ({"summary": "PRIVATE_SUMMARY_DO_NOT_ECHO", "priorities": [{"title": "Issue"}], "limitations": [],
+        ({"notice_items": [], "summary": "PRIVATE_SUMMARY_DO_NOT_ECHO", "priorities": []}, {("result", "limitations")}),
+        ({"limitations": []}, {("result", "notice_items")}),
+        ({"notice_items": [], "summary": "PRIVATE_SUMMARY_DO_NOT_ECHO", "priorities": [{"title": "Issue"}], "limitations": [],
           "unrecognized": "PRIVATE_INPUT_DO_NOT_ECHO"},
-         {("result", "priorities", 0, "analysis"), ("result", "priorities", 0, "next_watch"), ("result", "unrecognized")}),
+         {("result", "priorities", 0, "analysis"), ("result", "unrecognized")}),
     ]
     for draft, expected in drafts:
         with pytest.raises(ToolError) as error:
             asyncio.run(mcp.mcp.call_tool("submit_risk_review", {"result": draft}))
         diagnostic = json.loads(str(error.value).split(": ", 1)[1])
         assert {tuple(issue["loc"]) for issue in diagnostic["issues"]} == expected
-        assert diagnostic["required_result_fields"] == ["summary", "priorities", "limitations"]
-        assert diagnostic["required_priority_fields"] == ["title", "analysis", "next_watch"]
+        assert diagnostic["required_result_fields"] == ["limitations", "notice_items"]
+        assert diagnostic["required_priority_fields"] == ["title", "analysis"]
         assert diagnostic["resubmit_mode"] == "complete_result"
         assert "PRIVATE_" not in str(error.value)
         assert calls == []
 
-    complete = {"summary": "核对当前风险与证据限制。", "priorities": [], "limitations": []}
+    complete = {"summary": "核对当前风险与证据限制。", "priorities": [], "limitations": [], "notice_items": []}
     accepted = asyncio.run(mcp.mcp.call_tool("submit_risk_review", {"result": complete}))
     assert json.loads(accepted.content[0].text) == {"status": "accepted"}
     assert calls == [("risk-draft", {**complete, "case_assessments": []})]

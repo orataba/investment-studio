@@ -2,13 +2,11 @@ import WorkspaceSkeleton from './WorkspaceSkeleton'
 import InfoHint from './InfoHint'
 import { researchStamp } from './ResearchRunStatus'
 import RiskChangeAudit from './RiskChangeAudit'
-import { PriceRuleCountsLine, PriceRuleDetails } from './PriceRiskRules'
 import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import RiskOfficerPanel from './RiskOfficerPanel'
 import type { ResearchAssistantReference } from './researchReference'
 import {
   type RiskAsset,
-  type PriceRiskPeriod,
   type PeriodLossReading,
   type RiskRequest,
   type RiskWorkspace,
@@ -356,250 +354,10 @@ function coverageFor(asset: RiskAsset) {
   )
 }
 
-function Readings({ asset }: { asset: RiskAsset }) {
-  const labels: Record<string, string> = {
-    'Rolling Ann. Vol': '滚动年化波动率',
-    'Current Drawdown': '当前回撤',
-    'Latest Monthly Drawdown': '最新月度回撤',
-    'Recent Return Pressure': '近期收益压力',
-  }
-  const local = (value: unknown) =>
-    String(value ?? '—')
-      .replace('Median month ', '月度中位数 ')
-      .replace('Median ', '中位数 ')
-      .replace('Worst ', '最深 ')
-      .replace('% of worst', '%（占历史最深幅度）')
-      .replace(' trailing down month(s)', ' 个连续下跌月')
-  return (
-    <>
-      <div className="risk-reading-summary">
-        <span>
-          当前回撤 <strong>{percent(asset.risk?.current_drawdown)}</strong>
-        </span>
-        <span>
-          样本最大回撤{' '}
-          <strong>{percent(asset.risk?.drawdown_summary?.maximum)}</strong>
-        </span>
-        <span title={asset.previous_observation_date || undefined}>
-          较上次观察{' '}
-          {asset.drawdown_change_pp == null
-            ? '—'
-            : `${asset.drawdown_change_pp < 0 ? '加深' : asset.drawdown_change_pp > 0 ? '收窄' : '持平'} ${Math.abs(asset.drawdown_change_pp).toFixed(2)} 个百分点`}
-        </span>
-      </div>
-      {coverageFor(asset) && (
-        <p className="research-muted">
-          监测受限：需核对最新数据及样本完整性，当前读数不能确认风险是否恢复。
-        </p>
-      )}
-      {Boolean(asset.period_readings?.length) && (
-        <>
-          <div className="research-table-scroll risk-period-table">
-            <table aria-label={`${asset.name} 区间跌幅监测`}>
-              <thead>
-                <tr>
-                  <th>滚动区间</th>
-                  <th>区间涨跌</th>
-                  <th>下跌复核线</th>
-                  <th>状态</th>
-                </tr>
-              </thead>
-              <tbody>
-                {asset.period_readings!.map((row) => (
-                  <tr
-                    key={row.period}
-                    className={
-                      row.breached && !coverageFor(asset)
-                        ? 'risk-period-breached'
-                        : ''
-                    }
-                    title={
-                      row.limitation ||
-                      `${row.start_date} → ${row.end_date} · ${row.observations} 个交易观察值`
-                    }
-                  >
-                    <td>
-                      {row.label}
-                      <small>{row.observations} 个交易观察值</small>
-                    </td>
-                    <td>{percent(row.return_pct)}</td>
-                    <td>
-                      {row.limit_pct == null ? '未设置' : `−${row.limit_pct}%`}
-                    </td>
-                    <td>
-                      {row.limitation || coverageFor(asset)
-                        ? '监测受限'
-                        : row.limit_pct == null
-                          ? '仅展示读数'
-                          : row.breached
-                            ? '需复核'
-                            : '未触发'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="research-muted">
-            {asset.return_kind === 'price_return'
-              ? '价格收益'
-              : asset.return_kind === 'total_return'
-                ? '总收益（含分红）'
-                : '净值收益'}{' '}
-            · 滚动区间，非本周／本月累计；截至{' '}
-            {asset.period_readings?.[0]?.end_date || '—'}。
-            {asset.price_risk_note && ` ${asset.price_risk_note}。`}
-          </p>
-        </>
-      )}
-      {Boolean(asset.risk?.risk_change_monitor?.rows?.length) && (
-        <details className="risk-history-readings">
-          <summary>其他风险读数</summary>
-          <div className="research-table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>相对自身历史</th>
-                  <th>当前</th>
-                  <th>历史参照</th>
-                </tr>
-              </thead>
-              <tbody>
-                {asset.risk!.risk_change_monitor!.rows!.map((row, index) => (
-                  <tr key={index}>
-                    <td>{labels[String(row.signal)] || String(row.signal)}</td>
-                    <td>{local(row.current)}</td>
-                    <td>{local(row.baseline)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </details>
-      )}
-    </>
-  )
-}
-
-const pricePeriods: Array<[PriceRiskPeriod, string]> = [
-  ['day', '日跌幅'],
-  ['week', '周跌幅'],
-  ['month', '月跌幅'],
-  ['quarter', '季度跌幅'],
-]
-
-function PriceRiskSettings({
-  canWrite,
-  asset,
-  request,
-  onSaved,
-}: {
-  asset: RiskAsset
-  request: RiskRequest
-  onSaved: () => Promise<void>
-  canWrite: boolean
-}) {
-  const initial = () => ({
-    drawdown: asset.drawdown_limit?.toString() || '',
-    ...Object.fromEntries(
-      pricePeriods.map(([key]) => [
-        key,
-        asset.period_limits?.[key]?.toString() || '',
-      ]),
-    ),
-  })
-  const [values, setValues] = useState<Record<string, string>>(initial)
-  const [busy, setBusy] = useState(false)
-  const [message, setMessage] = useState('')
-  const [failed, setFailed] = useState(false)
-  useEffect(() => {
-    setValues(initial())
-  }, [asset.drawdown_limit, asset.period_limits])
-  const calibration = asset.price_risk_calibration
-  return (
-    <details className="risk-price-settings">
-      <summary>提醒设置</summary>
-      {asset.price_rule_summary && <>
-        <PriceRuleCountsLine counts={asset.price_rule_summary.counts} />
-        <details><summary>当前规则与观察值</summary><PriceRuleDetails summary={asset.price_rule_summary} /></details>
-      </>}
-      <p className="research-muted">
-        下跌幅度达到复核线才生成提醒；填正数，留空关闭。设置对该标的生效，在不同观察列表和组合中共用。
-      </p>
-      <form
-        onSubmit={async (event) => {
-          event.preventDefault()
-          if (!canWrite) return
-          setBusy(true)
-          setMessage('')
-          setFailed(false)
-          try {
-            await request(`/risk/rules/${asset.instrument_id}`, {
-              method: 'PUT',
-              body: JSON.stringify({
-                drawdown_limit: values.drawdown
-                  ? Number(values.drawdown)
-                  : null,
-                period_limits: Object.fromEntries(
-                  pricePeriods.map(([key]) => [
-                    key,
-                    values[key] ? Number(values[key]) : null,
-                  ]),
-                ),
-              }),
-            })
-            await onSaved()
-            setMessage('提醒设置已保存')
-          } catch (error) {
-            setFailed(true)
-            setMessage(error instanceof Error ? error.message : '保存失败')
-          } finally {
-            setBusy(false)
-          }
-        }}
-      >
-        <div className="risk-price-inputs">
-          {[...pricePeriods, ['drawdown', '高点回撤']].map(([key, label]) => (
-            <label key={key}>
-              {label}（%）
-              <input
-                disabled={!canWrite}
-                aria-label={`${asset.name} ${label}复核线`}
-                type="number"
-                min="0.01"
-                max="100"
-                step="any"
-                placeholder="未设置"
-                value={values[key] || ''}
-                onChange={(event) =>
-                  setValues({ ...values, [key]: event.target.value })
-                }
-              />
-            </label>
-          ))}
-        </div>
-        <div className="risk-settings-save">
-          {canWrite && <button disabled={busy}>{busy ? '保存中…' : '保存提醒设置'}</button>}
-          <span role={failed ? 'alert' : 'status'}>{message}</span>
-        </div>
-      </form>
-      <details className="risk-initial-method">
-        <summary>初值依据</summary>
-        <p className="research-muted">
-          {calibration?.sample_end
-            ? <><span>校准样本</span> {calibration.sample_start} → {calibration.sample_end} · {calibration.observations} <span>个日收益观察值</span> · <span>日波动率</span> {percent(calibration.daily_volatility_pct)}。{calibration.manually_edited && <span>当前复核线已手动调整。</span>}</>
-            : '日度样本完整且足够时，才按自身历史波动生成初值。'}
-        </p>
-        <p className="research-muted">常规市场使用最近最多 252、至少 63 个日对数收益；24/7 市场最多 365、至少 90 个。</p>
-        <p className="research-muted">日、周、月、季度分别取 3／2.5／2／1.5 倍区间波动，最低跌幅为 0.5%／1%／2%／3%，向上取整到 0.5 个百分点。</p>
-        <p className="research-muted">保存后固定，不随波动升高自动放宽。这是初始复核容忍度，不是亏损概率或买卖指令；高点回撤线另行设置。</p>
-      </details>
-    </details>
-  )
-}
-
 function ScopedInstrumentRiskPanel({
+  showOfficer = true,
   canWrite = true,
+  canCorrect = canWrite,
   canRun = canWrite,
   portfolioId,
   instrumentId,
@@ -616,7 +374,9 @@ function ScopedInstrumentRiskPanel({
   instrumentContext,
   heading = '近期风险与跟进',
 }: {
+  showOfficer?: boolean
   canWrite?: boolean
+  canCorrect?: boolean
   canRun?: boolean
   portfolioId?: string
   instrumentId?: string
@@ -774,8 +534,10 @@ function ScopedInstrumentRiskPanel({
   ]
   return (
     <section className="research-workbench risk-workbench">
-      {officerScope && <RiskOfficerPanel canRun={canRun} request={request} scopeQuery={officerScope} refreshToken={officerRefresh}
+      {showOfficer && officerScope && <RiskOfficerPanel canCorrect={canCorrect} canWrite={canWrite} canRun={canRun} request={request} scopeQuery={officerScope} refreshToken={officerRefresh}
         onCompleted={() => { void refresh(false).catch((failure) => setError(failure instanceof Error ? failure.message : '风险事项读取失败')) }} />}
+      <details className="risk-case-workpapers" open={Boolean(focusInstrumentId)}>
+        <summary>事项底稿与跟进</summary>
       <div className="research-page-heading">
         <div>
           {heading && <h2>{heading}</h2>}
@@ -977,36 +739,6 @@ function ScopedInstrumentRiskPanel({
               </div>
             )}
           </div>
-          <details
-            className="research-section risk-readings"
-          >
-            <summary>价格风险与提醒设置</summary>
-            {data.instruments.map((asset) => (
-              <details
-                className="risk-reading-asset"
-                key={asset.instrument_id}
-                open={
-                  Boolean(instrumentId) ||
-                  asset.instrument_id === focusInstrumentId
-                }
-              >
-                <summary>
-                  <span translate="no">{asset.name}</span>
-                  <small>
-                    回撤 {percent(asset.risk?.current_drawdown)} ·{' '}
-                    {asset.as_of_date || '日期待核对'}
-                  </small>
-                </summary>
-                <Readings asset={asset} />
-                <PriceRiskSettings
-                  canWrite={canWrite}
-                  asset={asset}
-                  request={request}
-                  onSaved={refresh}
-                />
-              </details>
-            ))}
-          </details>
           <details className="risk-coverage-note">
             <summary>当前监测范围</summary>
             <p>
@@ -1018,6 +750,7 @@ function ScopedInstrumentRiskPanel({
           </details>
         </>
       )}
+      </details>
     </section>
   )
 }

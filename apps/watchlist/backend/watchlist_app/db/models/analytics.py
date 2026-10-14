@@ -85,6 +85,7 @@ class RiskSnapshot(Base):
     down_capture: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     tracking_error: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     information_ratio: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    monitoring_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
 
 
 class ExposureAnalyticsSnapshot(Base):

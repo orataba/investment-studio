@@ -11,7 +11,6 @@ import {
 import WatchlistRiskDrawer from './WatchlistRiskDrawer'
 import InstrumentRiskDrawer from './InstrumentRiskDrawer'
 import { riskPendingState } from '../../../../../packages/ui/src/instrumentRisk'
-import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 const request = vi.hoisted(() => vi.fn())
 const officer = vi.hoisted(() => ({ onCompleted: undefined as undefined | (() => void) }))
 const permission = vi.hoisted(() => ({ canWrite: true }))
@@ -115,7 +114,8 @@ it('scopes instrument detail risk to the instrument even when opened from a list
   expect(request).toHaveBeenCalledWith('/api/risk?instrument_id=a&summary=true', undefined)
   expect(screen.getByTestId('officer-scope').textContent).toBe('instrument_id=a')
   expect(screen.getByRole('link', { name: 'a 风险事项' }).getAttribute('href')).toBe('/instruments/a?tab=investment-research&risk=1&watchlist=source-list')
-  expect(container.querySelector('.risk-readings')?.hasAttribute('open')).toBe(false)
+  expect(container.querySelector('.risk-readings')).toBeNull()
+  fireEvent.click(screen.getByText('事项底稿与跟进'))
   fireEvent.click(screen.getByRole('button', { name: '问助手' }))
   expect(ask).toHaveBeenCalledWith(expect.stringContaining('标的 A'), { instrument_id: 'a', risk_case_id: 'a', risk_case_updated_at: '2026-09-04' })
 })
@@ -186,95 +186,13 @@ it('keeps ordinary observations out of attention and retains due follow-ups afte
   expect(screen.getByRole('combobox', { name: '事件涉及的标的' })).toBeTruthy()
   await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
 })
-it('shows rolling losses and saves instrument-wide review lines, including an explicit disabled period', async () => {
-  let asset = {
-    instrument_id: 'a', name: '标的 A', instrument_type: 'equity', as_of_date: '2026-09-04',
-    freshness: 'fresh', risk: { data_quality: { status: 'ready' }, current_drawdown: -4 },
-    drawdown_limit: 10,
-    period_limits: { day: 1, week: 3, month: 5, quarter: 8 } as Record<string, number | null>,
-    period_readings: [{ period: 'week', label: '近1周', observations: 5, start_date: '2026-08-28', end_date: '2026-09-04', return_pct: -4, limit_pct: 3, breached: true, limitation: null }],
-  }
-  request.mockImplementation(async (_path: string, init?: RequestInit) => {
-    if (init?.method === 'PUT') { asset = { ...asset, ...JSON.parse(init.body as string) }; return {} }
-    return { instruments: [{ ...asset }], cases: [] }
-  })
-  render(<WatchlistRiskDrawer watchlistId="3" watchlistName="当前列表" focusInstrumentId="a" onClose={vi.fn()} onAskAssistant={vi.fn()} onChanged={vi.fn()} />)
-  await screen.findByText('价格风险与提醒设置')
-  fireEvent.click(screen.getByText('价格风险与提醒设置'))
-  expect(screen.getByRole('table', { name: '标的 A 区间跌幅监测' }).textContent).toContain('-4.00%')
-  expect(screen.getByText('需复核')).toBeTruthy()
-  fireEvent.click(screen.getByText('提醒设置'))
-  fireEvent.change(screen.getByRole('spinbutton', { name: '标的 A 日跌幅复核线' }), { target: { value: '' } })
-  fireEvent.change(screen.getByRole('spinbutton', { name: '标的 A 周跌幅复核线' }), { target: { value: '2' } })
-  fireEvent.click(screen.getByRole('button', { name: '保存提醒设置' }))
-  await screen.findByText('提醒设置已保存')
-  expect(request).toHaveBeenCalledWith('/api/risk/rules/a', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ drawdown_limit: 10, period_limits: { day: null, week: 2, month: 5, quarter: 8 } }) }))
-})
-
-it('shows English rule provenance, counts and calibration without changing instrument settings', async () => {
-  window.history.replaceState(null, '', '/?lang=en')
-  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: 'Asset A', instrument_type: 'equity',
-    freshness: 'fresh', risk: { data_quality: { status: 'ready' }, current_drawdown: -1 },
-    price_rule_summary: { contract_version: 1, settings_updated_at: '2026-10-02T00:00:00Z',
-      counts: { configured: 1, evaluable: 1, triggered: 0, unavailable: 0, default: 1, custom: 0, unknown: 0 },
-      rules: [{ key: 'day', source: 'default', state: 'not_triggered', limit_pct: 5, value_pct: 1.02, observations: 1,
-        start_date: '2026-10-01', end_date: '2026-10-02', limitation: null }] },
-    price_risk_calibration: { sample_start: '2026-01-02', sample_end: '2026-10-02', observations: 180, daily_volatility_pct: 1.5 },
-    period_limits: { day: 5 }, period_readings: [],
-  }], cases: [] })
-  render(<LanguageProvider><WatchlistRiskDrawer watchlistId="3" watchlistName="Scope" focusInstrumentId="a" onClose={vi.fn()} onAskAssistant={vi.fn()} onChanged={vi.fn()} /></LanguageProvider>)
-  fireEvent.click(await screen.findByText('Price risk and alert settings'))
-  fireEvent.click(await screen.findByText('Alert settings'))
-  fireEvent.click(await screen.findByText('Current rules and observations'))
-  fireEvent.click(await screen.findByText('Initial calibration'))
-  await screen.findByText('Configured rules')
-  const settings = screen.getByText('Alert settings').closest('details')!
-  await waitFor(() => expect(settings.textContent).not.toMatch(/[\u4e00-\u9fff]/))
-  expect(screen.getByRole('spinbutton', { name: 'Asset A Daily loss review level' })).toBeTruthy()
-  expect(screen.getByRole('spinbutton', { name: 'Asset A Drawdown from peak review level' })).toBeTruthy()
-  expect(settings.textContent).toContain('2026-10-02')
-  expect(settings.textContent).toContain('1.02%')
-  expect(settings.textContent).toContain('24/7')
+it('keeps metric rule editing outside the risk alert drawer', async () => {
+  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: '标的 A', drawdown_limit: 10 }], cases: [] })
+  render(<WatchlistRiskDrawer watchlistId="3" watchlistName="当前列表" onClose={vi.fn()} onAskAssistant={vi.fn()} onChanged={vi.fn()} />)
+  await screen.findByText('事项底稿与跟进')
+  expect(screen.queryByText('价格风险与提醒设置')).toBeNull()
+  expect(screen.queryByRole('spinbutton')).toBeNull()
   expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
-  window.history.replaceState(null, '', '/')
-})
-
-it.each([
-  [-0.02, 'Deepened 0.02 percentage points'],
-  [0.02, 'Narrowed 0.02 percentage points'],
-  [0, 'Unchanged 0.00 percentage points'],
-])('translates price monitoring explanations and rolling readings for drawdown change %s', async (change, description) => {
-  window.history.replaceState(null, '', '/?lang=en')
-  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: 'Asset A', instrument_type: 'equity',
-    freshness: 'stale', risk: { data_quality: { status: 'ready' }, current_drawdown: -1, drawdown_summary: { maximum: -8 },
-      risk_change_monitor: { rows: [
-        { signal: 'Rolling Ann. Vol', current: '4.0%', baseline: 'Median 3.0%' },
-        { signal: 'Current Drawdown', current: '-1.0%', baseline: 'Worst -8.0%' },
-        { signal: 'Recent Return Pressure', current: '-0.5%', baseline: 'Median month 1.0%' },
-      ] } },
-    drawdown_change_pp: change, previous_observation_date: '2026-09-30', return_kind: 'total_return',
-    period_limits: { day: 5, week: 8.5, month: 13.5, quarter: 17 },
-    period_readings: [['day', '近1日', 1], ['week', '近1周', 5], ['month', '近1月', 21], ['quarter', '近1季', 63]].map(([period, label, observations]) => ({
-      period, label, observations, start_date: '2026-09-01', end_date: '2026-10-01', return_pct: 1.02, limit_pct: 5, breached: false, limitation: null,
-    })),
-  }], cases: [{ ...caseFor('a'), title: '研究原题保持中文', body: '研究判断和依据保留原文。' }] })
-  const { container } = render(<LanguageProvider><WatchlistRiskDrawer watchlistId="3" watchlistName="Scope" focusInstrumentId="a" onClose={vi.fn()} onAskAssistant={vi.fn()} onChanged={vi.fn()} /></LanguageProvider>)
-  const explanation = 'Review levels set for 1/1 instruments; evaluable 0/1. No alert does not mean low risk.'
-  fireEvent.click(await screen.findByRole('button', { name: `Price monitoring coverage: ${explanation}` }))
-  expect((await screen.findByRole('tooltip')).textContent).toContain(explanation)
-  fireEvent.keyDown(document, { key: 'Escape' })
-  fireEvent.click(await screen.findByText('Price risk and alert settings'))
-  await waitFor(() => expect(container.querySelector('.risk-reading-summary')?.textContent).toContain(description))
-  for (const label of ['Trailing day', 'Trailing week', 'Trailing month', 'Trailing quarter']) expect(screen.getByText(label)).toBeTruthy()
-  await waitFor(() => expect(container.querySelector('.risk-reading-summary')?.textContent).not.toMatch(/[\u4e00-\u9fff]/))
-  expect(container.querySelector('.risk-period-table')?.textContent).not.toMatch(/[\u4e00-\u9fff]/)
-  fireEvent.click(await screen.findByText('Other risk readings'))
-  await waitFor(() => expect(container.querySelector('.risk-history-readings')?.textContent).not.toMatch(/[\u4e00-\u9fff]/))
-  expect(screen.getByText('Monthly median 1.0%')).toBeTruthy()
-  expect(screen.getByText('研究原题保持中文')).toBeTruthy()
-  expect(screen.getByText('研究判断和依据保留原文。')).toBeTruthy()
-  expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
-  window.history.replaceState(null, '', '/')
 })
 
 it.each([

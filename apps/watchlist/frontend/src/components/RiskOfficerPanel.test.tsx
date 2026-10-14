@@ -174,7 +174,8 @@ it('keeps the last completed result after failure and honestly shows stale and u
   expect(screen.getByText('风险研判服务不可用，暂时无法更新。')).toBeTruthy()
   expect((screen.getByRole('button', { name: '更新研判' }) as HTMLButtonElement).disabled).toBe(true)
   const result = screen.getByRole('region', { name: '最近完成的研判' })
-  expect(within(result).getByText(saved.summary).closest('details')).toBeNull()
+  expect(within(result).getByText(saved.summary).closest('details')?.open).toBe(false)
+  fireEvent.click(screen.getByText('Review workpapers and historical evidence'))
   expect(within(screen.getByRole('list', { name: '优先事项' })).getAllByRole('heading', { level: 4 })).toHaveLength(3)
   const remaining = screen.getByText('其余研判 · 1 项').closest('details')!
   expect(remaining.open).toBe(false)
@@ -338,4 +339,55 @@ it.each([false, true])('describes paused assessment according to whether a compl
   expect(screen.queryByText('尚未研判。点击“更新研判”发起首次研判。')).toBeNull()
   expect(Boolean(screen.queryByText('a 的既有研判结论。'))).toBe(hasCompleted)
   expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
+})
+
+it('shows all selected numbered notices and current severe facts while keeping internal priorities secondary', async () => {
+  const request = vi.fn().mockResolvedValue(payload('a', { notice_status: 'assessed', notice_items: Array.from({ length: 5 }, (_, i) => ({ notice_id: `n-${i}`, notice_version: 1, level: i === 4 ? null : 'high', title: `入选提示 ${i + 1}`, body: `提示正文 ${i + 1}`, as_of: '2026-10-14', origin: i === 4 ? 'deterministic' : 'risk_officer', instrument_ids: ['a'], case_ids: [`c-${i}`], current_rule_facts: i === 0 ? [{ title: '严重规则', body: '当前回撤 16%，超过已批准的 15% 严重阈值。', as_of: '2026-10-14' }] : [] })), latest_completed: completed('a') }))
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" />)
+  await load()
+  expect(screen.getByRole('list', { name: 'Current risk alerts' }).children).toHaveLength(5)
+  expect(screen.getByText('当前回撤 16%，超过已批准的 15% 严重阈值。').closest('details')).toBeNull()
+  expect(screen.getByText('Priority pending')).toBeTruthy()
+  expect(screen.getByText('a 的既有研判结论。').closest('details')?.open).toBe(false)
+  expect(screen.getByRole('list', { name: '优先事项' }).closest('.risk-officer-workpapers')?.hasAttribute('open')).toBe(false)
+})
+
+it('does not claim a clean assessment when no result exists and global work is paused', async () => {
+  const request = vi.fn().mockResolvedValue(payload('a', { available: false, model_work: { paused: true, code: 'paused', message: '已暂停' }, notice_status: 'assessment_pending', notice_items: [] }))
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" />)
+  await load()
+  expect(screen.getByText('首次研判已暂停，尚未形成可读结论。')).toBeTruthy()
+  expect(screen.queryByText('No risks currently require special attention.')).toBeNull()
+})
+
+it('summarizes repeated coverage gaps and retains every affected instrument in closed details', async () => {
+  const gap = '缺少完整收益样本，不能计算当前风险。'
+  const coverage = Array.from({ length: 8 }, (_, index) => ({ case_id: `gap-${index}`, instrument_id: `asset-${index}`,
+    name: `标的名称 ${index + 1}`, title: '风险监测受限', body: gap }))
+  const request = vi.fn().mockResolvedValue(payload('a', { scope: { kind: 'portfolio', id: '3', name: '实际组合' },
+    notice_status: 'unavailable', coverage_notes: [gap, gap], coverage_items: [...coverage, { ...coverage[0], case_id: 'duplicate-gap' }] }))
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="portfolio_id=3" />)
+  await load()
+  expect(screen.getByText('Coverage limited for 8 instruments · 1 gap category. Risk selection is incomplete; known risks remain visible.').textContent).not.toContain(gap)
+  const details = screen.getByText('View coverage gaps and affected instruments').closest('details')!
+  expect(details.open).toBe(false)
+  expect(within(details).getAllByText(gap)).toHaveLength(1)
+  for (const item of coverage) expect(details.textContent).toContain(item.name)
+  expect(within(details).getByText('风险监测受限')).toBeTruthy()
+  fireEvent.click(screen.getByText('View coverage gaps and affected instruments'))
+  expect(details.open).toBe(true)
+  expect(screen.queryByText('No risks currently require special attention.')).toBeNull()
+})
+
+it('keeps severe facts visible and binds personal read receipts to their exact string version', async () => {
+  const notice = { notice_id: 'rule:c-1', notice_version: 'risk-rule:a:2:3', level: null, title: '严重回撤', body: '当前回撤 16%。', as_of: '2026-10-14', origin: 'deterministic', instrument_ids: ['a'], case_ids: ['c-1'], receipt: { unread: true, muted: false } } as const
+  const request = vi.fn().mockResolvedValue(payload('a', { notice_items: [{ ...notice, instrument_ids: ['a'], case_ids: ['c-1'] }], notice_status: 'assessment_pending' }))
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" canWrite={false} canCorrect={false} />)
+  await load()
+  fireEvent.click(screen.getByText('Evidence · 2026-10-14'))
+  fireEvent.click(screen.getByRole('button', { name: 'Mark read' }))
+  await load()
+  expect(request).toHaveBeenCalledWith('/risk/notices/receipt', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ notice_id: 'rule:c-1', notice_version: 'risk-rule:a:2:3', rule_versions: {}, action: 'read' }) }))
+  expect(screen.getByText('当前回撤 16%。').closest('details')).toBeNull()
+  expect(screen.queryByText('Correct priority and wording')).toBeNull()
 })

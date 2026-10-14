@@ -224,7 +224,7 @@ def read_instrument_research(instrument_ids: list[str], estimate_symbol: str | N
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False))
 def submit_risk_review(result: SkipValidation[RiskReview]) -> dict:
-    """Submit ONE COMPLETE result with summary, priorities and limitations (use [] when there are none). Every retry REPLACES the whole result: preserve all valid fields and fix the reported errors; never send only the missing fields. References must match the retained scope and sources. Missing required reads are returned as exact tool arguments; read those pages and resubmit the complete result. This saves the result for the running job to finalize; it does not alter RiskCases or PM views. After acceptance acknowledge briefly, without reprinting JSON."""
+    """Submit ONE COMPLETE result with selected notice_items (use [] only when evaluation selected none), limitations and required case_assessments. Summary/priorities are optional internal analysis. Every retry REPLACES the whole result: preserve all valid fields and fix the reported errors; never send only the missing fields. References must match the retained scope and sources. Missing required reads are returned as exact tool arguments; read those pages and resubmit the complete result. This saves the result for the running job to finalize; it does not alter RiskCases or PM views. After acceptance acknowledge briefly, without reprinting JSON."""
     # Preserve RiskReview's advertised schema, but validate inside the tool so
     # a malformed submission gets actionable, input-free diagnostics rather
     # than the SDK's Pydantic exception before this function is reached.
@@ -239,7 +239,7 @@ def submit_risk_review(result: SkipValidation[RiskReview]) -> dict:
             "required_result_fields": schema["required"],
             "required_priority_fields": schema["$defs"]["Priority"]["required"],
             "resubmit_mode": "complete_result",
-            "next_action": "本次未保存任何结果。保留已正确填写的内容，修正全部错误后，重新提交完整的result（summary、priorities、limitations）；不能只补交缺失字段。没有优先事项或限制时，对应列表填写[]。",
+            "next_action": "本次未保存任何结果。保留已正确填写的内容，修正全部错误后，重新提交完整的result（notice_items、limitations、case_assessments及已有内部分析）；不能只补交缺失字段。完成筛选且没有入选风险时notice_items填写[]；缺数据列limitations，不得误称无风险。",
         }
         raise ValueError(json.dumps(diagnostic, ensure_ascii=False, separators=(",", ":"))) from error
     return request("risk-draft", validated.model_dump(mode="json"))

@@ -297,6 +297,8 @@ def _read_instrument_price_risk(session, instrument_id, *, as_of):
     series = chart.payload_json.get("research_returns") or {}
     calendar = (instrument.source_settings_json or {}).get("market_calendar") or instrument.exchange_code
     data = ewma_price_evidence(series, instrument_type=instrument.instrument_type, calendar=calendar, as_of=cutoff)
+    from watchlist_app.services.risk_monitoring import retained_monitoring_summary
+    data["monitoring_snapshot"] = retained_monitoring_summary(session, instrument_id, as_of=cutoff)
     return _evidence("价格波动研究 · 30日半衰期EWMA" if instrument.instrument_type == "crypto" else "价格波动研究 · 21交易日半衰期EWMA", cutoff, data, data["methodology"],
                      instrument_id=instrument_id, input_snapshot={
                          "source_type": "instrument_chart_snapshot", "instrument_id": instrument_id,

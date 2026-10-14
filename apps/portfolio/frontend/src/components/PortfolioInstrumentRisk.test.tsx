@@ -263,3 +263,11 @@ it('labels a withdrawn finding as invalidated history even if an old active snap
   expect(screen.queryByText('风险仍有效 · 新进展待复核')).not.toBeInTheDocument()
   expect(screen.queryByText('旧确认')).not.toBeInTheDocument()
 })
+
+it('loads selected portfolio risk independently when holdings context is unavailable', async () => {
+  getHoldingsWorkspace.mockRejectedValueOnce(new Error('持仓上下文读取失败'))
+  render(<PortfolioRiskDrawer portfolioId="3" onClose={vi.fn()} onAskAssistant={vi.fn()} />)
+  expect(screen.getByTestId('officer-scope')).toHaveTextContent('portfolio_id=3')
+  expect(await screen.findByText('持仓上下文读取失败')).toBeInTheDocument()
+  expect(screen.getByTestId('officer-scope')).toHaveTextContent('portfolio_id=3')
+})

@@ -57,3 +57,58 @@ def test_risk_bridge_forwards_summary_and_versioned_detail_under_same_actor(monk
     instrument_risk.case_detail('shared-case', updated_at='2026-09-27T08:00:00+00:00')
     assert calls[-1].full_url.endswith('/api/risk/cases/shared-case?updated_at=2026-09-27T08%3A00%3A00%2B00%3A00')
     assert calls[-1].get_header('Authorization') == 'Bearer test-session'
+
+
+@pytest.mark.parametrize("method,path,payload", [
+    ("PATCH", "/api/instrument-risk/notices/run-one/notice-one", {"expected_notice_version": 1, "level": "medium", "title": "更正", "body": "组合编辑者意见", "reason": "事实更新"}),
+    ("PUT", "/api/instrument-risk/notices/receipt", {"notice_id": "notice-one", "notice_version": 1, "run_id": "run-one", "action": "read"}),
+])
+def test_notice_actions_forward_team_reader_with_original_identity(raw_client, monkeypatch, method, path, payload):
+    from portfolio_app.api.authorization import authenticated_principal
+    reader = Principal("portfolio-editor", "Portfolio Editor", "default", team_role="reader", credential="reader-session")
+    raw_client.app.dependency_overrides[authenticated_principal] = lambda: reader
+    calls = []
+
+    def request(req, timeout):
+        calls.append(req)
+        return BytesIO(b'{"accepted": true}')
+
+    monkeypatch.setattr(instrument_risk, "urlopen", request)
+    response = raw_client.request(method, path, json=payload)
+    assert response.status_code == 200, response.text
+    assert calls[-1].method == method
+    assert calls[-1].full_url.endswith(path.replace("/api/instrument-risk", "/api/risk"))
+    assert calls[-1].get_header("Authorization") == "Bearer reader-session"
+    assert json.loads(calls[-1].data) == payload
+
+    def denied(req, timeout):
+        raise HTTPError(req.full_url, 403, "Forbidden", {}, BytesIO(b'{"detail":"notice scope denied"}'))
+
+    monkeypatch.setattr(instrument_risk, "urlopen", denied)
+    response = raw_client.request(method, path, json=payload)
+    assert response.status_code == 403
+    assert response.json()["detail"] == "notice scope denied"
+    # The exception is limited to notice actions; shared rule writes stay denied.
+    response = raw_client.put("/api/instrument-risk/rules/fund", json={"drawdown_limit": -0.2})
+    assert response.status_code == 403
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("principal", [
+    Principal(None, "Service", "default", kind="service", service_id="service", local_unrestricted=True),
+    Principal("editor", "Editor", "default", resource_scope={"kind": "portfolio", "id": "investment-studio"}),
+    Principal("editor", "Editor", "default", resource_scope={"kind": "capture", "id": "capture-one"}),
+])
+@pytest.mark.parametrize("method,path", [
+    ("PATCH", "/api/instrument-risk/notices/run-one/notice-one"),
+    ("PUT", "/api/instrument-risk/notices/receipt"),
+])
+def test_notice_actions_reject_service_and_delegation_before_forwarding(raw_client, monkeypatch, principal, method, path):
+    from portfolio_app.api.authorization import authenticated_principal
+    raw_client.app.dependency_overrides[authenticated_principal] = lambda: principal
+
+    def unexpected_forward(*args, **kwargs):
+        raise AssertionError("notice action must not reach Watchlist")
+
+    monkeypatch.setattr(instrument_risk, "urlopen", unexpected_forward)
+    assert raw_client.request(method, path, json={}).status_code == 403

@@ -138,6 +138,19 @@ def test_duplicate_end_dates_cannot_double_weight_a_scenario():
     assert result["rows"][0]["reason"] == "invalid_return_period"
 
 
+@pytest.mark.parametrize("status", ["unavailable", "pending", None])
+def test_explicit_invalid_interval_status_cannot_be_overridden_by_a_retained_number(status):
+    sample = points([-.01] * 40)
+    sample[10].update(status=status, value=-.4)
+    result = calculate(workspace([holding(returns=sample)]))
+    assert result["status"] == "unavailable"
+    assert result["var_amount"] is None and result["expected_shortfall_amount"] is None
+    if status == "unavailable":
+        assert result["rows"][0]["rejected_period_count"] == 1
+    else:
+        assert result["rows"][0]["reason"] == "invalid_return_period"
+
+
 def test_verified_calendar_retains_weekend_session_but_rejects_missing_session(monkeypatch):
     sessions = [date(2026, 6, 5), date(2026, 6, 8), date(2026, 6, 9), date(2026, 6, 10)]
     monkeypatch.setattr(service, "market_calendar_sessions", lambda *_: tuple(sessions))

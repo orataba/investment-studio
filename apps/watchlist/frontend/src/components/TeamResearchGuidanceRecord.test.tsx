@@ -38,6 +38,26 @@ it('preserves the draft on a conflict and only uses the newer revision after exp
   await waitFor(() => expect(api.save).toHaveBeenLastCalledWith(expect.objectContaining({ guidance: '我的未保存指导', expected_revision: 5 })))
 })
 
+it('requires an audit reason only when changing the risk role and submits it with the revision', async () => {
+  api.save.mockImplementation(async input => ({ ...guidance, ...input, revision: 5 }))
+  render(<TeamResearchGuidanceRecord />)
+  fireEvent.click(await screen.findByRole('button', { name: '编辑团队指导' }))
+  expect(screen.queryByLabelText('风控指导修改原因')).toBeNull()
+  fireEvent.change(screen.getByLabelText('风控专员'), { target: { value: '只保留重要风险。' } })
+  const reason = screen.getByLabelText('风控指导修改原因')
+  const save = screen.getByRole('button', { name: '保存团队指导' })
+  expect(reason).toHaveProperty('required', true)
+  expect(save).toHaveProperty('disabled', true)
+  fireEvent.change(reason, { target: { value: '   ' } })
+  fireEvent.click(save)
+  expect(api.save).not.toHaveBeenCalled()
+  fireEvent.change(reason, { target: { value: '  明确重要性筛选  ' } })
+  fireEvent.click(save)
+  await waitFor(() => expect(api.save).toHaveBeenCalledWith({ guidance: guidance.guidance,
+    expected_revision: 4, section_skills: { ...guidance.section_skills, risk: '只保留重要风险。' }, reason: '明确重要性筛选' }))
+  await screen.findByRole('button', { name: '编辑团队指导' })
+})
+
 it('allows readers to inspect the six saved roles without exposing edit actions', async () => {
   api.role = 'reader'
   render(<TeamResearchGuidanceRecord />)

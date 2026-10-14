@@ -7,7 +7,7 @@ const roles: Record<TeamResearchRole, string> = {
   overview: '主研究员 · 总览', recent_updates: '动态专员 · 标的动态', themes: '主题专员 · 重要研究主题', quantitative: '量化专员 · 量化指标',
   risk: '风控专员', review: '事实复核员',
 }
-type Draft = Pick<TeamResearchGuidance, 'guidance' | 'section_skills'> & { expected_revision: number }
+type Draft = Pick<TeamResearchGuidance, 'guidance' | 'section_skills'> & { expected_revision: number; reason: string }
 
 export default function TeamResearchGuidanceRecord() {
   const canWrite = useStudioAccount()?.team_role !== 'reader'
@@ -24,12 +24,15 @@ export default function TeamResearchGuidanceRecord() {
       .catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '团队研究指导读取失败') })
     return () => controller.abort()
   }, [refresh])
-  const edit = (value: TeamResearchGuidance): Draft => ({ guidance: value.guidance, section_skills: { ...value.section_skills }, expected_revision: value.revision })
+  const edit = (value: TeamResearchGuidance): Draft => ({ guidance: value.guidance, section_skills: { ...value.section_skills }, expected_revision: value.revision, reason: '' })
+  const riskChanged = Boolean(draft && draft.section_skills.risk !== (latest ?? saved)?.section_skills.risk)
   async function save(event: FormEvent) {
     event.preventDefault()
     if (!draft || !canWrite || busy) return
+    if (riskChanged && !draft.reason.trim()) { setError('修改风控指导须填写修改原因'); return }
     setBusy(true); setError('')
-    try { setSaved(await saveTeamResearchGuidance(draft)); setDraft(null); setLatest(null) }
+    const { reason, ...value } = draft
+    try { setSaved(await saveTeamResearchGuidance({ ...value, ...(riskChanged ? { reason: reason.trim() } : {}) })); setDraft(null); setLatest(null) }
     catch (reason) { setError(reason instanceof Error ? reason.message : '团队研究指导保存失败') }
     finally { setBusy(false) }
   }
@@ -48,10 +51,11 @@ export default function TeamResearchGuidanceRecord() {
     {draft ? <form className="research-material-form" onSubmit={event => void save(event)}>
       <label className="research-material-wide">团队共同研究指导<textarea rows={4} value={draft.guidance} maxLength={60000} disabled={busy} onChange={event => setDraft({ ...draft, guidance: event.target.value })} /></label>
       <div className="research-material-wide research-section-skills">{Object.entries(roles).map(([key, label]) => <label key={key}>{label}<textarea rows={5} disabled={busy} value={draft.section_skills[key as TeamResearchRole] || ''} onChange={event => setDraft({ ...draft, section_skills: { ...draft.section_skills, [key]: event.target.value } })} /></label>)}</div>
+      {riskChanged && <label className="research-material-wide">风控指导修改原因<input required maxLength={1000} disabled={busy} value={draft.reason} onChange={event => setDraft({ ...draft, reason: event.target.value })} /></label>}
       <p className="research-material-wide sector-research-note">保存后用于后续研究，不会立即启动研究。</p>
       {latest && <section className="research-guidance-latest research-material-wide"><h4>最新已保存指导</h4><p translate="no">{latest.guidance || '—'}</p>{Object.entries(roles).map(([key, label]) => <details key={key}><summary>{label}</summary><p className="research-dossier-text" translate="no">{latest.section_skills[key as TeamResearchRole]}</p></details>)}<p>你的草稿已保留。核对后保存，将替换上面的最新指导。</p><button type="button" disabled={busy} onClick={() => setDraft(edit(latest))}>用最新指导替换草稿</button></section>}
       {error && <button className="research-material-wide" type="button" disabled={busy} onClick={() => void readLatest()}>读取最新指导并核对</button>}
-      <div className="sector-research-actions research-material-wide"><button type="submit" disabled={busy}>{busy ? '保存中…' : '保存团队指导'}</button><button type="button" disabled={busy} onClick={() => { setDraft(null); setLatest(null); setError('') }}>取消</button></div>
+      <div className="sector-research-actions research-material-wide"><button type="submit" disabled={busy || (riskChanged && !draft.reason.trim())}>{busy ? '保存中…' : '保存团队指导'}</button><button type="button" disabled={busy} onClick={() => { setDraft(null); setLatest(null); setError('') }}>取消</button></div>
     </form> : saved && <>
       <p className="research-dossier-text" translate="no">{saved.guidance || '—'}</p>
       <div className="research-section-skills">{Object.entries(roles).map(([key, label]) => <details key={key}><summary>{label}</summary><p className="research-dossier-text" translate="no">{saved.section_skills[key as TeamResearchRole]}</p></details>)}</div>

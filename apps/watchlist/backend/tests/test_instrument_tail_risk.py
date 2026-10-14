@@ -167,14 +167,26 @@ def test_hk_adjacent_sessions_include_holiday_weekend_and_no_filled_returns():
     assert result["expected_shortfall"] == pytest.approx(.01)
 
 
-def test_endpoint_reuses_canonical_chart_validates_identity_and_options(client, monkeypatch):
-    from watchlist_app.api.routes import funds as api
+def test_endpoint_reads_materialized_snapshot_validates_identity_and_options(client, monkeypatch):
+    from watchlist_app.db.models import InstrumentRiskReadModel
+    from watchlist_app.db.session import get_session_factory
     from .conftest import seed_shared_instrument
     seed_shared_instrument({"instrument_id": "risk-api", "instrument_name": "Risk", "instrument_type": "etf",
         "currency": "USD", "exchange_code": "XNYS", "identifiers": [{"identifier_type": "ticker", "identifier_value": "RISK-API", "is_primary": True}], "lifecycle_state": {"status": "active"}})
     assert client.post("/api/instruments/risk-api/resolve").status_code == 200
-    monkeypatch.setattr(api, "get_instrument_chart_data", lambda *args: {**chart(), "instrument_id": "risk-api"})
-    monkeypatch.setattr(api, "instrument_tail_risk", lambda payload, **kwargs: instrument_tail_risk(payload, today=TODAY, **kwargs))
+    result = instrument_tail_risk({**chart(), "instrument_id": "risk-api"}, instrument_type="etf", today=TODAY, confidence=.99, lookback_days=365)
+    with get_session_factory()() as session:
+        record = session.get(InstrumentRiskReadModel, "risk-api")
+        if record is None:
+            from datetime import UTC, datetime
+            record = InstrumentRiskReadModel(instrument_id="risk-api", data_freshness_status="fresh",
+                last_recalculated_at=datetime.now(UTC), source_cutoff_at=datetime.now(UTC))
+            session.add(record)
+        record.payload_json = {"monitoring": {"instrument_id": "risk-api", "definition_version": "test-monitoring",
+            "metrics": [], "tail_risk_options": [result]}}
+        session.commit()
+    import watchlist_app.services.risk_monitoring as monitoring
+    monkeypatch.setattr(monitoring, "instrument_tail_risk", lambda *args, **kwargs: pytest.fail("GET must not recalculate"))
     response = client.get("/api/instruments/risk-api/tail-risk?confidence=.99&lookback_days=365")
     assert response.status_code == 200
     assert response.json()["instrument_id"] == "risk-api"

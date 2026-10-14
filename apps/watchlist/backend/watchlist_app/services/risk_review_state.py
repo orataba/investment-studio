@@ -181,9 +181,10 @@ def automatic_review_inputs(state, *, tracked_case_ids=()):
     for row in cases:
         evidence = row.get("evidence_json") or {}
         assessment = evidence.get("risk_assessment") or {}
-        active = row.get("trigger_active") and row.get("status") not in {"handled", "resolved"}
+        from watchlist_app.services.risk_notices import mandatory_case
+        active = (row.get("trigger_active") and row.get("status") not in {"handled", "resolved"}) or mandatory_case(row)
         pending = assessment.get("status") == "pending"
-        if row.get("severity") != "attention" or not (active or pending or row.get("case_id") in tracked_case_ids):
+        if row.get("severity") not in {"attention", "severe"} or not (active or pending or row.get("case_id") in tracked_case_ids):
             continue
         if evidence.get("direction") == "opportunity" and not assessment:
             continue
@@ -229,7 +230,7 @@ def new_referral_since(state, cutoff):
         return False
     for row in (state or {}).get("cases", []):
         assessment = (row.get("evidence_json") or {}).get("risk_assessment") or {}
-        if row.get("severity") != "attention" or assessment.get("status") != "pending":
+        if row.get("severity") not in {"attention", "severe"} or assessment.get("status") != "pending":
             continue
         try:
             submitted = datetime.fromisoformat(str(assessment.get("submitted_at")).replace("Z", "+00:00"))

@@ -466,3 +466,12 @@ textarea {
 .home-risk-review-state { flex: 0 0 auto; font-size: 10px; color: var(--studio-muted); }
 .home-risk-coverage { margin: 8px 0 0; font-size: 11px; }
 @media (max-width: 760px) { .home-risk-content li a { flex-wrap: wrap; gap: 3px 8px; } .home-risk-title { flex: 1; } .home-risk-review-state { margin-left: 83px; } }
+.home-risk-content ol { margin: 0; padding-left: 20px; }
+.home-risk-content ol > li::marker { color: var(--studio-muted); font-variant-numeric: tabular-nums; }
+.home-risk-content ol > li + li { border-top: 1px solid var(--studio-line); padding-top: 10px; margin-top: 10px; }
+.home-risk-content ol a { flex-wrap: wrap; gap: 5px 10px; }
+.home-risk-content ol .home-risk-title { white-space: normal; }
+.home-risk-level { font-size: 10px; border: 1px solid var(--studio-line); padding: 0 4px; }
+.home-risk-level-high { color: #a13f3f; border-color: #dfbaba; }
+.home-risk-level-medium { color: #886428; border-color: #d9c9a9; }
+.home-risk-body { color: var(--studio-ink); margin: 4px 0 0; max-width: 100ch; }

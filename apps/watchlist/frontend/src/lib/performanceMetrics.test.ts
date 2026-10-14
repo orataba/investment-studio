@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  downsideDeviation,
   buildPerformanceMetricPeriodSnapshots,
   buildPerformanceMetricSnapshot,
 } from './performanceMetrics'
@@ -80,4 +81,10 @@ it('never treats independently rebased return chains as a loss, even for direct 
   expect(invalid.maxDrawdown).toBeNull()
   expect(buildPerformanceMetricSnapshot(points.slice(2)).periodReturn).toBeCloseTo(10)
   expect(buildPerformanceMetricPeriodSnapshots(points).find(p => p.key === 'SI')?.snapshot.periodReturn).toBeNull()
+})
+
+it('uses zero downside for valid nonnegative returns, all observations for mixed returns, and no value without observations', () => {
+  expect(downsideDeviation([0, .01, .02])).toBe(0)
+  expect(downsideDeviation([-.02, 0, .03, -.04])).toBeCloseTo(Math.sqrt((.02 ** 2 + .04 ** 2) / 4))
+  expect(downsideDeviation([])).toBeNull()
 })

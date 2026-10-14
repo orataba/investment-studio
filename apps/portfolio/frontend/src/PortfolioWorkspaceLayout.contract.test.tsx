@@ -22,6 +22,7 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioUnresolvedOptionActions: vi.fn(),
   getWorkspaceSummaryForPortfolio: vi.fn(),
   getHoldingsWorkspace: vi.fn(),
+  requestInstrumentRisk: vi.fn(),
   updatePortfolioRiskPolicy: vi.fn(),
   updatePortfolioSettings: vi.fn(),
 }))
@@ -39,6 +40,7 @@ vi.mock('./components/PortfolioAccessProvider', () => ({ usePortfolioAccess: () 
 vi.mock('./lib/preload', () => ({
   preloadPortfolioSection: vi.fn(),
 }))
+vi.mock('../../../../packages/ui/src/RiskOfficerPanel', () => ({ default: () => <section aria-label="Selected risk alerts" /> }))
 vi.mock('./components/PortfolioInstrumentRisk', () => ({
   default: ({ portfolioId, onAskAssistant }: { portfolioId: string; onAskAssistant: (id: string, question: string, reference?: { instrument_id: string; event_case_id: string; event_version_id: string }) => void }) =>
     <section aria-label="Risk content" data-portfolio={portfolioId}><button type="button">Inspect risk</button><button type="button" onClick={() => onAskAssistant('asset-1', '这项风险如何影响组合？', { instrument_id: 'asset-1', event_case_id: 'event-1', event_version_id: 'event-1:2' })}>Ask about risk</button></section>,

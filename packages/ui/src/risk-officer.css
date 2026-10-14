@@ -61,3 +61,23 @@
 .risk-officer-limitations { margin-top: 12px; }
 .risk-officer-limitations ul { margin: 5px 0; padding-left: 18px; color: #70808c; font-size: 12px; }
 .risk-officer-limitations li { margin: 5px 0; }
+.risk-officer-coverage-group + .risk-officer-coverage-group { margin-top: 10px; border-top: 1px solid #e6ebef; padding-top: 5px; }
+.risk-notice-list { margin: 16px 0; padding-left: 22px; }
+.risk-notice-list > li { padding: 12px 0; border-bottom: 1px solid #e6ebef; }
+.risk-notice-list > li::marker { color: #70808c; font-variant-numeric: tabular-nums; }
+.risk-notice-title { display: flex; gap: 9px; align-items: baseline; }
+.risk-notice-level { flex-shrink: 0; font-size: 11px; line-height: 1.6; padding: 0 5px; color: #6c7b88; border: 1px solid #dce3e8; }
+.risk-notice-level-high { color: #a13f3f; border-color: #dfbaba; }
+.risk-notice-level-medium { color: #886428; border-color: #d9c9a9; }
+.risk-notice-level-pending { color: #6a657c; }
+.risk-officer-workpapers, .risk-guidance { margin-top: 12px; }
+.risk-guidance-layers { display: grid; gap: 20px; }
+.risk-guidance-editor { display: grid; gap: 7px; }
+.risk-guidance-editor textarea, .risk-guidance-editor input { width: 100%; box-sizing: border-box; font: inherit; color: inherit; border: 1px solid #cdd8df; border-radius: 0; background: #fff; padding: 8px; }
+.risk-guidance-editor label { display: grid; gap: 5px; font-size: 12px; }
+.risk-guidance-editor > button { justify-self: start; }
+.risk-guidance-version { border-top: 1px solid #e6ebef; padding: 8px 0; }
+.risk-case-workpapers > summary { cursor: pointer; padding: 14px 0; font-size: 13px; color: #526a78; }
+.risk-notice-preferences > div { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.risk-notice-correction { margin: 10px 0; }
+.risk-guidance-editor select { height: 30px; color: inherit; font: inherit; border: 1px solid #cdd8df; border-radius: 0; background: transparent; }

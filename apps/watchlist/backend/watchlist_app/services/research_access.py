@@ -283,6 +283,14 @@ def enforce_request(request, session):
         return
     if request.method in {"GET", "HEAD", "OPTIONS"} or path == "/api/screener/query":
         return
+    if path == "/api/risk/notices/receipt" and request.method == "PUT":
+        # A reader may record their own receipt; the handler rechecks the exact
+        # notice's current scope and version and only writes personal settings.
+        return
+    if re.fullmatch(r"/api/risk/notices/[^/]+/[^/]+", path) and request.method == "PATCH":
+        # Portfolio editors need not be team-research editors. The handler
+        # checks human identity and the original team's or portfolio's write role.
+        return
     # Personal discussion and display settings never modify shared research.
     personal = re.fullmatch(r"/api/research/topics(?:/[^/]+(?:/(?:analysis|entries|files))?)?", path)
     personal_entry = re.fullmatch(r"/api/research/entries/[^/]+/completion", path)

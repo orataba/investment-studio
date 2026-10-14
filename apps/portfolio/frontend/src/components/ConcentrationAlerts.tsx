@@ -32,10 +32,9 @@ export default function ConcentrationAlerts({ portfolioId, asOfDate }: { portfol
   return <aside className="inline-notice inline-notice-warning concentration-alerts" aria-label={zh ? '集中度提醒' : 'Concentration alerts'}>
     <div><strong>{zh ? '集中度提醒' : 'Concentration alerts'}</strong> · <a href={href}>{zh ? '查看集中度' : 'View concentration'}</a></div>
     {error ? <p>{zh ? '集中度暂不可用：' : 'Concentration unavailable: '}{concentrationMessage(error, zh)}</p> : null}
-    {breaches.length ? <ul>{breaches.slice(0, 3).map((row) => <li key={`${row.scope.scope}:${row.scope.taxonomy_id}:${row.entity_id}`}>
+    {breaches.length ? <ul>{breaches.map((row) => <li key={`${row.scope.scope}:${row.scope.taxonomy_id}:${row.entity_id}`}>
       {row.name}{row.scope.scope === 'taxonomy' ? ` · ${row.scope.name}` : ''}：{row.weight == null ? '≥ ' : ''}{formatPercent(row.weight ?? row.lower_bound_weight)} / {zh ? '上限' : 'limit'} {formatPercent(row.limit_weight)}
     </li>)}</ul> : null}
-    {breaches.length > 3 ? <p>{zh ? `共 ${breaches.length} 项超限` : `${breaches.length} limits exceeded`}</p> : null}
     {unavailable.length ? <p>{zh ? `${unavailable.length} 项已设上限缺少足够数据，暂不能判断。` : `${unavailable.length} configured limits cannot be assessed because data is incomplete.`}</p> : null}
   </aside>
 }

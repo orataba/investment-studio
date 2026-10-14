@@ -182,7 +182,9 @@ Watchlist 只直接维护自己的持仓快照。历史 `nav_fact` 只保留为�
 - summary / chart / performance / risk / exposure read models；人工 rating 保存在 research profile，不是计算 read model
 - instrument summary payload
 
-`GET /api/instruments/{instrument_id}/tail-risk` 使用既有 canonical chart 的普通收益区间即时派生历史 VaR／ES；置信度 0.95／0.99，回看 365／1095／1825 天。返回真实样本、披露应到日期、历史缺口及不可用原因，不增加风险快照表、不从显示复权价格重复推导。经济与样本契约见 [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)。
+`GET /api/instruments/{instrument_id}/monitoring` 读取后台物化的固定指标目录（回撤、区间最大回撤、1M 滚动波动／下行偏差、VaR／ES）、序列、样本口径和不可用原因；`metric_snapshot_id` 查询参数读取留存旧版。`GET /api/instruments/{instrument_id}/tail-risk` 选择同份快照预计算的置信度 0.95／0.99 与回看 365／1095／1825 天组合，保留原小数收益单位，不从显示价格重复推导。历史合同新增到既有 `risk_snapshot.monitoring_json`，旧行空值不伪造历史；最新投影存 `InstrumentRiskReadModel.payload_json.monitoring`，供 agent 的精简数值在 `monitoring_summary`；风险 workspace 与普通 `/risk` 接口只返回该摘要，完整曲线留在专用监测接口。确定性 worker 随来源和应到时钟重建，读接口不计算，独立于付费研究 agent。
+
+`PUT /api/risk/rules/{instrument_id}` 保留 `drawdown_limit`、`period_limits`，可附 `severities`（drawdown/day/week/month/quarter 对应 attention 或 severe）与 `change_reason`。编辑界面传回读取时的 `expected_rule_version`；版本已变时返回 409，避免覆盖另一人的编辑。旧规则默认 attention；显式严重且有效触发才产生 `mandatory_notice`。`calibration_json` 保留初始来源并追加 `rule_revision`、`rule_history`，风险 workspace 返回 `rule_version`、每条规则的 `metric_snapshot_id`、严重性和强制提示状态。`POST /api/risk/rules/{instrument_id}/preview` 接受相同输入，只读比较留存样本上的新旧历史命中及缺失数量，不改变规则、事项或通知。经济、统计、频率和历史边界见 [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)。
 
 Performance snapshot 的 `return_1w / return_1m / return_3m / return_6m / return_mtd / return_ytd / return_1y` 必须完整投影到 `watchlist_row_read_model`、field registry、筛选/排序和导出。新增窗口时不能只改计算 snapshot 而遗漏 migration、repository 或 serializer。窗口边界及 return semantics 见 [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)。
 
@@ -239,7 +241,11 @@ Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会
 
 `context.research_tasks` 按任务保存角色、标的、主题范围、父任务、执行尝试及输入截点。上下文路径支持字符串字段及整数数组索引；主研究员通过 `task_results` 读取提案，子会话只通过原生 `read_assigned_context` 定位自己的分工和直接子任务。当前有效任务结束后，只有主研究员可提交最终草稿；独立核证读取各任务原始风险与限制。事件没有实质变化时可提交稀疏回执 `{action: "checked", event_key, event_version_id}`，不得附替代正文、来源或日期；服务核对冻结与当前版本，仅更新复核时间。提案不是独立事实来源，不直接发布事件或主题，也不修改人工记录。恢复时复用已验证且输入未变的结果，未完成任务留存中断原因。
 
-`GET/PUT /api/research/guidance` 读取／保存团队共同 `guidance` 与六个角色的 `section_skills`（overview、recent_updates、themes、quantitative、risk、review）。写入仅允许团队可写成员，使用 `expected_revision` 并保留版本与作者；未保存的默认框架读取不落库。新运行在准备期冻结团队指导，工具仅投影本角色所需的部分，旧运行继续原冻结含义。
+`GET/PUT /api/research/guidance` 读取／保存团队共同 `guidance` 与六个角色的 `section_skills`（overview、recent_updates、themes、quantitative、risk、review）。写入仅允许团队可写成员，使用 `expected_revision` 并保留版本与作者；修改 risk 文本还须提供非空 `reason`，其他角色不新增原因要求。未保存的默认框架读取不落库。新运行在准备期冻结团队指导，工具仅投影本角色所需的部分，旧运行继续原冻结含义。
+
+`GET/PUT /api/risk/guidance` 提供团队通用与单标的风险补充，保存使用 `scope`、可选 `instrument_id`、`text`、`expected_revision` 和必填 `reason`，只更新对应风险字段并保留其他研究指导及其作者时钟。展示用 `content_revision` 表示风险文本的实际版本，并发保存仍核对底层 `revision`；从未设置的标的补充显示内容版本 0、空作者与时间，已有文本再清空则形成真实新版本。`GET /api/risk/guidance/preview` 只读已有案例和上次正式筛选，不调用模型模拟未保存指导。
+
+`GET /api/risk/review` 的 `notice_items` 是当前范围的默认短提示，`notice_status` 区分已筛选、待筛选与不可用。首页使用 `GET /api/risk/alerts?all=true` 读取全部团队可见短提示及严重规则事实。`PATCH /api/risk/notices/{run_id}/{notice_id}` 带 `expected_notice_version`、等级、标题、正文及原因，更正须具备原团队或组合的写权限。`PUT /api/risk/notices/receipt` 保存本人当前提示版本的已读／静默状态，严重规则版本通过 `rule_versions` 一并核对；只读成员也可记录自己的回执。Portfolio 经 `/api/instrument-risk` 原身份转发，服务器重新检查原提示范围，私有组合内容不进入团队首页。
 
 `PUT /api/research/instruments/{instrument_id}/dossier/mandate` 接受 `guidance`、四部分 `section_skills` 和 `expected_revision`。 此处是单标的补充，角色留空继承团队框架；修改不自动启动运行。`POST .../themes/{theme_id}/notes` 保存人工记录，`DELETE .../themes/{theme_id}` 按当前 revision 删除主题及研究引用，保护 PM、事件事实与风险状态。模型不得通过专员工具编辑用户 skill 或 PM 观点。
 

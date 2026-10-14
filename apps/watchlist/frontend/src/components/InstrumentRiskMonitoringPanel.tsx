@@ -4,21 +4,11 @@ import { LoadingNotice } from '../../../../../packages/ui/src/NoticeToast'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import type { ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import { getInstrumentTailRisk, type InstrumentTailRisk } from '../lib/instrumentTailRiskApi'
-import InstrumentRiskPanel from './InstrumentRiskPanel'
+import InstrumentMonitoringMetrics from './InstrumentMonitoringMetrics'
+import { riskUnavailableReason } from '../lib/instrumentRiskMessages'
 import './instrument-risk-monitoring.css'
 
-const reasons: Record<string, [string, string]> = {
-  unconfirmed_economic_returns: ['收益口径尚未确认，暂不计算日度风险。', 'Economic return semantics are unconfirmed; daily risk is unavailable.'],
-  non_daily_source: ['该资产没有已确认的日频收益，暂不计算日度 VaR / ES。', 'This asset has no confirmed daily returns; daily VaR / ES are unavailable.'],
-  unverified_daily_calendar: ['日频交易日历尚未确认，暂不计算日度风险。', 'The daily trading calendar is unverified; daily risk is unavailable.'],
-  missing_daily_return_intervals: ['实际样本内部或尾部存在缺失／不可用收益区间，暂不计算 VaR / ES。', 'Missing or unavailable intervals within or after the actual sample prevent VaR / ES.'],
-  incomplete_market_session: ['存在尚未收盘的行情日期，暂不使用该收益样本。', 'The return sample contains a market session that has not closed.'],
-  invalid_return_interval: ['收益区间存在无效或重复记录，暂不计算日度风险。', 'Invalid or duplicate return intervals prevent a daily estimate.'],
-  less_than_one_tail_observation: ['所选置信度的尾部不足一个观察样本，暂不显示 VaR / ES。', 'The selected tail contains less than one observation; VaR / ES are unavailable.'],
-  no_verified_daily_returns: ['所选区间没有有效日频收益，暂不计算。', 'No verified daily returns are available in this window.'],
-}
-
-export default function InstrumentRiskMonitoringPanel({ instrumentId, onAskAssistant }: {
+export default function InstrumentRiskMonitoringPanel({ instrumentId }: {
   instrumentId: string
   onAskAssistant?: (id: string, question: string, reference?: ResearchAssistantReference) => void
 }) {
@@ -55,6 +45,7 @@ export default function InstrumentRiskMonitoringPanel({ instrumentId, onAskAssis
     'No filling or time scaling. Tails below one effective observation are withheld; larger samples do not guarantee stable estimates or future loss bounds.',
   ]
   return <div className="instrument-risk-monitoring">
+    <InstrumentMonitoringMetrics key={instrumentId} instrumentId={instrumentId} />
     <section className="instrument-tail-risk" aria-label={zh ? '日度尾部风险' : 'Daily tail risk'}>
       <div className="instrument-tail-risk-heading"><h2>{zh ? '日度尾部风险' : 'Daily tail risk'}<InfoHint label={zh ? '风险计算口径' : 'Risk methodology'} detail={method} /></h2>
         <div className="instrument-tail-risk-controls">
@@ -62,7 +53,7 @@ export default function InstrumentRiskMonitoringPanel({ instrumentId, onAskAssis
           <label>{zh ? '回看' : 'Lookback'}<select value={lookbackDays} onChange={e => setLookbackDays(Number(e.target.value))}>{[[365, 1], [1095, 3], [1825, 5]].map(([days, years]) => <option key={days} value={days}>{years}{zh ? ' 年' : ' years'}</option>)}</select></label>
         </div>
       </div>
-      <LoadingNotice active={!data && !error} message={zh ? '正在计算风险…' : 'Calculating risk…'} />
+      <LoadingNotice active={!data && !error} message={zh ? '正在读取风险快照…' : 'Loading risk snapshot…'} />
       {error && <div role="alert">{error} <button onClick={() => setReload(v => v + 1)}>{zh ? '重试' : 'Retry'}</button></div>}
       {data && <>
         <div className="instrument-tail-risk-metrics">
@@ -70,7 +61,7 @@ export default function InstrumentRiskMonitoringPanel({ instrumentId, onAskAssis
           <div><span>ES / CVaR · {Math.round(confidence * 100)}%</span><strong>{pct(data.expected_shortfall)}</strong></div>
           <div><span>{zh ? '日频样本 / 尾部等效数' : 'Daily samples / Tail mass'}</span><strong>{data.observation_count} / {data.tail_effective_observations.toFixed(2)}</strong></div>
         </div>
-        {data.reason && <p className="instrument-tail-risk-warning" role="status">{reasons[data.reason]?.[zh ? 0 : 1] ?? data.reason}</p>}
+        {data.reason && <p className="instrument-tail-risk-warning" role="status">{riskUnavailableReason(data.reason, zh)}</p>}
         {data.source_stale && <p className="instrument-tail-risk-warning" role="status">{zh ? `有效收益尚未覆盖应到日期 ${data.latest_expected_date}，结果不能代表最新风险。` : `Valid returns do not cover the latest due date ${data.latest_expected_date}; this is not a current estimate.`}</p>}
         {data.freshness?.data_freshness_status === 'pending_recalc' && <p className="instrument-tail-risk-warning" role="status">{zh ? '收益数据正在更新，请以更新完成后的结果为准。' : 'Return data is being updated; use the completed result when available.'}</p>}
         {data.freshness?.data_freshness_status === 'stale' && <p className="instrument-tail-risk-warning" role="status">{zh ? '收益计算尚未更新至最新数据或设置，以下保留上次结果。' : 'The calculation has not caught up with the latest data or settings; these are retained results.'}</p>}
@@ -83,6 +74,5 @@ export default function InstrumentRiskMonitoringPanel({ instrumentId, onAskAssis
         {data.excluded_interval_count > 0 && <p className="instrument-tail-risk-warning">{zh ? `发现 ${data.excluded_interval_count} 条非日频或不可用收益区间，风险估计不可用。` : `${data.excluded_interval_count} non-daily or unavailable intervals prevent a risk estimate.`}</p>}
       </>}
     </section>
-    <InstrumentRiskPanel key={instrumentId} instrumentId={instrumentId} heading={zh ? '风险事项与跟踪' : 'Risk cases and follow-up'} onAskAssistant={onAskAssistant} />
   </div>
 }

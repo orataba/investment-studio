@@ -1,6 +1,6 @@
 # Investment Studio — Watchlist
 
-资产详情的五类工作面统一为总览、风险监测、投资研究、投资观点、资料。总览合并价格／净值与完整绩效及历史风险特征；风险监测提供适用的日度 VaR／ES 和既有事项跟踪，资料保留各资产真实档案与原编辑能力。旧表现和基金档案链接分别进入总览、资料。当前边界见 [详情架构](./docs/ASSET_DETAIL_ARCHITECTURE.md) 与 [收益序列契约](./docs/RETURN_SERIES_CONTRACT.md)。
+资产详情的五类工作面统一为总览、风险监测、投资研究、投资观点、资料。总览合并价格／净值与完整绩效及历史风险特征；风险监测提供后台计算的回撤、滚动波动、下行风险、适用的日度 VaR／ES、覆盖和规则编辑。风险提示单独展示筛选后的编号分级短提示，依据及事项跟踪留在二级。资料保留各资产真实档案与原编辑能力。旧表现和基金档案链接分别进入总览、资料。当前边界见 [详情架构](./docs/ASSET_DETAIL_ARCHITECTURE.md) 与 [收益序列契约](./docs/RETURN_SERIES_CONTRACT.md)。
 
 Watchlist 承载观察池、单资产研究、监控和本地物化 read model。当前主路径支持 `public_fund / private_fund / etf / equity / index / crypto`；其他 Instrument Data 类型不会被塞入通用详情页。
 

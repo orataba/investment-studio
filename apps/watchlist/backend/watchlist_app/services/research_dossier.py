@@ -79,6 +79,8 @@ class ResearchMandateInput(BaseModel):
     guidance: str = Field(default="",
         description="用户自然语言研究问题、目标、约束与偏好；研究员不可修改，也不构成独立事实。")
     section_skills: SectionSkills = Field(default_factory=SectionSkills)
+    risk_guidance: str = Field(default="", max_length=20000,
+        description="人工保存的本标的风险筛选与表达补充；不能更改确定性指标、规则、权限或严重信号必达约束。")
     focus_company_symbols: list[str] = Field(default_factory=list,
         description="人工明确指定的FMP公司代码；补充ETF前十大股票持仓，不从自然语言猜测，也不代表这些公司已经取得资料。")
     background: str = Field(min_length=1, max_length=6000,
@@ -242,7 +244,7 @@ def effective_mandate(payload: ResearchMandateInput, previous: dict | None, *, o
     """Resolve writer-owned method choices before both validation and publication."""
     value = payload.model_dump(mode="json")
     previous = ResearchMandateInput.model_validate(previous).model_dump(mode="json") if previous else None
-    for key, default in (("guidance", ""), ("section_skills", SectionSkills().model_dump()), ("focus_company_symbols", []), ("user_constraints", []), ("user_methods", []),
+    for key, default in (("guidance", ""), ("risk_guidance", ""), ("section_skills", SectionSkills().model_dump()), ("focus_company_symbols", []), ("user_constraints", []), ("user_methods", []),
                          ("report_preferences", ReportPreferences().model_dump(mode="json"))):
         if origin == "research" or key not in payload.model_fields_set:
             value[key] = deepcopy((previous or {}).get(key, default))
@@ -326,7 +328,8 @@ def read_mandate(session: Session, instrument_id: str) -> dict:
 
 def save_mandate(session: Session, instrument_id: str, payload: ResearchMandateInput, *, commit: bool = True,
                  origin: Literal["user", "research", "initial"] = "research",
-                 expected_revision: int | None = None) -> dict:
+                 expected_revision: int | None = None, change_reason: str | None = None,
+                 preserve_research_guidance: bool = False) -> dict:
     from watchlist_app.services.research_identity import research_identity
     research_actor = research_identity()
     topic = dossier_topic(session, instrument_id)
@@ -349,7 +352,8 @@ def save_mandate(session: Session, instrument_id: str, payload: ResearchMandateI
     if previous is not None:
         previous["guidance"] = _user_guidance(metadata["mandate"], metadata.get("user_focus", []))
     value = effective_mandate(payload, previous, origin=origin)
-    user_focus = [] if origin == "user" else deepcopy(metadata.get("user_focus", []))
+    update_research_guidance = origin == "user" and not preserve_research_guidance
+    user_focus = [] if update_research_guidance else deepcopy(metadata.get("user_focus", []))
     if origin == "user":
         # Human guidance cannot overwrite the researcher's evolving working notes.
         value["focus"] = deepcopy(entry.context_json["mandate"].get("focus", []) if entry else read_mandate(session, instrument_id)["focus"])
@@ -376,12 +380,14 @@ def save_mandate(session: Session, instrument_id: str, payload: ResearchMandateI
     author = {"origin": origin, "user_id": entry.author_user_id,
               "display_name": research_actor["display_name"] if origin == "user" else ("研究员" if origin == "research" else "系统初始化"),
               "requested_by_user_id": research_actor["user_id"], "service_id": research_actor.get("service_id")}
+    if change_reason:
+        author["reason"] = change_reason
     now = datetime.now(UTC)
     entry.context_json = {"role": "research_mandate", "instrument_id": instrument_id,
                           "mandate": value, "revision": revision, "versions": versions,
                           "author": author, "user_focus": user_focus,
-                          "guidance_author": author if origin == "user" else deepcopy(metadata.get("guidance_author")),
-                          "guidance_updated_at": now.isoformat() if origin == "user" else metadata.get("guidance_updated_at")}
+                          "guidance_author": author if update_research_guidance else deepcopy(metadata.get("guidance_author")),
+                          "guidance_updated_at": now.isoformat() if update_research_guidance else metadata.get("guidance_updated_at")}
     entry.updated_at = topic.updated_at = now
     session.flush()
     if commit:

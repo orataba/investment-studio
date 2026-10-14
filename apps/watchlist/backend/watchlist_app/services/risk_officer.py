@@ -168,17 +168,19 @@ def _research_context(session, instrument_id, notebook, *, inputs=None):
 
 
 def selected_cases(cases):
+    from watchlist_app.services.risk_notices import mandatory_case
     cases = sorted((case for case in cases if ((case["trigger_active"]
                     and case["status"] not in {"handled", "resolved"}
                     and ((case.get("evidence_json") or {}).get("direction") != "opportunity"
                          or (case.get("evidence_json") or {}).get("risk_assessment")))
-                    or ((case.get("evidence_json") or {}).get("risk_assessment") or {}).get("status") == "pending")
-                    and case["severity"] in {"attention", "coverage"}), key=lambda item: (
+                    or ((case.get("evidence_json") or {}).get("risk_assessment") or {}).get("status") == "pending"
+                    or mandatory_case(case))
+                    and case["severity"] in {"attention", "severe", "coverage"}), key=lambda item: (
                         {"immediate": 0, "review_soon": 1, "monitor": 2}.get((item.get("evidence_json") or {}).get("urgency"), 3),
                         {"major": 0, "material": 1, "limited": 2}.get((item.get("evidence_json") or {}).get("impact_level"), 3),
                         item["case_id"]))
-    research = [case for case in cases if case["severity"] == "attention" and case["signal"] not in QUANTITATIVE_SIGNALS]
-    quantitative = [case for case in cases if case["severity"] == "attention" and case["signal"] in QUANTITATIVE_SIGNALS]
+    research = [case for case in cases if case["severity"] in {"attention", "severe"} and case["signal"] not in QUANTITATIVE_SIGNALS]
+    quantitative = [case for case in cases if case["severity"] in {"attention", "severe"} and case["signal"] in QUANTITATIVE_SIGNALS]
     coverage = [case for case in cases if case["severity"] == "coverage"]
     return {"research": research, "quantitative": quantitative, "coverage": coverage}
 
@@ -272,6 +274,10 @@ def read_snapshot(session, **scope):
                 summary["longest_underwater_period_months"] = summary.pop("max_duration_months")
             summary["duration_note"] = "最长水下期是全样本统计，不是 peak_date 至 valley_date 的最大回撤区间时长，也不是当前回撤持续时间。"
             item["risk"] = {**risk, "drawdown_summary": summary}
+        monitoring = (item.get("risk") or {}).get("monitoring_summary")
+        if monitoring and monitoring.get("metric_snapshot_id"):
+            item["risk"]["monitoring_summary"] = {**monitoring,
+                "source_id": f"risk-monitoring:{monitoring['metric_snapshot_id']}"}
         item["performance_evidence"] = performance_evidence(session, item["instrument_id"], context=performance_inputs)
     categories = selected_cases(workspace["cases"])
     research, quantitative, coverage = (categories[key] for key in ("research", "quantitative", "coverage"))
@@ -339,6 +345,8 @@ def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=No
         session.add(topic)
         session.flush()
     session.refresh(topic, with_for_update=True)
+    from watchlist_app.services.research_access import require_topic_access
+    require_topic_access(session, topic)
     previous = session.scalar(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id)
         .order_by(ResearchEntry.created_at.desc()).limit(1))
     now = datetime.now(UTC)
@@ -418,19 +426,24 @@ def prepare_run(run_id):
         automatic_before = automatic_review_inputs(before_state, tracked_case_ids=tracked_ids)
         automatic_after = automatic_review_inputs(after_state, tracked_case_ids=tracked_ids)
         from watchlist_app.services.research_access import research_context_projection, research_projection_rows
-        relation, fields = research_context_projection(session, {"risk_inputs": JSON})
-        prior_query = select(fields["risk_inputs"].label("risk_inputs")).select_from(ResearchEntry)
+        relation, fields = research_context_projection(session, {"risk_inputs": JSON, "result": JSON})
+        prior_query = select(ResearchEntry.entry_id, fields["risk_inputs"].label("risk_inputs"), fields["result"].label("result")).select_from(ResearchEntry)
         if relation is not None:
             prior_query = prior_query.join(relation, true())
         prior = research_projection_rows(session, prior_query.where(ResearchEntry.topic_id == run.topic_id,
             ResearchEntry.status == "completed", ResearchEntry.entry_id != run.entry_id)
-            .order_by(ResearchEntry.created_at.desc()).limit(1), {"risk_inputs": ("risk_inputs",)})
+            .order_by(ResearchEntry.created_at.desc()).limit(1), {"risk_inputs": ("risk_inputs",), "result": ("result",)})
         topic = session.get(ResearchTopic, run.topic_id)
         topic.instrument_ids = snapshot["instrument_ids"]
         prepared_at = datetime.now(UTC).isoformat()
         from watchlist_app.services.research_guidance import freeze_guidance
+        from watchlist_app.services.risk_guidance import freeze_risk_guidance
         run.context_json = {**run.context_json, "risk_inputs": snapshot, "risk_input_version": bound_version, "prepared_at": prepared_at,
             "research_guidance": freeze_guidance(session, run.context_json),
+            "risk_guidance": freeze_risk_guidance(session, snapshot["instrument_ids"]),
+            "risk_notice_contract": 1,
+            "prior_notice_items": (prior[0].result or {}).get("notice_items") if prior else None,
+            "prior_notice_run_id": prior[0].entry_id if prior else None,
             "risk_automatic_inputs": automatic_before if automatic_before == automatic_after else None,
             "cutoff": prepared_at,
             **({"input_snapshot_cutoff": prepared_at} if snapshot["scope_available"] else {}),
@@ -462,7 +475,7 @@ class Priority(BaseModel):
         "Only cite current risk-scope IDs returned by performance_evidence, comparisons, research_context.records "
         "or portfolio sources. Cite research cases through case_ids; do not copy their nested original "
         "text:/computed: source_ids here. With case_ids, this list may be empty.")
-    next_watch: str = Field(min_length=1, max_length=2000)
+    next_watch: str = Field(default="", max_length=2000)
 
 
 class CaseAssessment(BaseModel):
@@ -473,11 +486,24 @@ class CaseAssessment(BaseModel):
     reason: str = Field(min_length=1, max_length=3000)
 
 
+class RiskNoticeItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    level: Literal["high", "medium", "low"]
+    title: str = Field(min_length=1, max_length=180)
+    body: str = Field(min_length=1, max_length=1200)
+    as_of: str | None = Field(default=None, description="Own fact/observation date; never the overall scope maximum date.")
+    instrument_ids: list[str] = Field(default_factory=list)
+    holding_ids: list[str] = Field(default_factory=list)
+    case_ids: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+
+
 class RiskReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    summary: str = Field(min_length=1, max_length=8000)
-    priorities: list[Priority]
+    summary: str = Field(default="", max_length=8000)
+    priorities: list[Priority] = Field(default_factory=list)
     limitations: list[str]
+    notice_items: list[RiskNoticeItem]
     case_assessments: list[CaseAssessment] = Field(default_factory=list)
 
 
@@ -502,7 +528,19 @@ def validate_result(run, result: RiskReview):
     if missing:
         raise ValueError("case_assessments 缺少待风控复核的研究上报：" + ", ".join(missing)
                          + "。请逐项绑定事件原版本并说明结论；证据不足可明确保留 pending 并说明原因。")
-    for priority_index, priority in enumerate(result.priorities):
+    notice_case_ids = set()
+    decisions = {item.case_id: item.status for item in result.case_assessments}
+    for notice in result.notice_items or []:
+        if notice_case_ids.intersection(notice.case_ids):
+            raise ValueError("同一风险事项不能重复进入多条短提示；保留独立 case 引用并合并重复表述。")
+        notice_case_ids.update(notice.case_ids)
+        if any(decisions.get(cid) in {"resolved", "dismissed"} for cid in notice.case_ids):
+            raise ValueError("本轮已解除或排除的事项不能同时发布为当前风险提示。")
+        if notice.case_ids and all(cases.get(cid, {}).get("severity") == "coverage" for cid in notice.case_ids):
+            raise ValueError("纯数据缺口须写入 limitations，不能评为高、中、低市场风险提示。")
+    for priority_index, priority in enumerate([*result.priorities, *(result.notice_items or [])]):
+        field_name = (f"priorities[{priority_index}]" if priority_index < len(result.priorities)
+                      else f"notice_items[{priority_index - len(result.priorities)}]")
         if (not set(priority.instrument_ids).issubset(ids) or not set(priority.case_ids).issubset(cases)
                 or not set(priority.holding_ids).issubset(holdings)):
             raise ValueError("研判引用了当前范围快照以外的标的或风险事项。")
@@ -513,7 +551,7 @@ def validate_result(run, result: RiskReview):
         unknown_sources = sorted(set(priority.source_ids) - sources.keys())
         if unknown_sources:
             raise ValueError(
-                f"priorities[{priority_index}].source_ids 引用了当前范围快照以外的直接来源："
+                f"{field_name}.source_ids 引用了当前范围快照以外的直接来源："
                 f"{json.dumps(unknown_sources, ensure_ascii=False)}。"
                 f"本轮允许的直接 source_ids：{json.dumps(sorted(sources), ensure_ascii=False)}。"
                 "研究事件及其原件请通过该事件的 case_id 填入 case_ids；"
@@ -547,8 +585,36 @@ def apply_result(session, run, payload):
         require_portfolio(snapshot["scope"]["id"])
     else:
         require_team_write()
+    # Publication and human corrections serialize on the scope topic. A model
+    # prepared before a human correction cannot silently overwrite that correction.
+    session.get(ResearchTopic, run.topic_id, with_for_update=True, populate_existing=True)
+    prior_id = run.context_json.get("prior_notice_run_id")
+    if prior_id:
+        from watchlist_app.services.research_access import research_context_projection, research_projection_rows
+        column = ResearchEntry.read_context_json
+        relation, fields = research_context_projection(session, {"risk_notice_items": JSON}, json_column=column)
+        query = select(fields["risk_notice_items"].label("risk_notice_items")).select_from(ResearchEntry).where(
+            ResearchEntry.entry_id == prior_id, ResearchEntry.topic_id == run.topic_id)
+        if relation is not None:
+            query = query.join(relation, true())
+        prior = research_projection_rows(session, query, {"risk_notice_items": ("risk_notice_items",)}, json_column=column)
+        if not prior or prior[0].risk_notice_items != run.context_json.get("prior_notice_items"):
+            raise ValueError("上一版风险提示在本轮研判期间已经更正，请重新读取后评估。")
     assessed = []
     bound_cases = {case["case_id"]: case for key in ("research", "quantitative", "coverage") for case in snapshot[key]}
+    notice_case_ids = {cid for notice in result.notice_items or [] for cid in notice.case_ids}
+    for cid in sorted(notice_case_ids):
+        case = session.get(RiskCase, cid, with_for_update=True, populate_existing=True)
+        bound = bound_cases[cid]
+        if case is None or any(getattr(case, key) != bound.get(key) for key in ("status", "trigger_active")):
+            raise ValueError("提示引用的风险状态已有更新，请基于当前状态重新评估。")
+        if case.signal.startswith("sector:"):
+            from watchlist_app.services.sector_research import event_record
+            if event_record(case)["event_version_id"] != (bound.get("evidence_json") or {}).get("event_version_id"):
+                raise ValueError("提示引用的研究事件已有新版本，请重新读取。")
+        elif any((case.evidence_json or {}).get(key) != (bound.get("evidence_json") or {}).get(key)
+                 for key in ("rule_version", "trigger_version")):
+            raise ValueError("提示引用的指标规则或触发事项已有新版本，请重新读取。")
     for assessment in sorted(result.case_assessments, key=lambda item: item.case_id):
         case = session.get(RiskCase, assessment.case_id, with_for_update=True, populate_existing=True)
         from watchlist_app.services.sector_research import event_record
@@ -600,6 +666,11 @@ def apply_result(session, run, payload):
         case.history_json = [*(case.history_json or []), {**change,
             "action": "risk_assessed", "detail": assessment.reason, "risk_assessment": value}]
     saved = result.model_dump()
+    from watchlist_app.services.risk_notices import version_notices
+    saved["notice_items"] = version_notices(result.notice_items,
+        previous=run.context_json.get("prior_notice_items"), run_id=run.entry_id,
+        reviewed_at=datetime.now(UTC).isoformat(), cases=bound_cases,
+        sources=evidence_sources(snapshot))
     saved["case_changes"] = case_changes
     saved["limitations"] = list(dict.fromkeys([*snapshot["limitations"], *saved["limitations"]]))
     if assessed:
@@ -630,12 +701,15 @@ def apply_result(session, run, payload):
             automatic_inputs = {**automatic_inputs, "cases": updated}
     run.context_json = {**run.context_json, "result": saved,
         "risk_input_version": bound_version,
+        "risk_notice_items": saved.get("notice_items"),
+        "risk_notice_scope": {**snapshot["scope"], "instrument_ids": snapshot["instrument_ids"]},
         "risk_automatic_inputs": automatic_inputs,
         "risk_review_view": {"input_as_of": snapshot["input_as_of"], "evidence_sources": evidence_sources(snapshot),
             "price_rule_summary": {**snapshot["price_rule_summary"], "instruments": [
                 {"instrument_id": item["instrument_id"], "name": item["name"], **item["price_rule_summary"]}
                 for item in snapshot["instruments"]]} if snapshot.get("price_rule_summary") else None,
-            "prepared_at": run.context_json.get("prepared_at")}}
+            "prepared_at": run.context_json.get("prepared_at"),
+            "risk_guidance": run.context_json.get("risk_guidance")}}
     run.body = saved["summary"]
     run.status = "completed"
     run.completed_at = datetime.now(UTC)
@@ -654,6 +728,14 @@ def evidence_sources(snapshot):
                    if record["kind"] == "pm_profile" else {}),
                 "note_id": value.get("note_id"), "revision_number": value.get("revision_number"),
                 "version_id": value.get("version_id"), "verification_status": "retained_judgment_not_independent_fact"}
+        monitoring = (item.get("risk") or {}).get("monitoring_summary")
+        if monitoring and monitoring.get("metric_snapshot_id"):
+            source_id = f"risk-monitoring:{monitoring['metric_snapshot_id']}"
+            sources[source_id] = {"title": f"{item['name']} · 固定风险监测快照", "instrument_id": item["instrument_id"],
+                "source_type": "computed_metric", "metric_snapshot_id": monitoring["metric_snapshot_id"],
+                "end_date": monitoring.get("as_of"), "frequency": monitoring.get("frequency"),
+                "definition_version": monitoring.get("definition_version"),
+                "detail_path": f"/instruments/{quote(item['instrument_id'], safe='')}?tab=risk"}
         evidence = item.get("performance_evidence")
         if not evidence:
             continue
@@ -684,10 +766,14 @@ def review_workspace(session, **scope):
         require_portfolio(scope["portfolio_id"])
     state = current_scope(session, scope)
     topic_id = _topic_id(scope)
+    topic = session.get(ResearchTopic, topic_id)
+    if topic is not None:
+        from watchlist_app.services.research_access import require_topic_access
+        require_topic_access(session, topic)
     latest = session.execute(select(ResearchEntry.entry_id, ResearchEntry.status, ResearchEntry.created_at,
         ResearchEntry.completed_at, ResearchEntry.body).where(ResearchEntry.topic_id == topic_id)
         .order_by(ResearchEntry.created_at.desc()).limit(1)).first()
-    fields = {key: JSON for key in ("result", "risk_input_version", "risk_review_view", "review_corrections")}
+    fields = {key: JSON for key in ("result", "risk_input_version", "risk_review_view", "review_corrections", "risk_automatic_inputs", "risk_notice_corrections")}
     relation, values = research_context_projection(session, fields)
     query = select(ResearchEntry.entry_id, ResearchEntry.status, ResearchEntry.completed_at,
         *(value.label(key) for key, value in values.items())).select_from(ResearchEntry)
@@ -712,8 +798,29 @@ def review_workspace(session, **scope):
                  if version is not None and completed.risk_input_version is not None else None)
         saved = {**completed.result, "run_id": completed.entry_id, "status": completed.status,
             "completed_at": completed.completed_at, **view, "stale": stale}
+        from watchlist_app.services.risk_review_state import automatic_review_inputs
+        baseline = completed.risk_automatic_inputs
+        if baseline is None:
+            baseline = automatic_review_inputs(completed.risk_input_version) if completed.risk_input_version else None
+        current_selection_inputs = automatic_review_inputs(state,
+            tracked_case_ids={item["case_id"] for item in (baseline or {}).get("cases", [])})
+        saved["selection_pending"] = baseline is None or baseline != current_selection_inputs
+        saved["notice_corrections"] = completed.risk_notice_corrections or []
         if completed.review_corrections:
             saved["review_note"] = "本次内容经 Codex 依据留存数据复核修订，原模型稿及修订原因已保留。"
+    from watchlist_app.services.risk_notices import current_notices
+    notices = current_notices(saved, state["cases"], scope_available=state["scope_available"])
+    instrument_names = {item["instrument_id"]: item["name"] for item in state["instruments"]}
+    coverage_items = [{"case_id": case["case_id"], "instrument_id": case["instrument_id"],
+                       "name": instrument_names.get(case["instrument_id"], case["instrument_id"]),
+                       "title": case["title"], "body": case.get("body") or case["title"]}
+                      for case in state["cases"] if case["severity"] == "coverage" and case["trigger_active"]]
+    coverage_notes = list(dict.fromkeys(item["body"] for item in coverage_items))
+    selected_complete = saved is not None and saved.get("notice_items") is not None
+    notice_status = ("unavailable" if not state["scope_available"] or coverage_notes else
+                     "assessed" if selected_complete and not saved.get("selection_pending") else "assessment_pending")
+    from watchlist_app.services.risk_notice_actions import apply_receipts
+    notices = apply_receipts(session, notices)
     model_work = model_work_status()
     configured = harness_available()
     reason = (model_work["message"] if model_work["paused"] else
@@ -722,6 +829,8 @@ def review_workspace(session, **scope):
     return serialize_payload({"available": not model_work["paused"] and configured and state["scope_available"],
         "model_work": model_work, "reason": reason, "scope": state["scope"],
         "input_as_of": state["input_as_of"], "counts": state["counts"],
+        "notice_items": notices, "notice_status": notice_status, "coverage_notes": coverage_notes,
+        "coverage_items": coverage_items,
         "instruments": [{key: item.get(key) for key in ("instrument_id", "name", "as_of_date")} for item in state["instruments"]],
         "holdings": state["holdings"], "limitations": state["limitations"], "latest_completed": saved,
         "latest_run": {"run_id": latest.entry_id, "status": latest.status, "created_at": latest.created_at,

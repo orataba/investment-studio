@@ -3,11 +3,11 @@ import apps from '../../apps.json'
 import { readRiskAlerts, riskDestination } from './riskAlerts'
 
 afterEach(() => vi.unstubAllGlobals())
-it('reads a small page of published important risks without creating work', async () => {
+it('reads all selected important risks without creating work or hiding severe items', async () => {
   const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ alerts: [], total: 0, has_more: false })))
   vi.stubGlobal('fetch', fetcher)
   expect(await readRiskAlerts('http://127.0.0.1:5173', 3)).toEqual({ alerts: [], total: 0, has_more: false })
-  expect(fetcher).toHaveBeenCalledWith('http://127.0.0.1:5173/api/risk/alerts?limit=3&offset=3', expect.objectContaining({ credentials: 'include', cache: 'no-store', signal: expect.any(AbortSignal) }))
+  expect(fetcher).toHaveBeenCalledWith('http://127.0.0.1:5173/api/risk/alerts?all=true', expect.objectContaining({ credentials: 'include', cache: 'no-store', signal: expect.any(AbortSignal) }))
 })
 it('keeps an unavailable source distinct from no published important risks', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 503, headers: { 'X-Request-ID': 'trace-1' } })))

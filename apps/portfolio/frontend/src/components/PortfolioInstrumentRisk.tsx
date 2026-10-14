@@ -19,10 +19,12 @@ import { usePortfolioSession } from './PortfolioSessionProvider'
 
 export default function PortfolioInstrumentRisk({
   portfolioId,
+  showOfficer = true,
   workspace,
   onAskAssistant,
 }: {
   portfolioId: string
+  showOfficer?: boolean
   workspace: HoldingsWorkspaceResponse
   onAskAssistant: (instrumentId: string, question: string, reference?: ResearchAssistantReference) => void
 }) {
@@ -60,7 +62,9 @@ export default function PortfolioInstrumentRisk({
   return (
     <section className="portfolio-section-block" aria-label={zh ? '持仓风险关注' : 'Holding risk watch'}>
       <RiskPanel
+        showOfficer={showOfficer}
         canWrite={Boolean(session?.can_write_team_research)}
+        canCorrect={Boolean(access?.can_edit)}
         canRun={Boolean(access?.can_read)}
         portfolioId={portfolioId}
         request={request}

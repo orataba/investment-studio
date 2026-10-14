@@ -106,6 +106,7 @@ def _risk_scope_index(context):
     portfolio_context = (portfolio or {}).get("risk_context") or {}
     return {"risk_run": True, "risk_scope": context["risk_scope"], "cutoff": context["cutoff"],
         "business_guidance": role_guidance(context, "risk"),
+        "risk_guidance": context.get("risk_guidance"),
         "risk_inputs": {**{key: snapshot.get(key) for key in (
             "scope", "scope_available", "instrument_ids", "input_as_of", "limitations")},
             "price_rule_counts": (snapshot.get("price_rule_summary") or {}).get("counts"),

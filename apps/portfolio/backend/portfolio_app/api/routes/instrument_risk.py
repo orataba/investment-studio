@@ -48,6 +48,22 @@ def start_risk_review(payload: dict):
     return watchlist_risk("/review/runs", "POST", payload)
 
 
+@router.get("/guidance")
+def risk_guidance(instrument_id: str | None = None):
+    return watchlist_risk("/guidance" + ("?" + urlencode({"instrument_id": instrument_id}) if instrument_id else ""))
+
+
+@router.put("/guidance")
+def save_risk_guidance(payload: dict):
+    return watchlist_risk("/guidance", "PUT", payload)
+
+
+@router.get("/guidance/preview")
+def preview_risk_guidance(portfolio_id: str | None = None, instrument_id: str | None = None):
+    scope = {key: value for key, value in {"portfolio_id": portfolio_id, "instrument_id": instrument_id}.items() if value}
+    return watchlist_risk("/guidance/preview?" + urlencode(scope))
+
+
 @router.post("/cases", status_code=201)
 def add_case(payload: dict):
     return watchlist_risk("/cases", "POST", payload)
@@ -61,3 +77,14 @@ def follow_up(case_id: str, payload: dict):
 @router.put("/rules/{instrument_id}")
 def set_rule(instrument_id: str, payload: dict):
     return watchlist_risk("/rules/" + quote(instrument_id, safe=""), "PUT", payload)
+
+
+
+@router.patch("/notices/{run_id}/{notice_id}")
+def correct_notice(run_id: str, notice_id: str, payload: dict):
+    return watchlist_risk("/notices/" + quote(run_id, safe="") + "/" + quote(notice_id, safe=""), "PATCH", payload)
+
+
+@router.put("/notices/receipt")
+def notice_receipt(payload: dict):
+    return watchlist_risk("/notices/receipt", "PUT", payload)

@@ -50,6 +50,19 @@ async def authorize(request: Request, principal) -> None:
     method = request.method
     scope = principal.resource_scope or {}
     portfolio_id = request.path_params.get("portfolio_id") or request.query_params.get("portfolio_id")
+    notice_action = (
+        method == "PUT" and path == "/api/instrument-risk/notices/receipt"
+    ) or (
+        method == "PATCH"
+        and path.startswith("/api/instrument-risk/notices/")
+        and set(request.path_params) == {"run_id", "notice_id"}
+    )
+    if notice_action:
+        # The notice's retained run owns its scope. Watchlist checks that scope
+        # and the original user's portfolio edit rights or personal receipt.
+        if scope or principal.kind != "user" or not principal.user_id:
+            raise HTTPException(403, "风险提示更正和个人回执仅供已登录用户使用")
+        return
     if path.startswith("/api/research-assistant/"):
         # A personal conversation is available to portfolio viewers. Watchlist
         # checks the original user's topic ownership and bound portfolio access.

@@ -250,7 +250,7 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
       <p className="sector-research-note">研究正文和引用保留原语言。</p>
       <div className="research-event-filters research-guidance-scopes" aria-label="研究指导范围"><button type="button" aria-pressed={guidanceScope === 'team'} onClick={() => { setGuidanceScope('team'); setTeamGuidanceOpened(true) }}>团队通用</button><button type="button" aria-pressed={guidanceScope === 'instrument'} onClick={() => setGuidanceScope('instrument')}>此标的补充</button></div>
       <div hidden={guidanceScope !== 'team'}>{teamGuidanceOpened && <TeamResearchGuidanceRecord />}</div>
-      <div hidden={guidanceScope !== 'instrument'}><p className="sector-research-note">在团队通用框架上补充本标的的研究重点。角色指导留空时沿用团队指导；风控与事实复核采用团队规则。</p>
+      <div hidden={guidanceScope !== 'instrument'}><p className="sector-research-note">在团队通用框架上补充本标的的研究重点。角色指导留空时沿用团队指导；风险指导请到风险提示设置，事实复核采用团队规则。</p>
       {dossier.mandate && <ResearchMandateRecord key={instrumentId} instrumentId={instrumentId} mandate={dossier.mandate} onSaved={mandate => { setDossier(current => current && ({ ...current, mandate })); setRefresh(value => value + 1) }} />}</div>
       {Boolean(dossier.research_plan?.modules.length) && <details className="research-dossier-record research-method-plan"><summary>方法参考（可选）</summary>
         <p className="sector-research-note">按研究问题取用，也可以采用其他有依据的方法。</p>

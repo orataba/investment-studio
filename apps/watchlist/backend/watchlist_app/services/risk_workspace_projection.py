@@ -12,10 +12,14 @@ CASE_EVIDENCE_FIELDS = {
     "withdrawn": Boolean, "withdrawal_reason": String, "withdrawn_at": String,
     "risk_assessment": JSON, "event_version_id": String,
     "last_assessed_snapshot": JSON, "pending_revision": JSON,
+    "mandatory_notice": Boolean, "rule_version": String, "metric_snapshot_id": String,
+    "trigger_version": String,
 }
 RISK_FIELDS = {
     "current_drawdown": Float, "drawdown_summary": JSON,
     "data_quality": JSON, "risk_change_monitor": JSON,
+    "metric_snapshot_id": String,
+    "monitoring_summary": JSON,
 }
 
 

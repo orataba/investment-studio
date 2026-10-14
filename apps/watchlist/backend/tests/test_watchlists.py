@@ -2535,7 +2535,7 @@ def test_instrument_detail_payload_uses_daily_calculation_frequency(
     risk_response = client.get("/api/instruments/weekly-risk-fund/risk")
     assert risk_response.status_code == 200
     risk_payload = risk_response.json()
-    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v11"
+    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v12"
     assert risk_payload["calculation_frequency_profile"]["resolved_frequency"] == "daily"
     assert risk_payload["calculation_frequency_profile"]["annualization_periods_per_year"] == pytest.approx(
         52.178571,

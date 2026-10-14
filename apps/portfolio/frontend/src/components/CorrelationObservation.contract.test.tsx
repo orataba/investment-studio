@@ -8,7 +8,8 @@ import CorrelationObservation from './CorrelationObservation'
 import PortfolioRiskDrawer from './PortfolioRiskDrawer'
 
 const getHoldingsWorkspace = vi.hoisted(() => vi.fn())
-vi.mock('../lib/api', () => ({ getHoldingsWorkspace }))
+vi.mock('../lib/api', () => ({ getHoldingsWorkspace, requestInstrumentRisk: vi.fn() }))
+vi.mock('../../../../../packages/ui/src/RiskOfficerPanel', () => ({ default: () => <p>Independent selected risk alerts</p> }))
 vi.mock('./PortfolioInstrumentRisk', () => ({ default: () => <p>Existing assessed risk remains visible</p> }))
 
 const renderWithLanguage = (element: ReactElement) => render(element, {

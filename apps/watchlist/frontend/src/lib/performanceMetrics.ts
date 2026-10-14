@@ -7,6 +7,13 @@ import {
   type ReturnWindowName,
 } from './returnWindows'
 
+/** MAR = 0; use every return observation in the denominator. */
+export function downsideDeviation(values: number[]) {
+  return values.length
+    ? Math.sqrt(values.reduce((sum, value) => sum + Math.min(value, 0) ** 2, 0) / values.length)
+    : null
+}
+
 export type PerformanceMetricPeriodKey =
   | '1W'
   | '1M'
@@ -201,16 +208,11 @@ export function buildPerformanceMetricSnapshot(
     mean == null || standardDeviation == null || standardDeviation === 0 || periodsPerYear == null
       ? null
       : (mean / standardDeviation) * Math.sqrt(periodsPerYear)
-  const downsideDeviation = returns.length
-    ? Math.sqrt(
-        returns.reduce((sum, value) => sum + (Math.min(value, 0) ** 2), 0) /
-          returns.length,
-      )
-    : null
+  const downside = downsideDeviation(returns)
   const sortino =
-    mean == null || downsideDeviation == null || downsideDeviation === 0 || periodsPerYear == null
+    mean == null || downside == null || downside === 0 || periodsPerYear == null
       ? null
-      : (mean / downsideDeviation) * Math.sqrt(periodsPerYear)
+      : (mean / downside) * Math.sqrt(periodsPerYear)
   const drawdown = drawdownStats(ordered)
   const calmar =
     annualizedReturn == null || drawdown.maxDrawdown == null || drawdown.maxDrawdown === 0

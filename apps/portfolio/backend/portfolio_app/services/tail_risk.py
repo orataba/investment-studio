@@ -58,9 +58,11 @@ def _daily_periods(points, *, detail, start_date, end_date):
         if end > end_date or start < start_date or end <= start_date:
             continue
         value = _number(point.get("value"))
-        if value is None and point.get("status") == "unavailable":
+        if point.get("status") == "unavailable":
             rejected.append({"start_date": start.isoformat(), "end_date": end.isoformat(), "reason": "unavailable_return"})
             continue
+        if "status" in point and point["status"] != "complete":
+            return {}, {"reason": "invalid_return_period", "rejected_period_count": len(points), "calendar_basis": calendar_basis}, session_pairs
         if start >= end or value is None or value < -1 or end in seen_ends:
             return {}, {"reason": "invalid_return_period", "rejected_period_count": len(points), "calendar_basis": calendar_basis}, session_pairs
         seen_ends.add(end)

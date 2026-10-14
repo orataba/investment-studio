@@ -104,7 +104,7 @@ def test_rules_freeze_before_settings_change_and_old_reports_are_not_reconstruct
         research_mcp.read_risk_instrument('outside')
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id)
-        risk_officer.apply_result(session, run, {'summary': '当时四条默认规则未触发；不代表无风险。', 'priorities': [], 'limitations': []})
+        risk_officer.apply_result(session, run, {'summary': '当时四条默认规则未触发；不代表无风险。', 'priorities': [], 'notice_items': [], 'limitations': []})
         session.commit()
         saved = risk_officer.review_workspace(session, instrument_id='sxv264')['latest_completed']
         assert saved['price_rule_summary']['counts']['configured'] == 4 and saved['stale'] is True

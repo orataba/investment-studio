@@ -18,7 +18,7 @@ class TeamSectionSkills(BaseModel):
     recent_updates: str = Field(default=SECTION_SKILLS["recent_updates"], max_length=20000)
     themes: str = Field(default=SECTION_SKILLS["themes"], max_length=20000)
     quantitative: str = Field(default=SECTION_SKILLS["quantitative"], max_length=20000)
-    risk: str = Field(default="关注对当前投资判断和实际组合敞口有意义的风险，区分已经确认、尚待核实与数据不足；说明影响路径、优先级与下一观察条件。", max_length=20000)
+    risk: str = Field(default="先筛选对当前投资判断和授权范围有实质意义的风险，过滤转载和普通数值抖动，再粗分高、中、低关注优先度。每条只写关键事实和必要风险含义，通常一至三句；证据不足注明待核。不凑条数，不强制总评、行动建议或下一验证点。等级不是概率、预计损失或置信度。", max_length=20000)
     review: str = Field(default="优先核对会改变投资判断的事实、数字、日期与因果前提，检查反证、覆盖限制及请求范围内的前后一致性；保留有证据支持的判断与限定条件。", max_length=20000)
 
 
@@ -27,6 +27,7 @@ class GuidanceInput(BaseModel):
     guidance: str = Field(max_length=60000)
     section_skills: TeamSectionSkills
     expected_revision: int = Field(ge=0)
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 def _record(row, team_id, *, include_history=True):
@@ -55,10 +56,14 @@ def save_guidance(session, payload):
     if current["revision"] != payload.expected_revision:
         raise HTTPException(409, "研究指导已由其他成员更新，请重新读取后保存")
     value = {"guidance": payload.guidance, "section_skills": payload.section_skills.model_dump()}
+    reason = (payload.reason or "").strip()
+    if current["section_skills"]["risk"] != value["section_skills"]["risk"] and not reason:
+        raise HTTPException(422, "修改风控指导须填写修改原因")
     if all(current[key] == value[key] for key in value):
         return read_guidance(session)
     values = {**value, "revision": current["revision"] + 1,
-              "author": {"origin": "user", "user_id": principal.user_id, "display_name": principal.display_name},
+              "author": {"origin": "user", "user_id": principal.user_id, "display_name": principal.display_name,
+                         **({"reason": reason} if reason else {})},
               "updated_at": datetime.now(UTC), "versions": [*(row.versions if row else []), current]}
     if row is None:
         try:

@@ -10,7 +10,8 @@ EXACT_FIELDS = frozenset({
     "latest_development", "next_check", "figure_source_ids", "reference", "last_reviewed_at",
     "baseline_status", "baseline_requested_at", "migration_origin", "lifecycle_owner",
     "incremental_trigger", "market_queries", "attempted_theme_baselines",
-    "research_working_sets",
+    "research_working_sets", "risk_guidance", "risk_notice_contract", "prior_notice_items",
+    "risk_notice_items", "risk_notice_scope", "risk_automatic_inputs",
 })
 
 

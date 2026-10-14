@@ -73,11 +73,32 @@ def test_first_writer_race_uses_unique_team_key_without_overwriting(research_cli
         assert guidance.read_guidance(session) == winner
 
 
+def test_risk_role_edits_require_a_reason_through_the_team_guidance_entry(research_client):
+    client = research_client
+    initial = client.get("/api/research/guidance").json()
+    skills = {**initial["section_skills"], "risk": "只保留对判断有实质影响的风险"}
+    for change in ({}, {"reason": "   "}):
+        rejected = client.put("/api/research/guidance", json=_payload(initial, section_skills=skills, **change))
+        assert rejected.status_code == 422, rejected.text
+        assert client.get("/api/research/guidance").json() == initial
+    accepted = client.put("/api/research/guidance", json=_payload(initial, section_skills=skills,
+        reason="  调整风险筛选重点  "))
+    assert accepted.status_code == 200, accepted.text
+    saved = accepted.json()
+    assert saved["author"]["reason"] == "调整风险筛选重点"
+    unchanged_risk = client.put("/api/research/guidance", json=_payload(saved, guidance="补充研究期限"))
+    assert unchanged_risk.status_code == 200, unchanged_risk.text
+    assert unchanged_risk.json()["section_skills"]["risk"] == skills["risk"]
+
+
 def test_frozen_role_guidance_reaches_real_section_and_child_routes(research_client, monkeypatch):
     client = research_client
     initial = client.get("/api/research/guidance").json()
     skills = {key: f"ROLE:{key}" for key in initial["section_skills"]}
-    saved = client.put("/api/research/guidance", json=_payload(initial, guidance="团队重点", section_skills=skills)).json()
+    saved_response = client.put("/api/research/guidance", json=_payload(initial, guidance="团队重点",
+        section_skills=skills, reason="明确各角色关注范围"))
+    assert saved_response.status_code == 200, saved_response.text
+    saved = saved_response.json()
     principal = Principal("pm-one", "投资经理甲", "default")
     with principal_context(principal), get_session_factory()() as session:
         frozen = guidance.freeze_guidance(session, {"research_actor": {"team_id": "default"}})
@@ -93,7 +114,9 @@ def test_frozen_role_guidance_reaches_real_section_and_child_routes(research_cli
         session.add(ResearchEntry(entry_id="guidance-run", topic_id="guidance-test", team_id="default",
             kind="analysis", status="running", title="指导冻结", context_json=context))
         session.commit()
-    client.put("/api/research/guidance", json=_payload(saved, guidance="后来的变更", section_skills={key: "NEW" for key in skills}))
+    changed = client.put("/api/research/guidance", json=_payload(saved, guidance="后来的变更",
+        section_skills={key: "NEW" for key in skills}, reason="调整各角色关注范围"))
+    assert changed.status_code == 200, changed.text
     import watchlist_app.main as main
     monkeypatch.setattr(main, "resolve_request", lambda *args, **kwargs: Principal("pm-one", "投资经理甲", "default",
         resource_scope={"kind": "run", "id": "guidance-run", "attempt": "1"}))

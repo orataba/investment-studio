@@ -11,3 +11,25 @@
 .instrument-tail-risk-sample { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--text-secondary, #666); margin: 8px 0; }
 .instrument-tail-risk-warning { font-size: 12px; color: var(--warning-text, #8a5700); line-height: 1.65; margin: 8px 0; }
 @media (max-width: 640px) { .instrument-tail-risk-metrics { grid-template-columns: 1fr; } }
+.monitoring-metrics h2, .monitoring-rules h2 { margin: 0 0 10px; font-size: 16px; }
+.monitoring-metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 28px; }
+.monitoring-metric { min-width: 0; padding: 18px 0; border-bottom: 1px solid var(--border-color, #dedee3); }
+.monitoring-metric header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.monitoring-metric h3 { font-size: 13px; font-weight: 500; margin: 0; }
+.monitoring-metric header > span { font-size: 11px; color: var(--text-secondary, #666); }
+.monitoring-metric-value { display: block; font-size: 23px; font-weight: 500; margin-top: 9px; font-variant-numeric: tabular-nums; }
+.monitoring-trend { width: 100%; height: auto; min-height: 120px; }
+.monitoring-trend text { font-size: 10px; fill: #70808c; }
+.monitoring-metrics summary, .monitoring-rules summary { cursor: pointer; font-size: 12px; padding: 5px 0; color: var(--text-secondary, #666); }
+.monitoring-metrics pre { max-height: 240px; overflow: auto; white-space: pre-wrap; font-size: 11px; }
+.monitoring-series-table { max-height: 260px; overflow: auto; font-size: 12px; }
+.monitoring-series-table table { width: 100%; text-align: left; border-collapse: collapse; }
+.monitoring-series-table td, .monitoring-series-table th { padding: 5px 8px; border-bottom: 1px solid #e6ebef; }
+.monitoring-contract { margin-top: 12px; font-size: 12px; }
+.monitoring-contract dd { overflow-wrap: anywhere; margin: 4px 0 10px; color: var(--text-secondary, #666); }
+.monitoring-rules { border-bottom: 1px solid var(--border-color, #dedee3); padding-bottom: 20px; }
+@media (max-width: 760px) { .monitoring-metric-grid { grid-template-columns: 1fr; } }
+.risk-price-inputs select, .risk-rule-reason input { min-height: 30px; width: 100%; color: inherit; font: inherit; border: 1px solid var(--border-color, #dedee3); background: transparent; border-radius: 0; }
+.risk-rule-reason { display: grid; gap: 6px; margin: 12px 0; font-size: 12px; }
+.risk-rule-preview table { width: 100%; text-align: left; font-size: 12px; }
+.risk-rule-preview td, .risk-rule-preview th { padding: 5px; }

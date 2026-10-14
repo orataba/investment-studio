@@ -239,7 +239,7 @@ def test_accepted_risk_checkpoint_recovers_publication_without_another_model(cli
         "input_snapshot_cutoff": "2026-10-09T00:00:00Z"})
     first = queue.claim_next("old-owner")
     running(first)
-    accepted = {"summary": "Validated proposal", "priorities": [], "limitations": []}
+    accepted = {"summary": "Validated proposal", "priorities": [], "limitations": [], "notice_items": []}
     with get_session_factory()() as session:
         session.add(ResearchRiskReadState(run_id=first.run_id, attempt=1,
             submitted_review=accepted, delivered_pages=[["same-input", "overview", 0]]))

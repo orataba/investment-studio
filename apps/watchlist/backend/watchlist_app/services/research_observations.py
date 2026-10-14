@@ -28,7 +28,7 @@ from watchlist_app.services.return_windows import (
 from watchlist_app.services.sector_market_data import all_rows, holding_type, numeric_store
 
 
-OBSERVATION_METHOD_VERSION = "watchlist-observations/v5"
+OBSERVATION_METHOD_VERSION = "watchlist-observations/v6"
 REACTION_METHOD_VERSION = "event-daily-reaction/v3"
 
 
@@ -391,12 +391,13 @@ def _raw_market(instrument, cutoff, store, as_of_date):
 
 
 def instrument_observations(session, instrument_id, *, as_of, benchmark_id=None, store=None):
-    from watchlist_app.services.canonical_recalc import _current_drawdown
+    from watchlist_app.services.risk_monitoring import retained_monitoring_summary
     cutoff = cutoff_instant(as_of)
     try:
         with calculation_input_read(session, [instrument_id]):
             instrument, series, calendar, snapshot = _read_snapshot(session, instrument_id, cutoff)
             benchmark_id, benchmark, benchmark_snapshot = _benchmark(session, instrument_id, benchmark_id, cutoff)
+            monitoring = retained_monitoring_summary(session, instrument_id, as_of=cutoff)
     except ResearchInputUnavailable as error:
         return _evidence("量化观察", cutoff, {"status": "unavailable", "summary": "数值重算尚未成功完成，暂不能生成新观察。", "limitations": [str(error)],
             "metrics": {}, "tables": [], "charts": []}, {"version": OBSERVATION_METHOD_VERSION}, instrument_id=instrument_id)
@@ -407,13 +408,11 @@ def instrument_observations(session, instrument_id, *, as_of, benchmark_id=None,
         limits.append(snapshot["limitation"])
     relative = relative_performance(series, benchmark, as_of_date=as_of_date)
     ewma = ewma_price_evidence(series, instrument_type=instrument.instrument_type, calendar=calendar, as_of=cutoff)
-    # Canonical path definition; validate the actual path before calling its helper.
-    days = [p["as_of_date"] for p in points]
-    sessions = _market_calendar_sessions(calendar, days[0], days[-1]) if calendar and days else None
-    complete_path = sessions is not None and tuple(days) == tuple(sessions) and same_return_segment(points)
-    drawdown = {"status": "available" if complete_path and len(points) >= 2 else "unavailable",
-        "current_pct": _current_drawdown(points) if complete_path else None,
-        "start_date": points[0]["date"] if points else None, "end_date": points[-1]["date"] if points else None}
+    retained_drawdown = next((row for row in monitoring.get("metrics", []) if row["metric_id"] == "current_drawdown"), {})
+    drawdown = {"status": "available" if retained_drawdown.get("value") is not None else "unavailable",
+        "current_pct": retained_drawdown.get("value"), "metric_snapshot_id": monitoring.get("metric_snapshot_id"),
+        "start_date": retained_drawdown.get("window_start_date"), "end_date": retained_drawdown.get("window_end_date"),
+        "limitation": retained_drawdown.get("unavailable_reason") or monitoring.get("unavailable_reason")}
     volume, holdings, members, info, originals = {"status": "unavailable", "change_pct": None}, [], {}, None, []
     if instrument.instrument_type in {"equity", "etf"}:
         try:
@@ -481,7 +480,8 @@ def instrument_observations(session, instrument_id, *, as_of, benchmark_id=None,
     data = {"analysis_kind": "watchlist_observations", "status": status, "method_version": OBSERVATION_METHOD_VERSION,
         "observation_key": f"watchlist-observations:{instrument_id}", "as_of_date": as_of_date.isoformat() if points else None,
         "information_cutoff_at": cutoff.isoformat(), "benchmark_id": benchmark_id, "summary": (f"截至 {as_of_date.isoformat()} 的固定量化观察；各项保留实际区间与覆盖样本。" if points else "固定量化观察；仅披露已取得部分的实际日期与覆盖样本。") if available else "量化数据不足，尚不能形成有效观察。",
-        "metrics": metrics, "tables": tables, "charts": [], "limitations": list(dict.fromkeys(limits)), "observations": observations}
+        "metrics": metrics, "tables": tables, "charts": [], "limitations": list(dict.fromkeys(limits)), "observations": observations,
+        "monitoring_snapshot": monitoring}
     return _evidence("量化观察", cutoff, data, {"version": OBSERVATION_METHOD_VERSION,
         "relative_return": "same-currency same-return-kind observed endpoints; arithmetic difference in percentage points",
         "breadth": "price above mean of 50 completed observations; changes use common members",
@@ -563,7 +563,8 @@ def instrument_event_reaction(session, instrument_id, *, as_of, event_date, timi
 
 def observation_business_values(evidence):
     """Stable value/sample/method comparison; source IDs or read clocks are not change."""
-    ignored = {"source_id", "source_ids", "observed_at", "available_at", "batch_id", "known_at", "source_cutoff_at"}
+    ignored = {"source_id", "source_ids", "observed_at", "available_at", "batch_id", "known_at", "source_cutoff_at",
+               "metric_snapshot_id", "input_snapshot_version", "calculated_at"}
     def clean(value):
         if isinstance(value, dict):
             return {key: clean(item) for key, item in value.items() if key not in ignored}

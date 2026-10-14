@@ -40,3 +40,5 @@ from watchlist_app.api.routes import research_dossier
 api_router.include_router(research_dossier.router, tags=["research-dossier"])
 from watchlist_app.api.routes import risk_officer
 api_router.include_router(risk_officer.router, tags=["risk-officer"])
+from watchlist_app.api.routes import risk_guidance
+api_router.include_router(risk_guidance.router, tags=["risk-guidance"])

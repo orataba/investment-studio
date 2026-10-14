@@ -113,13 +113,13 @@ export type ResearchSectionSkills = Record<ResearchSectionKey, string>
 export type TeamResearchRole = ResearchSectionKey | 'risk' | 'review'
 export type TeamResearchGuidance = {
   team_id: string; guidance: string; section_skills: Record<TeamResearchRole, string>; revision: number
-  author: { user_id?: string; display_name?: string; origin: string } | null; updated_at: string | null
+  author: { user_id?: string; display_name?: string; origin: string; reason?: string } | null; updated_at: string | null
   versions: Array<Omit<TeamResearchGuidance, 'versions'>>
 }
 export function getTeamResearchGuidance(signal?: AbortSignal) {
   return fetchJson<TeamResearchGuidance>('/api/research/guidance', { signal })
 }
-export function saveTeamResearchGuidance(input: Pick<TeamResearchGuidance, 'guidance' | 'section_skills'> & { expected_revision: number }) {
+export function saveTeamResearchGuidance(input: Pick<TeamResearchGuidance, 'guidance' | 'section_skills'> & { expected_revision: number; reason?: string }) {
   return fetchJson<TeamResearchGuidance>('/api/research/guidance', { method: 'PUT', body: JSON.stringify(input) })
 }
 export type ResearchMandateInput = { guidance: string; section_skills?: ResearchSectionSkills; focus_company_symbols?: string[]; expected_revision: number }

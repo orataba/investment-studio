@@ -7,7 +7,7 @@ import type { InstrumentTailRisk } from '../lib/instrumentTailRiskApi'
 
 const request = vi.hoisted(() => vi.fn())
 vi.mock('../lib/instrumentTailRiskApi', () => ({ getInstrumentTailRisk: request }))
-vi.mock('./InstrumentRiskPanel', () => ({ default: ({ instrumentId }: { instrumentId: string }) => <div>风险事项 {instrumentId}</div> }))
+vi.mock('./InstrumentMonitoringMetrics', () => ({ default: ({ instrumentId }: { instrumentId: string }) => <div>固定监测 {instrumentId}</div> }))
 const data: InstrumentTailRisk = {
   instrument_id: 'a', status: 'ready', reason: null, confidence: .95, lookback_days: 1095,
   currency: 'HKD', return_kind: 'total_return', var: .0234, expected_shortfall: .0367,
@@ -22,14 +22,14 @@ function panel(id = 'a') { return <LanguageProvider><InstrumentRiskMonitoringPan
 beforeEach(() => { window.history.replaceState({}, '', '/?lang=zh-Hans'); request.mockResolvedValue(data) })
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 
-it('shows loss percentages, actual sample, tail precision and the same risk cases', async () => {
+it('shows loss percentages, actual sample, tail precision without embedding risk case workpapers', async () => {
   render(panel())
   expect(await screen.findByText('2.34%')).toBeTruthy()
   expect(screen.getByText('3.67%')).toBeTruthy()
   expect(screen.getByText('250 / 12.50')).toBeTruthy()
   expect(screen.getByText(/2025-10-01 → 2026-10-07/)).toBeTruthy()
   expect(screen.getByText(/样本未覆盖完整回看区间/)).toBeTruthy()
-  expect(screen.getByText('风险事项 a')).toBeTruthy()
+  expect(screen.getByText('固定监测 a')).toBeTruthy()
   expect(request).toHaveBeenCalledWith('a', .95, 1095, expect.any(AbortSignal))
 })
 
@@ -53,7 +53,7 @@ it('discards old confidence and old-asset responses and immediately clears their
   expect(screen.queryByText('99.00%')).toBeNull()
   await act(async () => resolvers[2]({ ...data, instrument_id: 'b', var: .05 }))
   expect(screen.getByText('5.00%')).toBeTruthy()
-  expect(screen.getByText('风险事项 b')).toBeTruthy()
+  expect(screen.getByText('固定监测 b')).toBeTruthy()
   expect(request.mock.calls[0][3].aborted).toBe(true)
 })
 

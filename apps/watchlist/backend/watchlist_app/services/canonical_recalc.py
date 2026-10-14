@@ -89,7 +89,7 @@ from watchlist_app.services.shared_instrument_registry import (
 INSTRUMENT_DETAIL_TABS = ["overview", "risk", "investment-research", "views", "info"]
 
 PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v11"
-RISK_METHODOLOGY_VERSION = "canonical-risk/v11"
+RISK_METHODOLOGY_VERSION = "canonical-risk/v12"
 PEER_COMPARISON_POLICY_VERSION = "peer-comparison/v6"
 
 
@@ -2426,6 +2426,18 @@ class CanonicalRecalcService:
             calculation_frequency_profile=calculation_frequency_profile,
             return_series=return_series,
         )
+        from watchlist_app.services.risk_monitoring import build_monitoring_snapshot, monitoring_summary, retained_monitoring_snapshot
+        monitoring = build_monitoring_snapshot(
+            {**chart_payload, "freshness": summary_payload["freshness"]},
+            instrument_type=instrument.instrument_type, source_settings=source_settings,
+            risk_payload=risk_payload, input_snapshot_version=getattr(risk_snapshot, "input_hash", None),
+            calculated_at=now, source_cutoff_at=materialized_market_source_cutoff,
+        )
+        risk_payload["monitoring"] = monitoring
+        risk_payload["monitoring_summary"] = monitoring_summary(monitoring)
+        risk_payload["metric_snapshot_id"] = monitoring["metric_snapshot_id"]
+        if risk_snapshot is not None:
+            risk_snapshot.monitoring_json = retained_monitoring_snapshot(monitoring)
         exposure_payload = self._exposure_payload(exposure_snapshot)
         holdings_payload = self._holdings_payload(holding_snapshot)
         for model_class, payload in (

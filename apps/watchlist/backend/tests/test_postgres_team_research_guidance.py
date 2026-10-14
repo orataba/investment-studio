@@ -35,7 +35,7 @@ def test_guidance_upgrade_preserves_custom_history_and_frozen_inputs(postgres_wa
         before_frozen = dict(session.execute(select(ResearchEntry.__table__).where(ResearchEntry.entry_id=='frozen-pg-run')).mappings().one())
         old_row = session.get(ResearchEntry,'dossier-mandate:pg-guidance')
         previous_updated_at = old_row.updated_at.isoformat()
-    _run_watchlist_upgrade(postgres_watchlist_env['database_url'], 'head')
+    _run_watchlist_upgrade(postgres_watchlist_env['database_url'], '20261014_0072')
     with get_session_factory()() as session:
         assert session.scalar(text('SELECT version_num FROM watchlist.alembic_version')) == '20261014_0072'
         assert dict(session.execute(select(ResearchEntry.__table__).where(ResearchEntry.entry_id=='frozen-pg-run')).mappings().one()) == before_frozen

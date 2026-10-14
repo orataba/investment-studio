@@ -7,12 +7,20 @@ import { PriceRuleCountsLine, PriceRuleDetails } from './PriceRiskRules'
 import { researchStamp } from './ResearchRunStatus'
 import ConfirmDialog from './ConfirmDialog'
 import RiskChangeAudit from './RiskChangeAudit'
+import RiskGuidanceSettings from './RiskGuidanceSettings'
+import RiskNoticeCorrection, { RiskNoticePreferences } from './RiskNoticeCorrection'
+import { useLanguage } from './i18n'
 import { resolveWorkspaceUrl } from './navigation'
 import './risk-officer.css'
 
 type RunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'paused'
 type StartedRun = { run_id: string; status: RunStatus }
+export type RiskNotice = { run_id?: string; notice_id: string; notice_version: number | string; status_note?: string; metric_snapshot_id?: string | null; rule_version?: string | null; receipt?: { unread: boolean; muted: boolean; read_at?: string; muted_until?: string }; level: 'high' | 'medium' | 'low' | null; title: string; body: string; as_of: string | null; origin: 'risk_officer' | 'deterministic'; mandatory?: boolean; current_rule_facts?: Array<{ notice_id?: string; notice_version?: number | string; title: string; body: string; as_of: string | null; metric_snapshot_id?: string | null; rule_version?: number | string | null }>; alert_state?: string; instrument_ids: string[]; holding_ids?: string[]; case_ids: string[]; source_ids?: string[] }
 export type RiskOfficerReview = {
+  notice_items?: RiskNotice[]
+  notice_status?: 'assessed' | 'assessment_pending' | 'unavailable'
+  coverage_notes?: string[]
+  coverage_items?: Array<{ case_id: string; instrument_id: string; name: string; title: string; body: string }>
   available: boolean
   model_work?: ModelWorkStatus
   reason?: string | null
@@ -29,6 +37,7 @@ export type RiskOfficerReview = {
     input_as_of: string | null
     summary: string
     case_changes?: RiskCaseHistory[]
+    notice_corrections?: Array<{ notice_id: string; at: string; author: string; reason: string; before: { level: string; title: string; body: string }; after: { level: string; title: string; body: string } }>
     review_note?: string
     prepared_at?: string
     price_rule_summary?: { contract_version: number; counts: PriceRuleCounts;
@@ -41,14 +50,15 @@ export type RiskOfficerReview = {
   latest_run: null | (StartedRun & { created_at: string; completed_at: string | null; message: string })
 }
 
-type Props = { canRun?: boolean; request: RiskRequest; scopeQuery: string; refreshToken?: number; onCompleted?: () => void }
+type Props = { canCorrect?: boolean; canWrite?: boolean; canRun?: boolean; request: RiskRequest; scopeQuery: string; refreshToken?: number; onCompleted?: () => void }
 const running = (status: RunStatus | undefined) => status === 'queued' || status === 'running'
 const settled = (status: RunStatus | undefined) => status === 'completed' || status === 'failed' || status === 'paused'
 const frequencyLabels: Record<string, string> = { daily: '日度', weekly: '周度', monthly: '月度' }
 const portfolioHref = (path: string | null | undefined) => path?.startsWith('/portfolios/')
   ? `${resolveWorkspaceUrl(import.meta.env.VITE_PORTFOLIO_URL, 'portfolio')}${path}` : undefined
 
-function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, onCompleted }: Props) {
+function ScopedRiskOfficer({ canWrite = true, canCorrect = canWrite, canRun = true, request, scopeQuery, refreshToken, onCompleted }: Props) {
+  const zh = useLanguage().language === 'zh-Hans'
   const [data, setData] = useState<RiskOfficerReview | null>(null)
   const [error, setError] = useState('')
   const [posting, setPosting] = useState(false)
@@ -137,6 +147,18 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
   const names = new Map(data?.instruments.map((instrument) => [instrument.instrument_id, instrument.name]))
   const holdings = new Map(data?.holdings?.map((holding) => [holding.holding_id, holding]))
   const limitations = [...new Set([...(data?.limitations || []), ...(completed?.limitations || [])])]
+  const coverageGroups = new Map<string, { names: Map<string, string>; titles: Set<string> }>()
+  const coverageInstruments = new Set<string>()
+  for (const item of data?.coverage_items || []) {
+    const group = coverageGroups.get(item.body) || { names: new Map<string, string>(), titles: new Set<string>() }
+    group.names.set(item.instrument_id, item.name || names.get(item.instrument_id) || item.instrument_id)
+    if (item.title !== item.body) group.titles.add(item.title)
+    coverageInstruments.add(item.instrument_id)
+    coverageGroups.set(item.body, group)
+  }
+  for (const note of data?.coverage_notes || []) {
+    if (!coverageGroups.has(note)) coverageGroups.set(note, { names: new Map(), titles: new Set() })
+  }
   const renderPriority = (priority: NonNullable<RiskOfficerReview['latest_completed']>['priorities'][number], index: number) => <li key={`${index}:${priority.title}`}>
     <h4 translate="no">{priority.title}</h4>
     {priority.instrument_ids.length > 0 && <p className="risk-officer-muted">
@@ -159,9 +181,9 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
     </details>
   </li>
 
-  return <section className="risk-officer" aria-label="风险研判">
+  return <section className="risk-officer" aria-label={zh ? "风险提示" : "Risk alerts"}>
     <header className="risk-officer-heading">
-      <div><div className="risk-officer-title"><h2>风险研判</h2>{data && <InfoHint label="风控输入" detail={`研究上报: ${data.counts.research} · 量化触发事项: ${data.counts.quantitative} · 监测受限: ${data.counts.coverage} · 输入截至: ${data.input_as_of?.slice(0, 10) || '尚无输入日期'}`} />}</div>{data && <p translate="no">{data.scope.name}</p>}</div>
+      <div><div className="risk-officer-title"><h2>{zh ? "风险提示" : "Risk alerts"}</h2>{data && <InfoHint label="风控输入" detail={`研究上报: ${data.counts.research} · 量化触发事项: ${data.counts.quantitative} · 监测受限: ${data.counts.coverage} · 输入截至: ${data.input_as_of?.slice(0, 10) || '尚无输入日期'}`} />}</div>{data && <p translate="no">{data.scope.name}</p>}</div>
       <button type="button" disabled={!canSubmit} onClick={() => data?.scope.kind === 'portfolio' ? void update() : setConfirming(true)}>
         {data?.model_work?.paused ? '研究已暂停' : busy ? '研判进行中…' : '更新研判'}
       </button>
@@ -180,11 +202,41 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
       {data.latest_run?.status === 'failed' && !busy && <p className="risk-officer-warning" role="status">
         本次研判失败：{data.latest_run.message || '本次未生成有效结论。'}
       </p>}
-      {data.latest_run?.status === 'paused' && <p className="risk-officer-muted">{completed
+      {(data.latest_run?.status === 'paused' || data.model_work?.paused) && <p className="risk-officer-muted">{completed
         ? '本次研判已暂停，下方保留最近完成的结论。'
         : '首次研判已暂停，尚未形成可读结论。'}</p>}
       {!completed && !busy && !data.model_work?.paused && data.latest_run?.status !== 'paused' && <p className="risk-officer-muted">尚未研判。点击“更新研判”发起首次研判。</p>}
-      {completed && <section className="risk-officer-conclusion" aria-label="最近完成的研判">
+      {!!data.notice_items?.length && <ol className="risk-notice-list" aria-label={zh ? '当前风险提示' : 'Current risk alerts'}>{data.notice_items.map(notice => <li key={notice.notice_id}>
+        <div className="risk-notice-title"><span className={`risk-notice-level risk-notice-level-${notice.level || 'pending'}`}>{notice.level ? ({ high: zh ? '高' : 'High', medium: zh ? '中' : 'Medium', low: zh ? '低' : 'Low' })[notice.level] : (zh ? '等级待评' : 'Priority pending')}</span><h3 translate="no">{notice.title}</h3></div>
+        <p translate="no">{notice.body}</p>{notice.status_note && <p className="risk-officer-warning" translate="no">{notice.status_note}</p>}{notice.current_rule_facts?.map((fact, index) => <p key={index} className="risk-notice-rule-fact" translate="no">{fact.body}</p>)}
+        {notice.origin !== 'deterministic' && notice.alert_state === 'assessment_pending' && <p className="risk-officer-muted">{zh ? '新进展待复核；保留原判断及其截至日。' : 'New developments await review; the original assessment and its as-of date are retained.'}</p>}
+        <details><summary>{zh ? '依据'  : 'Evidence'}{notice.as_of ? ` · ${notice.as_of.slice(0, 10)}` : ''}</summary>
+          <p className="risk-officer-muted">{notice.instrument_ids.map(id => names.get(id) || id).join('、') || (data.scope.kind === 'portfolio' ? (zh ? '组合整体' : 'Portfolio') : '')}</p>
+          {notice.origin === 'deterministic' && <p>{zh ? '已批准严重规则的事实提示；分析与等级待补，不等待模型运行。' : 'A factual alert from an approved severe rule. Analysis and priority may follow without delaying this alert.'}</p>}
+          {notice.source_ids?.map(id => { const source = completed?.evidence_sources?.[id]; const href = portfolioHref(source?.detail_path); return source ? <p key={id}>{href ? <a href={href} translate="no">{source.title}</a> : <span translate="no">{source.title}</span>} · {source.end_date || '—'}</p> : <p key={id}><code translate="no">{id}</code></p> })}
+          {notice.metric_snapshot_id && <p>{zh ? '指标快照' : 'Metric snapshot'}: <code translate="no">{notice.metric_snapshot_id}</code> · {zh ? '规则版本' : 'Rule version'}: <code translate="no">{notice.rule_version}</code></p>}
+          {!!completed?.notice_corrections?.filter(change => change.notice_id === notice.notice_id).length && <details><summary>{zh ? '提示更正记录' : 'Alert correction history'}</summary>{completed.notice_corrections.filter(change => change.notice_id === notice.notice_id).map((change, index) => <div key={index}><p>{researchStamp(change.at)} · <span translate="no">{change.author}</span></p><p translate="no">{change.reason}</p><p><strong>{zh ? '更正前' : 'Before'}</strong> <span translate="no">{change.before.title} · {change.before.body}</span></p><p><strong>{zh ? '更正后' : 'After'}</strong> <span translate="no">{change.after.title} · {change.after.body}</span></p></div>)}</details>}
+          <RiskNoticePreferences notice={notice} request={request} onSaved={() => setRefresh(value => value + 1)} />
+          {canCorrect && notice.run_id && notice.origin === 'risk_officer' && <RiskNoticeCorrection key={`${notice.notice_id}:${notice.notice_version}`} notice={notice} request={request} onSaved={() => setRefresh(value => value + 1)} />}
+          <p className="risk-officer-muted">{zh ? '提示版本' : 'Notice version'} {notice.notice_version} · {zh ? '事项引用' : 'Case references'}: <span translate="no">{notice.case_ids.join(', ') || '—'}</span></p>
+        </details>
+      </li>)}</ol>}
+      {data.notice_status === 'assessed' && !data.notice_items?.length && <p>{zh ? '当前暂无需要特别提示的风险。' : 'No risks currently require special attention.'}</p>}
+      {data.notice_status === 'unavailable' && !coverageGroups.size && <p className="risk-officer-warning">{zh ? '相关风险暂无法完整评估，已知风险仍保留。' : 'Some risks cannot currently be fully assessed; known risks remain visible.'}</p>}
+      {data.notice_status === 'assessment_pending' && !data.notice_items?.length && <p className="risk-officer-muted">{zh ? '当前范围尚未完成筛选，不能据此判断没有风险。' : 'Selection is not yet complete for this scope; an empty list does not establish an absence of risk.'}</p>}
+      {!!coverageGroups.size && <div className="risk-officer-coverage">
+        <p className="risk-officer-warning" role="status">{zh
+          ? `监测受限${coverageInstruments.size ? `：${coverageInstruments.size} 只标的` : ''} · ${coverageGroups.size} 类覆盖缺口。风险筛选尚不完整，已知风险仍保留。`
+          : `Coverage limited${coverageInstruments.size ? ` for ${coverageInstruments.size} ${coverageInstruments.size === 1 ? 'instrument' : 'instruments'}` : ''} · ${coverageGroups.size} ${coverageGroups.size === 1 ? 'gap category' : 'gap categories'}. Risk selection is incomplete; known risks remain visible.`}</p>
+        <details><summary>{zh ? '查看覆盖缺口与涉及标的' : 'View coverage gaps and affected instruments'}</summary>
+          {[...coverageGroups].map(([body, group]) => <div key={body} className="risk-officer-coverage-group">
+            {!!group.titles.size && <p translate="no"><strong>{[...group.titles].join(' · ')}</strong></p>}
+            <p translate="no">{body}</p>
+            {!!group.names.size && <p className="risk-officer-muted" translate="no">{[...group.names.values()].join('、')}</p>}
+          </div>)}
+        </details>
+      </div>}
+      {completed && <details className="risk-officer-workpapers"><summary>{zh ? '完整研判与历史依据' : 'Review workpapers and historical evidence'}</summary><section className="risk-officer-conclusion" aria-label="最近完成的研判">
         <div className="risk-officer-conclusion-heading"><h3>最近完成的研判</h3>
           <time title={completed.completed_at} dateTime={completed.completed_at}>{researchStamp(completed.completed_at)}</time>
         </div>
@@ -217,7 +269,8 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
             <ol className="risk-officer-priorities" start={4}>{completed.priorities.slice(3).map((priority, index) => renderPriority(priority, index + 3))}</ol>
           </details>}
         </>}
-      </section>}
+      </section></details>}
+      <RiskGuidanceSettings request={request} scopeQuery={scopeQuery} instrumentId={data.scope.kind === 'instrument' ? data.scope.id : undefined} canWrite={canWrite} />
       {limitations.length > 0 && <details className="risk-officer-limitations"><summary>证据与覆盖限制</summary>
         <ul>{limitations.map((limitation) => <li key={limitation} translate="no">{limitation}</li>)}</ul>
       </details>}

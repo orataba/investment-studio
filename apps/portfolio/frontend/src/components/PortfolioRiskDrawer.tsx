@@ -1,10 +1,13 @@
 import CorrelationObservation, { type CorrelationRiskObservation } from './CorrelationObservation'
+import RiskOfficerPanel from '../../../../../packages/ui/src/RiskOfficerPanel'
+import { usePortfolioAccess } from './PortfolioAccessProvider'
+import { usePortfolioSession } from './PortfolioSessionProvider'
 import WorkspaceSkeleton from '../../../../../packages/ui/src/WorkspaceSkeleton'
 import { useEffect, useState } from 'react'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import { WorkspaceToolIcon } from '../../../../../packages/ui/src/WorkspaceTools'
-import { getHoldingsWorkspace, type HoldingsWorkspaceResponse } from '../lib/api'
+import { getHoldingsWorkspace, requestInstrumentRisk, type HoldingsWorkspaceResponse } from '../lib/api'
 import PortfolioInstrumentRisk from './PortfolioInstrumentRisk'
 import type { ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import './portfolio-risk-drawer.css'
@@ -16,6 +19,9 @@ export default function PortfolioRiskDrawer({ portfolioId, onClose, onAskAssista
   onAskAssistant: (instrumentId: string, question: string, reference?: ResearchAssistantReference) => void
 }) {
   const { language } = useLanguage()
+  const access = usePortfolioAccess()
+  const session = usePortfolioSession()
+  const [reviewRevision, setReviewRevision] = useState(0)
   const zh = language === 'zh-Hans'
   const dialogRef = useModalDialog(true, onClose)
   const [workspace, setWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
@@ -43,8 +49,9 @@ export default function PortfolioRiskDrawer({ portfolioId, onClose, onAskAssista
       </header>
       <div className="portfolio-risk-body">
         {correlationObservation ? <CorrelationObservation {...correlationObservation} alertOnly /> : null}
+        <RiskOfficerPanel request={requestInstrumentRisk} scopeQuery={new URLSearchParams({ portfolio_id: portfolioId }).toString()} canRun={Boolean(access?.can_read)} canWrite={Boolean(session?.can_write_team_research)} canCorrect={Boolean(access?.can_edit)} onCompleted={() => setReviewRevision(value => value + 1)} />
         {error ? <p role="alert">{error}</p> : workspace
-          ? <PortfolioInstrumentRisk portfolioId={portfolioId} workspace={workspace} onAskAssistant={onAskAssistant} />
+          ? <PortfolioInstrumentRisk key={`${portfolioId}:${reviewRevision}`} showOfficer={false} portfolioId={portfolioId} workspace={workspace} onAskAssistant={onAskAssistant} />
           : <WorkspaceSkeleton />}
       </div>
     </div>

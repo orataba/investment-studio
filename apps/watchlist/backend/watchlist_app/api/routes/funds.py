@@ -27,7 +27,7 @@ from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadMode
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
 from watchlist_app.services.recalc import lock_instrument_configuration, queue_configuration_recalculation
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
-from watchlist_app.services.instrument_tail_risk import instrument_tail_risk
+from watchlist_app.services.risk_monitoring import monitoring_unavailable
 from watchlist_app.services.shared_instrument_registry import get_shared_instrument_summaries
 from watchlist_app.services.instrument_taxonomy import (
     build_taxonomy_context,
@@ -356,14 +356,67 @@ def get_instrument_tail_risk(
     lookback_days: int = Query(1095),
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    instrument = _require_instrument(session, instrument_id)
+    _require_instrument(session, instrument_id)
     if confidence not in {.95, .99} or lookback_days not in {365, 1095, 1825}:
         raise HTTPException(status_code=422, detail="Choose 95% or 99% and a 1, 3 or 5 year lookback")
-    chart = get_instrument_chart_data(instrument_id, session)
-    detail = get_shared_instrument_summaries([instrument_id]).get(instrument_id) or {}
-    return instrument_tail_risk(chart, instrument_type=instrument.instrument_type,
-                                source_settings=detail.get("source_settings"),
-                                confidence=confidence, lookback_days=lookback_days)
+    monitoring = get_instrument_monitoring(instrument_id, session=session)
+    selected = next((row for row in monitoring.get("tail_risk_options", [])
+                     if row["confidence"] == confidence and row["lookback_days"] == lookback_days), None)
+    if selected is None:
+        return {"instrument_id": instrument_id, "status": "unavailable", "reason": "monitoring_snapshot_pending",
+                "confidence": confidence, "lookback_days": lookback_days, "var": None,
+                "expected_shortfall": None, "metric_snapshot_id": None, "observation_count": 0,
+                "tail_effective_observations": 0, "tail_observation_count": 0, "missing_intervals": []}
+    return {**selected, "freshness": monitoring.get("freshness")}
+
+
+@router.get("/{instrument_id}/monitoring")
+def get_instrument_monitoring(instrument_id: str, metric_snapshot_id: str | None = None,
+                             session: Session = Depends(get_db_session)) -> dict[str, object]:
+    from sqlalchemy import select
+    from watchlist_app.db.models.analytics import RiskSnapshot
+    _require_instrument(session, instrument_id)
+    if metric_snapshot_id:
+        record = session.scalars(select(RiskSnapshot).where(
+            RiskSnapshot.instrument_id == instrument_id,
+            RiskSnapshot.monitoring_json["metric_snapshot_id"].as_string() == metric_snapshot_id,
+        ).order_by(RiskSnapshot.calculated_at.desc())).first()
+        if record is None:
+            raise HTTPException(404, "Monitoring snapshot not found")
+        return serialize_payload(record.monitoring_json)
+    record = read_model_repository.get_risk(session, instrument_id)
+    result = serialize_payload((record.payload_json.get("monitoring") or {}) if record else {})
+    if not result:
+        return monitoring_unavailable(instrument_id)
+    freshness = recalculation_freshness_overrides(session, [instrument_id]).get(instrument_id)
+    if freshness:
+        result["freshness"] = {**(result.get("freshness") or {}), **freshness}
+    # Only actually retained, comparable outputs form the historical VaR/ES
+    # trend. Do not backdate today's corrected source data into old assessments.
+    payload = RiskSnapshot.monitoring_json
+    history = session.execute(select(
+        RiskSnapshot.as_of_date, RiskSnapshot.calculated_at,
+        payload["tail_risk_options"][2]["var"].as_float(),
+        payload["tail_risk_options"][2]["expected_shortfall"].as_float(),
+        payload["tail_risk_options"][2]["status"].as_string(),
+        payload["tail_risk_options"][2]["window_end_date"].as_string(),
+    ).where(RiskSnapshot.instrument_id == instrument_id,
+        payload["definition_version"].as_string() == result["definition_version"],
+        payload["currency"].as_string() == result.get("currency"),
+        payload["return_kind"].as_string() == result.get("return_kind"),
+        payload["frequency"]["gap_detection_basis"].as_string() == (result.get("frequency") or {}).get("gap_detection_basis"),
+        RiskSnapshot.calculated_at <= record.last_recalculated_at,
+    ).order_by(RiskSnapshot.calculated_at))
+    # A missing newly due session belongs to its evaluated window end, not the
+    # last observed source day; otherwise it erases that day's valid reading.
+    by_day = {window_end or day.isoformat(): (var, es, status)
+              for day, _, var, es, status, window_end in history}
+    for metric in result["metrics"]:
+        if metric["metric_id"] in {"var", "expected_shortfall"}:
+            index = 0 if metric["metric_id"] == "var" else 1
+            metric["series"] = [{"date": day, "value": values[index] * 100 if values[index] is not None else None,
+                                 "status": values[2]} for day, values in sorted(by_day.items())]
+    return result
 
 
 @router.get("/{instrument_id}/performance")
@@ -396,7 +449,8 @@ def get_instrument_risk_data(
     _, payload = canonical_recalc_service.apply_current_peer_comparison(
         session,
         instrument_id=instrument_id,
-        risk_payload=dict(record.payload_json) if record is not None else default_instrument_risk_payload(),
+        risk_payload={key: value for key, value in record.payload_json.items() if key != "monitoring"}
+        if record is not None else default_instrument_risk_payload(),
     )
     freshness = recalculation_freshness_overrides(session, [instrument_id]).get(instrument_id)
     if freshness:

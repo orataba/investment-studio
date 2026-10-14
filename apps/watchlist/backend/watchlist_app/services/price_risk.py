@@ -13,6 +13,30 @@ PERIODS = {
 }
 
 
+def rule_version(rule):
+    return f"risk-rule:{rule.instrument_id}:{int((rule.calibration_json or {}).get('rule_revision', 0))}" if rule else None
+
+
+def rule_configuration(rule):
+    return {"drawdown_limit": rule.drawdown_limit, "period_limits": dict(rule.period_limits_json or {}),
+            "severities": dict((rule.calibration_json or {}).get("severities") or {}),
+            "calibration": {key: value for key, value in (rule.calibration_json or {}).items()
+                            if key not in {"rule_revision", "rule_history", "severities"}}}
+
+
+def record_rule_revision(rule, *, previous, actor, reason, at):
+    """Keep prior rule values and calibration evidence; never rewrite old decisions."""
+    current = rule_configuration(rule)
+    if current == previous:
+        return
+    calibration = dict(rule.calibration_json or {})
+    revision = int(calibration.get("rule_revision", 0)) + 1
+    history = list(calibration.get("rule_history") or [])
+    history.append({"revision": revision, "effective_at": at.isoformat(), "changed_by": actor,
+                    "reason": reason, "previous": previous, "current": current})
+    rule.calibration_json = {**calibration, "rule_revision": revision, "rule_history": history}
+
+
 def _continuous_daily_market(series):
     return (series.get("frequency") or {}).get("gap_detection_basis") == "market_calendar:24/7"
 
@@ -113,6 +137,8 @@ def price_rule_summary(asset: dict, updated_at=None) -> dict:
     """
     sources = period_rule_sources(asset.get("period_limits") or {}, asset.get("price_risk_calibration") or {})
     risk = asset.get("risk") or {}
+    calibration = asset.get("price_risk_calibration") or {}
+    severities = calibration.get("severities") or {}
     coverage = "行情新鲜度不足" if asset.get("freshness") != "fresh" else None
     readings = [{**row, "key": row["period"], "source": sources.get(row["period"], "none")}
                 for row in asset.get("period_readings") or []]
@@ -134,13 +160,17 @@ def price_rule_summary(asset: dict, updated_at=None) -> dict:
             counts["unavailable" if state == "unavailable" else "evaluable"] += 1
             counts["triggered"] += state == "triggered"
         rules.append({"key": reading["key"], "source": reading["source"], "state": state,
+            "rule_version": asset.get("rule_version"), "metric_snapshot_id": risk.get("metric_snapshot_id"),
+            "severity": severities.get(reading["key"], "attention"),
+            "mandatory_notice": state == "triggered" and severities.get(reading["key"]) == "severe",
             "limit_pct": reading["limit_pct"], "value_pct": reading.get("return_pct"),
             "metric": "current_drawdown" if reading["key"] == "drawdown" else "rolling_return",
             "loss_magnitude_pct": max(0.0, -reading["return_pct"]) if reading.get("return_pct") is not None else None,
             "trigger_at_or_below_pct": -reading["limit_pct"] if configured else None,
             "observations": reading.get("observations"), "start_date": reading.get("start_date"),
             "end_date": reading.get("end_date"), "limitation": limitation if configured else None})
-    return {"contract_version": 2, "settings_updated_at": updated_at, "counts": counts, "rules": rules}
+    return {"contract_version": 2, "settings_updated_at": updated_at, "counts": counts, "rules": rules,
+            "rule_version": asset.get("rule_version"), "rule_history": calibration.get("rule_history") or []}
 
 
 def scope_price_rule_summary(instruments: list[dict]) -> dict:

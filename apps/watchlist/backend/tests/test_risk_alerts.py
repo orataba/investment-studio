@@ -64,8 +64,8 @@ def test_home_alerts_use_current_assessed_scope_and_paginate_without_originals(c
         assert first.json()["total"] == 4 and first.json()["has_more"]
         assert [item["case_id"] for item in first.json()["alerts"]] == ["both", "urgent"]
         assert loaded == []
-        assert len(queries) == 2
-        assert all("context_json" not in query and "history_json" not in query for query in queries)
+        assert len(queries) == 5
+        assert all("research_entry.context_json" not in query and "risk_case.history_json," not in query for query in queries)
         second = client.get("/api/risk/alerts?limit=2&offset=2").json()
         assert second["total"] == 4 and not second["has_more"]
         assert [item["case_id"] for item in second["alerts"]] == ["major", "opportunity-active"]
@@ -73,7 +73,7 @@ def test_home_alerts_use_current_assessed_scope_and_paginate_without_originals(c
         assert alert["case_id"] == "major" and alert["confidence"] == "reported"
         assert alert["as_of"] == "2026-10-11T21:00:00Z"
         assert alert["reviewed_at"] == "2026-10-12T00:00:00Z"
-        assert alert["target"] == {"workspace": "watchlist", "path": "/instruments/sxv264?tab=risk"}
+        assert alert["target"] == {"workspace": "watchlist", "path": "/instruments/sxv264?tab=risk&risk=1"}
         assert "UNSELECTED" not in first.text and "DO_NOT_READ" not in first.text
         assert "不表示没有风险" in second["selection_note"]
         assert client.get("/api/risk/alerts?offset=99").json()["alerts"] == []
@@ -179,3 +179,20 @@ def test_numeric_refresh_neither_adds_pending_badge_nor_hides_existing_urgent_re
     assert rows["pending"]["title"] == "明确期限待核实"
     assert rows["pending"]["pending_revision"]["event_version_id"] == "current-version"
     assert rows["pending"]["last_assessed_snapshot"] is None
+
+
+def test_home_legacy_cases_exclude_current_and_retained_private_portfolio_scope(client):
+    with get_session_factory()() as session:
+        seed_alerts(session)
+        topic = session.get(ResearchTopic, "alert-topic")
+        topic.portfolio_id = "private-portfolio"
+        session.commit()
+    assert client.get("/api/risk/alerts?all=true").json()["alerts"] == []
+    with get_session_factory()() as session:
+        topic = session.get(ResearchTopic, "alert-topic")
+        topic.portfolio_id = None
+        # Clearing the present field never clears this topic's retained ACL.
+        session.add(ResearchEntry(entry_id="private-history", topic_id=topic.topic_id, kind="analysis",
+            title="private", status="completed", context_json={"portfolio_id": "private-portfolio"}))
+        session.commit()
+    assert client.get("/api/risk/alerts?all=true").json()["alerts"] == []

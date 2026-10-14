@@ -49,6 +49,24 @@ def seed(client):
         session.commit()
 
 
+def test_review_coverage_preserves_instrument_attribution_and_deduplicates_notes(client):
+    seed(client)
+    with get_session_factory()() as session:
+        session.add(RiskCase(case_id="second-coverage", instrument_id="risk-a", signal="coverage",
+            title="另一项资料缺口", body="已留存事实", severity="coverage", status="open", trigger_active=True))
+        session.commit()
+    response = client.get("/api/risk/review?watchlist_id=risk-list")
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["notice_status"] == "unavailable"
+    assert result["coverage_notes"] == ["已留存事实"]
+    items = {item["case_id"]: item for item in result["coverage_items"]}
+    assert items["coverage"] == {"case_id": "coverage", "instrument_id": "risk-b", "name": "risk-b",
+        "title": "coverage", "body": "已留存事实"}
+    assert items["second-coverage"]["name"] == "risk-a"
+    assert items["second-coverage"]["title"] == "另一项资料缺口"
+
+
 def test_review_get_uses_versions_and_keeps_unversioned_legacy_report(client, monkeypatch):
     from watchlist_app.services import risk_review_state
     seed(client)
@@ -267,7 +285,7 @@ def test_review_version_tracks_theme_lifecycle_and_actual_forecast_due_state(cli
 
 def reply(**priority):
     return {"summary": "现有证据需要进一步核查共同影响。", "priorities": [{"title": "共同风险", "analysis": "依据已留存事项复核。",
-        "instrument_ids": ["risk-a"], "case_ids": ["research"], "next_watch": "等待原文披露。", **priority}], "limitations": []}
+        "instrument_ids": ["risk-a"], "case_ids": ["research"], "next_watch": "等待原文披露。", **priority}], "limitations": [], "notice_items": []}
 
 
 def test_scope_read_separates_inputs_without_model_or_new_run(client, monkeypatch):
@@ -1081,7 +1099,7 @@ def test_identical_pending_assessments_across_scopes_do_not_republish_or_requeue
         with get_session_factory()() as session:
             run = session.get(ResearchEntry, run_id)
             event = next(item for item in run.context_json["risk_inputs"]["research"] if item["case_id"] == "research")
-            service.apply_result(session, run, {"summary": "等待更多证据。", "priorities": [], "limitations": [], "case_assessments": [{
+            service.apply_result(session, run, {"summary": "等待更多证据。", "priorities": [], "limitations": [], "notice_items": [], "case_assessments": [{
                 "case_id": "research", "event_version_id": event["evidence_json"]["event_version_id"],
                 "status": "pending", "reason": reason}]})
             session.commit()
@@ -1118,7 +1136,7 @@ def test_revised_assessment_reason_remains_a_real_shared_case_update(client):
         with get_session_factory()() as session:
             run = session.get(ResearchEntry, run_id)
             event = next(item for item in run.context_json["risk_inputs"]["research"] if item["case_id"] == "research")
-            service.apply_result(session, run, {"summary": reason, "priorities": [], "limitations": [], "case_assessments": [{
+            service.apply_result(session, run, {"summary": reason, "priorities": [], "limitations": [], "notice_items": [], "case_assessments": [{
                 "case_id": "research", "event_version_id": event["evidence_json"]["event_version_id"],
                 "status": "pending", "reason": reason}]})
             session.commit()

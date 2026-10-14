@@ -447,7 +447,7 @@ def test_auth_errors_remain_http_errors_without_exposing_response_body(mcp_http,
     actions = {"request": lambda: research_mcp.request("context"),
         "submit_research": lambda: research_mcp.submit_research_review(service.ReviewResult(reviews=[])),
         "submit_risk": lambda: research_mcp.submit_risk_review(
-            research_mcp.RiskReview(summary="已有证据待复核。", priorities=[], limitations=[])),
+            research_mcp.RiskReview(summary="已有证据待复核。", priorities=[], limitations=[], notice_items=[])),
         "user_command": lambda: research_mcp._user_command({})}
     with pytest.raises(HTTPError) as caught:
         actions[entry]()
