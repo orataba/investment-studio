@@ -149,3 +149,32 @@ def test_revoked_actor_cannot_publish_completed_model_output(fixture, monkeypatc
     with factory() as session:
         report = session.get(Report, "draft")
         assert report.status == "failed" and report.result_json is None
+
+
+def test_publication_status_preserves_report_access_and_ignores_archive_filters(fixture, monkeypatch):
+    client, factory, _ = fixture
+    monkeypatch.setattr('briefing_app.main.read_schedules', lambda role: {'daily': {'state': 'disabled', 'next_run_at': None, 'last_trigger_at': None}})
+    with factory() as session:
+        session.get(Report, 'draft').report_date = '2026-09-08'
+        session.get(Report, 'preview').report_date = '2026-09-06'
+        session.commit()
+    from sqlalchemy import event
+    def reject_full_report(*args):
+        raise AssertionError('Status must not load research bodies')
+    event.listen(Report, 'load', reject_full_report)
+    try:
+        anonymous = client.get('/api/briefing/status').json()
+        assert anonymous['editions']['daily']['latest']['report_id'] == 'public'
+        assert anonymous['editions']['daily']['latest_completed']['report_id'] == 'public'
+        member = client.get('/api/briefing/status', headers={'Authorization': 'Bearer member'}).json()
+        assert member['editions']['daily']['latest']['report_id'] == 'draft'
+        assert member['editions']['daily']['latest_completed']['report_id'] == 'public'
+        task = client.get('/api/briefing/status', headers={'Authorization': 'Bearer task'}).json()
+        assert task['editions']['daily']['latest']['report_id'] == 'draft'
+        assert task['editions']['daily']['latest_completed'] is None
+        foreign = client.get('/api/briefing/status', headers={'Authorization': 'Bearer foreign'}).json()
+        assert foreign['editions']['daily'] == {'latest': None, 'latest_completed': None}
+        assert client.get('/api/briefing/status', headers={'Authorization': 'Bearer wrong-service'}).status_code == 403
+        assert member['schedules']['daily']['state'] == 'disabled'
+    finally:
+        event.remove(Report, 'load', reject_full_report)

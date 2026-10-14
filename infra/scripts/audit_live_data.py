@@ -34,7 +34,7 @@ FINAL_FLAT_TABLE_HEADS = {
     "instrument_data": "20261008_0037",
     "data_ingestion": "20260904_0009",
     "portfolio": "20261012_0073",
-    "watchlist": "20261012_0071",
+    "watchlist": "20261014_0072",
     "market_data": "studio_market_0002",  # This migration chain also owns market_text.
     "briefing": "20260908_0003",
 }
@@ -465,6 +465,7 @@ def _detect_schema_profile(cursor: psycopg.Cursor[Any]) -> SchemaProfile:
             "corporate_action_event",
         ),
         "watchlist_chart": ("watchlist", "instrument_chart_read_model"),
+        "watchlist_guidance": ("watchlist", "research_guidance"),
         "target_set": ("portfolio", "target_set_record"),
         "target_line": ("portfolio", "target_set_line_record"),
         "taxonomy": ("portfolio", "taxonomy_record"),
@@ -492,6 +493,7 @@ def _detect_schema_profile(cursor: psycopg.Cursor[Any]) -> SchemaProfile:
         "instrument",
         "corporate_action",
         "watchlist_chart",
+        "watchlist_guidance",
         "target_set",
         "target_line",
         "taxonomy",

@@ -16,22 +16,29 @@ def definitions(scheduler, role, project_root, env_root, python_bin, log_root, l
         name='investment-studio-market-'+action
         if scheduler=='systemd':
             calendars={'daily':'*-*-* 07:15 Asia/Shanghai','weekly':'Sat *-*-* 11:00 Asia/Shanghai','crypto':'*-*-* 08:15 Asia/Shanghai','publish':'*-*-* *:40:00','sync':'*-*-* *:20:00',
-                'registered-prices-cn':'Mon..Fri *-*-* 15:30 Asia/Shanghai','registered-prices-hk':'Mon..Fri *-*-* 17:00 Asia/Shanghai',
-                'registered-prices-us':'Tue..Sat *-*-* 07:00 Asia/Shanghai','registered-prices-eu':'Tue..Sat *-*-* 07:05 Asia/Shanghai'}
+                'registered-prices-cn':'Mon..Fri *-*-* 15:30 Asia/Shanghai','registered-prices-hk':'*-*-* *:30 Asia/Hong_Kong',
+                'registered-prices-us':'*-*-* *:00 America/New_York','registered-prices-eu':'Tue..Sat *-*-* 07:05 Asia/Shanghai'}
             command=action
             if action.startswith('registered-prices-'):command='registered-prices --market '+action.rsplit('-',1)[1]
             retry_lock = action in {'daily', 'weekly', 'crypto'} or action.startswith('registered-prices-')
+            calendar_probe = action in {'registered-prices-us', 'registered-prices-hk'}
             def quote(value):return '"'+str(value).replace('\\','\\\\').replace('"','\\"').replace('%','%%')+'"'
             result[name+'.service']='\n'.join([
                 '[Unit]',f'Description=Investment Studio market {action}',
                 'After=network-online.target','Wants=network-online.target','',
-                *(['StartLimitIntervalSec=6h','StartLimitBurst=4',''] if retry_lock else []),
+                # ExecCondition is a service command, so off-slot hourly probes
+                # must not exhaust the ordinary four-start lock retry budget.
+                *(['StartLimitIntervalSec=0',''] if calendar_probe else
+                  ['StartLimitIntervalSec=6h','StartLimitBurst=4',''] if retry_lock else []),
                 '[Service]','Type=oneshot',
                 'Environment='+quote('ENV_ROOT='+str(env_root)),
                 'Environment='+quote('PYTHON_BIN='+str(python_bin)),
                 'Environment='+quote('INVESTMENT_STUDIO_MARKET_ROLE='+role),
+                *(['ExecCondition='+quote(python_bin)+' '+quote(project_root/'infra/scripts/market_close_schedule.py')+' --market-scope '+action.rsplit('-',1)[1]+' --collection']
+                  if calendar_probe else []),
                 'ExecStart=/bin/bash '+quote(runner)+' '+command,
-                *(['Restart=no','RestartForceExitStatus=75','RestartSec=1h'] if retry_lock else []),
+                *(['Restart=no'] if calendar_probe else
+                  ['Restart=no','RestartForceExitStatus=75','RestartSec=1h'] if retry_lock else []),
                 'TimeoutStartSec=12h','StandardOutput=journal','StandardError=journal','']).encode()
             result[name+'.timer']='\n'.join([
                 '[Unit]',f'Description=Investment Studio market {action} schedule','',

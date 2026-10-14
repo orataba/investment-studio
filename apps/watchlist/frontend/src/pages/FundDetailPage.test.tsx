@@ -620,6 +620,8 @@ it('keeps comparison loading distinct from missing common dates, and exposes all
   expect(table.getAttribute('aria-busy')).toBe('true')
   expect(table.textContent).not.toContain('Insufficient coverage')
   expect(screen.queryByText(/no common date/)).toBeNull()
+  expect(screen.getByText('Loading benchmark and common sample…')).toBeTruthy()
+  expect(screen.queryByText(/Return chart unavailable|is unavailable for the current currency/)).toBeNull()
   expect(table.querySelectorAll('thead th')).toHaveLength(7)
   fireEvent.click(screen.getByRole('button', { name: 'All periods' }))
   expect(table.querySelectorAll('thead th')).toHaveLength(12)

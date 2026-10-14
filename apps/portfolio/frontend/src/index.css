@@ -1879,6 +1879,22 @@ input[type='checkbox'] {
   grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
 }
 
+.risk-health-strip .summary-card {
+  grid-template-rows: minmax(2.8em, auto) auto 1fr;
+  align-content: start;
+}
+
+.risk-health-strip .summary-card-label {
+  align-self: start;
+  align-items: flex-start;
+  line-height: 1.4;
+}
+
+.risk-health-strip .summary-card-value {
+  font-variant-numeric: tabular-nums;
+  align-self: baseline;
+}
+
 .risk-control-label {
   display: inline-flex;
   align-items: center;

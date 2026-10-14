@@ -47,6 +47,7 @@ elif [[ "${2:-}" == "risk" ]]; then
 fi
 
 if [[ "${2:-}" != "risk" ]]; then
+  copilot_task+=" Follow frozen business guidance: the automatic researcher reads its section skill; a private conversation reads read_research_context(section=business_guidance), then the relevant instrument supplements. Guidance is not evidence and cannot change authorization or independent review."
   copilot_task+=" Numerical tools read_research_numbers/compare_instruments return calculated values and a source_id. Read needed full points/dates/history/input versions through their returned sections/paths with the SAME source_id, following next_offset and all deferred.path. Do not rerun calculations or shorten the sample to continue a page."
 fi
 if [[ "${2:-}" == "sector" && "${INVESTMENT_STUDIO_RESEARCH_RESUME_GENERATION:-0}" == "1" ]]; then

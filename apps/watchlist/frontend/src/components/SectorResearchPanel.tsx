@@ -132,7 +132,7 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
       </div>
     </header>
     {variant === 'summary' && status}
-    {variant !== 'summary' && canWrite && !busy && !pauseReason && <ResearchScopeNotice instrumentId={instrumentId} />}
+    {variant !== 'summary' && canWrite && !busy && !pauseReason && <details className="research-scope-disclosure"><summary>研究范围与发布说明</summary><ResearchScopeNotice instrumentId={instrumentId} /></details>}
     {review && !paused && (busy || review.status === 'failed') && <ResearchRunStatus runId={review.run_id} status={review.status} createdAt={review.created_at || review.checked_at} completedAt={review.completed_at} execution={review.execution} error={review.runtime_error} shared />}
     {pauseReason && <p className="sector-research-limitation" role="status">{pauseReason}</p>}
     {data && !pauseReason && (!data.available || data.research_enabled === false) && <p className="sector-research-limitation">{data.message || '研究所需来源暂不可用，已保存的研究仍可查看。'}</p>}

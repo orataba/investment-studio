@@ -2,6 +2,7 @@ import type {
   PortfolioDerivativeContractCreate,
   PortfolioDerivativeContractRecord,
 } from './api'
+import { transactionTodayIso } from './transactionClock'
 
 export type FcnUnderlyingDraft = {
   row_id: string
@@ -45,12 +46,6 @@ export type DerivativeContractDraft = {
   fcn_payoff_description: string
 }
 
-function localTodayIso() {
-  const now = new Date()
-  const timezoneOffsetMs = now.getTimezoneOffset() * 60 * 1000
-  return new Date(now.getTime() - timezoneOffsetMs).toISOString().slice(0, 10)
-}
-
 let nextUnderlyingRowId = 0
 
 export function buildInitialFcnUnderlyingDraft(): FcnUnderlyingDraft {
@@ -67,7 +62,7 @@ export function buildInitialFcnUnderlyingDraft(): FcnUnderlyingDraft {
 
 export function buildInitialDerivativeContractDraft(
   contractType: 'fcn' | 'option' = 'option',
-  today = localTodayIso(),
+  today = transactionTodayIso(),
 ): DerivativeContractDraft {
   return {
     derivative_contract_id: '',

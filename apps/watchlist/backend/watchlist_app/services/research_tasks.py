@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import GenerateJsonSchema
 
 from watchlist_app.services.research_themes import AnalystThemeUpdate
-from watchlist_app.services.sector_research import SectorEvent
+from watchlist_app.services.sector_research import SectorEventCheck, SectorEventProposal
 
 ResearchRole = Literal["recent_updates", "themes", "quantitative"]
 TERMINAL_STATUSES = {"completed", "limited", "not_applicable", "failed"}
@@ -42,7 +42,7 @@ class ResearchTaskResult(BaseModel):
     source_ids: list[str] = Field(default_factory=list)
     risks: list[TaskRisk] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
-    events: list[SectorEvent] = Field(default_factory=list)
+    events: list[SectorEventProposal] = Field(default_factory=list)
     themes: list[AnalystThemeUpdate] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -243,7 +243,8 @@ def save_task_result(session, run, task_id, payload: ResearchTaskResult):
     event_sources = event_evidence_sources(context, run.entry_id, notebook_evidence=sources)
     validate_review_updates(session, run, SectorReview(instrument_id=task["instrument_id"],
         events=payload.events, themes=payload.themes), sources, event_sources)
-    if payload.status == "completed" and not refs:
+    unchanged_only = bool(payload.events) and all(isinstance(item, SectorEventCheck) for item in payload.events) and not payload.themes and not payload.risks
+    if payload.status == "completed" and not refs and not unchanged_only:
         raise ValueError("完成的专员研究须绑定实际读取的依据；资料不足请提交 limited 并说明限制")
     updated = {**task, "status": payload.status, "result": serialized, "completed_at": datetime.now(UTC).isoformat()}
     run.context_json = {**context, "research_tasks": {**context["research_tasks"], task_id: updated}}

@@ -32,6 +32,37 @@ it('keeps the volume comparison dates distinct from the figure as-of date', () =
   expect(metric.textContent).not.toContain('2026-10-08')
 })
 
+it('plots only the defined disclosed-stock weight table without normalizing weights or inventing missing holdings', () => {
+  const saved: SavedResearchSource = { source_id: 'computed:observations', source_type: 'computed_metric', data: {
+    analysis_kind: 'watchlist_observations', tables: [{ key: 'top10', title: '当前披露股票篮子',
+      columns: [{ key: 'symbol', label: '证券' }, { key: 'weight_percent', label: '披露权重', unit: '%' }],
+      rows: [{ symbol: 'NVDA', weight_percent: 15.2610546 }, { symbol: 'AAPL', weight_percent: 13.51 }, { symbol: 'MSFT', weight_percent: null }] }], charts: [] } }
+  const before = JSON.stringify(saved)
+  const { container, rerender } = render(<ResearchQuantFigure source={saved} />)
+  expect(screen.getByRole('img', { name: '主要股票披露权重' })).toBeTruthy()
+  expect(container.querySelectorAll('rect')).toHaveLength(2)
+  expect(container.querySelector('rect title')?.textContent).toContain('NVDA · 披露权重（%）: 15.2611')
+  expect(screen.getByText(/沿用披露分母，未重新归一化/)).toBeTruthy()
+  expect(JSON.stringify(saved)).toBe(before)
+  rerender(<ResearchQuantFigure source={{ ...saved, data: { ...saved.data, analysis_kind: 'python_quant' } }} />)
+  expect(screen.queryByRole('img')).toBeNull()
+  saved.data!.tables![0].columns[1].unit = ''
+  rerender(<ResearchQuantFigure source={saved} />)
+  expect(screen.queryByRole('img')).toBeNull()
+})
+
+it('keeps stored ETF fields as original records without false common-sample missing-data warnings', () => {
+  const saved = JSON.parse(JSON.stringify({ source_id: 'computed:etf-info', source_type: 'computed_metric', title: 'ETF结构与条款',
+    data: { analysis_kind: 'stored_data', dataset: 'etf_info', rows: [{ symbol: 'XLK', expense_ratio: 0.08, nav: 197.77, nav_currency: 'USD' }] } })) as SavedResearchSource
+  render(<EvidenceFigure source={saved} />)
+  expect(screen.queryByRole('img')).toBeNull()
+  expect(screen.queryByText(/共同样本|未取得/)).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '查看留存原始字段' }))
+  const evidence = screen.getByRole('dialog')
+  expect(within(evidence).queryByText(/共同样本|未取得/)).toBeNull()
+  expect(evidence.querySelector('pre')?.textContent).toBe(JSON.stringify(saved, null, 2))
+})
+
 it('plots retained values on proportional dates rather than compressing missing days', () => {
   const { container } = render(<ResearchQuantFigure source={source()} />)
   expect(screen.getByRole('img', { name: '留存收益路径' })).toBeTruthy()
@@ -123,7 +154,9 @@ it('formats explicitly percentage-valued metrics without rounding unknown units 
   saved.data!.metrics = { return: 12.34567, breadth_pct: 51.45678, change_pp: -1.23456, variance: 0.00000125, correlation: 0.1234567890123456, missing: null }
   const { container } = render(<ResearchQuantFigure source={saved} />)
   const values = [...container.querySelectorAll('.research-quant-metrics dd')].map(item => item.textContent)
-  expect(values).toEqual(['12.35%', '51.46%', '-1.23 个百分点', '0.00000125', '0.1234567890123456', '—'])
+  expect(values).toEqual(['12.35%', '51.46%', '-1.23 个百分点', '0.00000125', '0.1234567890123456'])
+  fireEvent.click(screen.getByRole('button', { name: '查看全部指标和计算依据' }))
+  expect(screen.getByRole('dialog').textContent).toContain('未取得指标—')
   expect(container.querySelector('.research-quant-metrics dt')?.textContent).toBe('累计收益')
 })
 
@@ -146,7 +179,7 @@ it('presents retained EWMA observations compactly and keeps exact values and met
     data: { current: { date: '2026-01-11', volatility_pct: 22.12345678 }, previous: { date: '2026-01-10', volatility_pct: 21.98765432 }, change_pp: 0.13580246, five_session_change_pp: null,
       history: [{ date: '2026-01-01', volatility_pct: 18 }, { date: '2026-01-02', volatility_pct: null }, { date: '2026-01-11', volatility_pct: 22.12345678 }], limitations: ['尚无足够观察计算五次变化。'] } }
   const { container } = render(<EvidenceFigure source={saved} />)
-  expect([...container.querySelectorAll('.research-quant-metrics dd')].map(item => item.textContent)).toEqual(['22.12%2026-01-11', '21.99%2026-01-10', '+0.14个百分点', '未取得'])
+  expect([...container.querySelectorAll('.research-quant-metrics dd')].map(item => item.textContent)).toEqual(['22.12%2026-01-11', '21.99%2026-01-10', '+0.14个百分点'])
   expect(screen.queryByText(/EWMA 半衰期/)).toBeNull()
   expect(screen.getByText(saved.data!.limitations![0])).toBeTruthy()
   expect(screen.getByRole('img', { name: '年化波动率' })).toBeTruthy()
@@ -165,10 +198,10 @@ it('presents retained EWMA observations compactly and keeps exact values and met
 it('keeps unavailable EWMA observations empty and retains their limitation', () => {
   const saved: SavedResearchSource = { source_id: 'computed:unavailable', source_type: 'computed_metric', methodology: { metric: 'ewma_volatility' }, data: { status: 'unavailable', current: null, previous: null, change_pp: null, five_session_change_pp: null, history: [], limitations: ['交易观察不足。'] } }
   const { container } = render(<EvidenceFigure source={saved} />)
-  expect(screen.getAllByText('未取得')).toHaveLength(4)
+  expect(screen.queryByText('未取得')).toBeNull()
   expect(screen.getByText('交易观察不足。')).toBeTruthy()
   expect(container.querySelector('svg')).toBeNull()
-  expect(container.querySelector('.research-quant-metrics')?.textContent).not.toContain('0.00')
+  expect(container.querySelector('.research-quant-metrics')).toBeNull()
 })
 
 it('keeps a common-sample comparison focused on the chart and opens precise supporting records on demand', () => {

@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 from studio_market.config import MarketSettings
 from studio_market.numeric.collect import symbol_market
@@ -110,7 +111,17 @@ for channel in channels:
                '--fail-on-item-failure', '--require-downstream-success', '--json']
     for instrument_id in instruments:
         command.extend(['--instrument-id', instrument_id])
-    completed = subprocess.run(command)
+    # Calendar admission happens once. Keep the existing four-attempt, hourly
+    # lock retry inside this oneshot so a retry can pass the original slot,
+    # without reacquiring provider data or retrying non-lock failures.
+    attempts = 4 if args.action == 'registered-prices' and args.market in {'us', 'hk'} else 1
+    for attempt in range(attempts):
+        completed = subprocess.run(command)
+        if completed.returncode != 75 or attempt == attempts - 1:
+            break
+        print(json.dumps({'stage': 'projection_lock_wait', 'market': args.market,
+                          'attempt': attempt + 1, 'retry_in_seconds': 3600}), flush=True)
+        time.sleep(3600)
     exit_code = exit_code or completed.returncode
 raise SystemExit(exit_code)
 PY

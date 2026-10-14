@@ -340,6 +340,20 @@ def submit_review_receipts(receipts: dict) -> dict:
             if key != "sources" and not _delivered(versions, [index, key], version_reads):
                 raise ValueError(f"Read the exact prior judgment version {version.get('version_id')} field {key} before reviewing its outcome; original sources remain available on demand")
     from watchlist_app.services.research_notebook import notebook_source_ids
+    prior_events = state["packet"].get("prior_events", [])
+    prior_event_reads = [row for row in reads if row.get("section") == "prior_events"]
+    for review in checked.reviews:
+        for decision in review.decisions:
+            event = decision.event
+            if event is None or event.action != "checked":
+                continue
+            index = next((index for index, prior in enumerate(prior_events)
+                if prior.get("instrument_id") == review.instrument_id and prior.get("event_key") == event.event_key
+                and prior.get("event_version_id") == event.event_version_id), None)
+            if index is None:
+                raise ValueError("Unchanged check must reference the retained prior event version")
+            if not _delivered(prior_events, [index], prior_event_reads):
+                raise ValueError(f"Read prior_events at path=[{index}] before accepting its unchanged check")
     originals = {source["source_id"]: source for source in state["packet"]["sources"]}
     missing = [sid for sid in sorted(notebook_source_ids(result))
                if sid not in originals or not _evidence_read(originals[sid], [row for row in reads if row.get("source_id") == sid])]

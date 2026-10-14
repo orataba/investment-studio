@@ -7,14 +7,14 @@ import json
 import os
 import re
 import sys
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import quote
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from watchlist_app.services.sector_research import ResearchReflection, ReviewResult, SectorEvent, usable_original, usable_computed, draft_payload, shared_market_coverage_gaps
+from watchlist_app.services.sector_research import ResearchReflection, ReviewResult, SectorEvent, SectorEventCheck, usable_original, usable_computed, draft_payload, shared_market_coverage_gaps
 from watchlist_app.services.sector_estimates import retained_estimate_sources, usable_estimate_change
 from watchlist_app.services.sector_web import SectorWebError
 from watchlist_app.services.research_notebook import ResearchNotebook, research_sources, validate_notebook, notebook_source_ids, _original_source
@@ -102,7 +102,9 @@ The draft is a claim to check, not evidence. Event decisions apply ONLY to the e
 instrument's draft_reviews.events. prior_events and prior_research_updates are historical context, NEVER
 additional candidates. If that instrument's draft events=[], return decisions=[] even when prior_events
 contains open events; reviewing a receipt does not authorize a new decision about a prior event.
-Check EVERY proposed event separately:
+Check EVERY proposed event separately. An action=checked receipt only confirms no change to its
+specified retained version: read that prior event and the acquisition coverage, then accept or remove
+the check. The following external-development checks apply to new/updated/resolved proposals:
 First identify the actual external development or attributed public view and why it matters to this
 instrument. A fresh calculation, rechecking old holdings, finding no announcement, or an expected reporting
 window alone is research/coverage work, not a new external event. Remove such proposals from events; do not
@@ -389,6 +391,10 @@ market_views require attribution, dates and actual originals; issuer statements 
 market_reaction only references retained computed results; never invent returns or causation from prices.
 Follow-up dates are research arrangements, never risk resolution. Extensions/endings require reasons; missing
 sources or a failed closing check preserve watch. PM pins, future nodes and unresolved major risk are protected.
+An event with action=checked is an unchanged-check receipt bound to its exact prior event_version_id.
+Read that prior_events record and the actual acquisition coverage before accepting the check. It proposes
+no new event content, sources or dates; accept or remove it, never rewrite it or change its version.
+Removal means the check was not established, not that the retained event or its risk was removed.
 Review changes against their cited baseline and evidence. Assess the resulting current judgment,
 including inherited premises it still depends on, rather than checking edited sentences in isolation.
 When a premise changes, reconcile every dependent proposed claim: facts, modules, theme synthesis and
@@ -459,7 +465,7 @@ class _Decision(BaseModel):
     event_key: str
     decision: Literal["keep", "remove"]
     reason: str = Field(min_length=1)
-    event: _CorrectedEvent | None
+    event: Annotated[_CorrectedEvent | SectorEventCheck, Field(discriminator="action")] | None
 
 
 class _SectorCheck(BaseModel):
@@ -765,8 +771,10 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
     from watchlist_app.services.market_evidence import initialization_search_summary
     initialization_searches = initialization_search_summary(context)
     event_sources = event_evidence_sources(context, run_id, notebook_evidence=available)
+    from watchlist_app.services.research_guidance import role_guidance
     return {
         "run_id": run_id,
+        "business_guidance": role_guidance(context, "review"),
         "cutoff": context["cutoff"],
         **({"question": context["question"], "question_note":
             "This is the recorded research request and review scope, not factual evidence or an investment conclusion. Verify the proposed response against the retained originals; do not cite the request as a source."}
@@ -905,7 +913,10 @@ def _apply_checks(draft: dict, result: dict, sources: list[dict], dossiers=()) -
             if (event is None or event.event_key != decision.event_key
                     or event.action != original_events[decision.event_key]["action"]):
                 raise ValueError("Kept events require a full correction with the original key and action")
-            if not set(event.source_ids).issubset(source_ids):
+            if isinstance(event, SectorEventCheck):
+                if event.model_dump(mode="json") != original_events[decision.event_key]:
+                    raise ValueError("Fact review cannot change an unchanged check's bound event version")
+            elif not set(event.source_ids).issubset(source_ids):
                 raise ValueError("Fact review introduced a source that was not supplied as evidence")
             kept[decision.event_key] = {key: value for key, value in event.model_dump(mode="json", exclude_unset=True).items()
                                        if key in original_events[decision.event_key]}
@@ -1005,12 +1016,19 @@ def review_output(output: str, *, context: dict | None = None) -> dict:
                            for source in value.get("sources", []))]}
         # The API context contains an index, not archived body text. Resolve event references
         # before the original-source check, just as working-paper references are resolved below.
-        for sid in {sid for event in row["events"] for sid in event["source_ids"]} & archived_ids:
+        for sid in {sid for event in row["events"] for sid in event.get("source_ids", [])} & archived_ids:
             if sid not in sources:
                 from urllib.parse import urlencode
                 sources[sid] = _api_request(run_id, f"dossier/{quote(row['instrument_id'], safe='')}?" + urlencode({"source_id": sid}))
         eligible = []
         for event in row["events"]:
+            if event["action"] == "checked":
+                prior = next((item for item in context.get("prior_events", [])
+                    if item.get("instrument_id") == row["instrument_id"] and item.get("event_key") == event["event_key"]), None)
+                if prior is None or prior.get("event_version_id") != event["event_version_id"]:
+                    raise ValueError("Unchanged check must reference this run's retained event version")
+                eligible.append(event)
+                continue
             if any(usable_original(sources.get(sid, {}), cutoff) or usable_estimate_change(sources.get(sid, {}), cutoff, row["instrument_id"]) or usable_computed(sources.get(sid, {}), cutoff, row["instrument_id"])
                    for sid in event["source_ids"]):
                 eligible.append(event)

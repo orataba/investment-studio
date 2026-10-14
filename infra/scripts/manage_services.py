@@ -90,6 +90,12 @@ def manage(group: str, action: str) -> None:
     for service in services:
         if not scheduled(service):
             continue
+        if service == "us-market-data-refresh" and action in {"start", "restart"}:
+            # The cloud collector's registered-US pipeline owns acquisition and
+            # projection. Keep this legacy/manual unit stoppable and inspectable,
+            # without group start restoring a duplicate automatic schedule.
+            units.remove(f"investment-studio-{service}.service")
+            continue
         timer = f"investment-studio-{service}.timer"
         # Starting a group enables its schedule, not an unsolicited data refresh.
         if action in {"start", "restart"}:

@@ -66,25 +66,31 @@ def test_daily_scope_includes_current_proposed_and_invested_and_reloads_changes(
 
 
 @pytest.mark.parametrize("market,instant,expected", [
-    ("cn", "2026-09-08T00:29:00+00:00", False),
-    ("cn", "2026-09-08T00:30:00+00:00", True),
-    ("hk", "2026-09-08T00:30:00+00:00", True),
-    ("us", "2026-09-08T12:29:00+00:00", False),
-    ("us", "2026-09-08T12:30:00+00:00", True),
-    ("us", "2026-01-06T13:29:00+00:00", False),
-    ("us", "2026-01-06T13:30:00+00:00", True),
-    ("us", "2026-09-07T12:30:00+00:00", False),  # Labor Day
-    ("cn", "2026-10-01T00:30:00+00:00", False),
-    ("hk", "2026-07-01T00:30:00+00:00", False),
-    ("cn", "2026-09-06T00:30:00+00:00", False),
-    ("us", "2026-09-06T12:30:00+00:00", False),
+    ("cn", "2026-09-08T13:59:59+00:00", False),
+    ("cn", "2026-09-08T14:00:00+00:00", True),
+    ("hk", "2026-09-08T11:29:59+00:00", False),
+    ("hk", "2026-09-08T11:30:00+00:00", True),
+    ("us", "2026-09-08T23:14:59+00:00", False),
+    ("us", "2026-09-08T23:15:00+00:00", True),
+    ("us", "2026-09-09T07:15:00+08:00", True),
+    ("us", "2026-01-07T00:14:59+00:00", False),
+    ("us", "2026-01-07T08:15:00+08:00", True),
+    ("us", "2026-11-27T21:14:59+00:00", False),
+    ("us", "2026-11-27T21:15:00+00:00", True),
+    ("hk", "2026-02-16T07:29:59+00:00", False),
+    ("hk", "2026-02-16T07:30:00+00:00", True),
+    ("us", "2026-09-07T23:30:00+00:00", False),
+    ("cn", "2026-10-01T14:00:00+00:00", False),
+    ("hk", "2026-07-01T11:30:00+00:00", False),
+    ("cn", "2026-09-06T14:00:00+00:00", False),
+    ("us", "2026-09-06T23:30:00+00:00", False),
     ("fund_nav", "2026-09-08T00:29:00+00:00", False),
     ("fund_nav", "2026-09-08T00:30:00+00:00", True),
     ("fund_nav", "2026-09-06T00:30:00+00:00", True),
     ("crypto", "2026-09-06T00:29:00+00:00", False),
     ("crypto", "2026-09-06T00:30:00+00:00", True),
     ("crypto", "2026-10-01T00:30:00+00:00", True),
-    (None, "2026-09-08T12:30:00+00:00", False),
+    (None, "2026-09-08T23:30:00+00:00", False),
 ])
 def test_research_is_due_in_market_local_time_only_on_exchange_sessions(market, instant, expected):
     assert service._research_due(market, datetime.fromisoformat(instant)) is expected
@@ -119,9 +125,11 @@ def test_daily_scope_uses_registered_calendar_and_explicit_fund_nav_check_clock(
         assert service._research_market(session, "daily-private") == "fund_nav"
         assert service._research_market(session, "daily-private-us") == "us"
         morning = datetime.fromisoformat("2026-09-08T00:30:00+00:00")
-        assert service.daily_review_groups(session, now=morning) == [[iid] for iid in ["daily-cn", "daily-hk", "daily-index"]]
-        us_morning = datetime.fromisoformat("2026-09-08T12:30:00+00:00")
-        assert service.daily_review_groups(session, now=us_morning) == [[iid] for iid in ["daily-cn", "daily-hk", "daily-index", "daily-us"]]
+        assert service.daily_review_groups(session, now=morning) == []
+        asia_closed = datetime.fromisoformat("2026-09-08T14:00:00+00:00")
+        assert service.daily_review_groups(session, now=asia_closed) == [[iid] for iid in ["daily-cn", "daily-hk", "daily-index"]]
+        us_closed = datetime.fromisoformat("2026-09-08T23:30:00+00:00")
+        assert service.daily_review_groups(session, now=us_closed) == [["daily-us"]]
 
 
 def test_scheduled_us_review_deduplicates_across_beijing_midnight_and_quiet_next_us_day(client, monkeypatch):

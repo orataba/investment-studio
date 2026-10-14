@@ -110,6 +110,18 @@ export type ResearchNotebook = {
 
 export type ResearchSectionKey = 'overview' | 'recent_updates' | 'themes' | 'quantitative'
 export type ResearchSectionSkills = Record<ResearchSectionKey, string>
+export type TeamResearchRole = ResearchSectionKey | 'risk' | 'review'
+export type TeamResearchGuidance = {
+  team_id: string; guidance: string; section_skills: Record<TeamResearchRole, string>; revision: number
+  author: { user_id?: string; display_name?: string; origin: string } | null; updated_at: string | null
+  versions: Array<Omit<TeamResearchGuidance, 'versions'>>
+}
+export function getTeamResearchGuidance(signal?: AbortSignal) {
+  return fetchJson<TeamResearchGuidance>('/api/research/guidance', { signal })
+}
+export function saveTeamResearchGuidance(input: Pick<TeamResearchGuidance, 'guidance' | 'section_skills'> & { expected_revision: number }) {
+  return fetchJson<TeamResearchGuidance>('/api/research/guidance', { method: 'PUT', body: JSON.stringify(input) })
+}
 export type ResearchMandateInput = { guidance: string; section_skills?: ResearchSectionSkills; expected_revision: number }
 export type ResearchMandate = ResearchRevision & {
   guidance: string; section_skills?: ResearchSectionSkills; revision: number
@@ -317,6 +329,7 @@ export type ResearchUpdate = {
   market_reaction?: { status: 'available' | 'partial' | 'unavailable' | 'pending'; figure_source_ids: string[]; explanation: string } | null
   follow_up_until?: string | null; follow_up_reason?: string; next_observation_on?: string | null
   follow_up_pinned?: boolean; follow_up_review_status?: 'active' | 'due' | 'ended'
+  material_change?: boolean; development_at?: string | null
   checked_at?: string | null; material_progress_at?: string | null; timeline_date?: string | null; late_arrival?: boolean
   impact_level?: 'limited' | 'material' | 'major'; urgency?: 'monitor' | 'review_soon' | 'immediate'
   risk_channels?: string[]; impact_analysis?: string; action_condition?: string
@@ -341,7 +354,7 @@ export type ResearchEventsResponse = {
   total: number; next_offset: number | null; has_more: boolean
 }
 export function getResearchEvents(instrumentId: string, scope: ResearchEventScope, signal?: AbortSignal, offset = 0, eventKey?: string, includeHistory = false, eventCategory?: ResearchEventCategory) {
-  const query = new URLSearchParams({ scope, display_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, offset: String(offset), limit: '20' })
+  const query = new URLSearchParams({ scope, display_timezone: 'UTC', offset: String(offset), limit: '20' })
   if (eventCategory) query.set('event_category', eventCategory)
   if (eventKey) query.set('event_key', eventKey)
   if (includeHistory) query.set('include_history', 'true')

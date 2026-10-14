@@ -38,10 +38,12 @@ def read_research_context(request, section: str = "overview", offset: int = 0, l
             "next_read": "先读取当前问题及总览技能，按需要直接研究或delegate_research委派具体任务。read_research_context(section=task_results)列出已委派任务及完整结果读取入口。原件按明确问题及精确选择器读取，不把全底稿、历史或其他角色输入逐份复制进上下文。"},
             pageable_fields=[(["question"], {"tool": "read_research_context", "section": "question"})] if "question" in context else [])
     if not context.get("risk_run"):
+        from watchlist_app.services.research_guidance import role_guidance
         sections = {key: context[key] for key in (
             "question", "page_context", "referenced_research_update", "referenced_research_versions", "referenced_risk_case", "history", "conversation", "evidence",
             "watchlists", "limitations", "data_gaps", "incremental_trigger", "research_working_sets", "analyst_focus", "user_records", "team_publication_instructions", "initialization") if key in context}
         sections.update({"market_coverage": coverage_detail(context.get("market_coverage")),
+            "business_guidance": role_guidance(context, "overview"),
             "catalogue": [{key: item[key] for key in ("instrument_id", "name", "instrument_type", "currency", "watchlist_ids") if key in item}
                           for item in context.get("catalogue", [])],
             "computed_metrics": [{**{key: item.get(key) for key in ("source_id", "instrument_id", "title", "as_of")},
@@ -96,12 +98,14 @@ def read_research_context(request, section: str = "overview", offset: int = 0, l
 
 
 def _risk_scope_index(context):
+    from watchlist_app.services.research_guidance import role_guidance
     snapshot = context["risk_inputs"]
     # Full portfolio snapshots exceed the harness's 50 KB tool-result limit.
     # Send the scope index here; read each retained instrument separately below.
     portfolio = snapshot.get("portfolio")
     portfolio_context = (portfolio or {}).get("risk_context") or {}
     return {"risk_run": True, "risk_scope": context["risk_scope"], "cutoff": context["cutoff"],
+        "business_guidance": role_guidance(context, "risk"),
         "risk_inputs": {**{key: snapshot.get(key) for key in (
             "scope", "scope_available", "instrument_ids", "input_as_of", "limitations")},
             "price_rule_counts": (snapshot.get("price_rule_summary") or {}).get("counts"),

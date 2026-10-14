@@ -665,13 +665,20 @@ def _submission_parent_contract(schema, location):
         if "anyOf" in value:
             return resolve(next((item for item in value["anyOf"] if item.get("type") != "null"), {}))
         return value
-    for part in location[:-1]:
+    wire_location, parent = [], {}
+    for part in location:
         node = resolve(node)
+        branches = node.get("discriminator", {}).get("mapping", {})
+        if part in branches:
+            # Pydantic includes the selected variant tag in an error path;
+            # it is not a field in the submitted JSON object.
+            node = resolve({"$ref": branches[part]})
+            continue
+        parent = node
+        wire_location.append(part)
         node = node.get("items", {}) if isinstance(part, int) else node.get("properties", {}).get(part, {})
-    node = resolve(node)
-    if "properties" not in node:
-        return {}
-    return {"parent_fields": list(node["properties"]), "parent_required_fields": node.get("required", [])}
+    return {"loc": ["result", *wire_location], **({"parent_fields": list(parent["properties"]),
+        "parent_required_fields": parent.get("required", [])} if "properties" in parent else {})}
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False))
@@ -709,7 +716,7 @@ def submit_research_review(result: SkipValidation[ReviewResult]) -> dict:
         definitions = schema["$defs"]
         diagnostic = {
             "error": "invalid_research_review",
-            "issues": [{"loc": ["result", *issue["loc"]], "type": issue["type"], "msg": issue["msg"],
+            "issues": [{"type": issue["type"], "msg": issue["msg"],
                         **_submission_parent_contract(schema, issue["loc"])}
                        for issue in error.errors(include_input=False, include_context=False, include_url=False)],
             "required_result_fields": schema["required"],

@@ -9,9 +9,10 @@ import '../../../../packages/ui/src/notice-toast.css'
 import { useModalDialog } from '../../../../packages/ui/src/useModalDialog'
 import { LanguageSelector, useLanguage } from '../../../../packages/ui/src/i18n'
 import { resolveWorkspaceUrl, withLanguage } from '../../../../packages/ui/src/navigation'
-import type { CitedItem, MacroRelease, ReportDetail, ReportSummary, ReportType, Source } from './types'
+import type { BriefingSchedule, EditionAvailability, CitedItem, MacroRelease, ReportDetail, ReportSummary, ReportType, Source } from './types'
 import { safeUrl, SourceEvidence } from './SourceEvidence'
 import GenerateEditionForm from './GenerateEditionForm'
+import EditionStatus from './EditionStatus'
 import SourceDirectory from './SourceDirectory'
 import { EvidenceTime, ExternalLinkIcon, navigateToSection, quoteUnit } from './reading'
 
@@ -71,6 +72,19 @@ function IndustryResearch() {
   </section>
 }
 
+function coverageSubject(note: Record<string, unknown>, detail: ReportDetail, copy: (zh: string, en: string) => string): string {
+  const identity = String(note.symbol || note.dataset || '')
+  if (identity === 'historical_report') return copy('历史报告行情口径', 'Historical report price basis')
+  const retainedName = note.label || note.company_name || detail.market_rows.find(row => row.symbol === identity)?.label
+    || detail.sources.find(source => source.symbol === identity && typeof source.company_name === 'string')?.company_name
+  const code = identity.match(/^issuer:(security_code|hkex:stock_code|cik):(\d+)$/)
+  const codeLabel = code ? code[1] === 'security_code' ? copy(`A股 ${code[2]}`, `China A-share ${code[2]}`)
+    : code[1] === 'hkex:stock_code' ? copy(`港股 ${code[2]}`, `Hong Kong ${code[2]}`)
+      : copy(`美国发行人 CIK ${code[2]}`, `U.S. issuer CIK ${code[2]}`) : identity
+  if (typeof retainedName === 'string' && retainedName && retainedName !== identity) return `${retainedName} (${codeLabel})`
+  return codeLabel || copy('未识别的数据项', 'Unidentified dataset')
+}
+
 function Coverage({ detail }: { detail: ReportDetail }) {
   const copy = useCopy()
   const text = detail.coverage.text
@@ -84,7 +98,10 @@ function Coverage({ detail }: { detail: ReportDetail }) {
     <details className="coverage-records"><summary>{copy('数据与采集记录', 'Data and collection records')}</summary>
     <dl className="source-dates"><div><dt>{copy('最近接收时间', 'Latest receipt')}</dt><dd><EvidenceTime value={typeof text.latest_received_at === 'string' ? text.latest_received_at : undefined} timezone={detail.window.timezone} /></dd></div><div><dt>{copy('最新来源采集时间', 'Latest source observation')}</dt><dd><EvidenceTime value={typeof text.latest_source_observed_at === 'string' ? text.latest_source_observed_at : undefined} timezone={detail.window.timezone} /></dd></div><div><dt>{copy('已接收资料包', 'Received packages')}</dt><dd>{String(text.bundle_count || 0)}</dd></div></dl>
 
-    {notes.length > 0 && <><h3>{copy('数值数据覆盖', 'Numeric coverage')}</h3><ul>{notes.map((note, index) => <li key={index}>{typeof note === 'string' ? note : [note.symbol || note.dataset, note.message || note.reason || note.note || numericStatus[note.status] || note.status, note.effective_date || note.latest_date, Array.isArray(note.missing_dates) && note.missing_dates.length ? `${copy('缺失日期', 'Missing dates')}: ${note.missing_dates.join(', ')}` : null].filter(Boolean).join(' · ')}</li>)}</ul></>}
+    {notes.length > 0 && <><h3>{copy('数值数据覆盖', 'Numeric coverage')}</h3><ul>{notes.map((note, index) => <li key={index}>{typeof note === 'string' ? note : <>
+      {[coverageSubject(note, detail, copy), note.message || note.reason || note.note || numericStatus[note.status] || note.status, note.effective_date || note.latest_date, Array.isArray(note.missing_dates) && note.missing_dates.length ? `${copy('缺失日期', 'Missing dates')}: ${note.missing_dates.join(', ')}` : null].filter(Boolean).join(' · ')}
+      {(String(note.symbol || '').startsWith('issuer:') || note.dataset) && <details><summary>{copy('原始标识', 'Original identifier')}</summary><code>{String(note.symbol || note.dataset)}</code></details>}
+    </>}</li>)}</ul></>}
     {channels.length > 0 && <><h3>{copy('资讯渠道', 'News channels')}</h3><ul>{channels.map((channel, index) => {
       const discovery = channel.latest_discovery as { status?: string; failure_reason?: string } | undefined
       const run = channel.latest_run as { status?: string; accepted_count?: number; failed_count?: number } | undefined
@@ -113,9 +130,10 @@ export function CoverageSummary({ detail }: { detail: ReportDetail }) {
   const numericGaps = Array.isArray(detail.coverage.numeric) ? detail.coverage.numeric.filter(note =>
     typeof note === 'object' && note !== null && note.status && note.status !== 'available') : []
   const prices = [...new Set(detail.market_rows.map(row => row.end_date))].sort()
+  const numericSubjects = [...new Set(numericGaps.map(note => coverageSubject(note, detail, copy)))]
   return <section className={`coverage-summary${gaps.length || numericGaps.length ? ' coverage-summary-warning' : ''}`} aria-label={copy('阅读前的覆盖说明', 'Coverage at a glance')}>
     <strong>{gaps.length ? copy(`来源覆盖有缺口：${gaps.length}/${channels.length} 个渠道`, `Source coverage gaps: ${gaps.length}/${channels.length} channels`) : copy('来源与日期', 'Sources and dates')}</strong>
-    {numericGaps.length > 0 && <span>{copy('数值数据有缺口', 'Numeric data has gaps')}: {numericGaps.map(note => note.symbol || note.dataset).filter(Boolean).join(' · ')}</span>}
+    {numericGaps.length > 0 && <span>{copy(`数值覆盖缺口 ${numericGaps.length} 项`, `${numericGaps.length} numeric coverage gaps`)}: {numericSubjects.slice(0, 3).join(' · ')}{numericSubjects.length > 3 && copy(` 等 ${numericSubjects.length} 个对象`, ` and ${numericSubjects.length - 3} more`)}</span>}
     <span>{copy('行情有效日', 'Price dates')}: {prices.length ? prices.join(' · ') : copy('没有留存行情', 'No retained prices')}</span>
     <a id="coverage-entry" href="#source-coverage" onClick={event => { event.preventDefault(); navigateToSection('source-coverage') }}>{copy('查看来源与缺口', 'Inspect sources and gaps')}</a>
     {gaps.length > 0 && <details className="coverage-gaps"><summary>{copy('未完整覆盖的渠道', 'Channels with coverage gaps')}</summary><p>{gaps.map(channel => String(channel.source_name || channel.channel_id)).join(' · ')}</p></details>}
@@ -250,6 +268,7 @@ export default function App() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
   const [generating, setGenerating] = useState(false)
+  const [publication, setPublication] = useState<{ timezone?: string; schedules?: Record<ReportType, BriefingSchedule>; editions?: Record<ReportType, EditionAvailability> } | null>(null)
   const [modelWork, setModelWork] = useState<ModelWorkStatus | null>(null)
   const [canGenerate, setCanGenerate] = useState(false)
   const [canReadSources, setCanReadSources] = useState(false)
@@ -298,7 +317,7 @@ export default function App() {
   useEffect(() => {
     if (kind === 'industry') return
     const controller = new AbortController()
-    request<{ harness_available: boolean; can_generate: boolean; can_read_sources: boolean; model_work?: ModelWorkStatus }>('/status', { signal: controller.signal }).then(result => { if (controller.signal.aborted) return; setAvailable(result.harness_available); setModelWork(result.model_work || null); setCanGenerate(result.can_generate); setCanReadSources(result.can_read_sources) }).catch(reason => { if (!controller.signal.aborted) setError(String(reason.message)) })
+    request<{ harness_available: boolean; can_generate: boolean; can_read_sources: boolean; model_work?: ModelWorkStatus; timezone?: string; schedules?: Record<ReportType, BriefingSchedule>; editions?: Record<ReportType, EditionAvailability> }>('/status', { signal: controller.signal }).then(result => { if (controller.signal.aborted) return; setPublication(result); setAvailable(result.harness_available); setModelWork(result.model_work || null); setCanGenerate(result.can_generate); setCanReadSources(result.can_read_sources) }).catch(reason => { if (!controller.signal.aborted) setError(String(reason.message)) })
     return () => controller.abort()
   }, [isIndustry, revision])
   useEffect(() => {
@@ -357,10 +376,10 @@ export default function App() {
   }, [source, sourceError])
   useEffect(() => {
     if (isIndustry) return
-    if (modelWork?.paused || (!rows.some(row => pending(row.status)) && !(detail && pending(detail.status)))) return
+    if (modelWork?.paused || (!rows.some(row => pending(row.status)) && !(detail && pending(detail.status)) && !pending(publication?.editions?.[kind]?.latest?.status || ''))) return
     const timer = window.setInterval(() => setRevision(value => value + 1), 5000)
     return () => window.clearInterval(timer)
-  }, [rows, detail?.status, kind, modelWork?.paused])
+  }, [rows, detail?.status, kind, modelWork?.paused, publication])
   function choose(id: string, replace = false) {
     if (id === selected) return
     pendingFocusReportId.current = replace ? null : id
@@ -417,6 +436,7 @@ export default function App() {
     {!isIndustry && showGenerate && !modelWork?.paused && <GenerateEditionForm kind={kind} busy={generating} onGenerate={generate} onCancel={() => { setShowGenerate(false); generateButton.current?.focus() }} /> }
     {!isIndustry && error && <RequestRecovery error={error} onRetry={() => setRevision(value => value + 1)} busy={loading} />}
     <div className="briefing-tabs" role="tablist" aria-label={copy('报告类型', 'Report type')}>{(['daily', 'weekly', 'industry'] as const).map(type => <button role="tab" aria-selected={kind === type} key={type} onClick={() => changeKind(type)}>{type === 'daily' ? copy('日报', 'Daily') : type === 'weekly' ? copy('周报', 'Weekly') : copy('行业研究', 'Industry research')}</button>)}</div>
+    {!isIndustry && publication && <EditionStatus schedule={publication.schedules?.[kind]} editions={publication.editions?.[kind]} timezone={publication.timezone} onRead={id => choose(id)} />}
     {isIndustry ? <IndustryResearch /> : <div className="briefing-layout"><aside className="edition-index" aria-busy={loading}><h2>{copy('历史简报', 'Editions')}</h2><form className="archive-search" onSubmit={event => { event.preventDefault(); setLimit(30); setArchiveFilter({ month: archiveMonth, query: archiveQuery.trim() }) }}>
       <label>{copy('月份', 'Month')}<input type="month" value={archiveMonth} onChange={event => setArchiveMonth(event.target.value)} /></label>
       <label>{copy('日期或标题', 'Date or title')}<input type="search" maxLength={120} value={archiveQuery} onChange={event => setArchiveQuery(event.target.value)} /></label>

@@ -5,7 +5,10 @@ import type { LanguageMessages } from '../../../packages/ui/src/i18n'
 export const homeMessages: LanguageMessages = { 'zh-Hans': {
   'Important risks': '重要风险',
   'Unresolved major risks retain their last assessment. Material urgent leads awaiting verification are labeled separately.': '尚未解除的重大风险保留最近一次研判，重大且限时的待核线索单独标注。',
-  'Risk status unavailable.': '风险提示暂不可用。',
+  'Important risks cannot be read right now.': '当前无法读取重要风险。',
+  'The current risk status is unknown; this does not mean there are no important risks.': '当前风险状态未知，不代表没有重要风险。',
+  'Open Watchlist': '打开观察池',
+  'Technical details': '技术详情',
   'No items currently meet the important-risk criteria.': '当前无符合条件的重要提示。',
   'New information awaiting review': '新进展待复核', 'Major lead — unverified': '重大待核实',
   'Research paused; retained assessments and pending developments are shown.': '研究已暂停；以下保留最近确认的风险及待复核进展。',

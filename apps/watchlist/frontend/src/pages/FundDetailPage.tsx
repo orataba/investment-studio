@@ -5928,10 +5928,10 @@ export default function FundDetailPage({
                   </div>
                 ) : null}
 
-                    {!chartReturnComplete && <p className="fund-overview-quality" role="status">{language === 'zh-Hans' ? '收益图不可用：当前窗口的观察值、收益区间或日历尚未完整确认；净值报价仍保留。' : 'Return chart unavailable: observations, return intervals or calendar are incomplete or unconfirmed for this window. NAV quotes remain available.'}</p>}
-                    {showDrawdownPanel && !fundDrawdownAvailable && <p className="fund-overview-quality" role="status">{language === 'zh-Hans' ? '回撤图不可用：当前窗口的观察值或收益连续性未完整确认。' : 'Drawdown chart unavailable: observations or return continuity are incomplete or unconfirmed for this window.'}</p>}
+                    {!comparisonPending && !chartReturnComplete && <p className="fund-overview-quality" role="status">{language === 'zh-Hans' ? '收益图不可用：当前窗口的观察值、收益区间或日历尚未完整确认；净值报价仍保留。' : 'Return chart unavailable: observations, return intervals or calendar are incomplete or unconfirmed for this window. NAV quotes remain available.'}</p>}
+                    {!comparisonPending && showDrawdownPanel && !fundDrawdownAvailable && <p className="fund-overview-quality" role="status">{language === 'zh-Hans' ? '回撤图不可用：当前窗口的观察值或收益连续性未完整确认。' : 'Drawdown chart unavailable: observations or return continuity are incomplete or unconfirmed for this window.'}</p>}
                 <div className="instrument-chart-stage instrument-chart-stage-interactive">
-                  {scaledVisibleSeries.length > 1 ? (
+                  {comparisonPending ? <div className="instrument-placeholder" role="status">{language === 'zh-Hans' ? '正在加载基准与共同样本…' : 'Loading benchmark and common sample…'}</div> : scaledVisibleSeries.length > 1 ? (
                     <>
                     <div className="instrument-chart-series-head">
                       <div className="instrument-series-legend">

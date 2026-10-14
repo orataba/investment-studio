@@ -2002,6 +2002,26 @@ describe('Transactions rendered page contract', () => {
     expect(apiMocks.createPortfolioOptionOutcome).not.toHaveBeenCalled()
   })
 
+  it('defaults transaction and option dates in the declared Shanghai timezone before UTC midnight', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-13T22:14:00Z'))
+    try {
+      apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [securitiesAccount, cashAccount, optionAccount] })
+      const user = userEvent.setup()
+      renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+      await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+      const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+      for (const label of ['Trade Date', 'Settlement Date', 'Position Effective Date']) {
+        expect(within(dialog).getByLabelText(label)).toHaveValue('2026-10-14')
+      }
+      fireEvent.change(within(dialog).getByLabelText('Trade Date'), { target: { value: '2026-10-10' } })
+      expect(within(dialog).getByLabelText('Trade Date')).toHaveValue('2026-10-10')
+      await user.click(within(within(dialog).getByRole('group', { name: 'Entry Type' })).getByRole('button', { name: /^Option/ }))
+      expect(within(dialog).getByLabelText('Expiry Date')).toHaveValue('2026-10-14')
+      expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+    } finally { vi.useRealTimers() }
+  })
+
   it('uses one entry-type menu and keeps accounts and derivative actions contextual', async () => {
     apiMocks.getPortfolioAccounts.mockResolvedValue({
       portfolio_id: '3',

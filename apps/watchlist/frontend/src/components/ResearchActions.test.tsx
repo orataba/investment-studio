@@ -119,6 +119,6 @@ it('keeps the server date ordering and exposes impact conditions when the event 
   await screen.findByText('流动性约束触发')
   expect(screen.getAllByRole('heading', { level: 4 }).map(node => node.textContent)).toEqual(['较新的常规变化', '流动性约束触发'])
   expect(screen.getByText('赎回期延长改变资金可用性。').closest('details')).toBeNull()
-  fireEvent.click(screen.getAllByText('查看影响、公开观点与依据')[1])
+  fireEvent.click(screen.getAllByText('查看影响与证据')[1])
   expect((await screen.findAllByText('下次申赎窗口前核实管理人安排。')).length).toBeGreaterThan(0)
 })

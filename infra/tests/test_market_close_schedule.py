@@ -13,13 +13,13 @@ spec.loader.exec_module(schedule)
 
 
 @pytest.mark.parametrize("market, clock, expected", [
-    ("us", "2026-11-27T13:30:00-05:00", True),  # Black Friday half-day
+    ("us", "2026-11-27T15:30:00-05:00", True),  # Black Friday half-day
     ("us", "2026-11-27T16:30:00-05:00", False),
-    ("hk", "2026-02-16T12:30:00+08:00", True),  # Lunar New Year's Eve half-day
+    ("hk", "2026-02-16T14:30:00+08:00", True),  # Lunar New Year's Eve half-day
     ("hk", "2026-02-16T16:30:00+08:00", False),
-    ("us", "2026-07-23T04:30:00+08:00", True),  # Normal US close in DST
-    ("us", "2026-01-06T05:30:00+08:00", True),  # Normal US close in winter
-    ("hk", "2026-07-22T16:30:00+08:00", True),
+    ("us", "2026-07-23T06:30:00+08:00", True),  # Normal US close in DST
+    ("us", "2026-01-06T07:30:00+08:00", True),  # Normal US close in winter
+    ("hk", "2026-07-22T18:30:00+08:00", True),
     ("hk", "2026-07-22T16:00:00+08:00", False),
     ("hk", "2026-07-22T17:00:00+08:00", False),
     ("hk", "2026-07-22T23:30:00+08:00", True),
@@ -37,9 +37,9 @@ def test_actual_close_controls_refresh(market, clock, expected):
 
 
 @pytest.mark.parametrize("clock, expected", [
-    ("2026-11-27T13:30:00-05:00", 0),
+    ("2026-11-27T15:30:00-05:00", 0),
     ("2026-11-27T16:30:00-05:00", 1),
-    ("2026-11-27T13:30:00", 255),
+    ("2026-11-27T15:30:00", 255),
 ])
 def test_condition_exit_status_distinguishes_skip_from_error(clock, expected):
     result = subprocess.run(
@@ -47,3 +47,29 @@ def test_condition_exit_status_distinguishes_skip_from_error(clock, expected):
         capture_output=True,
     )
     assert result.returncode == expected
+
+
+@pytest.mark.parametrize("market,clock,expected", [
+    ("us", "2026-10-14T05:59:59+08:00", False),
+    ("us", "2026-10-14T06:00:00+08:00", True),
+    ("us", "2026-11-04T07:00:00+08:00", True),
+    ("us", "2026-11-27T15:00:00-05:00", True),
+    ("us", "2026-11-27T18:00:00-05:00", False),
+    ("us", "2026-11-26T18:00:00-05:00", False),
+    ("hk", "2026-10-13T18:30:00+08:00", True),
+    ("hk", "2026-02-16T14:30:00+08:00", True),
+    ("hk", "2026-10-13T23:30:00+08:00", False),
+])
+def test_registered_acquisition_slot_is_distinct_from_replica_and_late_projection(market, clock, expected):
+    assert schedule.is_refresh_due(market, datetime.fromisoformat(clock), collection=True) is expected
+
+
+@pytest.mark.parametrize('clock,expected', [
+    ('2026-10-13T18:30:00+08:00', False),
+    ('2026-10-13T23:30:00+08:00', True),
+    ('2026-02-16T14:30:00+08:00', False),
+    ('2026-02-16T23:30:00+08:00', True),
+    ('2026-02-17T23:30:00+08:00', False),
+])
+def test_collector_hk_projects_only_late_reconciliation(clock, expected):
+    assert schedule.is_refresh_due('hk', datetime.fromisoformat(clock), collector_projection=True) is expected

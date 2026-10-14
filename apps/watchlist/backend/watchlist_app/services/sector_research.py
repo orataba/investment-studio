@@ -10,7 +10,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from typing import Literal
+from typing import Annotated, Literal
 from sqlalchemy import Boolean, JSON, String, case, func, or_, select, true
 from investment_studio_instrument_core.db_models import Instrument
 from investment_studio_instrument_core.listing_contract import (
@@ -517,7 +517,9 @@ def prepare_run(run_id):
         require_entry_access(session, run)
         context = dict(run.context_json)
         cutoff = datetime.now(UTC).isoformat()
+        from watchlist_app.services.research_guidance import freeze_guidance
         context.update(research_run=True, run_id=run_id, cutoff=cutoff, input_snapshot_cutoff=cutoff,
+            research_guidance=freeze_guidance(session, context),
             catalogue=catalogue(session), instrument_inputs=[], research_dossiers=[],
             sector_inputs=[], sector_company_data={}, sector_estimate_evidence=[], computed_metrics=[], prior_events=[],
             tool_evidence=[], web_evidence=[], market_text_sources=[], market_queries=[],
@@ -668,12 +670,23 @@ class ResearchReflection(BaseModel):
     source_ids: list[str] = Field(default_factory=list)
 
 
+class SectorEventCheck(BaseModel):
+    """A verified unchanged check cannot propose replacement event content."""
+    model_config = ConfigDict(extra="forbid")
+    event_key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    action: Literal["checked"]
+    event_version_id: str = Field(min_length=1,
+        description="Exact event_version_id read from this run's retained event. checked records a completed unchanged check only; do not include replacement text, sources or dates.")
+
+
+SectorEventProposal = Annotated[SectorEvent | SectorEventCheck, Field(discriminator="action")]
+
 class SectorReview(BaseModel):
     instrument_id: str
     summary: str = Field(default="", max_length=2000)
     change_kind: Literal["none", "knowledge", "investment"] = "none"
     coverage: list[str] = Field(default_factory=list)
-    events: list[SectorEvent] = Field(default_factory=list)
+    events: list[SectorEventProposal] = Field(default_factory=list)
     themes: list[AnalystThemeUpdate] = Field(default_factory=list)
     reflection: ResearchReflection | None = None
     research: ResearchNotebook | None = None
@@ -728,8 +741,10 @@ def usable_original(source: dict, cutoff: datetime) -> bool:
     return not any(re.search(r"(?:^|[·|])\s*Compiled by [^\n·|]*\bEngine\b", line, re.I) for line in opening)
 
 
-def validate_event_source_consistency(item: SectorEvent, sources: dict, cutoff: datetime, instrument_id: str):
+def validate_event_source_consistency(item: SectorEvent | SectorEventCheck, sources: dict, cutoff: datetime, instrument_id: str):
     """Check event clocks against the same eligible originals in review and publication."""
+    if isinstance(item, SectorEventCheck):
+        return  # No new factual claim or source mapping is proposed.
     for index, view in enumerate(item.market_views):
         if any(s not in sources or not usable_original(sources[s], cutoff) for s in view.source_ids):
             raise ValueError(f"事件 {item.event_key} market_views[{index}].source_ids: 公开观点需要实际读取的原文，搜索摘要或来源目录不足以支持观点")
@@ -955,6 +970,15 @@ def _effective_event(item, case, *, checked_at=None):
     return SectorEvent.model_validate(values)
 
 
+def _validate_unchanged_event(context, instrument_id, item, case):
+    previous = next((row for row in context.get("prior_events", [])
+        if row.get("instrument_id") == instrument_id and row.get("event_key") == item.event_key), None)
+    if previous is None or previous.get("event_version_id") != item.event_version_id:
+        raise ValueError("无变化复核须引用本轮已读取事件的准确 event_version_id")
+    if case is None or event_record(case)["event_version_id"] != item.event_version_id:
+        raise ResearchVersionConflict("事件在复核期间已有更新，不能确认旧版本无变化；请基于最新版本继续研究。")
+
+
 def _event_check_time(session, instrument_id, cutoff):
     market = _research_market(session, instrument_id)
     return cutoff.astimezone(ZoneInfo(RESEARCH_TIMEZONES[market]) if market else UTC)
@@ -1174,6 +1198,9 @@ def _validate_research_links(session, run, review, themes):
     checked_at = _event_check_time(session, review.instrument_id, datetime.fromisoformat(context["cutoff"])) if review.events else None
     for item in review.events:
         case = existing_events.get(item.event_key)
+        if isinstance(item, SectorEventCheck):
+            _validate_unchanged_event(context, review.instrument_id, item, case)
+            continue
         effective = _effective_event(item, case, checked_at=checked_at)
         effective_events[item.event_key] = effective
         if len(effective.theme_ids) != len(set(effective.theme_ids)):
@@ -1280,6 +1307,8 @@ def validate_review_updates(session, run, review, notebook_evidence, sources):
             raise ValueError("同一事件在本轮重复出现")
         seen.add(key)
         existing = existing_events.get(item.event_key)
+        if isinstance(item, SectorEventCheck):
+            continue  # The exact retained/current version was checked above.
         effective = effective_events[item.event_key]
         validate_event_source_consistency(item, sources, cutoff, review.instrument_id)
         item_source_ids = list(dict.fromkeys([*effective.source_ids,
@@ -1377,7 +1406,7 @@ def validate_result(session, run, parsed: ReviewResult):
             missing_events = set(working.get("affected_event_ids", [])) - reviewed_cases
             if missing_events:
                 raise ValueError("本轮受影响的跟踪事项尚未复核：" + ", ".join(sorted(missing_events))
-                    + "；无变化也须提交对应 event_key 的 update，不能将未处理事项标为成功。")
+                    + "；无变化须提交 action=checked、event_key 和原 event_version_id，不能将未处理事项标为成功。")
         if review.research is not None:
             dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
             validate_notebook(review.research, review.instrument_id, notebook_evidence,
@@ -1501,6 +1530,10 @@ def apply_result(session, run, reply):
         for item in review.events:
             signal = f"sector:{item.event_key}"
             case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id, RiskCase.signal == signal).order_by(RiskCase.created_at.desc()))
+            if isinstance(item, SectorEventCheck):
+                _validate_unchanged_event(context, review.instrument_id, item, case)
+                case.evidence_json = {**case.evidence_json, "checked_at": context["cutoff"]}
+                continue
             item = _effective_event(item, case, checked_at=_event_check_time(session, review.instrument_id, datetime.fromisoformat(context["cutoff"])))
             source_ids = list(dict.fromkeys([*item.source_ids,
                 *(sid for view in item.market_views for sid in view.source_ids),
@@ -1644,12 +1677,21 @@ def _research_due(market, now):
         # UTC daily bars close at midnight, including weekends. Check after that
         # boundary; missing or delayed provider bars remain a data-coverage gap.
         return (local.hour, local.minute) >= (0, 30)
-    if (local.hour, local.minute) < (8, 30):
-        return False
     if market == "fund_nav":
-        return True
+        return (local.hour, local.minute) >= (8, 30)
     day = local.date()
-    return bool(_market_calendar_sessions(MARKET_SCOPE_CALENDARS[market][0], day, day))
+    calendar_name = MARKET_SCOPE_CALENDARS[market][0]
+    if not _market_calendar_sessions(calendar_name, day, day):
+        return False
+    import exchange_calendars
+    close = exchange_calendars.get_calendar(calendar_name).session_close(day).to_pydatetime()
+    # Registered US/HK collection starts at close + 2h / 2h30 and already
+    # projects prices downstream. Leave the observed collection/projection
+    # duration before freezing research; CN uses its existing nightly settlement.
+    # This is a dispatch clock, not a promise of complete provider coverage.
+    if market == "cn":
+        return (local.hour, local.minute) >= (22, 0)
+    return now >= close + timedelta(minutes={"us": 195, "hk": 210}[market])
 
 
 def active_research_ids(session):

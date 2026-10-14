@@ -19,6 +19,7 @@ FLAT_TABLE_RELATIONS = {
     ("instrument_data", "instrument"),
     ("instrument_data", "corporate_action_event"),
     ("watchlist", "instrument_chart_read_model"),
+    ("watchlist", "research_guidance"),
     ("portfolio", "transaction_record"),
     ("portfolio", "portfolio_daily_snapshot"),
     ("portfolio", "portfolio_daily_holding_snapshot"),
@@ -54,7 +55,7 @@ def test_flat_table_profile_accepts_only_final_heads(
         "instrument_data": "20261008_0037",
         "data_ingestion": "20260904_0009",
         "portfolio": "20261012_0073",
-        "watchlist": "20261012_0071",
+        "watchlist": "20261014_0072",
         "market_data": "studio_market_0002",
         "briefing": "20260908_0003",
     }

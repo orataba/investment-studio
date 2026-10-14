@@ -2292,21 +2292,16 @@ export default function WatchlistsPage() {
     [renderedGroupedRows],
   )
   const metricAsOfRangeLabel = (() => {
-    const metadata = screenerResult?.snapshot_metadata
-    const missingSuffix = metadata?.as_of_date_missing_count
-      ? ` · ${metadata.as_of_date_missing_count} unavailable`
-      : ''
-    if (!metadata?.as_of_date_max) {
-      return `Metric as-of unavailable${missingSuffix}`
+    const dates = searchedRows.map(row => String(row.metric_as_of_date || '').slice(0, 10))
+      .filter(date => /^\d{4}-\d{2}-\d{2}$/.test(date)).sort()
+    const missingCount = searchedRows.length - dates.length
+    const missingSuffix = missingCount ? ` · ${missingCount} unavailable` : ''
+    if (!searchedRows.length) return 'No matching instruments · no metric date range'
+    if (!dates.length) return `Metric as-of unavailable${missingSuffix}`
+    if (dates[0] !== dates[dates.length - 1]) {
+      return `Per-instrument metric as-of ${dates[0]} to ${dates[dates.length - 1]}${missingSuffix}`
     }
-    if (
-      metadata.has_mixed_as_of_dates &&
-      metadata.as_of_date_min &&
-      metadata.as_of_date_min !== metadata.as_of_date_max
-    ) {
-      return `Per-instrument metric as-of ${metadata.as_of_date_min} to ${metadata.as_of_date_max}${missingSuffix}`
-    }
-    return `Metrics as of ${metadata.as_of_date_max}${missingSuffix}`
+    return `Metrics as of ${dates[0]}${missingSuffix}`
   })()
 
   const sortabilityByKey = useMemo(() => {

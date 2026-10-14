@@ -326,3 +326,16 @@ it('retains an earlier assessment while paid work is paused and never polls a pa
   await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
   expect(request).toHaveBeenCalledOnce()
 })
+
+it.each([false, true])('describes paused assessment according to whether a completed result exists: %s', async hasCompleted => {
+  const request = vi.fn().mockResolvedValue(payload('a', {
+    latest_completed: hasCompleted ? completed('a') : null,
+    latest_run: { run_id: 'paused-a', status: 'paused', created_at: '2026-10-14', completed_at: null, message: '' },
+  }))
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" />)
+  await load()
+  expect(screen.getByText(hasCompleted ? '本次研判已暂停，下方保留最近完成的结论。' : '首次研判已暂停，尚未形成可读结论。')).toBeTruthy()
+  expect(screen.queryByText('尚未研判。点击“更新研判”发起首次研判。')).toBeNull()
+  expect(Boolean(screen.queryByText('a 的既有研判结论。'))).toBe(hasCompleted)
+  expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
+})

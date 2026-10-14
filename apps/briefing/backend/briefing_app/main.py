@@ -19,6 +19,7 @@ from briefing_app.reports import begin_report, report_detail, report_summary, va
 from studio_runtime.model_work import model_work_status, require_model_work
 from briefing_app.runner import harness_available, interrupt_incomplete_runs, run_report
 from briefing_app.settings import get_settings
+from briefing_app.scheduling import read_schedules
 
 
 @asynccontextmanager
@@ -78,11 +79,32 @@ def create_app(settings=None):
         return {"status": "ok", "app": "briefing"}
 
     @app.get("/api/briefing/status")
-    def status(request: Request):
+    def status(request: Request, session: Session = Depends(get_session)):
         allowed = can_generate(request.state.principal, settings.edition_role)
+        filters = report_access_filters(request.state.principal)
+        editions = {}
+        for kind in ("daily", "weekly"):
+            statement = summary_statement().where(*filters, Report.report_type == kind).order_by(Report.report_date.desc(), Report.created_at.desc()).limit(1)
+            latest = session.execute(statement).first()
+            completed = session.execute(statement.where(Report.status == "completed")).first()
+            editions[kind] = {"latest": projected_report_summary(latest) if latest else None,
+                              "latest_completed": projected_report_summary(completed) if completed else None}
         return {"harness_available": harness_available() if allowed else False, "timezone": settings.timezone,
                 "edition_role": settings.edition_role, "can_generate": allowed,
-                "can_read_sources": request.state.principal is not None, "model_work": model_work_status()}
+                "can_read_sources": request.state.principal is not None, "model_work": model_work_status(),
+                "schedules": read_schedules(settings.edition_role), "editions": editions}
+
+    def report_access_filters(principal):
+        if principal is None:
+            return [Report.status == "completed", Report.input_json["edition_role"].as_string() == "publisher"]
+        filters = [Report.team_id == principal.team_id]
+        if principal.resource_scope:
+            if principal.resource_scope.get("kind") != "report":
+                raise HTTPException(403, "任务凭证不能浏览报告列表")
+            filters.append(Report.report_id == principal.resource_scope["id"])
+        if principal.kind == "service" and not set(principal.scopes) & {"briefing:read", "briefing:publish"}:
+            raise HTTPException(403, "此服务身份没有报告权限")
+        return filters
 
     @app.get("/api/briefing/reports")
     def reports(request: Request, report_type: Literal["daily", "weekly"] | None = None, offset: int = Query(0, ge=0),
@@ -99,17 +121,7 @@ def create_app(settings=None):
             zh_title = case((Report.report_type == "daily", "投研日报"), else_="投研周报") + " | " + Report.report_date
             en_title = case((Report.report_type == "daily", "Daily research briefing"), else_="Weekly research briefing") + " | " + Report.report_date
             filters.append(zh_title.icontains(term, autoescape=True) | en_title.icontains(term, autoescape=True))
-        principal = request.state.principal
-        if principal is None:
-            filters += [Report.status == "completed", Report.input_json["edition_role"].as_string() == "publisher"]
-        else:
-            filters.append(Report.team_id == principal.team_id)
-            if principal.resource_scope:
-                if principal.resource_scope.get("kind") != "report":
-                    raise HTTPException(403, "任务凭证不能浏览报告列表")
-                filters.append(Report.report_id == principal.resource_scope["id"])
-            if principal.kind == "service" and not set(principal.scopes) & {"briefing:read", "briefing:publish"}:
-                raise HTTPException(403, "此服务身份没有报告权限")
+        filters += report_access_filters(request.state.principal)
         rows = session.execute(summary_statement().where(*filters).order_by(Report.report_date.desc(), Report.created_at.desc()).offset(offset).limit(limit))
         return {"rows": [projected_report_summary(row) for row in rows], "total": session.scalar(select(func.count()).select_from(Report).where(*filters)),
                 "limit": limit, "offset": offset}

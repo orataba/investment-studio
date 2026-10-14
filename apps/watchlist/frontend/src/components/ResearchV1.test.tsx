@@ -101,7 +101,7 @@ it('retains known dates, unknown importance and overdue follow-up without claimi
   expect(screen.getByText('2026-09-22')).toBeTruthy()
   expect(screen.getByText('重要性 未评估')).toBeTruthy()
   expect(screen.getByText('到期待复核')).toBeTruthy()
-  fireEvent.click(screen.getByText('查看影响、公开观点与依据'))
+  fireEvent.click(screen.getByText('查看影响与证据'))
   expect(await screen.findByText(/未取得足够的公开观点材料/)).toBeTruthy()
   expect(screen.getByText('暂无可比事件窗口数据。')).toBeTruthy()
   expect(screen.queryByText(/风险已解除/)).toBeNull()
@@ -116,7 +116,7 @@ it('shows independent follow-up without granting readers pin controls', async ()
   render(<ResearchEventCard update={event({ timeline_date: null, follow_up: 'none' })} />)
   expect(screen.getByText('日期待核实')).toBeTruthy()
   expect(screen.getByText('无需跟进')).toBeTruthy()
-  fireEvent.click(screen.getByText('查看影响、公开观点与依据'))
+  fireEvent.click(screen.getByText('查看影响与证据'))
   await screen.findByText('发生了什么')
   expect(screen.queryByRole('button', { name: '固定跟进' })).toBeNull()
   expect(screen.queryByRole('button', { name: '写投资观点' })).toBeNull()
@@ -144,7 +144,10 @@ it('retains the last event response on refresh failure and rejects a previous in
 it.each(['watchlist_observations', 'event_market_reaction'])('renders fixed retained %s numbers while preserving missing values and limitations', analysis_kind => {
   render(<EvidenceFigure source={{ source_id: 'computed:fixed', title: '确定性观察', source_type: 'computed_metric', data: { analysis_kind, metrics: { 相对表现: null, 波动率: 18.2 }, tables: [], charts: [], limitations: ['只有部分成分行情。'] } }} />)
   expect(screen.getByText('18.2')).toBeTruthy()
-  expect(screen.getByText('—')).toBeTruthy()
+  expect(screen.queryByText('—')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '查看全部指标和计算依据' }))
+  expect(screen.getByRole('dialog').textContent).toContain('相对表现—')
+  fireEvent.click(screen.getByRole('button', { name: '关闭查看全部指标和计算依据' }))
   if (analysis_kind === 'watchlist_observations') {
     expect(screen.queryByText('只有部分成分行情。')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '数据覆盖与口径' }))
@@ -169,7 +172,7 @@ it('opens one event history only on request and preserves historical versions an
   api.events.mockResolvedValue(response([past]))
   render(<ResearchEventCard update={event()} />)
   expect(api.events).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole('button', { name: '研究修订历史' }))
+  fireEvent.click(screen.getByRole('button', { name: '进展与影响时间线' }))
   expect(await screen.findByRole('heading', { name: '当时的事件判断' })).toBeTruthy()
   expect(api.events).toHaveBeenCalledWith('stock', 'history', expect.any(AbortSignal), 0, 'stable-event', true)
   expect(screen.getByText('已修订 · 当时版本')).toBeTruthy()
@@ -291,4 +294,31 @@ it.each(['zh-Hans', 'en'])('presents unconfigured public search without private 
   render(<LanguageProvider messages={researchMessages} patterns={researchPatterns}><p>Tavily public search is not configured; set INVESTMENT_STUDIO_WATCHLIST_TAVILY_API_KEY in private watchlist.env. Retained information and known public URLs remain available.</p></LanguageProvider>)
   await screen.findByText(language === 'zh-Hans' ? 'Tavily 搜索尚未配置。已保存资料和已知公开链接仍可使用。' : 'Tavily search is not configured. Saved materials and known public links remain available.')
   expect(screen.queryByText(/TAVILY_API_KEY|watchlist\.env/)).toBeNull()
+})
+
+
+it('exposes the substantive-progress and check clocks independently and hides editorial versions by default', async () => {
+  const current = event({ checked_at: '2026-10-14T00:00:00Z', material_progress_at: '2026-10-12T00:00:00Z', recorded_at: '2026-10-13T00:00:00Z' })
+  api.events.mockResolvedValue(response([
+    event({ update_id: 'editorial', title: '仅资料修订', material_change: false }),
+    event({ update_id: 'progress', title: '订单与盈利假设变化', material_change: true, impact_analysis: '订单上调支持盈利预期。' }),
+  ]))
+  render(<ResearchEventCard update={current} />)
+  expect(screen.getByText(/最近实质进展/).querySelector('time')).toHaveProperty('dateTime', '2026-10-12T00:00:00Z')
+  expect(screen.getByText(/最近检查/).querySelector('time')).toHaveProperty('dateTime', '2026-10-14T00:00:00Z')
+  fireEvent.click(screen.getByRole('button', { name: '进展与影响时间线' }))
+  expect(await screen.findByRole('heading', { name: '订单与盈利假设变化' })).toBeTruthy()
+  expect(screen.getByText('订单上调支持盈利预期。')).toBeTruthy()
+  expect(screen.queryByRole('heading', { name: '仅资料修订' })).toBeNull()
+  fireEvent.click(screen.getByRole('checkbox', { name: '包括资料与设置修订' }))
+  expect(screen.getByRole('heading', { name: '仅资料修订' })).toBeTruthy()
+})
+
+
+it('keeps a disclosure fallback date neutral when the retained development clock has no basis metadata', () => {
+  render(<ResearchEventCard update={event({ occurred_at: null, development_at: '2026-10-12T03:15:38Z', published_at: '2026-10-12T03:15:38Z', timeline_date: '2026-10-12' })} />)
+  expect(screen.getByText('信息日期 · UTC')).toBeTruthy()
+  expect(screen.getByText('2026-10-12').closest('time')).toHaveProperty('dateTime', '2026-10-12')
+  expect(screen.queryByText('发生日期 · UTC')).toBeNull()
+  expect(screen.queryByText('进展日期 · UTC')).toBeNull()
 })

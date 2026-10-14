@@ -130,9 +130,9 @@ import {
   transactionActionValue,
   type TransactionAssetDomain,
 } from '../lib/transactionActions'
+import { DEFAULT_TRADE_TIMEZONE, transactionTodayIso } from '../lib/transactionClock'
 
 const DEFAULT_FORM_TIME = (import.meta.env.VITE_PORTFOLIO_DEFAULT_TRADE_TIME || '12:00').slice(0, 5)
-const DEFAULT_TRADE_TIMEZONE = import.meta.env.VITE_PORTFOLIO_DEFAULT_TRADE_TIMEZONE || 'Asia/Shanghai'
 const TRANSACTION_FILTER_TYPE_GROUPS = [
   {
     label: 'Trades',
@@ -373,12 +373,6 @@ function isTransferTransaction(transactionType: string) {
 
 function isFxConversionTransaction(transactionType: string) {
   return transactionType === 'fx_conversion'
-}
-
-function localTodayIso() {
-  const now = new Date()
-  const timezoneOffsetMs = now.getTimezoneOffset() * 60 * 1000
-  return new Date(now.getTime() - timezoneOffsetMs).toISOString().slice(0, 10)
 }
 
 function formatFormNumber(
@@ -924,7 +918,7 @@ type TransactionFormState = {
 type PricingAnchor = 'price' | 'gross_amount'
 
 function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionFormState {
-  const defaultFormDate = localTodayIso()
+  const defaultFormDate = transactionTodayIso()
   const defaultSecurityAccount = accounts.find((account) =>
     accountAllowsEntryKind(account, 'security'),
   )
@@ -2266,7 +2260,7 @@ export default function TransactionsPage() {
     setForm((current) => {
       const factDate =
         isOpeningBalance(current.transaction_type)
-          ? localTodayIso()
+          ? transactionTodayIso()
           : current.trade_date
       return {
         ...current,
@@ -2320,7 +2314,7 @@ export default function TransactionsPage() {
           ? portfolioInceptionDate!
           : isOpeningBalance(current.transaction_type) &&
               !isOpeningBalance(nextTransactionType)
-            ? localTodayIso()
+            ? transactionTodayIso()
             : current.trade_date
       if (
         isPhysicalOptionLifecycle(selectedAction.lifecycleEventType) &&

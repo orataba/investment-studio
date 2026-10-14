@@ -19,10 +19,10 @@ export default function ResearchEntryActions({ update, onAskAssistant, inTheme =
   return <>
     <div className="research-update-actions">
       {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(`请${historical ? '按当时信息复核这条历史研究更新' : '继续分析这条研究更新'}“${update.title}”。读取它对应的原始证据、相关事件及主题，区分新增事实、机制判断和市场定价；核实后说明是否需要改变认识或继续跟进。${historical ? '此版本已被修订或撤回，请区分当时判断与当前结论。' : ''}`, reference)}>{historical ? '讨论当时判断' : '追问这条更新'}</button>}
-      {canWrite && !historical && <>
+      {canWrite && !historical && <details className="research-entry-write-actions"><summary>记录与管理</summary><div>
         <button type="button" className="sector-event-ask" onClick={() => setWriting(value => !value)}>写投资观点</button>
         {!inTheme && update.theme_ids.length === 0 && update.kind === 'event' && <button type="button" className="sector-event-ask" onClick={() => setCreatingTheme(value => !value)}>转为跟踪主题</button>}
-      </>}
+      </div></details>}
     </div>
     {writing && <ResearchOpinionComposer instrumentId={reference.instrument_id} title={`关于${update.title}的观点`} context={{
       research_update_id: update.update_id, theme_id: reference.theme_id || update.theme_ids[0], event_case_id: reference.event_case_id, event_version_id: reference.event_version_id,

@@ -96,6 +96,8 @@ export const systemMessages: Record<string, string> = {
   "Price review rules in this run": "本轮价格复核规则",
   "Inputs frozen at": "输入冻结时间",
   "The task status is unconfirmed. Existing conclusions are retained; another run cannot be submitted until its status is known.": "任务状态暂未确认；保留已有结论，确认状态前不能重复提交。",
+  "This assessment is paused. The latest completed conclusion is retained below.": "本次研判已暂停，下方保留最近完成的结论。",
+  "The first assessment is paused; no conclusion is available yet.": "首次研判已暂停，尚未形成可读结论。",
   "Rule counts differ from quantitative case counts: several rules may share one case. No triggers does not mean no risk.": "规则数与量化触发事项数不同；多条规则可以共用一条事项。未触发不代表没有风险。",
   "These rules, parameters and observation dates were frozen for this run and do not follow current settings.": "以下为本轮冻结的规则、参数与观察日期，不随当前设置变化。",
   "This older report did not retain rule counts and version metadata. Its conclusion is preserved; current settings cannot reconstruct its rules.": "旧报告未留存规则统计与版本摘要；保留原结论，不使用当前设置反推当时规则。",

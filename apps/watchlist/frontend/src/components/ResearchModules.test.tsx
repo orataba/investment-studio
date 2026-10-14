@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import ResearchModules, { EvidenceFigure, SavedFigure } from './ResearchModules'
 import ResearchMandateRecord from './ResearchMandateRecord'
@@ -98,8 +98,29 @@ it('shows actual guidance changes without attributing analyst work-plan updates 
   ] }} onSaved={vi.fn()} />)
   expect(screen.getAllByText('此前指导')).toHaveLength(1)
   expect(screen.getAllByText(mandate.guidance)).toHaveLength(1)
-  expect(screen.queryByText(/研究员/)).toBeNull()
+  expect(screen.queryByText(/更新来源.*研究员/)).toBeNull()
+  expect(screen.getAllByText('主研究员 · 总览 · 研究 Skill')).toHaveLength(2)
   expect(screen.getByRole('heading', { name: /指导更新.*2026-08-01/ })).toBeTruthy()
+})
+
+it('retains role-only guidance changes and exposes the saved role skills without duplicating work-plan revisions', () => {
+  const previousSkills = { overview: '旧总览范围', recent_updates: '旧动态证据要求', themes: '旧主题研究框架', quantitative: '旧量化样本约束' }
+  const currentSkills = { ...previousSkills, themes: '新主题研究框架' }
+  render(<ResearchMandateRecord instrumentId="fund" mandate={{ ...mandate, section_skills: currentSkills, versions: [
+    { ...mandate, version_id: 'v1', section_skills: previousSkills, updated_at: '2026-08-01T00:00:00Z' },
+    { ...mandate, version_id: 'v2', section_skills: previousSkills, focus: ['仅更新研究员计划'], updated_at: '2026-08-02T00:00:00Z' },
+    { ...mandate, version_id: 'v3', section_skills: currentSkills, updated_at: '2026-08-03T00:00:00Z' },
+  ] }} onSaved={vi.fn()} />)
+  const summary = screen.getByText('指导修订历史', { selector: 'summary' })
+  fireEvent.click(summary)
+  const history = summary.closest('details')!
+  expect(history.querySelectorAll('article')).toHaveLength(1)
+  expect(within(history).getByText(mandate.guidance)).toBeTruthy()
+  for (const skill of Object.values(previousSkills)) expect(within(history).getByText(skill)).toBeTruthy()
+  expect(within(history).queryByText('新主题研究框架')).toBeNull()
+  expect(within(history).queryByText('仅更新研究员计划')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '编辑研究指导' }))
+  expect(screen.getByText(/本标的补充用于主研究员及动态、主题、量化三位专员/)).toBeTruthy()
 })
 
 it('saves one guidance paragraph at its original revision without resubmitting generated analyst fields', async () => {
@@ -109,7 +130,7 @@ it('saves one guidance paragraph at its original revision without resubmitting g
   render(<ResearchMandateRecord instrumentId="fund" mandate={mandate} onSaved={onSaved} />)
   fireEvent.click(screen.getByRole('button', { name: '编辑研究指导' }))
   expect(screen.getAllByRole('textbox')).toHaveLength(5)
-  fireEvent.change(screen.getByLabelText('共同研究范围与约束（可选）'), { target: { value: ` ${saved.guidance} ` } })
+  fireEvent.change(screen.getByLabelText('本标的研究范围与约束（可选）'), { target: { value: ` ${saved.guidance} ` } })
   fireEvent.click(screen.getByRole('button', { name: '保存研究指导' }))
   await waitFor(() => expect(onSaved).toHaveBeenCalledWith(saved))
   expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ section_skills: { overview: '', recent_updates: '', themes: '', quantitative: '' }, guidance: saved.guidance, expected_revision: 3 })
@@ -119,7 +140,7 @@ it('allows an empty guidance paragraph without requiring a title or a research m
   request.mockResolvedValue({ ...mandate, guidance: '', revision: 4 })
   render(<ResearchMandateRecord instrumentId="fund" mandate={mandate} onSaved={vi.fn()} />)
   fireEvent.click(screen.getByRole('button', { name: '编辑研究指导' }))
-  fireEvent.change(screen.getByLabelText('共同研究范围与约束（可选）'), { target: { value: '  ' } })
+  fireEvent.change(screen.getByLabelText('本标的研究范围与约束（可选）'), { target: { value: '  ' } })
   fireEvent.click(screen.getByRole('button', { name: '保存研究指导' }))
   await waitFor(() => expect(request).toHaveBeenCalledOnce())
   expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ section_skills: { overview: '', recent_updates: '', themes: '', quantitative: '' }, guidance: '', expected_revision: 3 })
@@ -130,16 +151,16 @@ it('preserves the local draft on conflict and requires review of the latest guid
   request.mockRejectedValueOnce(new Error('研究指导已被其他人更新，请核对最新版本。'))
   const { rerender } = render(<ResearchMandateRecord instrumentId="fund" mandate={mandate} onSaved={onSaved} />)
   fireEvent.click(screen.getByRole('button', { name: '编辑研究指导' }))
-  fireEvent.change(screen.getByLabelText('共同研究范围与约束（可选）'), { target: { value: '我的新研究问题' } })
+  fireEvent.change(screen.getByLabelText('本标的研究范围与约束（可选）'), { target: { value: '我的新研究问题' } })
   fireEvent.click(screen.getByRole('button', { name: '保存研究指导' }))
   await screen.findByRole('alert')
   const latest = { ...mandate, guidance: '另一位用户刚修改的研究期限', revision: 4 }
   rerender(<ResearchMandateRecord instrumentId="fund" mandate={latest} onSaved={onSaved} />)
-  expect(screen.getByLabelText('共同研究范围与约束（可选）')).toHaveProperty('value', '我的新研究问题')
+  expect(screen.getByLabelText('本标的研究范围与约束（可选）')).toHaveProperty('value', '我的新研究问题')
   request.mockResolvedValueOnce({ mandate: latest })
   fireEvent.click(screen.getByRole('button', { name: '读取最新指导并核对' }))
   await screen.findByText(latest.guidance)
-  expect(screen.getByLabelText('共同研究范围与约束（可选）')).toHaveProperty('value', '我的新研究问题')
+  expect(screen.getByLabelText('本标的研究范围与约束（可选）')).toHaveProperty('value', '我的新研究问题')
   expect(request.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1)
   request.mockResolvedValueOnce({ ...latest, guidance: '我的新研究问题', revision: 5 })
   fireEvent.click(screen.getByRole('button', { name: '保存研究指导' }))

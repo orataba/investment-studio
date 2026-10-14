@@ -57,7 +57,7 @@ it('preserves PM authorship and exact historical references in an actual theme t
   await openTheme(theme().title)
   expect(container.querySelector('.research-timeline')).toBeTruthy()
   const timeline = container.querySelector('.research-timeline')!
-  expect(screen.getByText(/最近记录/)).toBeTruthy()
+  expect(screen.getByRole('heading', { name: '当前认识' })).toBeTruthy()
   expect(screen.queryByText(/判断更新/)).toBeNull()
   expect(timeline.closest('.research-theme-expanded')).toBeTruthy()
   expect(timeline.querySelectorAll('time')).toHaveLength(2)
@@ -266,7 +266,7 @@ it('pauses and restores a theme from its card without fetching detailed research
   api.update.mockResolvedValue(theme({ status: 'paused' }))
   render(<ResearchThemesPanel instrumentId="gold" />)
   await screen.findByRole('heading', { name: theme().title })
-  expect(screen.queryByText(theme().synthesis!)).toBeNull()
+  expect(screen.getByText(theme().synthesis!)).toBeTruthy()
   api.get.mockResolvedValue({ identity, themes: [theme({ status: 'paused' })] })
   fireEvent.click(screen.getByText('管理主题'))
   fireEvent.click(screen.getByRole('button', { name: '暂停后续跟踪' }))
@@ -318,4 +318,34 @@ it('deletes the selected theme only after confirmation and preserves it when a r
   await waitFor(() => expect(api.remove).toHaveBeenCalledWith('gold', original.theme_id, 1))
   expect(await within(dialog).findByText('主题已更新，请刷新后重试。')).toBeTruthy()
   expect(screen.getByRole('heading', { name: original.title })).toBeTruthy()
+})
+
+
+it('previews the retained eight-condition XLK observation text without truncating it or expanding the synthesis', async () => {
+  // Retained reading fixture from the October 14 UI review, not verified investment facts.
+  const nextCheck = "结构保持上一版第1–8项，按本轮核实结果确认第1、2、4项仍为待观察：1) 2026-10-15（北京时间14:00）台积电Q3法说会＋2026-10-14 ASML业绩（cutoff前均未发布）：核对2027年资本开支（前瞻：美银约830亿美元、汇丰850亿美元）、2027年初先进节点涨价5%–10%是否确认、CoWoS与硅中介层产能及委外节奏、毛利率指引。（失效条件：以电力、许可、客户部署或存储成本为由下调2027年拉货能见度。）2) 10月底–11月初超大规模厂商Q3财报与10-Q（cutoff前未发布，不以推测替代事实）：capex指引、折旧/有用寿命口径、租赁与采购承诺（表外）、替代融资；并对照布鲁金斯口径（10.3万亿/3.63%GDP、约1.4万亿结构债务中7000–8000亿由银行持有）观察是否出现正式披露口径。（失效条件：capex指引下修，或10-Q中租赁/采购承诺环比收缩。）3) 2026-11-16至20当周英伟达FY2027三季报与下季指引：数据中心收入环比、10-Q表外担保科目是否继续扩张；备选2026-10-20英伟达GTC柏林。4) 内存合约价与扩产：2027年HBM4年度合约价能否在10月内收尾、三星「4美元/Gb中高区间」报价是否被客户接受（若成交价显著低于报价则HBM4溢价假设走弱）；三星与SK海力士Q3正式财报；美光FY27 capex落地与DIO回落；并观察10-12存储股回落、韩股外资流出与回购退潮是否延续。5) 融资与信用：Anthropic投资者日与其180亿美元次级债定价、IPO进度，博通为OpenAI定制芯片逾500亿美元融资进展，甲骨文5年期CDS能否持续高于250bp，Volta 50亿美元AI贷款分销结果。（失效条件：次级债需大幅折价发行或IPO推迟。）6) 月度现金读数：GPU租赁价与DRAM/NAND现货；若DRAM/NAND现货连续两月回落而合约价仍在上涨，需把「现货与合约分层」写入本主题主判断。7) 苹果链量价验证：iPhone 18 Pro/Pro Max 10–11月订单与出货跟踪（日经口径削减15%–20% vs 证券时报口径总量不变/结构上移，须由后续渠道数据裁决）、iPhone Duo 10-23上市后销售、苹果是否在FY4Q给出毛利率指引区间。8) AWS「Trainium产能大致售罄至明年年底」与「未来几年再购200万块英伟达GPU」的后续可验证口径；若AWS/超大规模厂商公开口径低于上述自述，则需求侧证据需下修。"
+  const longTheme = theme({ next_check: nextCheck, synthesis: '当前认识保持独立的阅读层级。'.repeat(25) })
+  api.get.mockResolvedValue({ identity, themes: [longTheme] })
+  const { container } = render(<ResearchThemesPanel instrumentId="xlk" />)
+  const expand = await screen.findByRole('button', { name: '展开下一观察' })
+  const original = container.querySelector('.research-theme-card-next p')!
+  expect(original.textContent).toBe(nextCheck)
+  expect(original.classList.contains('research-theme-next-preview')).toBe(true)
+  expect(expand.getAttribute('aria-expanded')).toBe('false')
+  fireEvent.click(expand)
+  expect(screen.getByRole('button', { name: '收起下一观察' }).getAttribute('aria-expanded')).toBe('true')
+  expect(original.classList.contains('research-theme-next-preview')).toBe(false)
+  expect(original.textContent).toBe(nextCheck)
+  expect(screen.getByRole('button', { name: '展开当前认识' }).getAttribute('aria-expanded')).toBe('false')
+  fireEvent.click(screen.getByRole('button', { name: '收起下一观察' }))
+  expect(original.classList.contains('research-theme-next-preview')).toBe(true)
+  expect(longTheme.next_check).toBe(nextCheck)
+  expect(api.update).not.toHaveBeenCalled()
+})
+
+it('shows a short next observation without an expansion control', async () => {
+  api.get.mockResolvedValue({ identity, themes: [theme()] })
+  render(<ResearchThemesPanel instrumentId="gold" />)
+  expect(await screen.findByText(theme().next_check!)).toBeTruthy()
+  expect(screen.queryByRole('button', { name: '展开下一观察' })).toBeNull()
 })

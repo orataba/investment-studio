@@ -6,9 +6,10 @@ import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTabl
 import ResearchFundamentalNumbers from './ResearchFundamentalNumbers'
 import EstimateHistoryPanel from './EstimateHistoryPanel'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
+import type { ResearchApplicability } from '../lib/researchDossierApi'
 
 /** Reads canonical values; opening research never starts a model or recomputes returns. */
-export default function ResearchCurrentNumbers({ instrumentId }: { instrumentId: string }) {
+export default function ResearchCurrentNumbers({ instrumentId, applicability }: { instrumentId: string; applicability?: ResearchApplicability }) {
   const { language } = useLanguage()
   const [state, setState] = useState<{ instrumentId: string; summary?: InstrumentSummaryResponse; chart?: InstrumentChartResponse; errors: string[] } | null>(null)
   const [months, setMonths] = useState(12)
@@ -27,6 +28,8 @@ export default function ResearchCurrentNumbers({ instrumentId }: { instrumentId:
   const current = state?.instrumentId === instrumentId ? state : null
   const summary = current?.summary
   const chart = current?.chart
+  const companyEstimatesInapplicable = (applicability?.underlying.status === 'documented' && applicability.underlying.asset_class === 'Commodities')
+    || applicability?.mechanisms.investment_type === '黄金现货合约'
   const showingReturn = (preferredSeries || (chart?.return_series?.wealth_points.length ? 'return' : 'price')) === 'return'
   const series = showingReturn ? { points: chart?.return_series?.wealth_points || [], currency: chart?.return_series?.currency, quote_basis: chart?.return_series?.metadata.quote_basis } : chart?.price_series
   const priceLabel = showingReturn ? `收益指数 · ${chart?.return_series?.metadata.label || '已保存收益口径'}` : ({ close: '收盘价', unadjusted_close: '未复权收盘价', adjusted_close: '复权收盘价', unit_nav: '单位净值', spot: '即期价格' } as Record<string, string>)[series?.quote_basis || ''] || series?.quote_basis || '价格'
@@ -59,6 +62,6 @@ export default function ResearchCurrentNumbers({ instrumentId }: { instrumentId:
     </svg></div> : current && <p className="sector-research-note">尚无足够的价格历史。缺失数据不作为零值。</p>}
     {points.length > 0 && <div className="research-quant-history-links"><ResearchReadingAside label={showingReturn ? "收益历史数据" : "价格历史数据"}><HorizontalTableScroll><table><thead><tr><th>日期</th><th>{showingReturn ? "收益指数" : `价格（${series?.currency || chart?.currency}）`}</th></tr></thead><tbody>{[...points].reverse().map(point => <tr key={point.date}><td>{point.date}</td><td>{number(point.value)}</td></tr>)}</tbody></table></HorizontalTableScroll></ResearchReadingAside></div>}
     <div className="research-quant-history-links"><ResearchReadingAside label="基本面与成份历史" title="基本面与成份历史"><ResearchFundamentalNumbers instrumentId={instrumentId} /></ResearchReadingAside>
-    <ResearchReadingAside label="分析师预期变化与历史" title="分析师预期变化与历史"><EstimateHistoryPanel instrumentId={instrumentId} language={language} /></ResearchReadingAside></div>
+    {!companyEstimatesInapplicable && <ResearchReadingAside label="分析师预期变化与历史" title="分析师预期变化与历史"><EstimateHistoryPanel instrumentId={instrumentId} language={language} /></ResearchReadingAside>}</div>
   </div>
 }

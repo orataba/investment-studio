@@ -54,6 +54,8 @@ def test_investments_start_schedules_data_without_forcing_refresh(monkeypatch):
     assert 'investment-studio-cn-hk-reference-data-refresh.timer' in command
     assert 'investment-studio-us-reference-data-refresh.service' not in command
     assert 'investment-studio-home-api.service' not in command
+    assert 'investment-studio-us-market-data-refresh.timer' not in command
+    assert 'investment-studio-us-market-data-refresh.service' not in command
 
 
 def test_market_and_briefing_stop_writers_but_start_only_schedules(monkeypatch):
@@ -132,3 +134,21 @@ def test_mac_restart_keeps_loaded_services_registered_and_preserves_data_schedul
     assert {command[-1].rsplit('.', 1)[-1] for command in commands} == {
         'watchlist-api', 'watchlist-web', 'research-worker', 'portfolio-api', 'portfolio-web',
     }
+
+
+def test_registered_us_hk_use_actual_session_conditions_not_fixed_beijing_us_clock(tmp_path):
+    spec = importlib.util.spec_from_file_location('market_pipeline', module.ROOT / 'infra/scripts/install_market_pipeline.py')
+    pipeline = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pipeline)
+    result = pipeline.definitions('systemd', 'collector', module.ROOT, tmp_path, Path('/usr/bin/python3'), tmp_path)
+    for market, tick in [('us', '*:00 America/New_York'), ('hk', '*:30 Asia/Hong_Kong')]:
+        stem = 'investment-studio-market-registered-prices-' + market
+        assert 'OnCalendar=*-*-* ' + tick in result[stem + '.timer'].decode()
+        service = result[stem + '.service'].decode()
+        assert 'StartLimitIntervalSec=0' in service
+        assert 'RestartForceExitStatus' not in service
+        assert 'ExecCondition=' in service
+        assert '--market-scope ' + market + ' --collection' in service
+        assert 'registered-prices --market ' + market in service
+    daily = result['investment-studio-market-daily.service'].decode()
+    assert 'RestartForceExitStatus=75' in daily and 'StartLimitBurst=4' in daily

@@ -658,7 +658,7 @@ it('shows missing trading sessions before reading the report and lists exact dat
     : url.includes('/reports?') ? { rows: [report], total: 1 } : report })))
   page(<App />)
   const summary = await screen.findByRole('region', { name: '阅读前的覆盖说明' })
-  expect(summary.textContent).toContain('数值数据有缺口: SPY · XAUUSD')
+  expect(summary.textContent).toContain('数值覆盖缺口 2 项: 标普500 ETF (SPY) · XAUUSD')
   expect(summary.className).toContain('coverage-summary-warning')
   expect(screen.getByText(/应有交易日行情缺失，涨跌幅不可用.*缺失日期: 2026-09-08/)).toBeTruthy()
   expect(screen.getByText(/交易日历尚未确认，涨跌幅不可用/)).toBeTruthy()
@@ -741,4 +741,41 @@ it('searches the archive without reloading or replacing the currently open repor
   expect(screen.getByRole('heading', { name: '央行继续观察就业' })).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: '清除' }))
   await waitFor(() => expect(screen.queryByText('没有匹配的简报。')).toBeNull())
+})
+
+
+it('summarizes numeric gaps with readable subjects and preserves raw identifiers in details', async () => {
+  const gaps = { ...detail, coverage: { text: {}, numeric: [
+    { symbol: 'issuer:security_code:601398', label: '工商银行', status: 'missing_comparable_prices' },
+    { symbol: 'issuer:hkex:stock_code:01211', status: 'unresolved_security' },
+    { dataset: 'historical_report', status: 'historical_price_window_unverified' },
+  ] } }
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { harness_available: false, can_generate: false, can_read_sources: true }
+    : url.includes('/reports?') ? { rows: [gaps], total: 1 } : gaps })))
+  page(<App />)
+  const summary = await screen.findByRole('region', { name: '阅读前的覆盖说明' })
+  expect(summary.textContent).toContain('数值覆盖缺口 3 项')
+  expect(summary.textContent).toContain('工商银行 (A股 601398)')
+  expect(summary.textContent).toContain('港股 01211')
+  expect(summary.textContent).toContain('历史报告行情口径')
+  expect(summary.textContent).not.toContain('issuer:')
+  expect(screen.getByText('issuer:security_code:601398').closest('details')?.open).toBe(false)
+})
+
+it('shows disabled publication independently of archive results and keeps the latest readable edition accessible', async () => {
+  const fetch = vi.fn(async (url: string) => ({ ok: true, json: async () => {
+    if (url.endsWith('/status')) return { harness_available: true, can_generate: true, can_read_sources: true,
+      timezone: 'Asia/Shanghai', schedules: { daily: { state: 'disabled', next_run_at: null, last_trigger_at: null } },
+      editions: { daily: { latest: { ...detail, report_id: 'failed', report_date: '2026-09-08', status: 'failed' }, latest_completed: detail } } }
+    if (url.includes('/reports?')) return { rows: [], total: 0 }
+    return detail
+  } }))
+  vi.stubGlobal('fetch', fetch)
+  page(<App />)
+  expect(await screen.findByText('定时生成未启用')).toBeTruthy()
+  expect(screen.getByText('2026-09-08 · 本次未完成')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: '最近可读版本 · 2026-09-07' }))
+  expect(await screen.findByRole('heading', { name: '投研日报 | 2026-09-07' })).toBeTruthy()
+  expect(fetch.mock.calls.some(([url]) => url.endsWith('/report-v1'))).toBe(true)
 })

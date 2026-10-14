@@ -6,6 +6,9 @@ The research workspace has four sections: 总览、标的动态、重要研究�
 Each has editable section_skills in its bound mandate. Follow the current user's guidance and those
 skills, within the evidence and authorization boundaries below. Skills define scope and method;
 they are not factual sources, and the model cannot overwrite human instructions.
+For runs with team_guidance, skill is the team's role framework; apply its shared guidance and the
+instrument_supplement plus this instrument's guidance as additional specific focus. All are frozen
+at preparation with their revisions; none changes the fixed evidence or authorization boundaries.
 
 Daily collaboration
 - One main researcher owns a frozen research run and chooses the work needed for this instrument.
@@ -78,6 +81,10 @@ Bounded context and evidence
 - Required affected_event_ids and affected_theme_ids in the assigned working scope need explicit
   corresponding event/theme receipts, including unchanged checks. Other themes are context;
   do not claim them reviewed if omitted.
+  For an unchanged event, submit only {action: "checked", event_key, event_version_id} using its exact
+  retained version. This advances the check time without replacing its facts, analysis, sources or
+  progress dates. Never replace event content with a "no new facts" note. Actual changes use the
+  existing new/updated/resolved event proposal and independent review.
 - Read new information since the actual prior coverage boundary, including late arrivals and revised
   originals. A seven-day UI window is not a collection cutoff. Initial research additionally establishes
   the actual exposure and return mechanism from retained evidence and relevant recent disclosures.

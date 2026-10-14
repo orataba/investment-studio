@@ -1,5 +1,7 @@
 export type ReportType = 'daily' | 'weekly'
 export type ReportStatus = 'queued' | 'running' | 'completed' | 'failed' | 'paused'
+export type BriefingSchedule = { state: 'scheduled' | 'disabled' | 'stopped' | 'unknown' | 'not_managed'; next_run_at: string | null; last_trigger_at: string | null }
+export type EditionAvailability = { latest: ReportSummary | null; latest_completed: ReportSummary | null }
 export type ReportSummary = { report_id: string; report_type: ReportType; report_date: string; title: string; version: number; status: ReportStatus; cutoff: string; created_at: string; completed_at: string | null; error: string | null; source_count: number; edition_role: 'preview' | 'publisher' }
 export type MarketRow = { symbol: string; label: string; start_date: string; end_date: string; start_close: number; end_close: number; return_pct: number; source_ids: string[]; return_basis?: string; price_field?: string; asset_type?: string; unit?: string; currency?: string }
 export type MacroRow = { symbol: string; label: string; date: string; value: number | string; unit?: string; source_ids: string[] }

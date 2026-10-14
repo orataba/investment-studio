@@ -116,3 +116,31 @@ def test_automatic_overview_keeps_task_directory_out_of_initial_prompt():
     assert view["section_reads"] == [{"tool": "read_research_section", "instrument_id": "xlk", "section": "overview"}]
     assert view["sections"]["task_results"]["count"] == 1
     assert "hidden" not in str(view) and "research_working_sets" not in view
+
+
+def test_custom_quantitative_module_is_discoverable_and_reads_its_exact_saved_body(activity_client):
+    from urllib.parse import parse_qs, urlsplit
+    from watchlist_app.services.research_dossier import read_dossier, read_dossier_version
+    from watchlist_app.services.research_tool_projection import read_research_dossier
+    from watchlist_app.services.research_working_set import working_notebook
+    with get_session_factory()() as session:
+        publish(session, research={"modules":[{"key":"custom-concentration", "title":"自定义集中度问题",
+            "summary":"既有分析摘要", "analysis":"必须按已保存版本读取的完整集中度分析。",
+            "coverage":"supported", "source_ids":["original"]}]})
+        dossier = read_dossier(session,"xlk")
+        context = {"instrument_ids":["xlk"],"research_dossiers":[{**dossier,
+            "notebook":working_notebook(dossier["notebook"],set())}]}
+        before = deepcopy(context)
+        quant = sections.section_context(context,"xlk","quantitative")
+        item = next(row for row in quant['prior_module_index'] if row['key']=='custom-concentration')
+        assert item['title']=='自定义集中度问题' and item['coverage']=='supported'
+        assert 'analysis' not in item and not quant['prior_quantitative_assessments']
+        def request(suffix):
+            if suffix=='context':
+                return context
+            version = parse_qs(urlsplit(suffix).query)['version_id'][0]
+            assert version == dossier['notebook']['modules'][0]['version_id']
+            return read_dossier_version(session,'xlk',version)
+        page = read_research_dossier(request,**{key:value for key,value in item['read'].items() if key!='tool'})
+        assert page['data']['value']['analysis']=='必须按已保存版本读取的完整集中度分析。'
+        assert context==before

@@ -33,7 +33,13 @@ def _inline_schema(schema):
 
 
 def _typed(schema, kind):
-    return schema if schema.get("type") == kind else next(item for item in schema["anyOf"] if item.get("type") == kind)
+    branches = [schema]
+    while branches:
+        branch = branches.pop(0)
+        if branch.get("type") == kind:
+            return branch
+        branches[0:0] = branch.get("anyOf", branch.get("oneOf", []))
+    raise ValueError(f"Review contract has no {kind} branch")
 
 
 def _patch_fields(original, properties, *, immutable=(), citations=False):
@@ -127,7 +133,7 @@ def review_receipt_schema(reviewed, canonical_schema, eligible_reflection_source
         candidates.append(_object({
             "instrument_id": {"const": row["instrument_id"]},
             **{field: scalar(canonical[field]) for field in ("summary", "change_kind", "coverage")},
-            "decisions": keyed_receipts(row.get("events", []), "event_key", event_properties, ("event_key", "action"), "remove"),
+            "decisions": keyed_receipts(row.get("events", []), "event_key", event_properties, ("event_key", "action", "event_version_id"), "remove"),
             "research": object_receipt(row.get("research"), research_fields(row.get("research") or {}, research_properties), reject="reject", omissions=True),
             "themes": keyed_receipts(row.get("themes", []), "theme_key", theme_properties, ("theme_key", "theme_id"), "reject"),
             "reflection": object_receipt(reflection, fields),
@@ -312,7 +318,7 @@ def expand_review_receipts(reviewed, result):
         decisions, kept_themes = [], []
         for event in original.get("events", []):
             receipt = events[event["event_key"]]
-            value = expand(event, receipt, key="event_key", reject="remove", immutable=("event_key", "action"))
+            value = expand(event, receipt, key="event_key", reject="remove", immutable=("event_key", "action", "event_version_id"))
             decisions.append({"event_key": event["event_key"], "decision": "remove" if value is None else "keep",
                 "reason": receipt.get("reason", "Explicitly accepted the bound draft event."), "event": value})
         for theme in original.get("themes", []):

@@ -836,8 +836,8 @@ Shared market pipeline definition generation never starts its timers.
 | Channel / market scope | Schedule |
 | --- | --- |
 | `market / cn` | 08:15 and 15:30 Asia/Shanghai |
-| `market / hk` | Actual Hong Kong session close + 30 minutes |
-| `market / us` | Actual US session close + 30 minutes |
+| `market / hk` | Collector: late reconciliation at 23:30; replica: actual close + 150 minutes and 23:30 |
+| `market / us` | Collector: projection follows registered collection; standalone timer disabled. Replica: actual US close + 150 minutes |
 | `reference / cn-hk` | 08:00 Asia/Shanghai |
 | `settlement` | 21:00 Asia/Shanghai; conditional retry at 23:00 |
 
@@ -846,16 +846,27 @@ again at 15:30 after the close. Both slots run independently; morning success do
 afternoon run. The pre-open batch expects only completed sessions and retains configured publication
 lags. It shares the existing writer lock and wait limit with the 08:00 reference batch.
 
-IANA timezones handle US daylight saving time. The shared runner selects instruments by their configured
-market calendars and skips closed markets. Hong Kong and US post-close timers check at each hour
-`:30`; the shared `infra/scripts/market_close_schedule.py` condition runs the batch only in the half-hour
-window beginning 30 minutes after the actual session close, including half-days. A calendar error fails
-the service; an ordinary off-schedule tick leaves the previous refresh summary unchanged.
+IANA timezones handle US daylight saving time. Registered US prices are collected at actual NYSE close
++ 120 minutes (normally 18:00 New York); HK collection starts at close + 150 minutes (normally 18:30).
+Hourly calendar probes include half-days and skip holidays. The same acquisition runner waits for its
+canonical projection and downstream recalculation before it exits; the collector's separate US projection
+timer is disabled to avoid a duplicate batch. Its service/CLI remains available for explicit repairs.
+The collector's independent HK projection retains only 23:30 reconciliation, because its registered
+collection also owns the immediate projection. For US/HK, projection lock exit75 keeps the existing
+four total attempts at one-hour intervals inside the admitted runner; calendar conditions are not
+re-evaluated and acquisition is not repeated. Other failures are not retried by this lock rule.
+Replicas retain independent US/HK projection at close + 150 minutes and projection on public-data arrival.
+The shared `infra/scripts/market_close_schedule.py` condition admits only the target half-hour slot; a
+calendar error fails the service, while an ordinary skipped tick leaves the previous summary unchanged.
 
 The pre-open reference batch only acquires Tushare reference inputs. FMP reference snapshots are
 projected after successful public collection or replica arrival, with failures retained in pipeline status.
-The matching market's research starts at 08:30 and collects current news and event evidence. Collect the initial references before
-activating research on a new release. Watchlist reads these snapshots without an external DuckDB source.
+Automatic research becomes due after the main price batches: CN at 22:00 Shanghai, HK at actual close
++ 210 minutes, and US at actual close + 195 minutes (normally 19:15 New York, or 07:15/08:15 Shanghai
+in summer/winter). Existing eligibility, peak-hour restrictions, concurrency and incremental evidence
+checks still apply. These dispatch times do not guarantee provider coverage or that long research is
+complete by 09:00. The CN 08:15 catch-up targets current price/calculation availability before work.
+Collect initial references before activating research on a new release. Watchlist needs no external DuckDB source.
 Nightly settlement covers the FMP catalogue, configured Tushare instruments (including fund NAVs and
 listed prices), email NAVs, FX and private-fund projections. It does not repeat FMP equity closing-price
 or reference collection.

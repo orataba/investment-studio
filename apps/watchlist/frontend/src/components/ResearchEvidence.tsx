@@ -42,6 +42,10 @@ export function ComputedEvidence({ source }: { source: SavedResearchSource }) {
   const [showOriginal, setShowOriginal] = useState(false)
   if (isProviderSnapshot(source)) return <ProviderEvidence source={source} />
   const data = source.data
+  if (data?.analysis_kind === 'stored_data') return <div className="research-computed-evidence">
+    <p className="sector-research-note">留存结构化原始字段，保留来源日期、单位与取得时间。</p>
+    <pre className="research-dossier-text" translate="no">{JSON.stringify(source, null, 2)}</pre>
+  </div>
   const method = typeof source.methodology === 'object' ? source.methodology : null
   const number = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 6 })
   const change = (value: number) => `${value > 0 ? '+' : ''}${number(value)} 个百分点`

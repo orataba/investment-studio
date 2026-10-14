@@ -67,7 +67,7 @@ def test_fixed_window_peer_catalog_migration_preserves_saved_criteria(tmp_path, 
         assert before
         old_fields = connection.execute(text("SELECT field_key, label FROM field_registry WHERE field_key IN ('attr.peer_annualized_return_percentile','attr.peer_volatility_percentile','attr.peer_max_drawdown_percentile','attr.peer_sharpe_percentile','attr.peer_calmar_percentile') ORDER BY field_key")).all()
         assert len(old_fields) == 5
-    command.upgrade(config, "head")
+    command.upgrade(config, "20261002_0064")
     with engine.connect() as connection:
         fields = set(connection.scalars(text("SELECT field_key FROM field_registry")))
         assert not {row[0] for row in old_fields} & fields

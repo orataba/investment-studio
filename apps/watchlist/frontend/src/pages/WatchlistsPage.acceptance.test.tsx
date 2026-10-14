@@ -338,3 +338,21 @@ it.each(['CSV', 'Excel'])('exports the full searched set in saved filter/sort or
     expect(created).not.toHaveBeenCalled()
   } finally { click.mockRestore(); URL.createObjectURL = oldCreate; URL.revokeObjectURL = oldRevoke }
 })
+
+
+it('keeps metric date ranges on exactly the searched result set, including no matches', async () => {
+  api.runScreenerQuery.mockResolvedValue({ ...result([
+    { ...rows[0], instrument_name: 'Older company', metric_as_of_date: '2026-07-28' },
+    { ...rows[1], instrument_name: 'Latest company', metric_as_of_date: '2026-10-13' },
+  ]), snapshot_metadata: { as_of_date_min: '2026-07-28', as_of_date_max: '2026-10-13', has_mixed_as_of_dates: true } })
+  show()
+  await screen.findByText('Per-instrument metric as-of 2026-07-28 to 2026-10-13')
+  const search = screen.getByRole('searchbox', { name: 'Search this watchlist' })
+  fireEvent.change(search, { target: { value: 'Latest company' } })
+  expect(screen.getByText('Metrics as of 2026-10-13')).toBeTruthy()
+  expect(screen.queryByText('Per-instrument metric as-of 2026-07-28 to 2026-10-13')).toBeNull()
+  fireEvent.change(search, { target: { value: 'does-not-exist' } })
+  expect(screen.getByText('No matching instruments · no metric date range')).toBeTruthy()
+  fireEvent.change(search, { target: { value: '' } })
+  expect(screen.getByText('Per-instrument metric as-of 2026-07-28 to 2026-10-13')).toBeTruthy()
+})

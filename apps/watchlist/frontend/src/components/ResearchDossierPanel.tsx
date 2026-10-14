@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { useStudioAccount } from './AccountBoundary'
+import TeamResearchGuidanceRecord from './TeamResearchGuidanceRecord'
 import ResearchMandateRecord from './ResearchMandateRecord'
 import InvestmentResearchState from './InvestmentResearchState'
 import ResearchModules from './ResearchModules'
@@ -161,6 +162,8 @@ function PriorAnalysis({ notebook, instrumentId }: { notebook: SavedResearchNote
 
 export default function ResearchDossierPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, variant = 'full' }: { instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; variant?: 'full' | 'summary' }) {
   const canWrite = useStudioAccount()?.team_role !== 'reader'
+  const [guidanceScope, setGuidanceScope] = useState<'instrument' | 'team'>('instrument')
+  const [teamGuidanceOpened, setTeamGuidanceOpened] = useState(false)
   const [snapshot, setSnapshot] = useState<{ instrumentId: string; data: ResearchDossier } | null>(null)
   const dossier = snapshot?.instrumentId === instrumentId ? snapshot.data : null
   const setDossier = (update: (current: ResearchDossier | null) => ResearchDossier | null) => setSnapshot(current => { const data = update(current?.instrumentId === instrumentId ? current.data : null); return data ? { instrumentId, data } : null })
@@ -233,14 +236,22 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
   const content: Record<keyof typeof sectionLabels, ReactNode> = {
     events: <ResearchRecentEvents instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={ask} themeNames={themeNames} hideWhenEmpty={privateFund} />,
     themes: <ResearchThemesPanel instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={ask} onThemeNamesChange={onThemeNamesChange} workingSet={dossier.working_set} />,
-    quantitative: <ResearchQuantObservations instrumentId={instrumentId} notebook={notebook} onAskAssistant={ask} />,
+    quantitative: <ResearchQuantObservations instrumentId={instrumentId} notebook={notebook} applicability={dossier.research_applicability} onAskAssistant={ask} />,
 
   }
   return <div className={`research-dossier-panel research-dossier-${variant}`}>
     <div className="research-guidance-bar">
-    <p className="sector-research-note">研究正文和引用保留原语言。</p>
-    <ResearchReadingAside label="研究指导" title="研究指导">
-      {dossier.mandate && <ResearchMandateRecord key={instrumentId} instrumentId={instrumentId} mandate={dossier.mandate} onSaved={mandate => { setDossier(current => current && ({ ...current, mandate })); setRefresh(value => value + 1) }} />}
+    {!privateFund && <nav className="research-reading-nav" aria-label="研究报告目录">
+      <a href={`#research-overview-${instrumentId}`} onClick={() => document.getElementById(`research-overview-${instrumentId}`)?.focus({ preventScroll: true })}>总览</a>
+      {sections.map(section => <a key={section} href={`#research-${sectionIds[section]}-${instrumentId}`} onClick={() => document.getElementById(`research-${sectionIds[section]}-${instrumentId}`)?.focus({ preventScroll: true })}>{sectionLabels[section]}</a>)}
+    </nav>}
+
+    <ResearchReadingAside label="研究指导与 Agent Skills" title="研究指导与 Agent Skills">
+      <p className="sector-research-note">研究正文和引用保留原语言。</p>
+      <div className="research-event-filters research-guidance-scopes" aria-label="研究指导范围"><button type="button" aria-pressed={guidanceScope === 'team'} onClick={() => { setGuidanceScope('team'); setTeamGuidanceOpened(true) }}>团队通用</button><button type="button" aria-pressed={guidanceScope === 'instrument'} onClick={() => setGuidanceScope('instrument')}>此标的补充</button></div>
+      <div hidden={guidanceScope !== 'team'}>{teamGuidanceOpened && <TeamResearchGuidanceRecord />}</div>
+      <div hidden={guidanceScope !== 'instrument'}><p className="sector-research-note">在团队通用框架上补充本标的的研究重点。角色指导留空时沿用团队指导；风控与事实复核采用团队规则。</p>
+      {dossier.mandate && <ResearchMandateRecord key={instrumentId} instrumentId={instrumentId} mandate={dossier.mandate} onSaved={mandate => { setDossier(current => current && ({ ...current, mandate })); setRefresh(value => value + 1) }} />}</div>
       {Boolean(dossier.research_plan?.modules.length) && <details className="research-dossier-record research-method-plan"><summary>方法参考（可选）</summary>
         <p className="sector-research-note">按研究问题取用，也可以采用其他有依据的方法。</p>
         {dossier.research_plan!.modules.map(method => <details className="research-dossier-record" key={method.id}><summary translate="no">{method.title}</summary>
@@ -251,10 +262,6 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
       </details>}
     </ResearchReadingAside>
     </div>
-    {!privateFund && <nav className="research-reading-nav" aria-label="研究报告目录">
-      <a href={`#research-overview-${instrumentId}`} onClick={() => document.getElementById(`research-overview-${instrumentId}`)?.focus({ preventScroll: true })}>总览</a>
-      {sections.map(section => <a key={section} href={`#research-${sectionIds[section]}-${instrumentId}`} onClick={() => document.getElementById(`research-${sectionIds[section]}-${instrumentId}`)?.focus({ preventScroll: true })}>{sectionLabels[section]}</a>)}
-    </nav>}
     {error && <p role="alert">研究档案暂时无法读取：{error} <button type="button" onClick={() => setRefresh(value => value + 1)}>重试读取</button></p>}
     {privateFund ? <section className="research-deferred" aria-label="研究暂缓"><h2>投资研究暂缓</h2><p>私募策略等资产的自动投资研究暂不开展。风险监测、研究助手、投资观点和原始材料仍可使用。</p>{ask && <button type="button" onClick={() => ask('请结合这个标的已有材料与我的投资观点，帮助回答当前的投资或风险问题。')}>打开研究助手</button>}</section> : <div id={`research-overview-${instrumentId}`} tabIndex={-1} className="research-current-section research-section-overview"><ResearchOverview instrumentId={instrumentId} dossier={dossier} onAskAssistant={ask} /></div>}
     <div className={`research-current-sections${privateFund ? ' research-current-sections-private' : ''}`}>

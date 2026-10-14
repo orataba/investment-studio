@@ -22,6 +22,8 @@ def section_context(context, instrument_id, section):
     dossier = next((item for item in context.get("research_dossiers", []) if item["instrument_id"] == instrument_id), {})
     mandate = dossier.get("mandate") or {}
     skills = {**SECTION_SKILLS, **mandate.get("section_skills", {})}
+    from watchlist_app.services.research_guidance import role_guidance
+    team_guidance = role_guidance(context, section)
     notebook = dossier.get("notebook") or {}
     working = (context.get("research_working_sets") or {}).get(instrument_id) or {}
     from watchlist_app.services.research_tasks import current_tasks, task_directory
@@ -32,6 +34,10 @@ def section_context(context, instrument_id, section):
         "instrument": {key: deepcopy(registration.get(key)) for key in ("name", "identifier", "instrument_type", "currency", "exchange")},
         "cutoff": context.get("cutoff"), "input_snapshot_cutoff": context.get("input_snapshot_cutoff"),
         "instruction": "只读取本角色所需的目录与选定原件。历史按具体问题和版本读取，不遍历全档。专员结论是分析，最终引用仍使用原 source_id。"}
+    if team_guidance is not None:
+        base.update(skill=team_guidance["skill"], team_guidance={key: value for key, value in team_guidance.items() if key != "skill"},
+            instrument_supplement={"revision": mandate.get("revision"), "version_id": mandate.get("version_id"),
+                "skill": mandate.get("section_skills", {}).get(section, "")})
     if section == "recent_updates":
         base.update(
             tracked_events=[_event_context(row) for row in context.get("prior_events", [])
@@ -63,6 +69,11 @@ def section_context(context, instrument_id, section):
         from watchlist_app.services.research_applicability import numeric_tool_capabilities
         kind = dossier.get("instrument_type") or registration.get("instrument_type")
         base.update(numeric_tools=numeric_tool_capabilities(kind),
+            prior_module_index=[{**{key: row.get(key) for key in ("key", "title", "coverage")},
+                "read": {"tool": "read_research_dossier", "instrument_id": instrument_id,
+                    **({"version_id": row["version_id"]} if row.get("version_id") else
+                       {"section": "modules", "path": [index]})}}
+                for index, row in enumerate(notebook.get("modules", []))],
             prior_quantitative_assessments=[deepcopy(row) for row in notebook.get("modules", [])
                 if row.get("key") in {"market-quantitative", "financial-analysis", "valuation", "earnings-expectations"}],
             quantitative_reads=[{"tool": "read_research_instrument", "instrument_id": instrument_id,

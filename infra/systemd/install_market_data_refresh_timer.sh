@@ -93,6 +93,10 @@ investment_studio_validate_env_file \
   INVESTMENT_STUDIO_INSTRUMENT_DATA_ \
   INVESTMENT_STUDIO_AUTH_
 investment_studio_validate_env_file "$ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
+market_role="$(
+  investment_studio_load_env_file "$ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
+  printf '%s' "${INVESTMENT_STUDIO_MARKET_ROLE:-}"
+)"
 (
   unset \
     INVESTMENT_STUDIO_DATA_DATABASE_URL \
@@ -213,6 +217,9 @@ if [[ "$CHANNEL" == "market" && ( "$MARKET_SCOPE" == "hk" || "$MARKET_SCOPE" == 
   fi
   escaped_schedule_helper="$(printf '%q' "$PROJECT_ROOT/infra/scripts/market_close_schedule.py")"
   schedule_condition="ExecCondition=/bin/bash -lc '$escaped_python_bin $escaped_schedule_helper --market-scope $MARKET_SCOPE'"
+  if [[ "$market_role" == "collector" ]]; then
+    schedule_condition="ExecCondition=/bin/bash -lc '$escaped_python_bin $escaped_schedule_helper --market-scope $MARKET_SCOPE --collector-projection'"
+  fi
 elif [[ "$CHANNEL" == "settlement" ]]; then
   if [[ ! -f "$PROJECT_ROOT/infra/scripts/settlement_refresh_schedule.py" ]]; then
     echo "Cannot find the settlement schedule helper under PROJECT_ROOT." >&2
@@ -259,9 +266,15 @@ EOF
 
 systemctl --user stop "$UNIT_NAME.timer" >/dev/null 2>&1 || true
 systemctl --user daemon-reload
-systemctl --user enable "$UNIT_NAME.timer"
-if [[ "$START_TIMERS" == true ]]; then
-  systemctl --user start "$UNIT_NAME.timer"
+if [[ "$CHANNEL:$MARKET_SCOPE:$market_role" == "market:us:collector" ]]; then
+  # Registered US acquisition already projects and notifies downstream reads.
+  # Keep the manual service, without a competing second automatic projection.
+  systemctl --user disable "$UNIT_NAME.timer"
+else
+  systemctl --user enable "$UNIT_NAME.timer"
+  if [[ "$START_TIMERS" == true ]]; then
+    systemctl --user start "$UNIT_NAME.timer"
+  fi
 fi
 
 echo "Installed $SERVICE_FILE"

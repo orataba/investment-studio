@@ -200,3 +200,22 @@ if grep -Fq 'start investment-studio-market-data-refresh.timer' "$SYSTEMCTL_CALL
 fi
 
 echo "systemd market close, pre-open reference and settlement timer tests passed."
+
+# On the cloud collector, registered-US acquisition owns the follow-on projection.
+printf '%s\n' 'INVESTMENT_STUDIO_MARKET_ROLE=collector' >> "$ENV_ROOT/market.env"
+: > "$SYSTEMCTL_CALLS"
+HOME="$TEST_ROOT/home" XDG_CONFIG_HOME="$TEST_ROOT/config" PATH="$MOCK_BIN:$PATH" \
+PROJECT_ROOT="$PROJECT_ROOT" BACKEND_ROOT="$BACKEND_ROOT" \
+PYTHON_BIN="$(command -v python3)" ENV_ROOT="$ENV_ROOT" CHANNEL=market MARKET_SCOPE=us \
+  "$REPOSITORY_ROOT/infra/systemd/install_market_data_refresh_timer.sh"
+grep -Fxq -- '--user disable investment-studio-us-market-data-refresh.timer' "$SYSTEMCTL_CALLS"
+if grep -Eq '^--user (start|enable) investment-studio-us-market-data-refresh.timer$' "$SYSTEMCTL_CALLS"; then
+  echo 'Collector US projection acquired a duplicate schedule.' >&2
+  exit 1
+fi
+HOME="$TEST_ROOT/home" XDG_CONFIG_HOME="$TEST_ROOT/config" PATH="$MOCK_BIN:$PATH" \
+PROJECT_ROOT="$PROJECT_ROOT" BACKEND_ROOT="$BACKEND_ROOT" \
+PYTHON_BIN="$(command -v python3)" ENV_ROOT="$ENV_ROOT" CHANNEL=market MARKET_SCOPE=hk \
+  "$REPOSITORY_ROOT/infra/systemd/install_market_data_refresh_timer.sh"
+grep -Fq -- '--market-scope hk --collector-projection' \
+  "$TEST_ROOT/config/systemd/user/investment-studio-hk-market-data-refresh.service"

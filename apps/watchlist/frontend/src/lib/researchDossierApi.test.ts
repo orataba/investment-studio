@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 import { fetchJson } from './api'
-import { getResearchTheme, getResearchThemes } from './researchDossierApi'
+import { getResearchEvents, getResearchTheme, getResearchThemes } from './researchDossierApi'
 
 vi.mock('./api', () => ({ fetchJson: vi.fn() }))
 
@@ -19,4 +19,11 @@ it('keeps explicit historical lists and individual theme originals available', a
   expect(fetchJson).toHaveBeenLastCalledWith('/api/research/instruments/xlk/themes', { signal: undefined })
   await getResearchTheme('xlk', 'saved-theme')
   expect(fetchJson).toHaveBeenLastCalledWith('/api/research/instruments/xlk/themes/saved-theme', { signal: undefined })
+})
+
+
+it('requests a stable UTC event grouping instead of the browser timezone', async () => {
+  const signal = new AbortController().signal
+  await getResearchEvents('xlk', 'watch', signal)
+  expect(fetchJson).toHaveBeenLastCalledWith('/api/research/instruments/xlk/events?scope=watch&display_timezone=UTC&offset=0&limit=20', { signal })
 })

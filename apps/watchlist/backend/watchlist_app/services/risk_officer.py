@@ -428,7 +428,9 @@ def prepare_run(run_id):
         topic = session.get(ResearchTopic, run.topic_id)
         topic.instrument_ids = snapshot["instrument_ids"]
         prepared_at = datetime.now(UTC).isoformat()
+        from watchlist_app.services.research_guidance import freeze_guidance
         run.context_json = {**run.context_json, "risk_inputs": snapshot, "risk_input_version": bound_version, "prepared_at": prepared_at,
+            "research_guidance": freeze_guidance(session, run.context_json),
             "risk_automatic_inputs": automatic_before if automatic_before == automatic_after else None,
             "cutoff": prepared_at,
             **({"input_snapshot_cutoff": prepared_at} if snapshot["scope_available"] else {}),

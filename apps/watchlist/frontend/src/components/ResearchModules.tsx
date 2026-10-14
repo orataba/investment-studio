@@ -27,6 +27,10 @@ export function EvidenceFigure({ source, hideSummary = false }: { source: SavedR
     <h4 translate="no">{source.title || '供应商原件'}</h4>
     <ResearchReadingAside label="查看供应商原件"><ProviderEvidence source={source} /></ResearchReadingAside>
   </section>
+  if (source.data?.analysis_kind === 'stored_data') return <section className="research-evidence-figure">
+    <h4 translate="no">{source.title || '留存原始字段'}</h4>
+    <ResearchReadingAside label="查看留存原始字段"><ComputedEvidence source={source} /></ResearchReadingAside>
+  </section>
   const quantitative = quantAnalysis(source.data?.analysis_kind) || isVolatilityFigure(source)
   const fixedObservations = source.data?.analysis_kind === 'watchlist_observations'
   const snapshot = source.snapshot

@@ -180,8 +180,10 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
       {data.latest_run?.status === 'failed' && !busy && <p className="risk-officer-warning" role="status">
         本次研判失败：{data.latest_run.message || '本次未生成有效结论。'}
       </p>}
-      {data.latest_run?.status === 'paused' && <p className="risk-officer-muted">本次研判已暂停，已有结论保留。</p>}
-      {!completed && !busy && !data.model_work?.paused && <p className="risk-officer-muted">尚未研判。点击“更新研判”发起首次研判。</p>}
+      {data.latest_run?.status === 'paused' && <p className="risk-officer-muted">{completed
+        ? '本次研判已暂停，下方保留最近完成的结论。'
+        : '首次研判已暂停，尚未形成可读结论。'}</p>}
+      {!completed && !busy && !data.model_work?.paused && data.latest_run?.status !== 'paused' && <p className="risk-officer-muted">尚未研判。点击“更新研判”发起首次研判。</p>}
       {completed && <section className="risk-officer-conclusion" aria-label="最近完成的研判">
         <div className="risk-officer-conclusion-heading"><h3>最近完成的研判</h3>
           <time title={completed.completed_at} dateTime={completed.completed_at}>{researchStamp(completed.completed_at)}</time>

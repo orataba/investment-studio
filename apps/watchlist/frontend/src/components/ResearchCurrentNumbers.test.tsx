@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import ResearchCurrentNumbers from './ResearchCurrentNumbers'
+import type { ResearchApplicability } from '../lib/researchDossierApi'
 import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 const read = vi.hoisted(() => vi.fn())
 vi.mock('../lib/api', async original => ({ ...await original<typeof import('../lib/api')>(), fetchJson: read }))
@@ -47,4 +48,22 @@ it('defaults to the canonical return path and keeps raw prices separate', async 
   fireEvent.click(screen.getByRole('button', { name: '原始价格' }))
   expect(screen.getByRole('img', { name: /价格历史/ })).toBeTruthy()
   expect(screen.getByText(/原始价格可能包含拆股/)).toBeTruthy()
+})
+
+it('hides the company-estimate entry only for explicitly disclosed inapplicable exposures', async () => {
+  read.mockImplementation(async (path: string) => path.endsWith('/chart') ? chart : {})
+  const applicability: ResearchApplicability = { schema_version: 1, instrument_type: 'etf',
+    underlying: { asset_class: 'Commodities', strategy: null, status: 'documented' }, mechanisms: {},
+    monitoring: { generic_news: true, numeric_change_requires_research: false, material_channels: [] }, section_order: ['quantitative'] }
+  const view = (value?: ResearchApplicability) => <LanguageProvider enableDomTranslation={false}><ResearchCurrentNumbers instrumentId="registered-etf" applicability={value} /></LanguageProvider>
+  const { rerender } = render(view(applicability))
+  await screen.findByRole('img')
+  expect(screen.queryByRole('button', { name: '分析师预期变化与历史' })).toBeNull()
+  expect(screen.getByRole('button', { name: '基本面与成份历史' })).toBeTruthy()
+  rerender(view({ ...applicability, underlying: { ...applicability.underlying, asset_class: 'Equity' } }))
+  expect(screen.getByRole('button', { name: '分析师预期变化与历史' })).toBeTruthy()
+  rerender(view({ ...applicability, underlying: { ...applicability.underlying, status: 'unknown' } }))
+  expect(screen.getByRole('button', { name: '分析师预期变化与历史' })).toBeTruthy()
+  rerender(view(undefined))
+  expect(screen.getByRole('button', { name: '分析师预期变化与历史' })).toBeTruthy()
 })

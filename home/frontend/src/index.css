@@ -444,6 +444,14 @@ textarea {
 .home-important-risks { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px 24px; margin-top: 30px; padding: 18px 0; border-top: 1px solid var(--studio-line); font-size: 12px; color: var(--studio-muted); }
 .home-important-risks h2 { margin: 2px 0; font-size: 12px; font-weight: 500; color: var(--studio-ink); }
 .home-risk-content { min-width: 0; line-height: 1.7; }
+.home-risk-unavailable { padding: 12px 14px; border-left: 2px solid var(--studio-warning); background: var(--studio-warning-soft); color: var(--studio-ink); font-size: 13px; }
+.home-risk-unavailable strong { font-weight: 500; }
+.home-risk-unavailable p { margin: 4px 0 8px; }
+.home-risk-unavailable-actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+.home-risk-unavailable-actions a, .home-risk-unavailable .home-risk-unavailable-actions button { color: var(--studio-accent); }
+.home-risk-unavailable details { font-size: 12px; color: var(--studio-muted); }
+.home-risk-unavailable summary { cursor: pointer; }
+.home-risk-unavailable code { display: block; margin-top: 6px; overflow-wrap: anywhere; }
 .home-risk-content ul { list-style: none; margin: 0; padding: 0; }
 .home-risk-content li + li { margin-top: 8px; }
 .home-risk-content li a { display: flex; align-items: baseline; gap: 12px; }

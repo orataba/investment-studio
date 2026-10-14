@@ -13,7 +13,7 @@ export function ImportantRiskEntries({ apps, alerts }: { apps: StudioApp[]; aler
 }
 
 export default function ImportantRisks({ apps }: { apps: StudioApp[] }) {
-  const { t } = useLanguage()
+  const { t, language } = useLanguage()
   const [result, setResult] = useState<RiskAlerts | null>(null)
   const [error, setError] = useState('')
   const [revision, setRevision] = useState(0)
@@ -38,7 +38,14 @@ export default function ImportantRisks({ apps }: { apps: StudioApp[] }) {
   return <aside className="home-important-risks" aria-label={t('Important risks')}>
     <h2 title={t('Unresolved major risks retain their last assessment. Material urgent leads awaiting verification are labeled separately.')}>{t('Important risks')}</h2>
     <div className="home-risk-content" aria-live="polite">
-      {loading ? <span>{t('Loading…')}</span> : error ? <span>{t('Risk status unavailable.')} <button type="button" title={error} onClick={() => setRevision(value => value + 1)}>{t('Retry')}</button></span>
+      {loading ? <span>{t('Loading…')}</span> : error ? <div className="home-risk-unavailable" role="status">
+        <strong>{t('Important risks cannot be read right now.')}</strong>
+        <p>{t('The current risk status is unknown; this does not mean there are no important risks.')}</p>
+        <div className="home-risk-unavailable-actions"><button type="button" onClick={() => setRevision(value => value + 1)}>{t('Retry')}</button>
+          <a data-workspace-link href={withLanguage(`${base}/watchlists/all-instruments`, language)}>{t('Open Watchlist')}</a>
+          <details><summary>{t('Technical details')}</summary><code>{error}</code></details>
+        </div>
+      </div>
         : !result?.alerts.length ? <span>{t('No items currently meet the important-risk criteria.')}</span>
         : <ImportantRiskEntries apps={apps} alerts={result.alerts} />}
       {!loading && !error && result?.model_work?.paused && <p className="home-risk-coverage">{t('Research paused; retained assessments and pending developments are shown.')}</p>}

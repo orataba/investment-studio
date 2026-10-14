@@ -237,9 +237,11 @@ Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会
 
 主研究员通过原生 `delegate_research` 按需创建具体任务；标的动态、主题、量化是职责模板，不要求每次全部执行。受信任的 Harness 适配器调用 `POST /api/research/runs/{run_id}/tasks`，将真实子会话身份绑定任务，再通过 `GET .../tasks/{task_id}/context` 和 `POST .../tasks/{task_id}/result` 读取分工上下文、保存经验证的提案；失败由 `POST .../tasks/{task_id}/failure` 留存具体限制。主题专员仅能进一步委派同标的、范围不扩大的主题子任务，最多两层。
 
-`context.research_tasks` 按任务保存角色、标的、主题范围、父任务、执行尝试及输入截点。上下文路径支持字符串字段及整数数组索引；主研究员通过 `task_results` 读取提案，子会话只通过原生 `read_assigned_context` 定位自己的分工和直接子任务。当前有效任务结束后，只有主研究员可提交最终草稿；独立核证读取各任务原始风险与限制。提案不是独立事实来源，不直接发布事件或主题，也不修改人工记录。恢复时复用已验证且输入未变的结果，未完成任务留存中断原因。
+`context.research_tasks` 按任务保存角色、标的、主题范围、父任务、执行尝试及输入截点。上下文路径支持字符串字段及整数数组索引；主研究员通过 `task_results` 读取提案，子会话只通过原生 `read_assigned_context` 定位自己的分工和直接子任务。当前有效任务结束后，只有主研究员可提交最终草稿；独立核证读取各任务原始风险与限制。事件没有实质变化时可提交稀疏回执 `{action: "checked", event_key, event_version_id}`，不得附替代正文、来源或日期；服务核对冻结与当前版本，仅更新复核时间。提案不是独立事实来源，不直接发布事件或主题，也不修改人工记录。恢复时复用已验证且输入未变的结果，未完成任务留存中断原因。
 
-`PUT /api/research/instruments/{instrument_id}/dossier/mandate` 接受 `guidance`、四部分 `section_skills` 和 `expected_revision`。`POST .../themes/{theme_id}/notes` 保存人工记录，`DELETE .../themes/{theme_id}` 按当前 revision 删除主题及研究引用，保护 PM、事件事实与风险状态。模型不得通过专员工具编辑用户 skill 或 PM 观点。
+`GET/PUT /api/research/guidance` 读取／保存团队共同 `guidance` 与六个角色的 `section_skills`（overview、recent_updates、themes、quantitative、risk、review）。写入仅允许团队可写成员，使用 `expected_revision` 并保留版本与作者；未保存的默认框架读取不落库。新运行在准备期冻结团队指导，工具仅投影本角色所需的部分，旧运行继续原冻结含义。
+
+`PUT /api/research/instruments/{instrument_id}/dossier/mandate` 接受 `guidance`、四部分 `section_skills` 和 `expected_revision`。 此处是单标的补充，角色留空继承团队框架；修改不自动启动运行。`POST .../themes/{theme_id}/notes` 保存人工记录，`DELETE .../themes/{theme_id}` 按当前 revision 删除主题及研究引用，保护 PM、事件事实与风险状态。模型不得通过专员工具编辑用户 skill 或 PM 观点。
 
 新增或扩展的读取／工具合同：
 

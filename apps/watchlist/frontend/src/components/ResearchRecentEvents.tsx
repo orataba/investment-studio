@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getResearchEvents, type AskResearchAssistant, type ResearchEventsResponse, type ResearchEventCategory, type ResearchEventScope, type ResearchUpdate } from '../lib/researchDossierApi'
+import { dateLabel } from './ResearchEvidence'
 import { RESEARCH_UPDATED } from '../lib/researchUpdates'
 import ResearchEventCard, { researchCategoryLabels } from './ResearchEventCard'
 import ResearchLoading from '../../../../../packages/ui/src/WorkspaceSkeleton'
@@ -39,16 +40,17 @@ export default function ResearchRecentEvents({ instrumentId, reviewRunId, review
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [instrumentId, scope, category, offset, refresh, reviewRunId, reviewStatus])
+  const retainedAt = data ? [...data.events, ...data.late_arrivals].map(item => item.checked_at || item.recorded_at).filter(value => value && Number.isFinite(Date.parse(value))).sort((a, b) => Date.parse(a) - Date.parse(b)).slice(-1)[0] : null
   const lateCount = data?.late_arrival_count ?? data?.late_arrivals.length ?? 0
   const groups = new Map<string, ResearchUpdate[]>()
   for (const update of data?.events || []) { const day = update.timeline_date || '日期待核实'; groups.set(day, [...(groups.get(day) || []), update]) }
   if (hideWhenEmpty && data && !data.events.length && !error && !loading && scope === initialScope) return null
   return <section className="research-recent-events" aria-label="标的动态" aria-busy={loading}>
-    <div className="research-dossier-section-heading"><div className="research-section-title"><h2>标的动态</h2><InfoHint label="重要进展范围" detail="公司、行业与底层资产的新闻、公告、观点及会议进展；持续跟进不受日期限制。" /></div><div className="research-event-filters" aria-label="事件范围">
+    <div className="research-dossier-section-heading"><div className="research-section-title"><h2>标的动态</h2><InfoHint label="重要进展范围" detail="公司、行业与底层资产的新闻、公告、观点及会议进展；持续跟进不受日期限制。时间线按进展、发生或披露日期归组（UTC），未知发生时间保持未知。" /></div><div className="research-event-filters" aria-label="事件范围">
       {([['recent', '近 7 天'], ['watch', '仍在跟进'], ['history', '历史']] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={scope === value} onClick={() => { setScope(value); setOffset(0) }}>{label}</button>)}
     </div></div>
     <div className="research-update-controls"><label>信息类别<select aria-label="信息类别" value={category} onChange={event => { setCategory(event.target.value as ResearchEventCategory | ''); setOffset(0) }}><option value="">全部类别</option>{Object.entries(researchCategoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>{onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(`请分析该标的的${category ? researchCategoryLabels[category] : '重要动态'}，核实事实、判断投资影响，并识别需要持续跟进的事项。`, { instrument_id: instrumentId })}>讨论标的动态</button>}</div>
-    {error && <p role="alert">事件暂时无法读取：{error}{data && '。以下保留上次有效内容。'}</p>}
+    {error && <aside className="research-retained-notice" role="alert"><strong>{data ? '动态更新暂不可用，保留上次有效内容' : '标的动态暂时无法读取'}</strong>{data && <p>以下为已取得的有效版本，尚未确认是否有更新。{retainedAt && <> 最近检查或记录 <time dateTime={retainedAt}>{dateLabel(retainedAt)}</time></>}</p>}<button type="button" disabled={loading} onClick={() => setRefresh(value => value + 1)}>重试读取</button><details><summary>技术详情</summary><p translate="no">{error}</p></details></aside>}
     {loading && !data && <ResearchLoading />}
     {data && !data.events.length && <p className="sector-research-note">{scope === 'recent' ? '近 7 天没有已记录的重要事件；这不代表没有风险。' : scope === 'watch' ? '暂无主动跟进的事件。' : '尚无事件记录。'}</p>}
     <div className="research-event-timeline">{[...groups].map(([day, events]) => <section className="research-event-day" key={day} aria-label={day}>

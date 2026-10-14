@@ -12,6 +12,18 @@ from watchlist_app.api.research_presentation import dossier_view
 
 router = APIRouter()
 
+from watchlist_app.services import research_guidance
+
+
+@router.get("/research/guidance")
+def team_guidance(session: Session = Depends(get_db_session)):
+    return research_guidance.read_guidance(session)
+
+
+@router.put("/research/guidance")
+def save_team_guidance(request: research_guidance.GuidanceInput, session: Session = Depends(get_db_session)):
+    return research_guidance.save_guidance(session, request)
+
 
 class MaterialInput(BaseModel):
     title: str = Field(min_length=1, max_length=300)

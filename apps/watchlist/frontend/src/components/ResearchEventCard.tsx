@@ -28,6 +28,7 @@ export function ReferencedResearchEvent({ instrumentId, eventKey }: { instrument
 
 function EventHistory({ update, onAskAssistant, themeNames }: { update: ResearchUpdate; onAskAssistant?: AskResearchAssistant; themeNames: Record<string, string> }) {
   const [data, setData] = useState<ResearchEventsResponse | null>(null)
+  const [includeRevisions, setIncludeRevisions] = useState(false)
   const [offset, setOffset] = useState(0)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -43,7 +44,10 @@ function EventHistory({ update, onAskAssistant, themeNames }: { update: Research
   return <div className="research-event-history" aria-busy={loading}>
     {error && <p role="alert">{error}</p>}
     {loading && !data && <ResearchLoading />}
-    {data?.events.map(record => <ResearchUpdateCard key={record.update_id} update={record} onAskAssistant={onAskAssistant} themeNames={themeNames} compact />)}
+    <p className="sector-research-note">按记录时间对照当时事实、影响判断与下一观察；资料整理与实质进展分开显示。</p>
+    {data?.events.some(record => record.material_change === false) && <label className="research-theme-history-filter"><input type="checkbox" checked={includeRevisions} onChange={event => setIncludeRevisions(event.target.checked)} />包括资料与设置修订</label>}
+    {data?.events.filter(record => includeRevisions || record.material_change !== false).map(record => <ResearchUpdateCard key={record.update_id} update={record} onAskAssistant={onAskAssistant} themeNames={themeNames} compact readable />)}
+    {data && !includeRevisions && data.events.length > 0 && data.events.every(record => record.material_change === false) && <p className="sector-research-note">本页仅有资料或设置修订，可展开查看；这些修订不代表新的事件进展。</p>}
     {data?.has_more && data.next_offset !== null && <button type="button" disabled={loading} onClick={() => setOffset(data.next_offset!)}>加载更多版本</button>}
   </div>
 }
@@ -110,13 +114,17 @@ export default function ResearchEventCard({ update, onAskAssistant, initiallyOpe
         {update.follow_up_review_status === 'due' && <span className="research-status-tag warning">到期待复核</span>}
       </div>
     </header>
-    <time className="research-event-inline-date" dateTime={update.timeline_date || undefined}>{update.timeline_date || '日期待核实'}</time>
+    <div className="research-event-inline-date">{update.timeline_date && <span>信息日期 · UTC </span>}<time dateTime={update.timeline_date || undefined}>{update.timeline_date || '日期待核实'}</time></div>
     {update.body && <p className="research-event-summary" translate="no">{update.body}</p>}
     {update.impact_analysis && update.impact_analysis !== update.body && <p className="research-event-impact"><span>投资影响</span><span translate="no">{update.impact_analysis}</span></p>}
+    {update.follow_up === 'watch' && <div className="research-event-follow-up">
+      {update.next_check && <p><span>下一观察</span><span translate="no">{update.next_check}</span></p>}
+      <p className="research-event-follow-up-dates">{update.material_progress_at && <span>最近实质进展 <time dateTime={update.material_progress_at}>{dateLabel(update.material_progress_at)}</time></span>}{update.checked_at && <span>最近检查 <time dateTime={update.checked_at}>{dateLabel(update.checked_at)}</time></span>}{update.next_observation_on && <span>观察日期 <time dateTime={update.next_observation_on}>{update.next_observation_on}</time></span>}</p>
+    </div>}
     {(pendingRisk || update.risk_assessment?.status === 'failed') && <p className="research-event-risk-status">{pendingRisk === 'verification' ? '风控已评估／待核实' : pendingRisk === 'review' ? '已提交／待风控复核' : '风控复核未完成'}</p>}
     <div className="research-event-reading-tools">
-      {!initiallyOpen && <ResearchReadingAside label="查看影响、公开观点与依据" title={update.title}>{details}</ResearchReadingAside>}
-      {update.event_key && <ResearchReadingAside label="研究修订历史" title={`${update.title} · 研究修订历史`} onOpenChange={setRecordOpen}>{recordOpen && <EventHistory update={update} onAskAssistant={onAskAssistant} themeNames={themeNames} />}</ResearchReadingAside>}
+      {!initiallyOpen && <ResearchReadingAside label="查看影响与证据" title={update.title}>{details}</ResearchReadingAside>}
+      {update.event_key && <ResearchReadingAside label="进展与影响时间线" title={`${update.title} · 进展与影响时间线`} onOpenChange={setRecordOpen}>{recordOpen && <EventHistory update={update} onAskAssistant={onAskAssistant} themeNames={themeNames} />}</ResearchReadingAside>}
     </div>
     {linkedThemes.length > 0 && <div className="research-update-themes" aria-label="关联主题">{linkedThemes.map(id => <a key={id} href={`#research-theme-${encodeURIComponent(id)}`} onClick={() => {
       let ancestor = document.getElementById(`research-theme-${encodeURIComponent(id)}`)?.parentElement

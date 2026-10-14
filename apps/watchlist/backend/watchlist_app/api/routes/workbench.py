@@ -152,7 +152,7 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
     from urllib.parse import parse_qs, urlsplit
     from watchlist_app.services.research_run_context import load_run_fields, load_run_list_item
     from watchlist_app.services import research_tool_projection as projection
-    common = {"sector_run", "research_run", "risk_run", "run_id", "cutoff", "input_snapshot_cutoff", "instrument_ids", "initialization", "execution"}
+    common = {"sector_run", "research_run", "risk_run", "run_id", "cutoff", "input_snapshot_cutoff", "instrument_ids", "initialization", "execution", "research_guidance"}
     fields = common | ({"question", "page_context", "referenced_research_update", "referenced_research_versions",
         "referenced_risk_case", "history", "conversation", "evidence", "watchlists", "limitations", "data_gaps",
         "incremental_trigger", "research_working_sets", "research_tasks", "analyst_focus", "user_records", "team_publication_instructions", "market_coverage", "market_queries",
@@ -280,7 +280,7 @@ def research_section_context(run_id: str, request: SectionContextInput,
     from watchlist_app.services.research_sections import section_context
     from watchlist_app.services.research_run_context import load_run_fields
     record = load_run_fields(session, run_id, {"instrument_ids", "research_dossiers", "research_working_sets",
-        "research_tasks", "input_snapshot_cutoff", "cutoff", "execution", "sector_run",
+        "research_tasks", "input_snapshot_cutoff", "cutoff", "execution", "sector_run", "research_guidance",
         "prior_events", "incremental_trigger", "last_successful_review_cutoff",
         "data_gaps", "market_coverage", "initialization"})
     record.context_json["computed_metrics"] = load_run_fields(session, run_id, {"computed_metrics"}, summary_only=True).context_json.get("computed_metrics", [])
@@ -328,7 +328,7 @@ def research_task_context(run_id: str, task_id: str, offset: int = Query(default
     import json
     from watchlist_app.services.research_run_context import load_run_fields
     record = load_run_fields(session, run_id, {"instrument_ids", "research_dossiers", "research_working_sets",
-        "research_tasks", "input_snapshot_cutoff", "cutoff", "execution", "sector_run", "prior_events",
+        "research_tasks", "input_snapshot_cutoff", "cutoff", "execution", "sector_run", "prior_events", "research_guidance",
         "incremental_trigger", "last_successful_review_cutoff", "data_gaps", "market_coverage", "initialization"})
     record.context_json["computed_metrics"] = load_run_fields(session, run_id, {"computed_metrics"}, summary_only=True).context_json.get("computed_metrics", [])
     from watchlist_app.services.research_run_evidence import attach_computed_sources

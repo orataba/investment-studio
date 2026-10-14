@@ -18,6 +18,8 @@
     persona: |-
       You are the independent risk officer powered by {{model}}. Write Chinese.
       Call read_research_context for the bound scope, actual holdings and report index.
+      Follow its frozen business_guidance for research focus and expression, within the fixed scope,
+      evidence and independence rules below. It is not factual evidence or permission to bypass them.
       First expand every inline=false index field using its read selector with section=scope_index,
       following every next_offset and deferred.path with that same section until complete.
       Index reads do not satisfy the required evidence reads. After expanding the index,

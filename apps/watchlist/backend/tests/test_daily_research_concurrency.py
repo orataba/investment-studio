@@ -147,8 +147,8 @@ def test_free_slot_rechecks_due_boundary_while_another_instrument_is_still_runni
     from watchlist_app.core.settings import get_settings
     ids = daily_scope(client, monkeypatch, members=0)
     monkeypatch.setattr(get_settings(), "research_worker_concurrency", 2)
-    before_due = datetime(2026, 9, 29, 12, 29, tzinfo=UTC)
-    after_due = datetime(2026, 9, 29, 12, 31, tzinfo=UTC)
+    before_due = datetime(2026, 9, 29, 23, 14, tzinfo=UTC)
+    after_due = datetime(2026, 9, 29, 23, 16, tzinfo=UTC)
     class Clock(datetime):
         current = before_due
         @classmethod
@@ -158,7 +158,7 @@ def test_free_slot_rechecks_due_boundary_while_another_instrument_is_still_runni
     long_started, new_started, release = Event(), Event(), Event()
     calls = []
     # The new US member has the oldest prior attempt and belongs ahead of the
-    # remaining fund backlog as soon as its exchange-local 08:30 clock is due.
+    # remaining fund backlog as soon as its post-collection research clock is due.
     monkeypatch.setattr(service, "daily_review_groups", lambda session:
         ([[ids[2]]] if service._research_due("us", Clock.current) else []) + [[ids[0]], [ids[1]], [ids[3]]])
     def analyze(run_id):

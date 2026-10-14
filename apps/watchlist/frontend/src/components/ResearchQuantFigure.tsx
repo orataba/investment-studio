@@ -81,10 +81,10 @@ function Chart({ chart, table, showTitle }: { chart: ResearchQuantChart; table: 
       {chart.kind === 'bar' && <line x1={left} x2={width - right} y1={y(0)} y2={y(0)} className="research-quant-zero-axis" stroke="var(--studio-chart-axis)" />}
       {chart.series.map((series, seriesIndex) => {
         const color = colors[seriesIndex % colors.length]
-        if (chart.kind === 'bar') return <g key={series.key}>{rows.map((row, index) => numeric(row[series.key]) ? <rect key={index} x={barX(index) + (seriesIndex - chart.series.length / 2) * barWidth} y={Math.min(y(0), y(row[series.key] as number))} width={barWidth * 0.85} height={Math.abs(y(row[series.key] as number) - y(0))} fill={color}><title>{String(row[chart.x_key])} · {series.label}: {number(row[series.key] as number)}</title></rect> : null)}</g>
+        if (chart.kind === 'bar') return <g key={series.key}>{rows.map((row, index) => numeric(row[series.key]) ? <rect key={index} x={barX(index) + (seriesIndex - chart.series.length / 2) * barWidth} y={Math.min(y(0), y(row[series.key] as number))} width={barWidth * 0.85} height={Math.abs(y(row[series.key] as number) - y(0))} fill={color}><title>{`${String(row[chart.x_key])} · ${series.label}: ${number(row[series.key] as number)}`}</title></rect> : null)}</g>
         const segments: number[][] = []; let current: number[] = []
         sorted.forEach(index => { if (numeric(rows[index][series.key])) current.push(index); else if (current.length) { segments.push(current); current = [] } }); if (current.length) segments.push(current)
-        return <g key={series.key}>{segments.map((segment, index) => <polyline key={index} points={segment.map(point => `${x(point)},${y(rows[point][series.key] as number)}`).join(' ')} fill="none" stroke={color} strokeWidth="2" />)}{sorted.filter(index => numeric(rows[index][series.key])).map(index => <circle key={index} cx={x(index)} cy={y(rows[index][series.key] as number)} r={2.2} fill={color}><title>{String(rows[index][chart.x_key])} · {series.label}: {number(rows[index][series.key] as number)}</title></circle>)}</g>
+        return <g key={series.key}>{segments.map((segment, index) => <polyline key={index} points={segment.map(point => `${x(point)},${y(rows[point][series.key] as number)}`).join(' ')} fill="none" stroke={color} strokeWidth="2" />)}{sorted.filter(index => numeric(rows[index][series.key])).map(index => <circle key={index} cx={x(index)} cy={y(rows[index][series.key] as number)} r={2.2} fill={color}><title>{`${String(rows[index][chart.x_key])} · ${series.label}: ${number(rows[index][series.key] as number)}`}</title></circle>)}</g>
       })}
       {xTicks.map(index => <text key={index} x={chart.kind === 'bar' ? barX(index) : x(index)} y={height - 25} textAnchor={chart.kind === 'bar' && !continuousX ? 'middle' : index === sorted[0] ? 'start' : index === sorted[rows.length - 1] ? 'end' : 'middle'}>{String(rows[index][chart.x_key])}</text>)}
     </svg></div>
@@ -102,14 +102,28 @@ export default function ResearchQuantFigure({ source, captioned = false, hideSum
     rows: data.history.map(row => ({ date: row.date, volatility_pct: row.volatility_pct })),
   } : null
   const tables = [...(data?.tables || []), ...(history ? [history] : [])]
-  const charts: ResearchQuantChart[] = [...(data?.charts || []), ...(history ? [{ key: 'ewma-history', title: '年化波动率', kind: 'line' as const, table_key: history.key, x_key: 'date', series: [{ key: 'volatility_pct', label: 'EWMA年化波动率' }], y_label: '%' }] : [])]
+  // This fixed observation contract stores disclosed percentage weights, not
+  // normalized portfolio weights or historical return contributions.
+  const holdings = data?.analysis_kind === 'watchlist_observations' && tables.find(table => table.key === 'top10'
+    && table.columns.some(column => column.key === 'symbol')
+    && table.columns.some(column => column.key === 'weight_percent' && column.unit === '%')
+    && table.rows.some(row => typeof row.symbol === 'string' && numeric(row.weight_percent)))
+  const holdingsChart: ResearchQuantChart[] = holdings && !(data?.charts || []).some(chart => chart.table_key === holdings.key && chart.series.some(series => series.key === 'weight_percent'))
+    ? [{ key: 'disclosed-stock-weights', title: '主要股票披露权重', kind: 'bar', table_key: holdings.key, x_key: 'symbol', series: [{ key: 'weight_percent', label: '披露权重（%）' }], y_label: '%', x_label: '沿用披露分母，未重新归一化；持仓日期与覆盖见数据口径。' }] : []
+  const charts: ResearchQuantChart[] = [...(data?.charts || []), ...holdingsChart, ...(history ? [{ key: 'ewma-history', title: '年化波动率', kind: 'line' as const, table_key: history.key, x_key: 'date', series: [{ key: 'volatility_pct', label: 'EWMA年化波动率' }], y_label: '%' }] : [])]
   const metrics = Object.entries(data?.metrics || {}).map(([key, value]) => {
     const column = tables.flatMap(table => table.columns).find(item => item.key === key)
     return { key, value, label: metricLabel(key, column?.label), unit: column?.unit }
   })
   const dates = metrics.filter(item => /(?:sample_start|sample_end|start_date|end_date)$/.test(item.key))
   const retainedSample = tables.flatMap(table => table.rows).find(row => ['样本区间', '共同样本区间', 'Sample period', 'Common sample'].includes(String(row.metric)))?.value
-  const keyMetrics = metrics.filter(item => item.label && !dates.includes(item)).slice(0, 6)
+  const keyMetrics = metrics.filter(item => item.label && !dates.includes(item) && item.value !== null && item.value !== undefined && item.value !== '').slice(0, 6)
+  const volatilityMetrics = [
+      { label: '当前年化波动率', value: data?.current?.volatility_pct, unit: '%', date: data?.current?.date },
+      { label: '前次年化波动率', value: data?.previous?.volatility_pct, unit: '%', date: data?.previous?.date },
+      { label: '较前次变化', value: data?.change_pp, unit: '个百分点' },
+      { label: '近5次交易观察变化', value: data?.five_session_change_pp, unit: '个百分点' },
+    ].filter(item => numeric(item.value))
   const volumeClock = data?.observation_clocks?.volume
   const displayValue = ({ key, value, unit }: typeof metrics[number]) => data?.analysis_kind === 'watchlist_observations'
     && ['股票Top 10平均相关性（63交易日）', 'Top 10平均相关性（63交易日）'].includes(key) && numeric(value) ? value.toFixed(3) : metricValue(key, value, unit)
@@ -118,12 +132,7 @@ export default function ResearchQuantFigure({ source, captioned = false, hideSum
     {retainedSample != null && <p className="research-quant-sample"><span>样本区间 <span translate="no">{String(retainedSample)}</span></span></p>}
     {hideSummary && data?.summary && !metrics.length && <ResearchReadingAside label="来源计算摘要"><p translate="no">{data.summary}</p></ResearchReadingAside>}
     {dates.length > 0 && <p className="research-quant-sample">{dates.map(item => <span key={item.key}>{item.label || '样本日期'} <time>{String(item.value ?? '—')}</time></span>)}</p>}
-    {volatility && <dl className="research-quant-metrics">{[
-      { label: '当前年化波动率', value: data?.current?.volatility_pct, unit: '%', date: data?.current?.date },
-      { label: '前次年化波动率', value: data?.previous?.volatility_pct, unit: '%', date: data?.previous?.date },
-      { label: '较前次变化', value: data?.change_pp, unit: '个百分点' },
-      { label: '近5次交易观察变化', value: data?.five_session_change_pp, unit: '个百分点' },
-    ].map(item => <div key={item.label}><dt>{item.label}</dt><dd>{numeric(item.value) ? `${item.unit === '个百分点' && item.value > 0 ? '+' : ''}${item.value.toFixed(2)}` : '未取得'}{numeric(item.value) && <span>{item.unit}</span>}{item.date && <small><time dateTime={item.date}>{item.date}</time></small>}</dd></div>)}</dl>}
+    {volatility && volatilityMetrics.length > 0 && <dl className="research-quant-metrics">{volatilityMetrics.map(item => <div key={item.label}><dt>{item.label}</dt><dd>{numeric(item.value) ? `${item.unit === '个百分点' && item.value > 0 ? '+' : ''}${item.value.toFixed(2)}` : '未取得'}{numeric(item.value) && <span>{item.unit}</span>}{item.date && <small><time dateTime={item.date}>{item.date}</time></small>}</dd></div>)}</dl>}
     {keyMetrics.length > 0 && <dl className="research-quant-metrics">{keyMetrics.map(item => <div key={item.key}><dt>{item.label}</dt><dd translate="no">{displayValue(item)}{item.key === '成交量较前一交易日（%）' && volumeClock?.current_date && <small>{volumeClock.previous_date && <><time dateTime={volumeClock.previous_date}>{volumeClock.previous_date}</time> → </>}<time dateTime={volumeClock.current_date}>{volumeClock.current_date}</time></small>}</dd></div>)}</dl>}
     {metrics.length > 0 && <ResearchReadingAside label="查看全部指标和计算依据">
       {hideSummary && data?.summary && <p translate="no">{data.summary}</p>}

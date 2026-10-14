@@ -211,3 +211,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 @media (max-width: 440px) { .archive-search { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .archive-search > div { grid-column: 1 / -1; } }
 
 .reading-order-symbols { margin-left: 10px; color: var(--studio-muted); font-size: 12px; }
+
+.edition-availability { display: flex; flex-wrap: wrap; gap: 6px 20px; align-items: baseline; padding: 10px 0 16px; font-size: 12px; color: var(--studio-muted); }
+.edition-availability strong { font-weight: 500; color: var(--studio-ink); }
+.edition-availability button { padding: 0; border: 0; background: transparent; color: var(--studio-accent); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }

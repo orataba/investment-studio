@@ -47,15 +47,12 @@
 .research-theme-card-heading h3 { margin: 0; font-size: 16px; font-weight: 500; line-height: 1.7; }
 .research-theme-card > p { font-size: 14px; line-height: 1.85; margin: 8px 0; }
 .research-theme-card > .sector-research-note { font-size: 12px; }
-.research-theme-card-next { display: grid; grid-template-columns: minmax(56px, max-content) minmax(0, 1fr); gap: 12px; }
+.research-theme-card-next { display: grid; grid-template-columns: minmax(56px, max-content) minmax(0, 1fr); gap: 12px; font-size: 14px; line-height: 1.85; margin: 8px 0; }
 .research-theme-card-next > span:first-child { color: var(--muted); font-size: 11px; padding-top: 2px; white-space: nowrap; }
 .research-theme-card-tools { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; margin-top: 14px; }
 .research-theme-card-tools .research-theme-actions { margin: 0; }
 .research-theme-expanded { margin-top: 22px; padding: 0 0 0 22px; border-left: 2px solid var(--line); }
 .research-theme-expanded .research-theme-reading { padding-top: 0; }
-.research-theme-analysis-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 14px; margin-bottom: 14px; }
-.research-theme-analysis-heading h4 { margin: 0; }
-.research-theme-analysis-heading > span { margin-left: auto; color: var(--muted); font-size: 11px; }
 .research-theme-reason { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; }
 .research-theme-reason > span:first-child { color: var(--muted); font-size: 12px; }
 .research-theme-actions button:hover, .research-theme-actions button:focus-visible { text-decoration: underline; text-underline-offset: 4px; }
@@ -63,3 +60,11 @@
   .research-theme-card-next, .research-theme-reason { grid-template-columns: 1fr; gap: 3px; }
   .research-theme-expanded { padding-left: 14px; }
 }
+
+.research-theme-current h4 { color: var(--muted); font-size: 11px; font-weight: 400; margin: 12px 0 5px; }
+.research-theme-current p { font-size: 14px; line-height: 1.85; margin: 0; white-space: pre-line; }
+.research-theme-summary-preview, .research-theme-next-preview { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.research-theme-card-next p { margin: 0; white-space: pre-line; }
+.research-theme-development { margin-top: 12px; }
+.research-theme-development > summary { cursor: pointer; color: var(--accent); font-size: 12px; }
+.research-theme-development > div { padding-top: 8px; max-width: 84ch; }
