@@ -79,6 +79,8 @@ class ResearchMandateInput(BaseModel):
     guidance: str = Field(default="",
         description="用户自然语言研究问题、目标、约束与偏好；研究员不可修改，也不构成独立事实。")
     section_skills: SectionSkills = Field(default_factory=SectionSkills)
+    focus_company_symbols: list[str] = Field(default_factory=list,
+        description="人工明确指定的FMP公司代码；补充ETF前十大股票持仓，不从自然语言猜测，也不代表这些公司已经取得资料。")
     background: str = Field(min_length=1, max_length=6000,
         description="区分已登记资料、注明原始依据的事实和待验证假设；不把方法或AI判断写成已核实事实。")
     mechanisms: list[str] = Field(default_factory=list, max_length=30)
@@ -116,13 +118,31 @@ class ResearchMandateInput(BaseModel):
             raise ValueError("同一方法模块不能重复选择")
         return values
 
+    @field_validator("focus_company_symbols")
+    @classmethod
+    def company_symbols(cls, values):
+        return normalize_company_symbols(values)
+
 
 class ResearchGuidanceInput(BaseModel):
     """The sole human editing contract; analytical working notes stay separate."""
     model_config = ConfigDict(extra="forbid", strict=True)
     guidance: str = Field(max_length=TEXT_LIMIT)
     section_skills: SectionSkills | None = None
+    focus_company_symbols: list[str] | None = None
     expected_revision: int = Field(ge=0)
+
+    @field_validator("focus_company_symbols")
+    @classmethod
+    def company_symbols(cls, values):
+        return normalize_company_symbols(values) if values is not None else None
+
+
+def normalize_company_symbols(values):
+    symbols = [value.strip().upper() for value in values]
+    if any(not re.fullmatch(r"[A-Z0-9][A-Z0-9.\-^]{0,29}", symbol) for symbol in symbols):
+        raise ValueError("请逐项填写明确的FMP公司代码，不填写公司名称或空白项。")
+    return list(dict.fromkeys(symbols))
 
 
 class ResearchGuidanceConflict(ValueError):
@@ -222,7 +242,7 @@ def effective_mandate(payload: ResearchMandateInput, previous: dict | None, *, o
     """Resolve writer-owned method choices before both validation and publication."""
     value = payload.model_dump(mode="json")
     previous = ResearchMandateInput.model_validate(previous).model_dump(mode="json") if previous else None
-    for key, default in (("guidance", ""), ("section_skills", SectionSkills().model_dump()), ("user_constraints", []), ("user_methods", []),
+    for key, default in (("guidance", ""), ("section_skills", SectionSkills().model_dump()), ("focus_company_symbols", []), ("user_constraints", []), ("user_methods", []),
                          ("report_preferences", ReportPreferences().model_dump(mode="json"))):
         if origin == "research" or key not in payload.model_fields_set:
             value[key] = deepcopy((previous or {}).get(key, default))
@@ -382,6 +402,8 @@ def save_guidance(session: Session, instrument_id: str, payload: ResearchGuidanc
                  module_focus=[item for item in value["module_focus"] if item.get("selected_by") != "user"])
     if payload.section_skills is not None:
         value["section_skills"] = payload.section_skills.model_dump()
+    if payload.focus_company_symbols is not None:
+        value["focus_company_symbols"] = payload.focus_company_symbols
     return save_mandate(session, instrument_id, ResearchMandateInput.model_validate(value),
                         origin="user", expected_revision=payload.expected_revision)
 

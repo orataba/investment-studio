@@ -16,6 +16,7 @@ def definitions(scheduler, role, project_root, env_root, python_bin, log_root, l
         name='investment-studio-market-'+action
         if scheduler=='systemd':
             calendars={'daily':'*-*-* 07:15 Asia/Shanghai','weekly':'Sat *-*-* 11:00 Asia/Shanghai','crypto':'*-*-* 08:15 Asia/Shanghai','publish':'*-*-* *:40:00','sync':'*-*-* *:20:00',
+                'research-content':'*-*-* 00,06,12,18,20:05:00 America/New_York',
                 'registered-prices-cn':'Mon..Fri *-*-* 15:30 Asia/Shanghai','registered-prices-hk':'*-*-* *:30 Asia/Hong_Kong',
                 'registered-prices-us':'*-*-* *:00 America/New_York','registered-prices-eu':'Tue..Sat *-*-* 07:05 Asia/Shanghai'}
             command=action

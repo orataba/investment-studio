@@ -30,7 +30,7 @@ FLAT_TABLE_RELATIONS = {
     ("portfolio", "taxonomy_record"),
     ("portfolio", "taxonomy_assignment_record"),
     *{("market_data", name) for name in ("datasets", "batches", "files", "current", "snapshots")},
-    *{("market_text", name) for name in ("document_version", "import_receipt", "entity", "document_entity", "document_event")},
+    *{("market_text", name) for name in ("document_version", "import_receipt", "entity", "document_entity", "document_event", "collection_receipt")},
     ("briefing", "report"),
 }
 
@@ -56,7 +56,7 @@ def test_flat_table_profile_accepts_only_final_heads(
         "data_ingestion": "20260904_0009",
         "portfolio": "20261012_0073",
         "watchlist": "20261014_0072",
-        "market_data": "studio_market_0002",
+        "market_data": "studio_market_0003",
         "briefing": "20260908_0003",
     }
     monkeypatch.setattr(

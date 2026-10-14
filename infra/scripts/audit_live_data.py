@@ -35,7 +35,7 @@ FINAL_FLAT_TABLE_HEADS = {
     "data_ingestion": "20260904_0009",
     "portfolio": "20261012_0073",
     "watchlist": "20261014_0072",
-    "market_data": "studio_market_0002",  # This migration chain also owns market_text.
+    "market_data": "studio_market_0003",  # This migration chain also owns market_text.
     "briefing": "20260908_0003",
 }
 VERSION_TABLES = {
@@ -476,7 +476,7 @@ def _detect_schema_profile(cursor: psycopg.Cursor[Any]) -> SchemaProfile:
         **{f"numeric_{name}": ("market_data", name) for name in
            ("datasets", "batches", "files", "current", "snapshots")},
         **{f"text_{name}": ("market_text", name) for name in
-           ("document_version", "import_receipt", "entity", "document_entity", "document_event")},
+           ("document_version", "import_receipt", "entity", "document_entity", "document_event", "collection_receipt")},
         "briefing_report": ("briefing", "report"),
     }
     capabilities = {

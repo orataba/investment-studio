@@ -65,6 +65,38 @@ def _mandate_payload(mandate):
     return {key: mandate[key] for key in service.ResearchMandateInput.model_fields}
 
 
+def test_human_focus_companies_normalize_version_and_survive_research_writes(dossier_client):
+    endpoint = url() + "/mandate"
+    saved = dossier_client.put(endpoint, json={"guidance": "看额外公司", "expected_revision": 0,
+        "focus_company_symbols": [" aapl ", "BRK-B", "AAPL", "0700.HK"]})
+    assert saved.status_code == 200, saved.text
+    saved = saved.json()
+    assert saved["focus_company_symbols"] == ["AAPL", "BRK-B", "0700.HK"]
+    with get_session_factory()() as session:
+        payload = {**_mandate_payload(saved), "background": "研究员补充实际研究背景",
+                   "focus_company_symbols": ["UNAUTHORIZED"]}
+        researched = service.save_mandate(session, "xlk", service.ResearchMandateInput.model_validate(payload), origin="research")
+        session.commit()
+        assert researched["focus_company_symbols"] == saved["focus_company_symbols"]
+    assert dossier_client.put(endpoint, json={"guidance": "stale", "expected_revision": saved["revision"],
+        "focus_company_symbols": []}).status_code == 409
+    retained = dossier_client.put(endpoint, json={"guidance": "只修改说明", "expected_revision": researched["revision"]}).json()
+    assert retained["focus_company_symbols"] == saved["focus_company_symbols"]
+    cleared = dossier_client.put(endpoint, json={"guidance": "只修改说明", "expected_revision": retained["revision"],
+        "focus_company_symbols": []})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["focus_company_symbols"] == []
+    assert any(row["focus_company_symbols"] == saved["focus_company_symbols"] for row in cleared.json()["versions"])
+
+
+@pytest.mark.parametrize("symbols", [[""], ["   "], ["Apple Inc"], ["AAPL\nMSFT"], ["fmp:AAPL"], ["苹果"], ["A" * 31], [123], "AAPL"])
+def test_human_focus_companies_require_explicit_string_codes(dossier_client, symbols):
+    response = dossier_client.put(url() + "/mandate", json={"guidance": "", "expected_revision": 0,
+        "focus_company_symbols": symbols})
+    assert response.status_code == 422
+    assert dossier_client.get(url()).json()["mandate"]["revision"] == 0
+
+
 def test_mandates_use_actual_registration_and_asset_specific_methods(dossier_client):
     from investment_studio_instrument_core.db_models import Instrument, InstrumentReferenceSnapshot
     with get_session_factory()() as session:

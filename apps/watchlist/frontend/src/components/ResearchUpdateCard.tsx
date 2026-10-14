@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { AskResearchAssistant, ResearchUpdate } from '../lib/researchDossierApi'
+import { researchCategoryLabels, researchSourceLabels } from '../lib/researchEventCategories'
 import { SourceList, dateLabel, hasTimeZone } from './ResearchEvidence'
 import ResearchEntryActions from './ResearchEntryActions'
 import ResearchReadingAside from './ResearchReadingAside'
@@ -74,6 +75,10 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
   </>
   return <article className={`research-update-card${historical ? ' research-update-historical' : ''}${readable ? ' research-update-readable' : ''}`} data-update-id={update.update_id}>
     <div className="research-update-meta"><span>{updateKindLabels[update.kind]}{update.analysis_depth === 'brief' && <> · <span>简讯</span></>}</span>
+      {update.kind === 'event' && <>
+        {update.event_category && <span>{researchCategoryLabels[update.event_category]}</span>}
+        {researchSourceLabels(update.sources, update.event_category).map(label => <span key={label}>{label}</span>)}
+      </>}
       <span translate={update.author === '研究员' || update.author_role === 'system' || !update.author ? undefined : 'no'}>{update.author || (update.author_role === 'researcher' ? '研究员' : '未标注作者')}</span>
       <span>{update.change === 'follow_up_pinned' ? 'PM 跟进设置' : citationCorrected ? '引用修正' : organized ? '纳入主题' : update.author_role === 'system' ? '系统记录修订' : update.author_role === 'user' ? '人工判断' : '研究员记录'}</span>
       <span>{citationCorrected && <>修正时间 </>}<time dateTime={update.recorded_at}>{dateLabel(update.recorded_at)}</time></span>

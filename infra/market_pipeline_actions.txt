@@ -3,6 +3,7 @@ weekly
 crypto
 publish
 sync
+research-content
 registered-prices-cn
 registered-prices-hk
 registered-prices-us

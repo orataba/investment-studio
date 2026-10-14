@@ -1,5 +1,5 @@
 """Compare retained FMP estimate observations without rolling fiscal periods."""
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from copy import deepcopy
 
@@ -81,7 +81,8 @@ def compare_estimate_snapshots(iid, current, previous=None, *, instrument_type="
                     "current_collected_at": row.get("collected_at"), "previous_collected_at": before.get("collected_at") if before else None,
                     "current_num_analysts": row.get(analyst_field), "previous_num_analysts": before.get(analyst_field) if before else None,
                     "source_dataset": row.get("source_dataset"), "previous_source_dataset": before.get("source_dataset") if before else None,
-                    "raw_sha256": row.get("raw_sha256"), "previous_raw_sha256": before.get("raw_sha256") if before else None}
+                    "raw_sha256": row.get("raw_sha256"), "previous_raw_sha256": before.get("raw_sha256") if before else None,
+                    "current_source_id": row.get("source_id"), "previous_source_id": before.get("source_id") if before else None}
                 if row.get(analyst_field) == 0:
                     gaps.add("current_analyst_coverage_missing")
                     unmatched.append({**point, "reason": "current_analyst_coverage_missing"})
@@ -178,34 +179,91 @@ def estimate_scope(session, instrument_id):
     return None
 
 
-def read_estimate_evidence(session, instrument_id, *, as_of: datetime | None = None):
-    """Compare the latest two collections available at the research cutoff."""
+def _capture_window(store, symbols, cutoff, since):
+    """Retain every complete capture in the window and one baseline per scope.
+
+    observations is bounded to 100 clocks per company/frequency. Walk its actual
+    clocks backwards, rather than imposing a day/count limit on retained PIT.
+    """
+    from collections import defaultdict
+    captures, cursor = {}, cutoff
+    while True:
+        page = store.observations("analyst_estimates", symbols=symbols, as_of=cursor,
+                                  limit=100 if since is not None else 2)["observations"]
+        groups = defaultdict(list)
+        for row in page:
+            group = row["symbol"], row["estimate_period"]
+            clock = _clock(row["observed_at"])
+            if clock is None:
+                raise ValueError("Estimate capture has no timezone-aware observation clock")
+            groups[group].append(clock)
+            key = (*group, clock)
+            if key not in captures or str(row.get("batch_id", "")) > str(captures[key].get("batch_id", "")):
+                captures[key] = row
+        if since is None:
+            break
+        # Dense/sparse company histories need separate stopping positions. Use
+        # the newest still-full group's boundary, so no other group is skipped.
+        pending = [min(clocks) for clocks in groups.values()
+                   if len(set(clocks)) >= 100 and min(clocks) > since]
+        if not pending:
+            break
+        cursor = max(pending) - timedelta(microseconds=1)
+    grouped = defaultdict(list)
+    for (symbol, frequency, _), row in captures.items():
+        grouped[(symbol, frequency)].append(row)
+    for group, history in grouped.items():
+        history.sort(key=lambda row: _clock(row["observed_at"]))
+        if since is not None:
+            baseline = [row for row in history if _clock(row["observed_at"]) <= since]
+            grouped[group] = baseline[-1:] + [row for row in history if _clock(row["observed_at"]) > since]
+    return grouped
+
+
+def read_estimate_evidence(session, instrument_id, *, as_of: datetime | None = None,
+                           since: datetime | None = None, company_scope=None):
+    """Compare each observed revision since the last successfully bound window.
+
+    Without an earlier research boundary, two captures describe the initial
+    baseline. A supplied fixed company scope avoids broad ETF constituent reads.
+    """
     iid = instrument_id.strip().lower()
-    scope = estimate_scope(session, instrument_id)
+    scope = company_scope or estimate_scope(session, instrument_id)
     empty = {"instrument_id": iid, "supported": scope is not None, "provider": "FMP",
              "current_snapshot": None, "previous_snapshot": None, "coverage": {},
              "changes": [], "observations": [], "unmatched": [], "gaps": []}
     if not empty["supported"]:
         return {**empty, "status": "unsupported", "gaps": ["该标的没有适用且已登记的FMP公司预期来源；不能用相似公司或ETF替代。"]}
+    if company_scope is not None and not scope["companies"]:
+        return {**empty, "supported": bool(scope.get("symbol")),
+            "status": "unsupported" if not scope.get("symbol") else "limited" if scope.get("coverage") else "not_applicable",
+            "gaps": list(scope.get("coverage") or ["当前固定范围没有适用的直接股票公司，不对非公司敞口套用EPS预期。"])}
     cutoff = as_of if as_of is not None else datetime.now(UTC)
-    if cutoff.tzinfo is None:
+    if cutoff.tzinfo is None or since is not None and since.tzinfo is None:
         raise ValueError("Estimate history cutoff must include a timezone.")
+    if since is not None and since > cutoff:
+        raise ValueError("Estimate history boundary must not follow cutoff.")
     statement_history = []
+    store = numeric_store()
 
     def read_statements(store, symbols, as_of):
-        # Bind all revisions once, after the actual constituent scope is known.
-        # Current and historical currencies are selected independently below;
-        # only I/O is shared, never a later financial judgment or source clock.
         statement_history.extend(all_rows(store, "financial_statements", symbols=symbols,
                                           as_of=as_of, versions=True, page_size=100000))
         return reporting_statements_at(statement_history, symbols, as_of)
 
-    market = read_sector_market_data(session, scope["symbol"], as_of=cutoff,
-                                    instrument_type=scope["instrument_type"], statement_reader=read_statements)
-    if market is None:
-        return {**empty, "status": "no_snapshot", "gaps": ["截至当前时点尚无可用的本公司或披露持仓对应的公司观测。"]}
-    companies = {row["holding_symbol"]: {"name": row["holding_name"], "weight_percent": row.get("weight_percent"),
-        "annual_estimates": [], "quarterly_estimates": []} for row in market["companies"]}
+    if company_scope is not None:
+        companies = {row["symbol"]: {"name": row.get("name"), "weight_percent": row.get("weight_percent"),
+            "annual_estimates": [], "quarterly_estimates": []} for row in scope["companies"]}
+        market = {"holdings": [{"as_of_date": row.get("holdings_as_of")} for row in scope["companies"]], "gaps": []}
+        if companies:
+            read_statements(store, list(companies), cutoff)
+    else:
+        market = read_sector_market_data(session, scope["symbol"], as_of=cutoff,
+                                        instrument_type=scope["instrument_type"], statement_reader=read_statements)
+        if market is None:
+            return {**empty, "status": "no_snapshot", "gaps": ["截至当前时点尚无可用的本公司或披露持仓对应的公司观测。"]}
+        companies = {row["holding_symbol"]: {"name": row["holding_name"], "weight_percent": row.get("weight_percent"),
+            "annual_estimates": [], "quarterly_estimates": []} for row in market["companies"]}
     unconfirmed_holdings = any(row["kind"] == "unclassified_holding" for row in market["gaps"])
     if not companies:
         if unconfirmed_holdings:
@@ -214,52 +272,78 @@ def read_estimate_evidence(session, instrument_id, *, as_of: datetime | None = N
         if scope["instrument_type"] != "equity" and not market["holdings"]:
             return {**empty, "status": "no_snapshot", "gaps": ["尚无已披露持仓，不能确认公司预期是否适用于本基金。"]}
         return {**empty, "supported": False, "status": "not_applicable", "gaps": ["本次披露持仓不包含直接股票公司，不对这些持仓直接套用公司EPS预期；间接敞口仍需穿透核实。"]}
-    store = numeric_store()
-    captures = store.observations("analyst_estimates", symbols=list(companies), as_of=cutoff, limit=2)["observations"]
-    if not captures:
+    grouped = _capture_window(store, list(companies), cutoff, since)
+    if not grouped:
         return {**empty, "status": "no_snapshot", "gaps": ["截至当前时点尚未采集这些公司的分析师预期；首次采集后建立历史基线。"]
                 + ([_GAP_LABELS["holding_type_unconfirmed"]] if unconfirmed_holdings else [])}
-    current_companies, previous_companies = deepcopy(companies), deepcopy(companies)
     from collections import defaultdict
-    grouped = defaultdict(list)
-    for capture in captures:
-        grouped[(capture["symbol"], capture["estimate_period"])].append(capture)
-    current_clocks, previous_clocks, source_ids = [], [], []
     scopes_by_clock = defaultdict(set)
     for (symbol, _), history in grouped.items():
-        history.sort(key=lambda row: row["observed_at"], reverse=True)
-        for capture in history[:2]:
+        for capture in history:
             scopes_by_clock[capture["observed_at"]].add(symbol)
-    # Full-market captures share clocks across companies. Read each capture once,
-    # rather than rescanning long histories for every ETF constituent.
-    captured_rows = {}
+    captured_rows, source_ids = {}, set()
     for clock, symbols in scopes_by_clock.items():
         statements = reporting_statements_at(statement_history, symbols, clock)
         rows = defaultdict(list)
         for row in all_rows(store, "analyst_estimates", symbols=list(symbols), as_of=cutoff, observed_at=clock):
             rows[(row["symbol"], row["estimate_period"])].append(enrich_estimate(row, statements.get(row["symbol"])))
+            source_ids.add(row["source_id"])
         captured_rows[clock] = rows
-    for (symbol, frequency), history in grouped.items():
-        for index, capture in enumerate(history[:2]):
-            selected = captured_rows[capture["observed_at"]][(symbol, frequency)]
-            target = current_companies if index == 0 else previous_companies
-            target[symbol][_FREQUENCIES[frequency]] = selected
-            (current_clocks if index == 0 else previous_clocks).append(capture["observed_at"])
-            source_ids.extend(row["source_id"] for row in selected)
+    current_companies, previous_companies = deepcopy(companies), deepcopy(companies)
+    current_clocks, previous_clocks, transitions = [], [], []
+
     def observation(items, clocks, label):
         return {"observation_id": label + ":" + cutoff.isoformat(), "companies": items,
             "collected_at": max(clocks), "collected_at_min": min(clocks), "collected_at_max": max(clocks),
             "holdings_as_of": max((str(row.get("as_of_date") or "") for row in market["holdings"]), default="") or None,
             "holdings_observed_on": max((str(row.get("snapshot_date") or "") for row in market["holdings"]), default="") or None}
+
+    for (symbol, frequency), history in grouped.items():
+        field = _FREQUENCIES[frequency]
+        last = history[-1]
+        current_companies[symbol][field] = captured_rows[last["observed_at"]][(symbol, frequency)]
+        current_clocks.append(last["observed_at"])
+        baseline = history[0] if len(history) > 1 or since is not None and _clock(history[0]["observed_at"]) <= since else None
+        if baseline:
+            previous_companies[symbol][field] = captured_rows[baseline["observed_at"]][(symbol, frequency)]
+            previous_clocks.append(baseline["observed_at"])
+        for before, after in zip(history, history[1:]):
+            def single(capture):
+                company = {**companies[symbol], field: captured_rows[capture["observed_at"]][(symbol, frequency)]}
+                return observation({symbol: company}, [capture["observed_at"]], capture["observed_at"])
+            change = compare_estimate_snapshots(iid, single(after), single(before), instrument_type=scope["instrument_type"])
+            for name in ("changes", "observations", "unmatched"):
+                for row in change[name]:
+                    row.update(previous_observation_at=before["observed_at"], current_observation_at=after["observed_at"])
+            transitions.append(change)
     current = observation(current_companies, current_clocks, "current")
-    previous = observation(previous_companies, previous_clocks, "previous") if previous_clocks else None
+    previous = observation(previous_companies, previous_clocks, "baseline") if previous_clocks else None
     result = compare_estimate_snapshots(iid, current, previous, instrument_type=scope["instrument_type"])
+    if since is not None:
+        # Retain reversals, not just the end-minus-start result. Current coverage
+        # still describes unique companies, not the number of revisions.
+        endpoint_change_count = len(result["changes"])
+        for name in ("changes", "observations", "unmatched"):
+            result[name] = [row for transition in transitions for row in transition[name]]
+        for metric in result["coverage"]["metrics"]:
+            changed = {row["symbol"] for row in result["changes"]
+                       if row["frequency"] == metric["frequency"] and row["metric"] == metric["metric"]}
+            metric["changed_company_count"] = len(changed)
+            weights = [companies[symbol].get("weight_percent") for symbol in changed]
+            metric["changed_weight_pct"] = None if scope["instrument_type"] == "equity" or any(w is None for w in weights) else sum(weights)
+        result["gap_codes"] = sorted(set(result["gap_codes"]) | {code for transition in transitions for code in transition["gap_codes"]})
+        result["gaps"] = [_GAP_LABELS[code] for code in result["gap_codes"]]
+        result["comparison_window"] = {"after": since.isoformat(), "through": cutoff.isoformat(),
+            "capture_count": sum(len(history) for history in grouped.values()), "transition_count": len(transitions),
+            "endpoint_change_count": endpoint_change_count}
+        result["semantics"].append("窗口内逐次保留同口径预期变化，包括上修后回落；末值与基线相同不表示期间没有修订，变化行数不是公司数。")
     if unconfirmed_holdings:
         result["status"] = "limited"
         result["gap_codes"].append("holding_type_unconfirmed")
         result["gaps"].append(_GAP_LABELS["holding_type_unconfirmed"])
-    return {**result, "as_of": cutoff.isoformat(), "source_ids": sorted(set(source_ids)),
-            "comparison_basis": "Latest two complete source captures for each company and forecast frequency; fund weights only when applicable."}
+    return {**result, "as_of": cutoff.isoformat(), "source_ids": sorted(source_ids),
+            "comparison_basis": "Every complete source capture in the research window plus its preceding company/frequency baseline; fund weights only when applicable." if since is not None else
+                "Latest two complete source captures for each company and forecast frequency; fund weights only when applicable."}
 
 
 def retained_estimate_sources(context):

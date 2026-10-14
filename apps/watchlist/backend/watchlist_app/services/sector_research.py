@@ -360,15 +360,18 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None, com
     # Raw retained documents can contain NUL; use the same narrow safe projection
     # as other history reads rather than extracting from the full PostgreSQL JSON.
     from watchlist_app.services.research_access import research_context_projection, research_projection_rows
-    relation, values = research_context_projection(session, {"cutoff": String, "sector_run": Boolean, "recordkeeping_only": Boolean}, json_column=ResearchEntry.read_context_json)
-    successful = select(ResearchEntry.entry_id, values["cutoff"].label("cutoff")).select_from(ResearchEntry)
+    relation, values = research_context_projection(session, {"cutoff": String, "input_snapshot_cutoff": String, "sector_run": Boolean, "recordkeeping_only": Boolean}, json_column=ResearchEntry.read_context_json)
+    successful = select(ResearchEntry.entry_id, values["cutoff"].label("cutoff"),
+        values["input_snapshot_cutoff"].label("input_snapshot_cutoff")).select_from(ResearchEntry)
     if relation is not None:
         successful = successful.join(relation, true())
     successful = successful.where(ResearchEntry.topic_id == topic_id, ResearchEntry.status == "completed",
         values["sector_run"].is_(True), values["recordkeeping_only"].is_not(True)).order_by(
             func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc(), ResearchEntry.created_at.desc()).limit(1)
-    successful_rows = research_projection_rows(session, successful, {"cutoff": ("cutoff",)}, json_column=ResearchEntry.read_context_json)
+    successful_rows = research_projection_rows(session, successful, {"cutoff": ("cutoff",),
+        "input_snapshot_cutoff": ("input_snapshot_cutoff",)}, json_column=ResearchEntry.read_context_json)
     last_successful_cutoff = successful_rows[0].cutoff if successful_rows else None
+    last_successful_numeric_cutoff = (successful_rows[0].input_snapshot_cutoff or last_successful_cutoff) if successful_rows else None
     incremental_trigger = {}
     monitor_state = None
     if scheduled:
@@ -400,6 +403,7 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None, com
             trigger_context = trigger_fields.context_json
             trigger_context = {**trigger_context, "reviews": {}, "previous_run_status": prior.status,
                 "last_successful_review_cutoff": last_successful_cutoff,
+                "last_successful_numeric_cutoff": last_successful_numeric_cutoff,
                 "research_dossiers": [trigger_dossier(session, iid) for iid in ids]}
             monitor_state, trigger = scan(session, ids[0], trigger_context, team_id=identity["team_id"], now=cutoff)
             incremental_trigger = {ids[0]: trigger} if trigger else {}
@@ -503,6 +507,8 @@ def bind_research_instruments(session, run, ids):
         context["instrument_ids"] = list(dict.fromkeys([*context.get("instrument_ids", []), *added]))
     # A first read can occur later in a conversation. Its inputs retain their own clock;
     # the run's knowledge horizon advances without relabeling earlier snapshots.
+    from watchlist_app.services.research_fmp_scope import bind_fmp_document_inputs
+    bind_fmp_document_inputs(session, context, added, cutoff)
     context["cutoff"] = datetime.now(UTC).isoformat()
     run.context_json = context
     session.flush()
@@ -522,7 +528,7 @@ def prepare_run(run_id):
             research_guidance=freeze_guidance(session, context),
             catalogue=catalogue(session), instrument_inputs=[], research_dossiers=[],
             sector_inputs=[], sector_company_data={}, sector_estimate_evidence=[], computed_metrics=[], prior_events=[],
-            tool_evidence=[], web_evidence=[], market_text_sources=[], market_queries=[],
+            tool_evidence=[], web_evidence=[], market_text_sources=[], market_queries=[], fmp_inputs={},
             market_coverage=text_store().get_coverage())
         run.context_json = context
         bind_research_instruments(session, run, context.get("instrument_ids", []))
@@ -614,6 +620,10 @@ class EventMarketReaction(BaseModel):
     explanation: str = Field(default="", max_length=2000)
 
 
+ResearchEventCategory = Literal["news", "opinion", "earnings", "meeting", "other",
+    "company_announcement", "earnings_call_transcript", "regulatory_filing", "industry_policy", "industry_news"]
+
+
 class SectorEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
     event_key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
@@ -642,7 +652,13 @@ class SectorEvent(BaseModel):
     impact_analysis: str = Field(default="", max_length=3000)
     action_condition: str = Field(default="", max_length=2000)
     information_type: Literal["fact", "opinion", "rumor"]
-    event_category: Literal["news", "opinion", "earnings", "meeting", "other"] = "other"
+    event_category: ResearchEventCategory = Field(default="other", description=(
+        "Choose one principal event category: news=general developments, opinion=market views, "
+        "earnings=earnings release, meeting=meeting notes, company_announcement=company announcement, "
+        "earnings_call_transcript=earnings-call transcript, regulatory_filing=regulatory disclosure, "
+        "industry_policy=industry policy, industry_news=industry developments, other=other. "
+        "Classify the event from the evidence actually read, not from the FMP provider name or headline alone. "
+        "Several source types can support one event; source labels are retained independently."))
     recording_type: Literal["new", "update", "backfill"]
     progress_kind: Literal["material", "editorial"] = "material"
     published_at: str | None = Field(default=None,
@@ -768,7 +784,7 @@ def validate_event_source_consistency(item: SectorEvent | SectorEventCheck, sour
 
 
 def _source_views(sources):
-    fields = ("source_id", "document_id", "version_id", "url", "title", "source_type", "as_of", "published_at", "published_at_raw",
+    fields = ("source_id", "document_id", "version_id", "url", "title", "source_type", "information_type", "channel_id", "as_of", "published_at", "published_at_raw",
               "occurred_at", "observed_at", "received_at", "retrieved_at", "discovered_at", "time_status", "run_cutoff", "pm_binding_note")
     return [{**{key: source.get(key) for key in fields}, **({"source_type": source["source_type"],
                 "changes": source["changes"], "current_snapshot": source["current_snapshot"],

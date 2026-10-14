@@ -41,7 +41,7 @@ def read_research_context(request, section: str = "overview", offset: int = 0, l
         from watchlist_app.services.research_guidance import role_guidance
         sections = {key: context[key] for key in (
             "question", "page_context", "referenced_research_update", "referenced_research_versions", "referenced_risk_case", "history", "conversation", "evidence",
-            "watchlists", "limitations", "data_gaps", "incremental_trigger", "research_working_sets", "analyst_focus", "user_records", "team_publication_instructions", "initialization") if key in context}
+            "watchlists", "limitations", "data_gaps", "incremental_trigger", "research_working_sets", "analyst_focus", "user_records", "team_publication_instructions", "initialization", "fmp_inputs") if key in context}
         sections.update({"market_coverage": coverage_detail(context.get("market_coverage")),
             "business_guidance": role_guidance(context, "overview"),
             "catalogue": [{key: item[key] for key in ("instrument_id", "name", "instrument_type", "currency", "watchlist_ids") if key in item}

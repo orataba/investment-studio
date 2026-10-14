@@ -129,11 +129,11 @@ it('saves one guidance paragraph at its original revision without resubmitting g
   request.mockResolvedValue(saved)
   render(<ResearchMandateRecord instrumentId="fund" mandate={mandate} onSaved={onSaved} />)
   fireEvent.click(screen.getByRole('button', { name: '编辑研究指导' }))
-  expect(screen.getAllByRole('textbox')).toHaveLength(5)
+  expect(screen.getAllByRole('textbox')).toHaveLength(6)
   fireEvent.change(screen.getByLabelText('本标的研究范围与约束（可选）'), { target: { value: ` ${saved.guidance} ` } })
   fireEvent.click(screen.getByRole('button', { name: '保存研究指导' }))
   await waitFor(() => expect(onSaved).toHaveBeenCalledWith(saved))
-  expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ section_skills: { overview: '', recent_updates: '', themes: '', quantitative: '' }, guidance: saved.guidance, expected_revision: 3 })
+  expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ section_skills: { overview: '', recent_updates: '', themes: '', quantitative: '' }, guidance: saved.guidance, focus_company_symbols: [], expected_revision: 3 })
 })
 
 it('allows an empty guidance paragraph without requiring a title or a research method', async () => {
@@ -143,7 +143,7 @@ it('allows an empty guidance paragraph without requiring a title or a research m
   fireEvent.change(screen.getByLabelText('本标的研究范围与约束（可选）'), { target: { value: '  ' } })
   fireEvent.click(screen.getByRole('button', { name: '保存研究指导' }))
   await waitFor(() => expect(request).toHaveBeenCalledOnce())
-  expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ section_skills: { overview: '', recent_updates: '', themes: '', quantitative: '' }, guidance: '', expected_revision: 3 })
+  expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ section_skills: { overview: '', recent_updates: '', themes: '', quantitative: '' }, guidance: '', focus_company_symbols: [], expected_revision: 3 })
 })
 
 it('preserves the local draft on conflict and requires review of the latest guidance before saving against it', async () => {
@@ -165,7 +165,7 @@ it('preserves the local draft on conflict and requires review of the latest guid
   request.mockResolvedValueOnce({ ...latest, guidance: '我的新研究问题', revision: 5 })
   fireEvent.click(screen.getByRole('button', { name: '保存研究指导' }))
   await waitFor(() => expect(onSaved).toHaveBeenCalledOnce())
-  expect(JSON.parse(request.mock.calls[2][1].body)).toEqual({ section_skills: { overview: '', recent_updates: '', themes: '', quantitative: '' }, guidance: '我的新研究问题', expected_revision: 4 })
+  expect(JSON.parse(request.mock.calls[2][1].body)).toEqual({ section_skills: { overview: '', recent_updates: '', themes: '', quantitative: '' }, guidance: '我的新研究问题', focus_company_symbols: [], expected_revision: 4 })
 })
 
 it('keeps guidance writes unavailable after access becomes read-only', () => {
@@ -175,6 +175,37 @@ it('keeps guidance writes unavailable after access becomes read-only', () => {
   rerender(<ResearchMandateRecord instrumentId="fund" mandate={mandate} readOnly onSaved={vi.fn()} />)
   expect(screen.queryByRole('button', { name: '保存研究指导' })).toBeNull()
   expect(screen.queryByRole('textbox')).toBeNull()
+})
+
+it('edits explicit focus company symbols with guidance and retains symbol-only history', async () => {
+  const saved = { ...mandate, focus_company_symbols: ['AAPL', 'MSFT', 'BRK-B'], revision: 4 }
+  request.mockResolvedValue(saved)
+  render(<ResearchMandateRecord instrumentId="fund" mandate={{ ...mandate, focus_company_symbols: ['AAPL'],
+    versions: [{ ...mandate, version_id: 'old-focus', focus_company_symbols: ['NVDA'] }] }} onSaved={vi.fn()} />)
+  expect(screen.getByText('NVDA')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: '编辑研究指导' }))
+  const companies = screen.getByLabelText('额外重点公司代码（可选）', { exact: false })
+  expect(companies).toHaveProperty('value', 'AAPL')
+  fireEvent.change(companies, { target: { value: ' aapl，msft  AAPL; BRK-B ' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存研究指导' }))
+  await waitFor(() => expect(request).toHaveBeenCalledOnce())
+  expect(JSON.parse(request.mock.calls[0][1].body)).toMatchObject({ focus_company_symbols: saved.focus_company_symbols, expected_revision: 3 })
+})
+
+it('keeps the focus-company draft on conflict and replaces it only on explicit selection', async () => {
+  request.mockRejectedValueOnce(new Error('研究指导已被其他人更新，请核对最新版本。'))
+  render(<ResearchMandateRecord instrumentId="fund" mandate={{ ...mandate, focus_company_symbols: ['AAPL'] }} onSaved={vi.fn()} />)
+  fireEvent.click(screen.getByRole('button', { name: '编辑研究指导' }))
+  const field = () => screen.getByLabelText('额外重点公司代码（可选）', { exact: false })
+  fireEvent.change(field(), { target: { value: 'NVDA' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存研究指导' }))
+  await screen.findByRole('alert')
+  request.mockResolvedValueOnce({ mandate: { ...mandate, focus_company_symbols: ['MSFT'], revision: 4 } })
+  fireEvent.click(screen.getByRole('button', { name: '读取最新指导并核对' }))
+  await screen.findByText('MSFT')
+  expect(field()).toHaveProperty('value', 'NVDA')
+  fireEvent.click(screen.getByRole('button', { name: '用最新指导替换草稿' }))
+  expect(field()).toHaveProperty('value', 'MSFT')
 })
 
 it('scales disclosed signed or leveraged weights without clipping their values', () => {

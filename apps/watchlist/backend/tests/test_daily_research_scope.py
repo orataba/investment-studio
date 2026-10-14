@@ -1,4 +1,5 @@
 from watchlist_app.services import risk_review_state
+from .conftest import canonical_quote_policy
 from datetime import UTC, datetime, timedelta
 from threading import Event
 
@@ -43,7 +44,7 @@ def test_daily_scope_includes_current_proposed_and_invested_and_reloads_changes(
         for iid, kind, active, status in rows:
             if iid not in {"not-registered", "unsupported"}:
                 session.add(Instrument(instrument_id=iid, instrument_name=iid, instrument_type=kind, currency="USD", exchange_code="XNYS" if kind in {"equity", "etf"} else None,
-                    quote_selection_policy_json={"total_return": ["adjusted_close"]} if kind in {"equity", "etf"} else {}, source_settings_json={}, lifecycle_state_json={"status": "active"}))
+                    quote_selection_policy_json=canonical_quote_policy(kind) if kind in {"equity", "etf"} else {}, source_settings_json={}, lifecycle_state_json={"status": "active"}))
             session.add(InstrumentDetail(instrument_id=iid, instrument_type=kind, detail_view_type=kind,
                 instrument_name=iid, is_active=active, metadata_json={}))
             session.flush()
@@ -99,7 +100,7 @@ def test_research_is_due_in_market_local_time_only_on_exchange_sessions(market, 
 def _registered(session, iid, kind, calendar, exchange=None):
     # Admission reads actual registered instruments and persisted Invested status.
     session.add(Instrument(instrument_id=iid, instrument_name=iid, instrument_type=kind, currency="USD",
-        exchange_code=exchange, quote_selection_policy_json={"total_return": ["adjusted_close"]} if kind in {"equity", "etf"} else {}, source_settings_json={"market_calendar": calendar},
+        exchange_code=exchange, quote_selection_policy_json=canonical_quote_policy(kind) if kind in {"equity", "etf"} else {}, source_settings_json={"market_calendar": calendar},
         lifecycle_state_json={"status": "active"}))
     session.add(InstrumentDetail(instrument_id=iid, instrument_type=kind, detail_view_type=kind,
         instrument_name=iid, is_active=True, metadata_json={}))

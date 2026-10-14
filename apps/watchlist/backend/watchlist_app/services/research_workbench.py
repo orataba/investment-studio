@@ -167,6 +167,7 @@ def _read_instrument_evidence(session: Session, ids: list[str], *, include_dossi
     from watchlist_app.services.sector_research import latest_reviews
     completed_research = latest_reviews(session, completed_only=True, instrument_ids=ids, summary_only=True)
     assets = [item for item in catalogue(session) if item["instrument_id"] in ids]
+    fmp_scopes = None
     from watchlist_app.services.risk_performance import _snapshot_cutoff_limitation, performance_context, performance_evidence
     fund_ids = [asset["instrument_id"] for asset in assets if asset["instrument_type"] in {"public_fund", "private_fund"}]
     fund_context = performance_context(session, fund_ids, cutoff=as_of) if fund_ids else None
@@ -180,7 +181,20 @@ def _read_instrument_evidence(session: Session, ids: list[str], *, include_dossi
             asset["fund_actions"] = get_shared_fund_actions(canonical_id, as_of=as_of)
             asset["performance_evidence"] = performance_evidence(session, iid, context=fund_context)
         if asset["instrument_type"] in {"equity", "etf", "public_fund"}:
-            asset["analyst_estimate_history"] = read_estimate_evidence(session, iid, as_of=as_of)
+            if fmp_scopes is None:
+                from watchlist_app.services.research_fmp_scope import build_fmp_research_scope
+                fmp_scopes = {row["instrument_id"]: row for row in build_fmp_research_scope(
+                    session, as_of=as_of or datetime.now(UTC), instrument_ids=ids)["instruments"]}
+            previous = completed_research.get(iid) or {}
+            numeric_cutoff = previous.get("checked_at")
+            if previous.get("run_id"):
+                from watchlist_app.services.research_run_context import load_run_fields
+                fields = load_run_fields(session, previous["run_id"], {"input_snapshot_cutoff"}, summary_only=True).context_json
+                numeric_cutoff = fields.get("input_snapshot_cutoff") or numeric_cutoff
+            since = datetime.fromisoformat(numeric_cutoff.replace("Z", "+00:00")) if numeric_cutoff else None
+            asset["analyst_estimate_history"] = read_estimate_evidence(session, iid, as_of=as_of,
+                since=since if as_of is None or since is None or since <= as_of else None,
+                company_scope=fmp_scopes.get(iid))
         for name, model in (("summary", InstrumentSummaryReadModel), ("performance", InstrumentPerformanceReadModel),
                             ("exposure", InstrumentExposureReadModel), ("holdings", InstrumentExposureHoldingsReadModel)):
             row = session.get(model, iid, populate_existing=True)

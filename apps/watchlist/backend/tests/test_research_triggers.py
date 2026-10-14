@@ -23,7 +23,10 @@ def store(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def no_registered_materials(monkeypatch):
+    monkeypatch.setattr(triggers, "_numeric_changes", lambda *args, **kwargs: [])
     monkeypatch.setattr("watchlist_app.services.research_dossier.material_index", lambda *args, **kwargs: [])
+    monkeypatch.setattr("watchlist_app.services.research_fmp_scope.build_fmp_research_scope",
+        lambda *args, **kwargs: {"instruments": [], "symbols": [], "subjects": []})
 
 
 def capture(store, body, *, observed=1, received=1, url="https://example.com/gold"):

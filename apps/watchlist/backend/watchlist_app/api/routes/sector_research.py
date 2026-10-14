@@ -87,7 +87,7 @@ class RunInput(BaseModel):
 def research_events(instrument_id: str, scope: Literal["recent", "watch", "history"] = "recent",
         display_timezone: str = "UTC", offset: int = Query(default=0, ge=0), limit: int = Query(default=20, ge=1, le=100),
         event_key: str | None = None, include_history: bool = False,
-        event_category: Literal["news", "opinion", "earnings", "meeting", "other"] | None = None,
+        event_category: service.ResearchEventCategory | None = None,
         session: Session = Depends(get_db_session)):
     from zoneinfo import ZoneInfoNotFoundError
     from watchlist_app.services.research_activity import event_page
@@ -329,6 +329,7 @@ class MarketSearch(BaseModel):
     instrument_id: str | None = None
     query: str = ""
     entities: list[str] = Field(default_factory=list)
+    channel_ids: list[str] = Field(default_factory=list)
     published_after: AwareDatetime | None = None
     observed_after: AwareDatetime | None = None
     received_after: AwareDatetime | None = None

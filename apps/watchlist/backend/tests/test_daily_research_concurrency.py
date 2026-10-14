@@ -9,6 +9,7 @@ from watchlist_app.db.models import InstrumentAttributeValue, InstrumentDetail
 from watchlist_app.db.models.workbench import ResearchEntry
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services import research_runner, research_workbench, risk_officer, sector_research as service
+from .conftest import canonical_quote_policy
 
 
 def daily_scope(client, monkeypatch, *, members=6):
@@ -20,7 +21,7 @@ def daily_scope(client, monkeypatch, *, members=6):
     with get_session_factory()() as session:
         for iid, kind in zip(ids, kinds):
             session.add(Instrument(instrument_id=iid, instrument_name=iid, instrument_type=kind, currency="USD", exchange_code="XNYS" if kind in {"equity", "etf"} else None,
-                quote_selection_policy_json={"total_return": ["adjusted_close"]} if kind in {"equity", "etf"} else {}, source_settings_json={}, lifecycle_state_json={"status": "active"}))
+                quote_selection_policy_json=canonical_quote_policy(kind), source_settings_json={}, lifecycle_state_json={"status": "active"}))
             session.add(InstrumentDetail(instrument_id=iid, instrument_type=kind, detail_view_type=kind,
                 instrument_name=iid, is_active=True, metadata_json={}))
         session.flush()

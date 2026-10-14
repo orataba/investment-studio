@@ -57,6 +57,7 @@ def test_market_search_directory_and_originals_have_lossless_bound_wire_pages(mo
         if suffix == "market-search":
             assert payload["query"] == "baseline" and payload["instrument_id"] == "xlk"
             assert payload["entities"] == ["entity"]
+            assert payload["channel_ids"] == ["fmp:earnings_transcripts"]
             assert payload["as_of"] in {None, cutoff}
             begin = payload["offset"]
             return {"rows": deepcopy(directory[begin:begin + payload["limit"]]), "total": len(directory),
@@ -66,7 +67,8 @@ def test_market_search_directory_and_originals_have_lossless_bound_wire_pages(mo
         return deepcopy(article)
 
     monkeypatch.setattr(mcp, "request", server_projection(request))
-    args = {"query": "baseline", "instrument_id": "xlk", "entities": ["entity"]}
+    args = {"query": "baseline", "instrument_id": "xlk", "entities": ["entity"],
+            "channel_ids": ["fmp:earnings_transcripts"]}
     first = wire("search_market_information", args)
     assert first["as_of"] == cutoff and first["search_total"] == 41
     assert first["deferred"] == [{"path": [0], "type": "object", "count": len(directory[0])}]

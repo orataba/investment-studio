@@ -16,7 +16,7 @@ def _initialization_query(context, query):
         return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC) if value else None
     if (instant(query.get("published_after")) != instant(initial.get("published_after"))
             or instant(query.get("cutoff")) != instant(initial.get("as_of"))
-            or query.get("entities") or query.get("observed_after") or query.get("received_after")):
+            or query.get("entities") or query.get("channel_ids") or query.get("observed_after") or query.get("received_after")):
         return None
     return next((item for item in initial.get("identity_queries", [])
         if item["query"] == query.get("query") and query.get("instrument_id") in {item["instrument_id"], None}
@@ -41,8 +41,15 @@ def search_market_directory(context: dict, request: dict) -> dict:
     initial = _initialization_query(context, query)
     if initial:
         query["origin"] = "initialization_identity"
+    for fixed in (context.get("fmp_inputs") or {}).get(query.get("instrument_id"), {}).get("directories", []):
+        if (not query.get("query") and set(query.get("entities") or []) == set(fixed["entities"])
+                and set(query.get("channel_ids") or []) == set(fixed["channel_ids"])):
+            from watchlist_app.services.research_fmp_scope import FIXED_INPUT_ORIGIN
+            query["origin"] = FIXED_INPUT_ORIGIN
+            break
     try:
         result = text_store().search(query.get("query", ""), entities=query.get("entities") or None,
+            **({"channel_ids": query["channel_ids"]} if query.get("channel_ids") else {}),
             **{key: datetime.fromisoformat(query[key]) if query.get(key) else None
                for key in ("published_after", "observed_after", "received_after")},
             as_of=cutoff, limit=query.get("limit", 30), offset=query.get("offset", 0))

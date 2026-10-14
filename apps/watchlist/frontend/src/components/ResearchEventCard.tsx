@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { getResearchEvents, pinResearchEvent, type AskResearchAssistant, type ResearchEventsResponse, type ResearchEventCategory, type ResearchUpdate } from '../lib/researchDossierApi'
+import { getResearchEvents, pinResearchEvent, type AskResearchAssistant, type ResearchEventsResponse, type ResearchUpdate } from '../lib/researchDossierApi'
+import { researchCategoryLabels, researchSourceLabels } from '../lib/researchEventCategories'
 import { announceResearchPublication } from '../lib/researchUpdates'
 import { useStudioAccount } from './AccountBoundary'
 import { SourceList, dateLabel } from './ResearchEvidence'
@@ -10,8 +11,6 @@ import ResearchReadingAside from './ResearchReadingAside'
 import InfoHint from '../../../../../packages/ui/src/InfoHint'
 import ResearchLoading from '../../../../../packages/ui/src/WorkspaceSkeleton'
 import { riskPendingState } from '../../../../../packages/ui/src/instrumentRisk'
-
-export const researchCategoryLabels: Record<ResearchEventCategory, string> = { news: '新闻与公告', opinion: '市场观点', earnings: '财报与业绩会', meeting: '会议纪要', other: '其他' }
 
 export function ReferencedResearchEvent({ instrumentId, eventKey }: { instrumentId: string; eventKey: string }) {
   const [state, setState] = useState<{ event?: ResearchUpdate; error?: string }>({})
@@ -104,6 +103,7 @@ export default function ResearchEventCard({ update, onAskAssistant, initiallyOpe
       <h4 translate="no">{update.title}</h4>
       <div className="research-event-tags">
         {update.event_category && <span className="research-status-tag">{researchCategoryLabels[update.event_category]}</span>}
+        {researchSourceLabels(sources, update.event_category).map(label => <span key={label} className="research-status-tag">{label}</span>)}
         {update.direction && <span className={`research-status-tag research-impact-${update.direction}`}>{{ opportunity: '利多', risk: '利空', uncertain: '影响待定' }[update.direction]}</span>}
         <span className={`research-importance${importance === 5 ? ' major' : ''}`} aria-label={scored ? `重要性 ${importance}/5` : '重要性 未评估'}>{scored ? importance >= 5 ? '重大' : importance >= 3 ? '重要' : '一般' : '重要性 未评估'}</span>
         {update.importance_reason && <InfoHint label="重要性依据" detail={update.importance_reason} />}

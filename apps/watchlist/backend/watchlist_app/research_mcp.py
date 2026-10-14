@@ -476,13 +476,16 @@ def search_market_information(query: str = "", instrument_id: str | None = None,
                               observed_after: SearchClock = None, received_after: SearchClock = None,
                               limit: Annotated[int, Field(ge=1, le=100)] = 30, offset: Annotated[int, Field(ge=0)] = 0,
                               as_of: SearchClock = None, section: Literal["results", "coverage"] = "results",
-                              path: list[str | int] | None = None) -> dict:
+                              path: list[str | int] | None = None, channel_ids: list[str] | None = None) -> dict:
     """Search the project's retained news, disclosures and attributed views at this run's cutoff.
     Space-separated terms are AND filters. Start with one distinctive company name or topic;
     search Chinese/English aliases and tickers separately, then narrow the results if needed.
     Use company/industry/macro names and entities, not only the ETF ticker. Results are a
     paginated directory in data, never original bodies. Follow next_offset and every deferred.path
     with the SAME filters, section and returned as_of. Root offsets count matching records;
+    FMP fixed inputs provide exact fmp:SYMBOL entities and channel_ids for company announcements,
+    news, transcripts and filing directories. Keep those filters on continuation; fund and company
+    disclosures are separate scopes. A filing directory or source excerpt is not a full original.
     nested path offsets page that selected value. section=coverage reads the complete search-time
     source coverage. An empty page is not absence of events. received_after finds newly delivered older packets; observed_after finds late captures and
     revisions without relabeling their original publication dates. Read returned document/version
@@ -498,6 +501,7 @@ def search_market_information(query: str = "", instrument_id: str | None = None,
     search_offset = path[0] if section == "results" and path else offset if section == "results" else 0
     result = request("market-search", {"query": query, "instrument_id": instrument_id,
         "entities": entities or [], "published_after": published_after.isoformat() if published_after else None,
+        "channel_ids": channel_ids or [],
         "observed_after": observed_after.isoformat() if observed_after else None,
         "received_after": received_after.isoformat() if received_after else None,
         "as_of": as_of.isoformat() if as_of else None,

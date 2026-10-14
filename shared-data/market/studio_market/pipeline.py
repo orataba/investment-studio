@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 from datetime import date,datetime,timedelta,timezone
 from zoneinfo import ZoneInfo
 
@@ -65,20 +66,20 @@ def next_eod_date(settings,end):
     return date.fromisoformat(value)+timedelta(days=1) if value else end-timedelta(days=7)
 
 
-def run(settings,action: str,*,now: datetime|None=None,market: str='all')->dict:
+def run(settings,action: str,*,now: datetime|None=None,market: str='all',research_subjects=None)->dict:
     settings.data_root.mkdir(parents=True,exist_ok=True)
     # Long bulk acquisition must not block a market's close or text delivery.
     lock_name='collection' if action in {'daily','weekly'} else action+('-'+market if action=='registered-prices' else '')
     try:
         with file_lock(settings.data_root/('pipeline-'+lock_name+'.lock'),blocking=False):
-            return _run(settings,action,now=now,market=market)
+            return _run(settings,action,now=now,market=market,research_subjects=research_subjects)
     except BlockingIOError:return {'action':action,'status':'already_running'}
 
 
-def _run(settings,action: str,*,now: datetime|None=None,market: str='all')->dict:
+def _run(settings,action: str,*,now: datetime|None=None,market: str='all',research_subjects=None)->dict:
     role=os.environ.get('INVESTMENT_STUDIO_MARKET_ROLE','')
     if role not in {'collector','replica'}:raise ValueError('Configure INVESTMENT_STUDIO_MARKET_ROLE as collector or replica')
-    if action in {'daily','weekly','crypto','publish','registered-prices'} and role!='collector':raise ValueError('This Studio installation is a replica; public acquisition and publication run on the collector')
+    if action in {'daily','weekly','crypto','publish','registered-prices','research-content'} and role!='collector':raise ValueError('This Studio installation is a replica; public acquisition and publication run on the collector')
     now=now or datetime.now(timezone.utc)
     if now.tzinfo is None:raise ValueError('Pipeline now must include a timezone')
     end=now.astimezone(ZoneInfo('Asia/Shanghai')).date();results=[]
@@ -95,6 +96,11 @@ def _run(settings,action: str,*,now: datetime|None=None,market: str='all')->dict
         return item
     if action in {'daily','weekly'}:
         if action=='daily':
+            # Consensus captures do not depend on price reconciliation. Publish
+            # them before potentially long full-history action rebuilds so the
+            # existing morning replica sync can see the new PIT observations.
+            stage('analyst',lambda:collect(settings,groups=['analyst'],start=end-timedelta(days=7),end=end,now=now))
+            stage('publish_analyst_delta',lambda:publish_pending(settings))
             prices=Collector(settings,now=now)
             try:
                 stage('corporate_actions',lambda:prices.actions(end-timedelta(days=7),end,None))
@@ -108,7 +114,7 @@ def _run(settings,action: str,*,now: datetime|None=None,market: str='all')->dict
             finally:
                 prices.store.close()
                 if prices._client:prices._client.close()
-            for group in ['analyst','financials','macro','market_series','etf','events']:
+            for group in ['financials','macro','market_series','etf','events']:
                 stage(group,lambda group=group:collect(settings,groups=[group],start=end-timedelta(days=7),end=end,now=now))
             registry=stage('registered_identities',lambda:registered_instruments(settings))
             if registry['status']=='ready':
@@ -135,6 +141,16 @@ def _run(settings,action: str,*,now: datetime|None=None,market: str='all')->dict
         stage('market_series',lambda:collect(settings,groups=['market_series'],symbols=['BTCUSD'],
                                             start=utc_end-timedelta(days=7),end=utc_end,now=now))
         stage('publish_numeric_delta',lambda:publish_pending(settings))
+    elif action=='research-content':
+        if research_subjects is None:
+            raise ValueError('Research content collection requires an explicit public company/fund scope')
+        from .text.fmp import FmpTextCollector
+        from .text.publication import publish_fmp_text
+        collector=FmpTextCollector(settings)
+        try:
+            stage('fmp_company_publications',lambda:collector.collect(research_subjects,now=now))
+            stage('publish_fmp_text',lambda:publish_fmp_text(collector.store))
+        finally:collector.close()
     elif action=='publish':stage('publish_numeric_delta',lambda:publish_pending(settings))
     elif action=='registered-prices':
         registry=stage('registered_identities',lambda:registered_instruments(settings))
@@ -150,7 +166,9 @@ def _run(settings,action: str,*,now: datetime|None=None,market: str='all')->dict
             directory=os.environ.get('INVESTMENT_STUDIO_MARKET_'+prefix+'_REMOTE_DIR')
             if not host or not directory:return {'status':'failed','error_type':'ConfigurationError','required_configuration':['INVESTMENT_STUDIO_MARKET_'+prefix+'_HOST','INVESTMENT_STUDIO_MARKET_'+prefix+'_REMOTE_DIR']}
             return pull(settings,host=host,remote_dir=directory)
-        if role=='replica':stage('numeric_catchup',lambda:catchup('NUMERIC',pull_numeric_directory))
+        if role=='replica':
+            stage('numeric_catchup',lambda:catchup('NUMERIC',pull_numeric_directory))
+            stage('fmp_text_catchup',lambda:catchup('FMP_TEXT',pull_text_directory))
         inbox=os.environ.get('INVESTMENT_STUDIO_MARKET_MI_INBOX_DIR')
         if inbox:
             if os.environ.get('INVESTMENT_STUDIO_MARKET_MI_HOST'):
@@ -168,12 +186,14 @@ def _run(settings,action: str,*,now: datetime|None=None,market: str='all')->dict
 
 def main(argv=None):
     parser=argparse.ArgumentParser(prog='studio-market pipeline')
-    parser.add_argument('action',choices=['daily','weekly','crypto','registered-prices','publish','sync','status'])
+    parser.add_argument('action',choices=['daily','weekly','crypto','registered-prices','research-content','publish','sync','status'])
     parser.add_argument('--market',choices=['cn','hk','us','eu','all'],default='all')
+    parser.add_argument('--scope-file',type=Path,help='Explicit public FMP subject list for research-content')
     args=parser.parse_args(argv);settings=MarketSettings.from_environment()
     if args.action=='status':
         path=settings.data_root/'pipeline-status.json';result=json.loads(path.read_text()) if path.exists() else {'status':'not_run'}
-    else:result=run(settings,args.action,market=args.market)
+    else:result=run(settings,args.action,market=args.market,
+                   research_subjects=json.loads(args.scope_file.read_text()) if args.scope_file else None)
     print(json.dumps(serializable(result),ensure_ascii=False,indent=2))
     if result.get('status')=='already_running' and args.action in {'daily','weekly'}:
         # These actions share the collection lock but perform different work.

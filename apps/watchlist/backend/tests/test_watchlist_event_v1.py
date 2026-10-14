@@ -21,6 +21,38 @@ def publish(session, run, **values):
     return session.scalar(select(RiskCase).where(RiskCase.signal == "sector:new-policy"))
 
 
+def test_event_categories_filter_persisted_events_without_inferring_from_source_or_title(client, monkeypatch):
+    from typing import get_args
+    seed_sector(client, monkeypatch)
+    now = datetime.now(UTC)
+    categories = get_args(service.ResearchEventCategory)
+    original = {"source_id": "text:release:1", "source_type": "market_text",
+        "information_type": "company_announcement", "channel_id": "fmp:press_releases",
+        "title": "Issuer release", "content_text": "Original body is not an event-list field."}
+    views = service._source_views([original])
+    assert views[0]["information_type"] == "company_announcement"
+    assert views[0]["channel_id"] == "fmp:press_releases"
+    assert "content_text" not in views[0]
+    with get_session_factory()() as session:
+        for category in categories:
+            payload = json.loads(result(sources=["web-one"], event_category=category))["reviews"][0]["events"][0]
+            assert service.SectorEvent.model_validate(payload).event_category == category
+            session.add(RiskCase(case_id=f"category-{category}", instrument_id="xlk", signal=f"sector:category-{category}",
+                title="Same headline for every category", body="Saved event body", status="investigating", trigger_active=False,
+                observed_on=now.date(), created_at=now, evidence_json={"event_category": category,
+                    "event_version_id": f"category-{category}:1", "source_views": views,
+                    "occurred_at": now.date().isoformat(), "recorded_at": now.isoformat()}))
+        session.commit()
+    for category in categories:
+        response = client.get("/api/research/instruments/xlk/events", params={"scope": "history", "event_category": category, "limit": 1})
+        assert response.status_code == 200, response.text
+        page = response.json()
+        assert page["total"] == 1 and not page["has_more"]
+        assert page["events"][0]["event_category"] == category
+        assert page["events"][0]["sources"][0]["channel_id"] == original["channel_id"]
+    assert client.get("/api/research/instruments/xlk/events?event_category=invented").status_code == 422
+
+
 def test_independent_follow_up_default_term_sparse_merge_and_risk_expiry(client, monkeypatch):
     seed_sector(client, monkeypatch)
     with get_session_factory()() as session:

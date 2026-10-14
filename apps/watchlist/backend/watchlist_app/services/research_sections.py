@@ -39,16 +39,20 @@ def section_context(context, instrument_id, section):
             instrument_supplement={"revision": mandate.get("revision"), "version_id": mandate.get("version_id"),
                 "skill": mandate.get("section_skills", {}).get(section, "")})
     if section == "recent_updates":
+        from watchlist_app.services.research_estimate_tools import estimate_overview
         base.update(
             tracked_events=[_event_context(row) for row in context.get("prior_events", [])
                 if row.get("instrument_id") == instrument_id and row.get("follow_up") == "watch"],
             required_event_ids=working.get("affected_event_ids", []),
             incremental_trigger=deepcopy((context.get("incremental_trigger") or {}).get(instrument_id)),
+            fmp_inputs=deepcopy((context.get("fmp_inputs") or {}).get(instrument_id)),
+            analyst_estimate_changes=[estimate_overview(row, detail_tool="read_sector_company(instrument_id, symbol)")
+                for row in context.get("sector_estimate_evidence", []) if row["instrument_id"] == instrument_id],
             acquisition={"initialization": deepcopy(context.get("initialization")),
                 "last_successful_review_cutoff": context.get("last_successful_review_cutoff"),
                 "market_coverage": deepcopy(context.get("market_coverage")),
                 "search_tool": "search_market_information", "original_tool": "read_market_source",
-                "transcript_coverage": "当前未接入FMP业绩会转录采集；共享文本可能有相关纪要，需核实覆盖。缺失时按具体需要读取发行人正式披露或公开原文，不能声称已读完整转录。"})
+                "source_scope": "固定FMP资料与已存财报、预期变化是重要输入，不能仅依赖新闻包和补充搜索。先核对fmp_inputs各适用类别的覆盖、目录和原件；基金本身不要求公司电话会或SEC公司财报。正文阅读及完整性必须单独核实，同口径预期变动按公司读取后分析影响。"})
     elif section == "themes":
         themes = [{key: deepcopy(value) for key, value in row.items()
                    if key not in {"versions", "sources", "updates", "research_progress"}}

@@ -41,11 +41,14 @@ def _queries(context, instrument_id):
         terms, entities = (query.get("query") or "").strip(), sorted(set(query.get("entities") or []))
         if not terms and not entities:
             continue  # A corpus-wide browse is not an asset-specific monitoring mandate.
-        key = (terms, tuple(entities))
+        channels = sorted(set(query.get("channel_ids") or []))
+        key = (terms, tuple(entities), tuple(channels))
         cutoff = query.get("cutoff") or context.get("input_snapshot_cutoff") or context["cutoff"]
         if key not in output or _instant(cutoff) > _instant(output[key]["cutoff"]):
             output[key] = {"instrument_id": instrument_id, "query": terms, "entities": entities,
-                           "cutoff": _instant(cutoff).isoformat()}
+                           "cutoff": _instant(cutoff).isoformat(),
+                           **({"channel_ids": channels} if channels else {}),
+                           **({"origin": query["origin"]} if query.get("origin") else {})}
     return list(output.values())
 
 
@@ -111,6 +114,14 @@ def _readable(document):
             and not (document.get("provenance") or {}).get("ai_generated"))
 
 
+def _filing_notice(document):
+    """An exact provider filing index can prompt reading, never prove its body."""
+    return (document.get("channel_id") == "fmp:sec_filings"
+            and document.get("information_type") == "regulatory_filing"
+            and document.get("content_completeness") == "title_only"
+            and (document.get("provenance") or {}).get("content_scope") == "metadata")
+
+
 def _same_original(left, right):
     # A correction to headline, occurrence/publication clock or fact/rumor
     # attribution can change the evidence even while its body stays identical.
@@ -132,6 +143,7 @@ def _new_text(store, queries, consumed_at, now, read_source_ids):
             offset = 0
             while True:
                 page = store.search(query["query"], entities=query["entities"] or None,
+                                    **({"channel_ids": query["channel_ids"]} if query.get("channel_ids") else {}),
                                     **{clock: since - timedelta(microseconds=1)}, as_of=now, limit=100, offset=offset, include_withdrawn=True)
                 for row in page["rows"]:
                     if row["source_id"] in changed or row["source_id"] in read_source_ids:
@@ -141,17 +153,20 @@ def _new_text(store, queries, consumed_at, now, read_source_ids):
                         continue
                     previous = store.read(row["document_id"], as_of=since - timedelta(microseconds=1))
                     withdrawn = row.get("status") in {"withdrawn", "superseded"}
-                    if (withdrawn and not previous) or (not withdrawn and not _readable(row)):
+                    notice = _filing_notice(row)
+                    if (withdrawn and not previous) or (not withdrawn and not (_readable(row) or notice)):
                         continue
                     if previous and (previous["version_id"] == row["version_id"] or _same_original(previous, row)):
                         continue
                     changed[row["source_id"]] = {
                         key: row.get(key) for key in (
                             "source_id", "document_id", "version_id", "title", "url", "body_sha256",
-                            "published_at", "observed_at", "received_at", "content_completeness", "status",
+                            "published_at", "observed_at", "received_at", "content_completeness", "status", "information_type", "channel_id",
                         )
                     } | {"change": "withdrawn_original" if withdrawn else "revised_original" if previous else "new_original",
                          **({"previous_source_id": previous["source_id"]} if previous else {}),
+                         **({"evidence_scope": "filing_index", "requires_original_read": True,
+                             "note": "监管披露索引发生变化；仅证明披露记录存在，须读取链接原文后分析正文与影响。"} if notice else {}),
                          "matched_query": query}
                 offset += len(page["rows"])
                 if offset >= page["total"] or not page["rows"]:
@@ -227,6 +242,54 @@ def _risk_changes(session, instrument_id, since, now):
     return changes
 
 
+def _numeric_changes(session, instrument_id, since, now):
+    """Same-period consensus revisions and changed retained financial facts.
+
+    Batch clocks alone are not information. The existing monitor owns retry and
+    applied deduplication; these identities refer to immutable numeric versions.
+    """
+    from watchlist_app.services.research_fmp_scope import build_fmp_research_scope
+    from watchlist_app.services.sector_estimates import read_estimate_evidence
+    from watchlist_app.services.sector_market_data import all_rows, numeric_store
+    if since >= now:
+        return []
+    scope = next((row for row in build_fmp_research_scope(session, as_of=now,
+        instrument_ids=[instrument_id])["instruments"] if row["instrument_id"] == instrument_id), None)
+    if scope is None or not scope["companies"]:
+        return []
+    evidence = read_estimate_evidence(session, instrument_id, as_of=now, since=since, company_scope=scope)
+    changes = []
+    for row in evidence["changes"]:
+        identity = [row[key] for key in ("symbol", "frequency", "target_period_end", "metric")]
+        changes.append({"key": "estimate:" + ":".join(identity), "version_id": row["current_source_id"],
+            "change": "consensus_revision", "source_ids": [row["previous_source_id"], row["current_source_id"]],
+            "title": f"{row['symbol']} {row['target_period_end']} {row['metric']} 同口径预期变化",
+            **row})
+    symbols = [row["symbol"] for row in scope["companies"]]
+    rows = all_rows(numeric_store(), "financial_statements", symbols=symbols, as_of=now, versions=True)
+    def available(row):
+        return max(_instant(row["observed_at"]), _instant(row.get("available_at") or row["observed_at"]))
+    rows.sort(key=lambda row: (available(row), row["batch_id"], row["row_index"]))
+    previous = {}
+    for row in rows:
+        identity = tuple(row[key] for key in ("symbol", "statement_type", "period_end", "fiscal_year", "fiscal_period"))
+        before = previous.get(identity)
+        version = row.get("statement_content_sha256")
+        if (available(row) > since and version
+                and (before is None or version != before.get("statement_content_sha256"))):
+            changes.append({"key": "financial:" + ":".join(map(str, identity)), "version_id": row["source_id"],
+                "change": "revised_financial_statement" if before else "new_financial_statement",
+                "title": f"{row['symbol']} {row['period_end']} {row['statement_type']} 财报事实版本更新",
+                "source_ids": [source["source_id"] for source in (before, row) if source],
+                "symbol": row["symbol"], "statement_type": row["statement_type"],
+                "period_end": row["period_end"], "fiscal_year": row["fiscal_year"], "fiscal_period": row["fiscal_period"],
+                "observed_at": row["observed_at"], "available_at": row.get("available_at"), "filing_date": row.get("filing_date"),
+                "accepted_at": row.get("accepted_at"), "statement_content_sha256": version,
+                "previous_statement_content_sha256": before.get("statement_content_sha256") if before else None})
+        previous[identity] = row
+    return changes
+
+
 def _due_items(session, instrument_id, context, now):
     from watchlist_app.services.sector_research import _research_market, RESEARCH_TIMEZONES
     market = _research_market(session, instrument_id)
@@ -282,10 +345,16 @@ def research_trigger(session, instrument_id, prior_context, *, now):
     private = instrument is not None and instrument.instrument_type == "private_fund"
     monitoring = prior_context if private else _monitoring_context(session, instrument_id, prior_context)
     queries = _queries(monitoring, instrument_id)
+    from watchlist_app.services.research_fmp_scope import build_fmp_research_scope, fixed_document_queries, FIXED_INPUT_ORIGIN
+    # Holding-derived entities are recomputed, never inherited as permanent extras.
+    queries = [query for query in queries if query.get("origin") != FIXED_INPUT_ORIGIN]
     if private:
         # Contracts, manager materials and bound-source corrections are checked
         # below. A private fund's name is not a generic daily-news mandate.
         queries = []
+    else:
+        scope = build_fmp_research_scope(session, as_of=now, instrument_ids=[instrument_id])
+        queries.extend(fixed_document_queries(scope, cutoff=prior_context.get("input_snapshot_cutoff") or prior_context["cutoff"]))
     consumed = [cursor for cursor in (_attempted_at(previous),
         _attempted_at(_previous_trigger(monitoring, instrument_id).get("coverage_cursor", {}))) if cursor]
     read_source_ids = {row["source_id"] for context in (monitoring, prior_context)
@@ -304,6 +373,9 @@ def research_trigger(session, instrument_id, prior_context, *, now):
         revisions = _revised_originals(text_store(), originals, dependency_cursor, now)
         documents = list({row["source_id"]: row for row in [*documents, *revisions]}.values())
     risk_changes = _risk_changes(session, instrument_id, since, now)
+    numeric_since = _instant(previous.get("numeric_cutoff") or prior_context.get("last_successful_numeric_cutoff")
+        or prior_context.get("input_snapshot_cutoff") or prior_context.get("last_successful_review_cutoff") or prior_context["cutoff"])
+    numeric_changes = [] if private else _numeric_changes(session, instrument_id, numeric_since, now)
     due = _due_items(session, instrument_id, prior_context, now)
     materials, registered_materials = [], previous.get("registered_materials")
     product_material = previous.get("product_material")
@@ -340,6 +412,8 @@ def research_trigger(session, instrument_id, prior_context, *, now):
         reasons.append({"kind": "theme_baseline", "reason": "新建重点主题需要主动补充研究基线。", "themes": pending_themes})
     if documents:
         reasons.append({"kind": "new_research_sources", "reason": "已研究范围出现新的、实质修订或撤回的来源资料。", "sources": documents})
+    if numeric_changes:
+        reasons.append({"kind": "financial_input_change", "reason": "固定公司范围内出现同口径预期修订或新的财报事实版本；核实投资影响。", "items": numeric_changes})
     if risk_changes:
         reasons.append({"kind": "quantitative_risk_change", "reason": "已有复核规则出现新触发或实质变化。", "cases": risk_changes})
     if materials:
@@ -348,7 +422,7 @@ def research_trigger(session, instrument_id, prior_context, *, now):
         reasons.append({"kind": "research_check_due", "reason": "已绑定的研究观察到达检查时间。", "items": due})
     return {"instrument_id": instrument_id, "reasons": reasons, "coverage_cursor": {
         "attempted_at": now.isoformat(), "last_successful_review_cutoff": prior_context.get("last_successful_review_cutoff"),
-        "previous_cutoff": since.isoformat(), "market_queries": queries,
+        "previous_cutoff": since.isoformat(), "market_queries": queries, "numeric_cutoff": now.isoformat(),
         "registered_materials": registered_materials,
         "product_material": product_material,
         "boundary_source_ids": [row["source_id"] for row in documents

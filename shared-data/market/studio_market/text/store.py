@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 import os
 import tempfile
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from sqlalchemy import create_engine, exists, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from .bundle import canonical_json, digest, load_bundle, source_time, timestamp, validate_document
-from .schema import bundles, document_entities, document_events, entities, versions
+from .schema import bundles, collection_receipts, document_entities, document_events, entities, versions
 
 
 def _iso(value):
@@ -119,6 +120,21 @@ class TextStore:
             for document in manifest["documents"]:
                 body = objects[f"objects/{document['body_sha256']}.txt"].decode("utf-8")
                 imported += self._write_document(connection, document, body, received_at)
+            for receipt in manifest["coverage"].get("fmp_sources", []):
+                values = self._collection_values(receipt, received_at=received_at)
+                self._insert(connection, collection_receipts, values)
+                existing = connection.execute(select(collection_receipts).where(
+                    collection_receipts.c.receipt_id == values["receipt_id"])).mappings().one()
+                # Delivery time belongs to this installation. Every other field
+                # belongs to the immutable provider-check receipt.
+                for key, value in values.items():
+                    if key == "received_at":
+                        continue
+                    stored = existing[key]
+                    if key == "checked_at":
+                        stored, value = _iso(stored), _iso(value)
+                    if stored != value:
+                        raise ValueError("An existing immutable collection receipt has different content")
             self._insert(connection, bundles, {
                 "bundle_id": manifest["bundle_id"], "sha256": package_digest,
                 "producer": manifest["producer"], "window_start": timestamp(manifest.get("window_start")),
@@ -193,6 +209,94 @@ class TextStore:
         ).where(versions.c.observed_at <= as_of, versions.c.received_at <= as_of).subquery()
         return ranked
 
+    def capture_provider_document(self, document: dict, body: str, raw: bytes) -> dict:
+        """Keep the complete provider response separately from extracted source text.
+
+        A repeated observation reuses the latest identical state. A correction,
+        including a reversion, receives a new immutable version and real clock.
+        """
+        document = dict(document)
+        observed = timestamp(document["observed_at"], required=True)
+        document.update(body_sha256=digest(body.encode("utf-8")), raw_sha256=digest(raw))
+        material = {key: value for key, value in document.items() if key not in {"version_id", "observed_at"}}
+        document["version_id"] = "fmp-text-" + digest(canonical_json({**material, "observed_at": observed.isoformat()}))
+        validate_document(document)
+        self._save_raw(document["raw_sha256"], raw)
+        with self.engine.begin() as connection:
+            latest = connection.execute(select(versions).where(
+                versions.c.document_id == document["document_id"], versions.c.observed_at <= observed,
+            ).order_by(versions.c.observed_at.desc(), versions.c.version_id.desc()).limit(1)).mappings().first()
+            if latest is not None:
+                previous = self._row(connection, latest)
+                previous_material = {key: previous.get(key) for key in material}
+                if previous_material == material:
+                    return previous
+            self._write_document(connection, document, body, datetime.now(UTC))
+        return self.read("text:" + document["version_id"])
+
+    @staticmethod
+    def _collection_values(receipt: dict, *, received_at=None) -> dict:
+        from .fmp import CHANNELS
+        values = {key: receipt[key] for key in ("symbol", "channel_id", "checked_at", "window_start",
+                  "window_end", "status", "document_count", "content_scope", "error_type", "details")}
+        values["receipt_id"] = receipt.get("receipt_id") or uuid4().hex
+        values["checked_at"] = timestamp(values["checked_at"], required=True)
+        values["received_at"] = received_at or datetime.now(UTC)
+        for key in ("window_start", "window_end"):
+            if isinstance(values[key], str):
+                values[key] = date.fromisoformat(values[key])
+        if (values["status"] not in {"ready", "partial", "failed"}
+                or values["channel_id"] not in CHANNELS or not values["symbol"]
+                or values["document_count"] < 0 or values["window_start"] > values["window_end"]):
+            raise ValueError("Unsupported text collection status")
+        return values
+
+    def record_collection(self, receipt: dict) -> dict:
+        values = self._collection_values(receipt)
+        with self.engine.begin() as connection:
+            connection.execute(collection_receipts.insert().values(**values))
+        return {**values, "checked_at": _iso(values["checked_at"]),
+                "received_at": _iso(values["received_at"]),
+                "window_start": values["window_start"].isoformat(), "window_end": values["window_end"].isoformat()}
+
+    def get_fmp_coverage(self, symbols: list[str], *, as_of: datetime | None = None) -> dict:
+        from .fmp import CHANNELS
+        cutoff = timestamp(as_of, required=True) if as_of is not None else datetime.now(UTC)
+        selected = sorted(set(symbols))
+        ranked = select(collection_receipts, func.row_number().over(
+            partition_by=(collection_receipts.c.symbol, collection_receipts.c.channel_id),
+            order_by=(collection_receipts.c.checked_at.desc(), collection_receipts.c.receipt_id.desc()),
+        ).label("rank")).where(collection_receipts.c.symbol.in_(selected),
+                              collection_receipts.c.checked_at <= cutoff,
+                              collection_receipts.c.received_at <= cutoff).subquery()
+        with self.engine.connect() as connection:
+            rows = {(row["symbol"], row["channel_id"]): dict(row) for row in connection.execute(
+                select(ranked).where(ranked.c.rank == 1)).mappings()}
+        result = []
+        for symbol in selected:
+            for channel, definition in CHANNELS.items():
+                row = rows.get((symbol, channel))
+                if row is None:
+                    result.append({"symbol": symbol, "channel_id": channel, "status": "not_collected",
+                                   "checked_at": None, "window_start": None, "window_end": None,
+                                   "document_count": None, "content_scope": definition["content_scope"]})
+                    continue
+                row.pop("rank", None)
+                row["checked_at"] = _iso(row["checked_at"])
+                row["received_at"] = _iso(row["received_at"])
+                for key in ("window_start", "window_end"):
+                    row[key] = row[key].isoformat()
+                result.append(row)
+        return {"sources": result, "as_of": cutoff.isoformat()}
+
+    def last_successful_collection(self, symbol: str, channel_id: str) -> dict | None:
+        with self.engine.connect() as connection:
+            row = connection.execute(select(collection_receipts).where(
+                collection_receipts.c.symbol == symbol, collection_receipts.c.channel_id == channel_id,
+                collection_receipts.c.status == "ready",
+            ).order_by(collection_receipts.c.checked_at.desc(), collection_receipts.c.receipt_id.desc()).limit(1)).mappings().first()
+        return dict(row) if row else None
+
     def _row(self, connection, row) -> dict:
         result = dict(row)
         result.pop("version_rank", None)
@@ -215,6 +319,7 @@ class TextStore:
 
     def search(
         self, query: str = "", *, entities: list[str] | None = None,
+        channel_ids: list[str] | None = None,
         published_after: datetime | None = None, published_before: datetime | None = None,
         observed_after: datetime | None = None, received_after: datetime | None = None, as_of: datetime | None = None,
         limit: int = 50, offset: int = 0, include_withdrawn: bool = False,
@@ -224,6 +329,8 @@ class TextStore:
         cutoff = timestamp(as_of, required=True) if as_of is not None else datetime.now(UTC)
         latest = self._latest(cutoff)
         conditions = [latest.c.version_rank == 1]
+        if channel_ids:
+            conditions.append(latest.c.channel_id.in_(channel_ids))
         if not include_withdrawn:
             conditions.append(latest.c.status.not_in(("withdrawn", "superseded")))
         if published_after is not None:
@@ -272,7 +379,8 @@ class TextStore:
     def get_coverage(self, *, as_of: datetime | None = None) -> dict:
         cutoff = timestamp(as_of, required=True) if as_of is not None else datetime.now(UTC)
         with self.engine.connect() as connection:
-            receipts = connection.execute(select(bundles).where(bundles.c.received_at <= cutoff).order_by(bundles.c.window_end.desc(), bundles.c.bundle_id.desc())).mappings().all()
+            receipts = connection.execute(select(bundles).where(bundles.c.received_at <= cutoff,
+                bundles.c.producer != "investment-studio-fmp").order_by(bundles.c.window_end.desc(), bundles.c.bundle_id.desc())).mappings().all()
             clocks = connection.execute(select(func.max(versions.c.received_at), func.max(versions.c.observed_at)).where(versions.c.received_at <= cutoff, versions.c.observed_at <= cutoff)).one()
         latest = dict(receipts[0]) if receipts else None
         return {

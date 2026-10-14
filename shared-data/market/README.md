@@ -248,8 +248,13 @@ recollecting on each 15-minute lock timeout. Real provider failures retain exit
 freshness and final receipts, not timer activation, establish completion. Hourly
 sync and publish services keep their normal cadence without this retry limit.
 
-The daily pipeline collects whole-market US EOD increments, corporate actions,
-analyst PIT captures, changed financial statements, macro/market series, ETF
+The daily pipeline first collects analyst PIT captures and immediately publishes
+the ready numerical delta. This group uses the retained company directory and
+FMP bulk feeds; it does not depend on today's prices or corporate-action rebuilds.
+The existing replica catch-up can therefore receive new forecasts before the
+remaining full-market work finishes. Actual completion and provider coverage,
+not the 07:15 start, establish morning availability. The pipeline then collects
+whole-market US EOD increments, corporate actions, changed financial statements, macro/market series, ETF
 holdings, events, and registered assets' typed supplements. Registered raw prices
 have separate market-close jobs and are published immediately after acquisition.
 They resume from each symbol's latest published raw observation when it predates
@@ -281,6 +286,40 @@ Macro and market-series acquisition record a result per source series, so one
 failed source does not stop other independent series. Failure diagnostics retain
 the exception class and source-code location without copying credential-bearing
 request URLs or response bodies.
+
+`research-content` is a separate, collector-only public-text action. Watchlist
+exports the currently eligible Proposed/Invested company scope: the stock itself,
+or an ETF's latest disclosed TOP10 companies plus explicitly selected focus
+companies. The ETF itself receives news and press releases only; company subjects
+also receive earnings-call transcripts and SEC filing metadata. No private
+portfolio, transaction or model context is sent to the supplier. News/press
+content is labeled as excerpts, SEC results as metadata, and transcripts as the
+provider's full text. Retained body versions and independent per-channel check
+receipts distinguish a successful empty check from a failure or missing coverage.
+Initial news/filing acquisition covers 30 days; subsequent acquisition resumes
+from the last successful window with seven days of overlap. Transcript collection
+uses the provider's dated directory, the latest two calls and calls in that window.
+Every collection re-reads those selected calls, including the latest two when
+they are older than the seven-day overlap, so later corrections remain observable.
+Unchanged content deduplicates to the same retained version; it is not new research.
+Sources preserve actual publication/observation/import clocks; none is backdated.
+
+The collector publishes FMP text and coverage receipts through the existing text
+bundle protocol to `<market-data>/text/outbox`. Replicas import this separately
+from the MI feed using `INVESTMENT_STUDIO_MARKET_FMP_TEXT_HOST` and
+`INVESTMENT_STUDIO_MARKET_FMP_TEXT_REMOTE_DIR`. Import failure remains visible;
+the new feed does not replace MI or turn on business-database synchronization.
+Schema revision `studio_market_0003` adds `market_text.collection_receipt` and
+must be installed on both collector and replica before these readers run.
+
+Research consumes every retained consensus capture after its prior successful
+numeric cutoff plus the preceding baseline, rather than only the latest two
+captures. A revision followed by a reversal remains two observations. Same-company,
+same-frequency, same-target-period EPS/revenue changes with known matching currency
+and changed financial-statement content can trigger the existing research monitor;
+collection clocks, empty captures and forecast-period rollover alone cannot.
+Pending/attempted/applied monitor state retains unsuccessful work without creating
+a separate retry queue or deleting PIT history.
 
 Regime's existing cloud source workers write their specialized HK/FRED/DataHub
 observations to this same catalog. Hourly `publish` includes these ready batches;
@@ -348,13 +387,19 @@ the archive and its checksum/index arrive from the same trusted host.
 ## Scheduled entrypoints
 
 `infra/scripts/install_market_pipeline.py --scheduler systemd --role collector
---env-root /external/config` writes nine user service/timer pairs. Daily collection
+--env-root /external/config` writes the action inventory's user service/timer pairs. Daily collection
 runs at 07:15 Shanghai time, weekly collection Saturday 11:00, publication hourly
 at :40, and text catch-up hourly at :20. Persistent timers catch up after downtime.
+The independent `research-content` action runs at 00:05, 06:05, 12:05, 18:05 and
+20:05 America/New_York, including DST transitions under the scheduler's timezone rules.
 BTC/USD has a separate daily 08:15 Shanghai collection after the UTC day closes;
 it publishes the shared series and projects registered crypto instruments without
 changing the other markets' daily collection time.
-Registered prices run at CN15:30, HK17:00, US07:00 and Europe07:05 Shanghai time.
+Registered prices run at CN15:30 and Europe07:05 Shanghai time. US and HK use
+hourly exchange-calendar probes: actual US close +120 minutes and HK close +150
+minutes, including half-days and skipping non-trading sessions. Their admitted
+runner owns the immediate projection and retries only projection-lock exit75,
+at most four total attempts one hour apart, without recollecting prices.
 `--scheduler launchd --role replica` writes hourly/login catch-up plus a daily
 08:20 synchronization before the 08:30 BTC research check. Delayed collection or
 delivery remains an explicit data gap, and does not fabricate a current close. The runner

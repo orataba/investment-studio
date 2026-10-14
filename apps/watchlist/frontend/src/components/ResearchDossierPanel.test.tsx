@@ -301,11 +301,11 @@ it('edits one instrument guidance paragraph while preserving materials and saved
   expect(within(task).getByText(mandate.guidance)).toBeTruthy()
   expect(within(task).queryByText(mandate.focus[0])).toBeNull()
   fireEvent.click(within(task).getByRole('button', { name: '编辑研究指导' }))
-  expect(within(task).getAllByRole('textbox')).toHaveLength(5)
+  expect(within(task).getAllByRole('textbox')).toHaveLength(6)
   fireEvent.change(within(task).getByLabelText('本标的研究范围与约束（可选）'), { target: { value: saved.guidance } })
   fireEvent.click(within(task).getByRole('button', { name: '保存研究指导' }))
   await within(task).findByText(saved.guidance)
-  const input = { guidance: saved.guidance, section_skills: { overview: '', recent_updates: '', themes: '', quantitative: '' }, expected_revision: mandate.revision }
+  const input = { guidance: saved.guidance, section_skills: { overview: '', recent_updates: '', themes: '', quantitative: '' }, focus_company_symbols: [], expected_revision: mandate.revision }
   expect(save).toHaveBeenCalledExactlyOnceWith('fund-1', input)
   expect(request.mock.calls.filter(([, init]) => init?.method)).toEqual([
     ['/api/research/instruments/fund-1/dossier/mandate', { method: 'PUT', body: JSON.stringify(input) }],

@@ -68,6 +68,36 @@ def test_simultaneous_first_writers_register_once_and_publish_both(publication_s
         store.close()
 
 
+def test_fmp_text_migration_and_publication_preserve_actual_clocks(publication_settings):
+    from studio_market.text.store import TextStore
+    from studio_market.text.publication import publish_fmp_text
+
+    store = TextStore(publication_settings)
+    observed = datetime.now(timezone.utc)
+    try:
+        document = dict(document_id='fmp-test-call', channel_id='fmp:earnings_transcripts',
+                        source_name='FMP', title='Example call', url='https://example.com/call',
+                        information_type='earnings_call_transcript', status='active',
+                        published_at=None, occurred_at=observed.date().isoformat(),
+                        observed_at=observed.isoformat(), raw_format='application/json',
+                        content_completeness='full_text', content_warnings=[],
+                        entities=[dict(entity_id='fmp:AAPL', label='AAPL', kind='security')],
+                        event_ids=[], provenance={'provider': 'fmp'})
+        saved = store.capture_provider_document(document, 'Complete prepared remarks and Q&A', b'{}')
+        receipt = store.record_collection(dict(symbol='AAPL', channel_id='fmp:earnings_transcripts',
+            checked_at=datetime.now(timezone.utc), window_start=observed.date(), window_end=observed.date(),
+            status='ready', document_count=1, content_scope='full_text', error_type=None, details={}))
+        assert store.get_fmp_coverage(['AAPL'], as_of=observed)['sources'][2]['status'] == 'not_collected'
+        assert store.get_fmp_coverage(['AAPL'])['sources'][2]['receipt_id'] == receipt['receipt_id']
+        result = publish_fmp_text(store)
+        assert result['documents'] == 1 and result['coverage_receipts'] == 1
+        assert store.read(saved['source_id'])['content_text'].endswith('Q&A')
+        assert publish_fmp_text(store)['status'] == 'current'
+        assert store.search(as_of=observed)['total'] == 0
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize('future_clock', ['observed_at', 'available_at'])
 def test_latest_visibility_uses_full_postgres_scope_and_exact_cutoff(publication_settings, monkeypatch, future_clock):
     store = NumericStore(publication_settings)

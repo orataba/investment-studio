@@ -11,6 +11,7 @@ Investment Studio 自己持有公开数值采集、历史库和应用数据。�
 | --- | --- | --- |
 | 全市场证券目录、日行情、财报、预期、成份、宏观等 | Studio 共享数值层 | `market_data` 目录与最新投影；不可变 Parquet 历史及原始响应 |
 | 新闻、公告、事件、观点、舆论 | 资讯采集服务输出；Studio 接收并保存 | `market_text` 版本索引、数据包回执、原文与渠道覆盖 |
+| 研究范围内的 FMP 公司公告、新闻、电话会及 SEC 披露目录 | Studio 共享文本采集；Watchlist 提供公开公司范围 | 同一 `market_text` 版本库；独立采集回执、完整性标签及文本包同步 |
 | 登记资产身份及应用使用的行情／净值／FX | Instrument Data | `instrument_data`；公开数值按原有单位、币种与复权合同投影 |
 | 邮件、私有附件、净值候选、解析状态 | 私有摄取层 | `data_ingestion` |
 | 账户、交易、FCN／期权合约、账本 | Portfolio | `portfolio`，不进入公开数据包 |
@@ -20,6 +21,8 @@ Investment Studio 自己持有公开数值采集、历史库和应用数据。�
 
 共享数值没有第二套完整 DuckDB；DuckDB 仅查询 Parquet。全市场数据积累不受观察列表范围限制。
 消费者用数据集和不可变来源 ID 查询，不直接遍历其他项目的文件布局。
+
+FMP 研究文本使用独立 `research-content` 任务，不等待模型主动搜索。股票覆盖本公司，ETF 覆盖实际前十大股票持仓和明确重点公司；摘要、完整文字稿与披露索引保留不同含义。范围、首次与增量窗口以及复制配置见 [共享市场模块运行合同](../shared-data/market/README.md#scheduled-entrypoints)；各角色如何读取这些资料见 [投资研究系统](INVESTMENT_RESEARCH_SYSTEM.md)。每日数值任务优先采集并发布分析师预期 PIT，再进行耗时的全市场价格修复，避免早间研究被后者阻塞。
 
 ## 数值范围与 PIT
 

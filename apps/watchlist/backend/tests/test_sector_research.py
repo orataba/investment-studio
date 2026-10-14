@@ -16,6 +16,10 @@ def seed_sector(client, monkeypatch):
     from watchlist_app.core.settings import get_settings
     from watchlist_app.db.models import InstrumentAttributeValue
     monkeypatch.setattr(service, "_research_market", lambda session, iid: "us")
+    # These publication/monitor fixtures do not seed the market store. Real FMP
+    # scope and source-directory integration is covered in test_research_fmp_scope.
+    monkeypatch.setattr("watchlist_app.services.research_fmp_scope.build_fmp_research_scope",
+        lambda *args, **kwargs: {"instruments": [], "symbols": [], "subjects": []})
     monkeypatch.setattr(get_settings(), "research_automatic_enabled", True)
     for iid in ("xlk", "xlf"):
         seed_shared_instrument({"instrument_id": iid, "instrument_name": iid.upper(),

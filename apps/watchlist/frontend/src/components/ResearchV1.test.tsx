@@ -285,7 +285,30 @@ it('filters instrument developments by server category before pagination and kee
   fireEvent.change(screen.getByLabelText('信息类别'), { target: { value: 'earnings' } })
   await waitFor(() => expect(api.events).toHaveBeenLastCalledWith('stock', 'recent', expect.any(AbortSignal), 0, undefined, false, 'earnings'))
   fireEvent.click(screen.getByRole('button', { name: '讨论标的动态' }))
-  expect(ask).toHaveBeenCalledWith(expect.stringContaining('财报与业绩会'), { instrument_id: 'stock' })
+  expect(ask).toHaveBeenCalledWith(expect.stringContaining('业绩发布'), { instrument_id: 'stock' })
+  fireEvent.change(screen.getByLabelText('信息类别'), { target: { value: 'earnings_call_transcript' } })
+  await waitFor(() => expect(api.events).toHaveBeenLastCalledWith('stock', 'recent', expect.any(AbortSignal), 0, undefined, false, 'earnings_call_transcript'))
+  expect(screen.getByRole('option', { name: '公司公告' })).toBeTruthy()
+  expect(screen.getByRole('option', { name: '行业政策' })).toBeTruthy()
+})
+
+it('shows explicit source types beside one saved category without relabelling news as an announcement', () => {
+  const { rerender } = render(<ResearchEventCard update={event({ event_category: 'earnings', sources: [
+    { source_id: 'press-release', information_type: 'company_announcement', channel_id: 'fmp:press_releases' },
+    { source_id: 'transcript', information_type: 'earnings_call_transcript' },
+    { source_id: 'same-kind', channel_id: 'fmp:earnings_transcripts' },
+  ] })} />)
+  expect(screen.getByText('业绩发布')).toBeTruthy()
+  expect(screen.getAllByText('公司公告')).toHaveLength(1)
+  expect(screen.getAllByText('电话会文字稿')).toHaveLength(1)
+  rerender(<ResearchEventCard update={event({ event_category: 'news', sources: [
+    { source_id: 'news', source_type: 'company_news', channel_id: 'fmp:stock_news', title: 'Company announcement mentioned in news' },
+    { source_id: 'unclassified', source_type: 'fmp', title: 'Earnings call transcript' },
+  ] })} />)
+  expect(screen.getByText('一般动态')).toBeTruthy()
+  expect(screen.getByText('公司新闻')).toBeTruthy()
+  expect(screen.queryByText('公司公告')).toBeNull()
+  expect(screen.queryByText('电话会文字稿')).toBeNull()
 })
 
 

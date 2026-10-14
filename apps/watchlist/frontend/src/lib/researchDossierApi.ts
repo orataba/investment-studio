@@ -7,7 +7,7 @@ type EstimateSnapshot = { observation_id?: string; collected_at?: string; run_id
 export type EventSource = {
   source_id?: string; url?: string; title?: string; published_at?: string | null
   published_at_raw?: string | null; retrieved_at?: string | null; discovered_at?: string | null; time_status?: string
-  source_type?: string; document_id?: string; version_id?: string
+  source_type?: string; information_type?: string; channel_id?: string; document_id?: string; version_id?: string
   as_of?: string | null
   measurement?: {
     current?: { date: string; volatility_pct: number } | null
@@ -122,9 +122,9 @@ export function getTeamResearchGuidance(signal?: AbortSignal) {
 export function saveTeamResearchGuidance(input: Pick<TeamResearchGuidance, 'guidance' | 'section_skills'> & { expected_revision: number }) {
   return fetchJson<TeamResearchGuidance>('/api/research/guidance', { method: 'PUT', body: JSON.stringify(input) })
 }
-export type ResearchMandateInput = { guidance: string; section_skills?: ResearchSectionSkills; expected_revision: number }
+export type ResearchMandateInput = { guidance: string; section_skills?: ResearchSectionSkills; focus_company_symbols?: string[]; expected_revision: number }
 export type ResearchMandate = ResearchRevision & {
-  guidance: string; section_skills?: ResearchSectionSkills; revision: number
+  guidance: string; section_skills?: ResearchSectionSkills; focus_company_symbols?: string[]; revision: number
   title: string; background: string; mechanisms: string[]; research_approach: string[]; focus: string[]; source_plan: string[]; gaps: string[]
   user_constraints?: string[]; user_methods?: string[]; report_preferences?: ResearchReportPreferences
   module_focus?: Array<{ module_id: string; reason: string; source_ids: string[]; selected_by: 'user' | 'research' | 'initial' | null }>
@@ -319,7 +319,7 @@ export function uploadResearchMaterial(instrumentId: string, file: File, materia
   return fetchJson<ResearchMaterial>(`${dossierPath(instrumentId)}/files`, { method: 'POST', headers: {}, body })
 }
 
-export type ResearchEventCategory = 'news' | 'opinion' | 'earnings' | 'meeting' | 'other'
+export type ResearchEventCategory = 'news' | 'opinion' | 'earnings' | 'meeting' | 'other' | 'company_announcement' | 'earnings_call_transcript' | 'regulatory_filing' | 'industry_policy' | 'industry_news'
 export type ResearchUpdate = {
   event_category?: ResearchEventCategory
   run_id?: string | null

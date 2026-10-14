@@ -12,6 +12,13 @@ investment_studio_load_env_file "$market_env_root/data.env" INVESTMENT_STUDIO_DA
 export PYTHONPATH="$market_project_root/packages/identity:$market_project_root/shared-data/market:$market_project_root/shared-data:$market_project_root/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
 export PYTHONNOUSERSITE=1
+if [[ "${1:-}" == "research-content" ]]; then
+  investment_studio_load_env_file "$market_env_root/watchlist.env" INVESTMENT_STUDIO_AUTH_ INVESTMENT_STUDIO_WATCHLIST_
+  export INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL="${INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL:-${INVESTMENT_STUDIO_DATA_DATABASE_URL:?Data database is required for the public research scope}}"
+  export PYTHONPATH="$market_project_root/apps/watchlist/backend:$PYTHONPATH"
+  shift
+  exec "$market_python" "$market_project_root/apps/watchlist/backend/scripts/refresh_fmp_research_content.py" "$@"
+fi
 case "${1:-}" in
   daily|crypto|registered-prices|sync) ;;
   *) exec "$market_python" -m studio_market.pipeline "$@" ;;

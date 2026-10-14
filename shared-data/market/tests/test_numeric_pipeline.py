@@ -369,12 +369,12 @@ def test_replica_has_no_collection_and_failed_delivery_stays_visible(tmp_path,mo
     monkeypatch.setenv('INVESTMENT_STUDIO_MARKET_ROLE','replica')
     with pytest.raises(ValueError,match='replica'):pipeline.run(settings,'daily')
     with pytest.raises(ValueError,match='replica'):pipeline.run(settings,'crypto')
-    for name in ['NUMERIC','MI']:
+    for name in ['NUMERIC','MI','FMP_TEXT']:
         monkeypatch.delenv('INVESTMENT_STUDIO_MARKET_'+name+'_HOST',raising=False)
         monkeypatch.delenv('INVESTMENT_STUDIO_MARKET_'+name+'_REMOTE_DIR',raising=False)
     result=pipeline.run(settings,'sync')
     assert result['status']=='failed'
-    assert [r['stage'] for r in result['stages']]==['numeric_catchup','mi_text_catchup']
+    assert [r['stage'] for r in result['stages']]==['numeric_catchup','fmp_text_catchup','mi_text_catchup']
     assert json.loads((settings.data_root/'pipeline-status.json').read_text())['sync']['status']=='failed'
 
 
@@ -383,7 +383,8 @@ def test_scheduled_definitions_only_collect_on_cloud_and_do_not_embed_secrets(tm
     spec=importlib.util.spec_from_file_location('market_pipeline_installer',path)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     units=module.definitions('systemd','collector',tmp_path/'project',tmp_path/'external',tmp_path/'python',tmp_path/'logs')
-    assert len(units)==18
+    assert len(units)==20
+    assert '00,06,12,18,20:05:00 America/New_York' in units['investment-studio-market-research-content.timer'].decode()
     assert b'Asia/Shanghai' in units['investment-studio-market-daily.timer']
     assert b'Persistent=true' in units['investment-studio-market-sync.timer']
     assert b'15:30 Asia/Shanghai' in units['investment-studio-market-registered-prices-cn.timer']
@@ -392,9 +393,10 @@ def test_scheduled_definitions_only_collect_on_cloud_and_do_not_embed_secrets(tm
     assert b'run_market_pipeline.sh" crypto' in units['investment-studio-market-crypto.service']
     for name, content in units.items():
         if name.endswith('.service'):
-            if name in {'investment-studio-market-sync.service', 'investment-studio-market-publish.service'}:
-                # Hourly delivery and Briefing's explicit prerequisite must not
-                # consume the low-frequency collectors' retry budget.
+            if name in {'investment-studio-market-sync.service', 'investment-studio-market-publish.service',
+                        'investment-studio-market-research-content.service'}:
+                # Frequent delivery/content schedules and Briefing's explicit
+                # prerequisite do not use the daily collectors' retry budget.
                 assert b'StartLimit' not in content and b'Restart' not in content
             elif name in {'investment-studio-market-registered-prices-us.service',
                           'investment-studio-market-registered-prices-hk.service'}:
@@ -503,4 +505,6 @@ def test_daily_price_revisions_continue_when_incremental_prices_fail(tmp_path,mo
     monkeypatch.setattr(pipeline,'publish_pending',lambda settings:steps.append('publish') or {'status':'ready'})
     result=pipeline.run(settings,'daily',now=datetime(2026,9,8,tzinfo=timezone.utc))
     assert result['status']=='failed'
-    assert steps[0]=='revisions' and 'raw_price_revisions' in steps and steps[-1]=='publish'
+    assert steps[:3]==['analyst','publish','revisions']
+    assert steps.count('analyst')==1 and 'raw_price_revisions' in steps and steps[-1]=='publish'
+    assert [item['stage'] for item in result['stages'][:2]]==['analyst','publish_analyst_delta']

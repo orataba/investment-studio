@@ -6,6 +6,26 @@ from sqlalchemy import (
 
 metadata = MetaData(schema="market_text")
 
+# A provider check is retained even when it returns no documents or fails.
+# Append-only receipts make coverage inspectable at a research run's cutoff.
+collection_receipts = Table(
+    "collection_receipt", metadata,
+    Column("receipt_id", String, primary_key=True),
+    Column("symbol", String, nullable=False),
+    Column("channel_id", String, nullable=False),
+    Column("checked_at", DateTime(timezone=True), nullable=False),
+    Column("received_at", DateTime(timezone=True), nullable=False),
+    Column("window_start", Date, nullable=False),
+    Column("window_end", Date, nullable=False),
+    Column("status", String, nullable=False),
+    Column("document_count", Integer, nullable=False),
+    Column("content_scope", String, nullable=False),
+    Column("error_type", String),
+    Column("details", JSON, nullable=False),
+)
+Index("ix_text_collection_scope_clock", collection_receipts.c.symbol,
+      collection_receipts.c.channel_id, collection_receipts.c.checked_at)
+
 bundles = Table(
     "import_receipt", metadata,
     Column("bundle_id", String, primary_key=True),

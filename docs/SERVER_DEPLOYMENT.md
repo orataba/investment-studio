@@ -342,6 +342,29 @@ Schedule generation, service control, app installation and database restore all
 read this list, including the separate crypto collector. Add a new action there
 and define its schedule together so every restore stops its timer and worker.
 
+FMP fixed research inputs add the collector's `research-content` action, scheduled
+at 00:05/06:05/12:05/18:05/20:05 America/New_York. Run the normal market migrations
+through `studio_market_0003` on both installations before switching these readers;
+the new table holds acquisition coverage in `market_text`, not portfolio facts.
+The collector uses its existing FMP authorization and the authorized Watchlist
+scope exporter. A safe preflight is `run_market_pipeline.sh research-content
+--scope-only`, with the normal external environment loader: it reads registered
+public identities and holdings without calling FMP or a model. Confirm the actual
+scope is Proposed/Invested companies or ETF TOP10 plus explicit focus, not every
+holding or an inferred ticker.
+
+Configure the replica's existing private `market.env` with
+`INVESTMENT_STUDIO_MARKET_FMP_TEXT_HOST` and
+`INVESTMENT_STUDIO_MARKET_FMP_TEXT_REMOTE_DIR=<collector-market-data>/text/outbox`.
+Use the existing trusted SSH transport and checked text bundles; do not copy
+supplier credentials to the replica. Keep the separate MI transport unchanged.
+Validate an actual public-text import and its immutable source/coverage clocks;
+timer installation or a successful zero-document check does not prove full-text
+coverage. This public feed never enables local model agents or full business sync.
+The normal daily job now collects and publishes analyst PIT data first, before
+long price-history reconciliation; hourly/login replica sync receives that ready
+delta without waiting for the rest of the daily batch.
+
 The information feed may push completed archives into a dedicated SFTP inbox. Bind `INVESTMENT_STUDIO_MARKET_MI_INBOX_DIR` to that directory; otherwise configure a trusted `MI_HOST` and `MI_REMOTE_DIR` for pulling. Configure one transport. The SFTP sender publishes a readable checksum receipt before atomically renaming the final ZIP. Keep the dedicated receiver confined to its inbox, with no shell or forwarding.
 
 Regime retains its model and private materialized inputs. Its source workers must install `studio_market` and use explicitly configured public-data credentials and directory access; preserve the private snapshot roles. A source-code or static UI update alone does not switch its running collector.
