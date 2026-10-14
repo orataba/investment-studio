@@ -6,6 +6,7 @@ import argparse
 import os
 from pathlib import Path
 import platform
+import plistlib
 import pwd
 import re
 import shlex
@@ -57,6 +58,37 @@ def installed_market_role() -> str:
     return role
 
 
+def local_research_worker_enabled() -> bool:
+    plist = Path.home() / "Library/LaunchAgents/com.orataba.investment-studio.research-worker.plist"
+    with plist.open("rb") as source:
+        configuration = plistlib.load(source)
+    arguments = configuration["ProgramArguments"]
+    if len(arguments) != 6 or arguments[1] != "research-worker":
+        raise ValueError("Installed research worker does not use the managed runtime contract.")
+    variable = "INVESTMENT_STUDIO_WATCHLIST_RESEARCH_WORKER_ENABLED"
+    environment = dict(os.environ)
+    # launchctl does not pass this command's environment to the installed worker.
+    # Use its actual process-manager overrides ahead of the external dotenv file.
+    environment.pop(variable, None)
+    environment.update(configuration.get("EnvironmentVariables", {}))
+    response = subprocess.run([
+        "/bin/bash", "-c", '''set -euo pipefail
+source "$1"
+if [[ -f "$2" ]]; then
+  investment_studio_load_env_file "$2" INVESTMENT_STUDIO_AUTH_ INVESTMENT_STUDIO_WATCHLIST_
+fi
+printf '%s' "${INVESTMENT_STUDIO_WATCHLIST_RESEARCH_WORKER_ENABLED-true}"
+''', "worker-configuration", str(ROOT / "infra/launchd/load_runtime_env.sh"),
+        str(Path(arguments[5]) / "watchlist.env"),
+    ], env=environment, capture_output=True, text=True, check=True)
+    value = response.stdout.lower()
+    if value in {"0", "off", "f", "false", "n", "no"}:
+        return False
+    if value in {"1", "on", "t", "true", "y", "yes"}:
+        return True
+    raise ValueError("Installed research worker has an invalid enabled setting.")
+
+
 def manage(group: str, action: str) -> None:
     mac = platform.system() == "Darwin"
     if group == "regime":
@@ -89,6 +121,10 @@ def manage(group: str, action: str) -> None:
         services = ("cloud-sync",) if config.is_file() else ("market-sync",)
     scheduled = lambda service: service.endswith("-data-refresh") or service in GROUPS["market"] or service in {"cloud-sync", "briefing-daily", "briefing-weekly"}
     if mac:
+        if ("research-worker" in services and action in {"start", "restart"}
+                and not local_research_worker_enabled()):
+            services = tuple(service for service in services if service != "research-worker")
+            print("research-worker: disabled by runtime configuration", flush=True)
         domain = f"gui/{os.getuid()}"
         for service in services:
             label = f"com.orataba.investment-studio.{service}"

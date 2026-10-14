@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import plistlib
 from unittest.mock import Mock
 import pytest
 
@@ -153,6 +154,7 @@ def test_mac_status_reports_failed_restart_state(monkeypatch, capsys):
 
 def test_mac_restart_keeps_loaded_services_registered_and_preserves_data_schedule(monkeypatch):
     monkeypatch.setattr(module.platform, 'system', lambda: 'Darwin')
+    monkeypatch.setattr(module, 'local_research_worker_enabled', lambda: True)
     monkeypatch.setattr(module.subprocess, 'run', Mock(return_value=Mock(returncode=0)))
     execute = Mock()
     monkeypatch.setattr(module, 'run', execute)
@@ -165,6 +167,67 @@ def test_mac_restart_keeps_loaded_services_registered_and_preserves_data_schedul
     assert {command[-1].rsplit('.', 1)[-1] for command in commands} == {
         'watchlist-api', 'watchlist-web', 'research-worker', 'portfolio-api', 'portfolio-web',
     }
+
+
+def worker_configuration(tmp_path, monkeypatch, value, *, overrides=None):
+    monkeypatch.setattr(module.Path, 'home', lambda: tmp_path)
+    monkeypatch.setattr(module.platform, 'system', lambda: 'Darwin')
+    environment = tmp_path / 'private-runtime'
+    environment.mkdir(mode=0o700)
+    env_file = environment / 'watchlist.env'
+    env_file.write_text('' if value is None else f'INVESTMENT_STUDIO_WATCHLIST_RESEARCH_WORKER_ENABLED={value}\n')
+    env_file.chmod(0o600)
+    plist = tmp_path / 'Library/LaunchAgents/com.orataba.investment-studio.research-worker.plist'
+    plist.parent.mkdir(parents=True)
+    plist.write_bytes(plistlib.dumps({
+        'ProgramArguments': ['run_local_service.sh', 'research-worker', str(module.ROOT),
+                             '/configured/python', '/configured/node', str(environment)],
+        'EnvironmentVariables': overrides or {},
+    }))
+    return env_file
+
+
+@pytest.mark.parametrize('action', ['start', 'restart'])
+@pytest.mark.parametrize('loaded', [True, False])
+def test_mac_group_preserves_worker_disabled_by_actual_runtime_configuration(tmp_path, monkeypatch, action, loaded):
+    env_file = worker_configuration(tmp_path, monkeypatch, '"FaLsE"')
+    marker = tmp_path / 'must-not-execute'
+    with env_file.open('a') as stream:
+        stream.write(f'INVESTMENT_STUDIO_WATCHLIST_UNUSED=$(touch "{marker}")\n')
+    monkeypatch.setenv('INVESTMENT_STUDIO_WATCHLIST_RESEARCH_WORKER_ENABLED', 'true')
+    original = module.subprocess.run
+    def query(command, **kwargs):
+        return Mock(returncode=0 if loaded else 1) if command[0] == 'launchctl' else original(command, **kwargs)
+    monkeypatch.setattr(module.subprocess, 'run', query)
+    execute = Mock()
+    monkeypatch.setattr(module, 'run', execute)
+    module.manage('investments', action)
+    commands = [call.args[0] for call in execute.call_args_list]
+    assert all('research-worker' not in ' '.join(command) for command in commands)
+    if action == 'restart' or not loaded:
+        assert any('watchlist-api' in ' '.join(command) for command in commands)
+    else:
+        assert not commands
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize('value,override,enabled', [
+    ('off', None, False), ('0', None, False), ('no', None, False),
+    ('true', None, True), (None, None, True), ('false', 'true', True),
+])
+def test_worker_flag_uses_runner_boolean_and_installed_environment_contract(tmp_path, monkeypatch, value, override, enabled):
+    overrides = {'INVESTMENT_STUDIO_WATCHLIST_RESEARCH_WORKER_ENABLED': override} if override else None
+    worker_configuration(tmp_path, monkeypatch, value, overrides=overrides)
+    assert module.local_research_worker_enabled() is enabled
+
+
+def test_mac_invalid_worker_flag_fails_before_any_service_action(tmp_path, monkeypatch):
+    worker_configuration(tmp_path, monkeypatch, 'unknown')
+    execute = Mock()
+    monkeypatch.setattr(module, 'run', execute)
+    with pytest.raises(ValueError, match='invalid enabled setting'):
+        module.manage('investments', 'restart')
+    execute.assert_not_called()
 
 
 def test_registered_us_hk_use_actual_session_conditions_not_fixed_beijing_us_clock(tmp_path):
