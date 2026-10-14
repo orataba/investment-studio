@@ -56,7 +56,7 @@ def test_access_backfill_preserves_both_contexts_and_timestamps_and_downgrades(p
     from sqlalchemy.engine import Engine
     event.listen(Engine, "before_cursor_execute", trace)
     try:
-        command.upgrade(config, "head")
+        command.upgrade(config, "20261012_0069")
     finally:
         event.remove(Engine, "before_cursor_execute", trace)
     assert not any("research_entry.context_json" in sql for sql in statements)
@@ -77,7 +77,7 @@ def test_access_backfill_preserves_both_contexts_and_timestamps_and_downgrades(p
         definition = session.scalar(text("SELECT indexdef FROM pg_indexes WHERE schemaname='watchlist' "
             "AND indexname='ix_research_entry_retained_portfolio_topic'"))
         assert "read_context_json" in definition and "access_context_json" not in definition
-    command.upgrade(config, "head")
+    command.upgrade(config, "20261012_0069")
     assert retained() == before
 
 

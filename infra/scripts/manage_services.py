@@ -8,6 +8,7 @@ from pathlib import Path
 import platform
 import pwd
 import re
+import shlex
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +27,34 @@ GROUPS = {
 
 def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(command, check=check)
+
+
+def systemctl_command(*arguments: str) -> list[str]:
+    command = ["systemctl", "--user", "--no-pager", *arguments]
+    if os.geteuid() == 0:
+        account = pwd.getpwnam("investment-studio")
+        command = [
+            "runuser", "-u", account.pw_name, "--", "env",
+            f"XDG_RUNTIME_DIR=/run/user/{account.pw_uid}",
+            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{account.pw_uid}/bus",
+            *command,
+        ]
+    return command
+
+
+def installed_market_role() -> str:
+    # The existing pipeline installer records the role on the sync unit for
+    # both supported Linux deployments. Do not infer it from the host OS.
+    response = subprocess.run(
+        systemctl_command("show", "investment-studio-market-sync.service",
+                          "--property=Environment", "--value"),
+        capture_output=True, text=True, check=True, timeout=5,
+    )
+    fields = dict(item.split("=", 1) for item in shlex.split(response.stdout) if "=" in item)
+    role = fields.get("INVESTMENT_STUDIO_MARKET_ROLE")
+    if role not in {"collector", "replica"}:
+        raise RuntimeError("Installed market sync unit has no valid collector/replica role.")
+    return role
 
 
 def manage(group: str, action: str) -> None:
@@ -86,11 +115,15 @@ def manage(group: str, action: str) -> None:
                 run(["launchctl", "bootstrap", domain, str(plist)])
         return
 
+    skip_collector_us = (
+        "us-market-data-refresh" in services and action in {"start", "restart"}
+        and installed_market_role() == "collector"
+    )
     units = [f"investment-studio-{name}.service" for name in services]
     for service in services:
         if not scheduled(service):
             continue
-        if service == "us-market-data-refresh" and action in {"start", "restart"}:
+        if service == "us-market-data-refresh" and skip_collector_us:
             # The cloud collector's registered-US pipeline owns acquisition and
             # projection. Keep this legacy/manual unit stoppable and inspectable,
             # without group start restoring a duplicate automatic schedule.
@@ -101,15 +134,7 @@ def manage(group: str, action: str) -> None:
         if action in {"start", "restart"}:
             units.remove(f"investment-studio-{service}.service")
         units.append(timer)
-    command = ["systemctl", "--user", "--no-pager", action, *units]
-    if os.geteuid() == 0:
-        account = pwd.getpwnam("investment-studio")
-        command = [
-            "runuser", "-u", account.pw_name, "--", "env",
-            f"XDG_RUNTIME_DIR=/run/user/{account.pw_uid}",
-            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{account.pw_uid}/bus",
-            *command,
-        ]
+    command = systemctl_command(action, *units)
     result = run(command, check=action != "status")
     # systemctl status returns 3 for a deliberately stopped group.
     if action == "status" and result.returncode not in {0, 3}:

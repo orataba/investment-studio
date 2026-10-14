@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 from unittest.mock import Mock
+import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/manage_services.py'
 spec = importlib.util.spec_from_file_location('manage_services', SCRIPT)
@@ -44,6 +45,7 @@ def test_database_restore_stops_every_generated_market_writer(tmp_path):
 def test_investments_start_schedules_data_without_forcing_refresh(monkeypatch):
     monkeypatch.setattr(module.platform, 'system', lambda: 'Linux')
     monkeypatch.setattr(module.os, 'geteuid', lambda: 1000)
+    monkeypatch.setattr(module, 'installed_market_role', lambda: 'collector')
     execute = Mock()
     monkeypatch.setattr(module, 'run', execute)
     module.manage('investments', 'start')
@@ -56,6 +58,35 @@ def test_investments_start_schedules_data_without_forcing_refresh(monkeypatch):
     assert 'investment-studio-home-api.service' not in command
     assert 'investment-studio-us-market-data-refresh.timer' not in command
     assert 'investment-studio-us-market-data-refresh.service' not in command
+
+
+@pytest.mark.parametrize('role,has_us_timer', [('collector', False), ('replica', True)])
+def test_linux_investments_uses_installed_role_for_us_schedule(monkeypatch, role, has_us_timer):
+    monkeypatch.setattr(module.platform, 'system', lambda: 'Linux')
+    monkeypatch.setattr(module.os, 'geteuid', lambda: 1000)
+    query = Mock(return_value=Mock(stdout=f'ENV_ROOT=/private/config INVESTMENT_STUDIO_MARKET_ROLE={role}'))
+    monkeypatch.setattr(module.subprocess, 'run', query)
+    execute = Mock()
+    monkeypatch.setattr(module, 'run', execute)
+    module.manage('investments', 'restart')
+    query.assert_called_once_with([
+        'systemctl', '--user', '--no-pager', 'show', 'investment-studio-market-sync.service',
+        '--property=Environment', '--value',
+    ], capture_output=True, text=True, check=True, timeout=5)
+    command = execute.call_args.args[0]
+    assert ('investment-studio-us-market-data-refresh.timer' in command) == has_us_timer
+    assert 'investment-studio-us-market-data-refresh.service' not in command
+
+
+def test_linux_investments_does_not_guess_an_unknown_market_role(monkeypatch):
+    monkeypatch.setattr(module.platform, 'system', lambda: 'Linux')
+    monkeypatch.setattr(module.os, 'geteuid', lambda: 1000)
+    monkeypatch.setattr(module.subprocess, 'run', Mock(return_value=Mock(stdout='ENV_ROOT=/private/config')))
+    execute = Mock()
+    monkeypatch.setattr(module, 'run', execute)
+    with pytest.raises(RuntimeError, match='no valid collector/replica role'):
+        module.manage('investments', 'start')
+    execute.assert_not_called()
 
 
 def test_market_and_briefing_stop_writers_but_start_only_schedules(monkeypatch):

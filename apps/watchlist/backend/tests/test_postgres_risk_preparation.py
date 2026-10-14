@@ -10,6 +10,7 @@ from studio_identity import Principal, principal_context
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
 from watchlist_app.db.session import get_engine, get_session_factory
 from watchlist_app.services import risk_officer, sector_research
+from watchlist_app.services.research_identity import research_identity
 
 from .test_postgres_instrument_registry_constraints import postgres_watchlist_env
 
@@ -117,6 +118,7 @@ def test_risk_states_project_current_fields_without_changing_scope_or_version(po
 @pytest.mark.parametrize("selected_nul", [False, True])
 def test_prepare_only_loads_latest_completed_risk_inputs(postgres_watchlist_env, monkeypatch, selected_nul):
     stamp = datetime.now(UTC)
+    actor = research_identity()
     prior_inputs = {"original": "exact\x00value" if selected_nul else r"literal\u0000"}
     current_inputs = {"scope_available": True, "instrument_ids": [], "instruments": []}
     with get_session_factory()() as session:
@@ -128,7 +130,7 @@ def test_prepare_only_loads_latest_completed_risk_inputs(postgres_watchlist_env,
                 "prior_inputs": {"unused": "UNUSED_PRIOR_HISTORY" * 10000 + "\x00"},
                 "risk_review": {"summary": "UNUSED_PRIOR_HISTORY" * 10000}}),
             ("newer-failed", 2, "failed", {"risk_inputs": {"failed": True}}),
-            ("prepare", 3, "running", {"risk_run": True, "risk_scope": {"instrument_id": "example"}}),
+            ("prepare", 3, "running", {"research_actor": actor, "risk_run": True, "risk_scope": {"instrument_id": "example"}}),
         ):
             session.add(ResearchEntry(entry_id=key, topic_id="risk-prepare", kind="analysis", title=key,
                 status=status, created_at=stamp + timedelta(seconds=offset), context_json=context))
@@ -153,6 +155,8 @@ def test_prepare_only_loads_latest_completed_risk_inputs(postgres_watchlist_env,
             assert context["prior_inputs"] == prior_inputs
             assert context["risk_inputs"] == current_inputs
             assert context["risk_input_version"] == "unchanged-version"
+            assert context["research_actor"] == actor
+            assert context["research_guidance"]["team_id"] == actor["team_id"]
             assert context["cutoff"] == context["prepared_at"] == context["input_snapshot_cutoff"]
     finally:
         engine.dispose()
