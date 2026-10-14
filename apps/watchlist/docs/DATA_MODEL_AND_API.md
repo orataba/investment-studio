@@ -245,7 +245,7 @@ Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会
 
 `GET/PUT /api/risk/guidance` 提供团队通用与单标的风险补充，保存使用 `scope`、可选 `instrument_id`、`text`、`expected_revision` 和必填 `reason`，只更新对应风险字段并保留其他研究指导及其作者时钟。展示用 `content_revision` 表示风险文本的实际版本，并发保存仍核对底层 `revision`；从未设置的标的补充显示内容版本 0、空作者与时间，已有文本再清空则形成真实新版本。`GET /api/risk/guidance/preview` 只读已有案例和上次正式筛选，不调用模型模拟未保存指导。
 
-`GET /api/risk/review` 的 `notice_items` 是当前范围的默认短提示，`notice_status` 区分已筛选、待筛选与不可用。首页使用 `GET /api/risk/alerts?all=true` 读取全部团队可见短提示及严重规则事实。`PATCH /api/risk/notices/{run_id}/{notice_id}` 带 `expected_notice_version`、等级、标题、正文及原因，更正须具备原团队或组合的写权限。`PUT /api/risk/notices/receipt` 保存本人当前提示版本的已读／静默状态，严重规则版本通过 `rule_versions` 一并核对；只读成员也可记录自己的回执。Portfolio 经 `/api/instrument-risk` 原身份转发，服务器重新检查原提示范围，私有组合内容不进入团队首页。
+`GET /api/risk/review` 的 `notice_items` 是当前范围的默认短提示，`notice_status` 区分已筛选、待筛选与不可用。首页使用 `GET /api/risk/alerts` 并传入查询参数 `all=true`，读取全部团队可见短提示及严重规则事实。`PATCH /api/risk/notices/{run_id}/{notice_id}` 带 `expected_notice_version`、等级、标题、正文及原因，更正须具备原团队或组合的写权限。`PUT /api/risk/notices/receipt` 保存本人当前提示版本的已读／静默状态，严重规则版本通过 `rule_versions` 一并核对；只读成员也可记录自己的回执。Portfolio 经 `/api/instrument-risk` 原身份转发，服务器重新检查原提示范围，私有组合内容不进入团队首页。
 
 `PUT /api/research/instruments/{instrument_id}/dossier/mandate` 接受 `guidance`、四部分 `section_skills` 和 `expected_revision`。 此处是单标的补充，角色留空继承团队框架；修改不自动启动运行。`POST .../themes/{theme_id}/notes` 保存人工记录，`DELETE .../themes/{theme_id}` 按当前 revision 删除主题及研究引用，保护 PM、事件事实与风险状态。模型不得通过专员工具编辑用户 skill 或 PM 观点。
 
