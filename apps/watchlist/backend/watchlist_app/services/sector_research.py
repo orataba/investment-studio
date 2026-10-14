@@ -979,6 +979,15 @@ def _validate_unchanged_event(context, instrument_id, item, case):
         raise ResearchVersionConflict("事件在复核期间已有更新，不能确认旧版本无变化；请基于最新版本继续研究。")
 
 
+def _record_unchanged_check(case, cutoff):
+    # Quiet checks retain one event version, so a slower older run can finish
+    # after a newer check. Keep the latest server-owned information cutoff.
+    evidence = case.evidence_json or {}
+    previous = evidence.get("checked_at")
+    if previous is None or datetime.fromisoformat(cutoff) > datetime.fromisoformat(previous):
+        case.evidence_json = {**evidence, "checked_at": cutoff}
+
+
 def _event_check_time(session, instrument_id, cutoff):
     market = _research_market(session, instrument_id)
     return cutoff.astimezone(ZoneInfo(RESEARCH_TIMEZONES[market]) if market else UTC)
@@ -1532,7 +1541,7 @@ def apply_result(session, run, reply):
             case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id, RiskCase.signal == signal).order_by(RiskCase.created_at.desc()))
             if isinstance(item, SectorEventCheck):
                 _validate_unchanged_event(context, review.instrument_id, item, case)
-                case.evidence_json = {**case.evidence_json, "checked_at": context["cutoff"]}
+                _record_unchanged_check(case, context["cutoff"])
                 continue
             item = _effective_event(item, case, checked_at=_event_check_time(session, review.instrument_id, datetime.fromisoformat(context["cutoff"])))
             source_ids = list(dict.fromkeys([*item.source_ids,
@@ -1545,7 +1554,7 @@ def apply_result(session, run, reply):
             item_sources = [_event_computed_original(retained[s], session=session) for s in source_ids]
             material_change = case is None or not _same_progress(case, item, item_sources, material_only=True, session=session)
             if case is not None and _same_progress(case, item, item_sources, session=session):
-                case.evidence_json = {**case.evidence_json, "checked_at": context["cutoff"]}
+                _record_unchanged_check(case, context["cutoff"])
                 continue
             if case is not None and _event_follow_up(case.evidence_json or {}) != "watch" and item.follow_up == "watch" and not material_change:
                 raise ValueError("重新开始主动跟进需要新实质进展，重复旧材料不能重新激活")

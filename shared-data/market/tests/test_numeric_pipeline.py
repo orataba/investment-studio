@@ -396,6 +396,16 @@ def test_scheduled_definitions_only_collect_on_cloud_and_do_not_embed_secrets(tm
                 # Hourly delivery and Briefing's explicit prerequisite must not
                 # consume the low-frequency collectors' retry budget.
                 assert b'StartLimit' not in content and b'Restart' not in content
+            elif name in {'investment-studio-market-registered-prices-us.service',
+                          'investment-studio-market-registered-prices-hk.service'}:
+                # Admission follows the actual close. A projection lock retry
+                # stays inside the admitted runner and must not recollect data
+                # or re-enter ExecCondition after its calendar slot has passed.
+                assert b'--collection' in content and b'ExecCondition=' in content
+                assert b'Restart=no\n' in content
+                assert b'RestartForceExitStatus' not in content and b'RestartSec' not in content
+                assert b'StartLimitIntervalSec=0' in content and b'StartLimitBurst' not in content
+                assert b'TimeoutStartSec=12h' in content
             else:
                 assert b'Restart=no\nRestartForceExitStatus=75\nRestartSec=1h' in content
                 assert b'StartLimitIntervalSec=6h\nStartLimitBurst=4' in content

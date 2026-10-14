@@ -148,3 +148,29 @@ def test_checked_mcp_shape_error_names_only_the_selected_receipt_fields(monkeypa
     assert issue['loc']==['result','reviews',0,'events',0,'body']
     assert set(issue['parent_fields'])=={'event_key','action','event_version_id'}
     assert 'PRIVATE_REPLACEMENT' not in message and not sent
+
+
+@pytest.mark.parametrize('receipt', ['checked', 'unchanged_full_event'])
+def test_older_quiet_run_cannot_move_the_last_check_backwards(activity_client, receipt):
+    with get_session_factory()() as session:
+        run, case, row = _check_run(session)
+        newer_check = '2030-01-02T04:00:00+08:00'
+        case.evidence_json = {**case.evidence_json,'checked_at':newer_check}
+        before, history, body = deepcopy(case.evidence_json), deepcopy(case.history_json), case.body
+        if receipt=='checked':
+            run.context_json = {**run.context_json,'cutoff':'2030-01-01T19:00:00+00:00'}
+            service.apply_result(session,run,json.dumps({'reviews':[row]}))
+        else:
+            publish(session,events=[event(action='updated',body=body)])
+        assert case.evidence_json==before and case.history_json==history and case.body==body
+        # Different UTC offsets must compare as instants, not strings.
+        if receipt=='checked':
+            from .research_sections_fixture import completed_sections
+            later, _ = service.begin_run(session,['xlk'])
+            later.context_json = {**later.context_json,'cutoff':'2030-01-01T21:00:00+00:00',
+                'prior_events':[service.event_record(case)],'research_dossiers':[read_dossier(session,'xlk')],
+                'research_working_sets':{'xlk':{'affected_event_ids':[case.case_id],'affected_theme_ids':[]}}}
+            completed_sections(later)
+            service.apply_result(session,later,json.dumps({'reviews':[row]}))
+            assert case.evidence_json=={**before,'checked_at':later.context_json['cutoff']}
+            assert case.history_json==history
