@@ -26,6 +26,17 @@ assert_invalid_selection backend
 assert_invalid_selection frontend
 assert_invalid_selection postgres-integration
 
+for selection in 'watchlist 3' 'portfolio 1' 'all 1'; do
+  status=0
+  PYTHON_BIN=/usr/bin/true "$VERIFY" backend ${selection} \
+    >"$TEST_ROOT/shard.out" 2>"$TEST_ROOT/shard.err" || status=$?
+  if [[ "$status" -ne 64 ]]; then
+    echo "Invalid backend shard selection returned $status instead of 64." >&2
+    exit 1
+  fi
+  grep -q 'Backend shards are only supported as: backend watchlist 1|2' "$TEST_ROOT/shard.err"
+done
+
 status=0
 PYTHON_BIN=/usr/bin/true \
   "$VERIFY" infra invalid-selection >"$TEST_ROOT/infra.out" 2>"$TEST_ROOT/infra.err" || status=$?

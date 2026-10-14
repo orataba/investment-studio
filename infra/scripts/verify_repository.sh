@@ -20,6 +20,9 @@ Commands:
   postgres-integration [all|home|data|market|portfolio|watchlist|briefing]
   all-local
 
+Only Watchlist backend CI is split: backend watchlist [1|2].
+Without a shard argument, backend always runs the complete selected suite.
+
 Dependency installation is intentionally separate. Run
 infra/scripts/sync_python_env.sh and npm ci before the relevant command.
 EOF
@@ -85,8 +88,15 @@ run_static() {
 
 run_backend() {
   require_python
-  local selected app_name
+  local selected app_name shard="${2:-}" shard_files test_path
   selected="$(selected_apps "${1:-all}")"
+  if [[ -n "$shard" ]]; then
+    if [[ "${1:-all}" != "watchlist" || ( "$shard" != 1 && "$shard" != 2 ) ]]; then
+      echo "Backend shards are only supported as: backend watchlist 1|2" >&2
+      exit 64
+    fi
+    shard_files="$("$PYTHON_BIN" "$PROJECT_ROOT/infra/scripts/watchlist_test_shard.py" "$shard")"
+  fi
   if [[ "${1:-all}" == "all" || "${1:-all}" == "home" ]]; then
     "$PYTHON_BIN" -m pytest "$PROJECT_ROOT/packages/identity/tests" -q
     "$PYTHON_BIN" -m pytest "$PROJECT_ROOT/packages/runtime/tests" -q
@@ -95,8 +105,15 @@ run_backend() {
     echo "Running $app_name backend tests without PostgreSQL integration cases."
     (
       cd "$(backend_root "$app_name")"
+      local pytest_arguments=(-m pytest -m "not postgresql_integration" --strict-markers -ra)
+      if [[ -n "$shard" ]]; then
+        echo "Watchlist test-file shard $shard/2."
+        while IFS= read -r test_path; do
+          pytest_arguments+=("$test_path")
+        done <<< "$shard_files"
+      fi
       PYTHONPATH="$(backend_root "$app_name"):$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
-        "$PYTHON_BIN" -m pytest -m "not postgresql_integration" --strict-markers -ra
+        "$PYTHON_BIN" "${pytest_arguments[@]}"
     )
   done <<< "$selected"
 }
@@ -243,7 +260,7 @@ case "$command_name" in
     run_static
     ;;
   backend)
-    run_backend "${2:-all}"
+    run_backend "${2:-all}" "${3:-}"
     ;;
   frontend)
     run_frontend "${2:-all}"
