@@ -269,11 +269,19 @@ def _numeric_changes(session, instrument_id, since, now):
     rows = all_rows(numeric_store(), "financial_statements", symbols=symbols, as_of=now, versions=True)
     def available(row):
         return max(_instant(row["observed_at"]), _instant(row.get("available_at") or row["observed_at"]))
-    rows.sort(key=lambda row: (available(row), row["batch_id"], row["row_index"]))
+    def winner_rank(row):
+        return _instant(row["observed_at"]), row["batch_id"], row["row_index"]
+    # Match NumericStore's visible winner, not arrival order. At one availability
+    # clock, consider the highest-ranked version first; other simultaneously
+    # available versions were never the current fact at any research cutoff.
+    rows.sort(key=winner_rank, reverse=True)
+    rows.sort(key=available)
     previous = {}
     for row in rows:
         identity = tuple(row[key] for key in ("symbol", "statement_type", "period_end", "fiscal_year", "fiscal_period"))
         before = previous.get(identity)
+        if before is not None and winner_rank(row) <= winner_rank(before):
+            continue
         version = row.get("statement_content_sha256")
         if (available(row) > since and version
                 and (before is None or version != before.get("statement_content_sha256"))):

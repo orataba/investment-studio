@@ -2,6 +2,8 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from watchlist_app.services import sector_estimates as estimates
 from watchlist_app.services import research_triggers as triggers
 from .test_sector_market_data import market_store, estimate_reader
@@ -104,6 +106,37 @@ def test_numeric_trigger_only_reports_same_basis_estimates_and_financial_content
     assert triggers._numeric_changes(None, "xlk", clock(6), clock(7)) == []
     monkeypatch.setattr(research_fmp_scope, "build_fmp_research_scope", lambda *a, **k:{"instruments": []})
     assert triggers._numeric_changes(None, "unrelated", clock(2), clock(7)) == []
+
+
+@pytest.mark.parametrize("captures,since,expected", [
+    ([(1, 4, "A"), (2, 2, "B")], 3, []),
+    ([(1, 1, "A"), (2, 2, "B"), (3, 3, "A")], 1, [("A", "B"), ("B", "A")]),
+    ([(1, 3, "A"), (2, 3, "B")], 1, [(None, "B")]),
+])
+def test_financial_trigger_matches_actual_pit_winner_when_versions_become_available(
+        market_store, monkeypatch, captures, since, expected):
+    from watchlist_app.services import research_fmp_scope
+    store, _ = market_store
+    scope = {"instrument_id": "xlk", "companies": [{"symbol": "AAA"}]}
+    monkeypatch.setattr(research_fmp_scope, "build_fmp_research_scope", lambda *a, **k: {"instruments": [scope]})
+    monkeypatch.setattr(estimates, "read_estimate_evidence", lambda *a, **k: {"changes": []})
+    for observed, available, value in captures:
+        store.ingest("financial_statements", [[{
+            "symbol": "AAA", "statement_type": "income", "period_end": "2026-06-30",
+            "fiscal_year": 2026, "fiscal_period": "Q2", "reported_currency": "USD",
+            "available_at": clock(available), "statement_content_sha256": value,
+        }]], source="fixture", observed_at=clock(observed))
+    result = triggers._numeric_changes(None, "xlk", clock(since), clock(9))
+    assert [(row["previous_statement_content_sha256"], row["statement_content_sha256"])
+            for row in result] == expected
+    # Check the actual shared-store contract, including the absence of a
+    # backwards revision when an older observation becomes available late.
+    prior = store.query("financial_statements", symbols=["AAA"], as_of=clock(since))["rows"]
+    current = store.query("financial_statements", symbols=["AAA"], as_of=clock(9))["rows"]
+    if not expected:
+        assert prior[0]["source_id"] == current[0]["source_id"]
+    else:
+        assert result[-1]["version_id"] == current[0]["source_id"]
 
 
 def test_failed_numeric_attempt_keeps_pending_reversal_and_apply_only_consumes_frozen_window(client, monkeypatch):
