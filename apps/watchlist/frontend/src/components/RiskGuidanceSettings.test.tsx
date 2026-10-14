@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 import RiskGuidanceSettings from '../../../../../packages/ui/src/RiskGuidanceSettings'
@@ -15,6 +15,8 @@ it('loads only on demand and saves a restored version with the current concurren
   await screen.findByDisplayValue('保留重要风险')
   fireEvent.click(screen.getAllByText('修改记录与恢复')[0])
   fireEvent.click(screen.getAllByRole('button', { name: '采用此版本内容' })[0])
+  expect((screen.getByLabelText('团队通用指导') as HTMLTextAreaElement).value).toBe('旧指导')
+  expect((screen.getAllByLabelText('修改原因')[0] as HTMLInputElement).value).toBe('恢复版本 1')
   fireEvent.click(screen.getAllByRole('button', { name: '保存指导' })[0])
   await waitFor(() => expect(request).toHaveBeenCalledWith('/risk/guidance', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ scope: 'general', instrument_id: 'a', text: '旧指导', expected_revision: 2, reason: '恢复版本 1' }) })))
   expect(request.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
@@ -26,4 +28,59 @@ it('keeps reader guidance read only', async () => {
   await screen.findByDisplayValue('保留重要风险')
   expect((screen.getByDisplayValue('保留重要风险') as HTMLTextAreaElement).readOnly).toBe(true)
   expect(screen.queryByRole('button', { name: '保存指导' })).toBeNull()
+})
+it('preserves edits for the same baseline and starts a clean draft after a saved revision changes', async () => {
+  window.history.replaceState({}, '', '/?lang=zh-Hans')
+  const saved = { ...response, general: { ...general, text: '新的关注重点', revision: 3 } }
+  const request = vi.fn().mockResolvedValueOnce(response).mockResolvedValue(saved)
+  const view = render(<LanguageProvider><RiskGuidanceSettings request={request} instrumentId="a" canWrite /></LanguageProvider>)
+  fireEvent.click(screen.getByText('风险提示设置 · Agent 指导'))
+  await screen.findByDisplayValue('保留重要风险')
+  fireEvent.change(screen.getByLabelText('团队通用指导'), { target: { value: '新的关注重点' } })
+  fireEvent.change(screen.getAllByLabelText('修改原因')[0], { target: { value: '收敛本轮风险重点' } })
+  view.rerender(<LanguageProvider><RiskGuidanceSettings request={request} instrumentId="a" canWrite /></LanguageProvider>)
+  expect((screen.getByLabelText('团队通用指导') as HTMLTextAreaElement).value).toBe('新的关注重点')
+  expect((screen.getAllByLabelText('修改原因')[0] as HTMLInputElement).value).toBe('收敛本轮风险重点')
+  fireEvent.click(screen.getAllByRole('button', { name: '保存指导' })[0])
+  await waitFor(() => expect((screen.getAllByLabelText('修改原因')[0] as HTMLInputElement).value).toBe(''))
+  expect((screen.getByLabelText('团队通用指导') as HTMLTextAreaElement).value).toBe('新的关注重点')
+  expect((screen.getAllByRole('button', { name: '保存指导' })[0] as HTMLButtonElement).disabled).toBe(true)
+  fireEvent.change(screen.getByLabelText('团队通用指导'), { target: { value: '下一版关注重点' } })
+  fireEvent.change(screen.getAllByLabelText('修改原因')[0], { target: { value: '继续细化' } })
+  fireEvent.click(screen.getAllByRole('button', { name: '保存指导' })[0])
+  await waitFor(() => expect(request).toHaveBeenLastCalledWith('/risk/guidance', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ scope: 'general', instrument_id: 'a', text: '下一版关注重点', expected_revision: 3, reason: '继续细化' }) })))
+})
+it('discards the old instrument draft before loading a different instrument with the same revision', async () => {
+  window.history.replaceState({}, '', '/?lang=zh-Hans')
+  let resolveB!: (value: typeof response) => void
+  const request = vi.fn().mockResolvedValueOnce(response).mockImplementationOnce(() => new Promise(resolve => { resolveB = resolve }))
+  const view = render(<LanguageProvider><RiskGuidanceSettings request={request} instrumentId="a" canWrite /></LanguageProvider>)
+  fireEvent.click(screen.getByText('风险提示设置 · Agent 指导'))
+  await screen.findByDisplayValue('关注信用')
+  fireEvent.change(screen.getByLabelText('标的专门指导'), { target: { value: 'A 的未保存草稿' } })
+  view.rerender(<LanguageProvider><RiskGuidanceSettings request={request} instrumentId="b" canWrite /></LanguageProvider>)
+  expect(screen.queryByRole('textbox')).toBeNull()
+  fireEvent.click(screen.getByText('风险提示设置 · Agent 指导'))
+  await waitFor(() => expect(request).toHaveBeenCalledWith('/risk/guidance?instrument_id=b', expect.anything()))
+  expect(screen.queryByDisplayValue('A 的未保存草稿')).toBeNull()
+  await act(async () => resolveB({ ...response, instrument: { ...response.instrument, instrument_id: 'b', text: '关注流动性' } }))
+  expect((screen.getByLabelText('标的专门指导') as HTMLTextAreaElement).value).toBe('关注流动性')
+  expect(screen.queryByDisplayValue('A 的未保存草稿')).toBeNull()
+  expect((screen.getAllByLabelText('修改原因')[1] as HTMLInputElement).value).toBe('')
+})
+it('aborts a previous scope read and ignores its late result after switching portfolio scope', async () => {
+  window.history.replaceState({}, '', '/?lang=zh-Hans')
+  const resolvers: Array<(value: typeof response) => void> = []
+  const request = vi.fn().mockImplementation(() => new Promise(resolve => resolvers.push(resolve)))
+  const view = render(<LanguageProvider><RiskGuidanceSettings request={request} scopeQuery="portfolio_id=one" canWrite /></LanguageProvider>)
+  fireEvent.click(screen.getByText('风险提示设置 · Agent 指导'))
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+  view.rerender(<LanguageProvider><RiskGuidanceSettings request={request} scopeQuery="portfolio_id=two" canWrite /></LanguageProvider>)
+  expect(request.mock.calls[0][1].signal.aborted).toBe(true)
+  fireEvent.click(screen.getByText('风险提示设置 · Agent 指导'))
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+  await act(async () => resolvers[1]({ ...response, general: { ...general, text: '当前指导' } }))
+  fireEvent.change(screen.getByLabelText('团队通用指导'), { target: { value: '当前范围草稿' } })
+  await act(async () => resolvers[0](response))
+  expect((screen.getByLabelText('团队通用指导') as HTMLTextAreaElement).value).toBe('当前范围草稿')
 })

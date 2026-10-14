@@ -6,6 +6,7 @@ import { researchStamp } from './ResearchRunStatus'
 type GuidanceVersion = { text: string; revision: number; content_revision?: number; updated_at: string | null; author?: { display_name?: string; reason?: string } | string | null; reason?: string }
 type Guidance = GuidanceVersion & { versions: GuidanceVersion[]; instrument_id?: string }
 type GuidanceResponse = { general: Guidance; instrument: Guidance | null; constraints: string[] }
+type GuidanceSettingsProps = { request: RiskRequest; instrumentId?: string; scopeQuery?: string; canWrite: boolean }
 
 function GuidanceEditor({ scope, value, canWrite, onSave }: { scope: 'general' | 'instrument'; value: Guidance; canWrite: boolean; onSave: (scope: 'general' | 'instrument', text: string, reason: string, revision: number) => Promise<void> }) {
   const zh = useLanguage().language === 'zh-Hans'
@@ -13,7 +14,6 @@ function GuidanceEditor({ scope, value, canWrite, onSave }: { scope: 'general' |
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  useEffect(() => { setText(value.text); setReason('') }, [value.revision, value.text])
   return <form className="risk-guidance-editor" onSubmit={async event => {
     event.preventDefault(); if (!canWrite || busy) return
     setBusy(true); setError('')
@@ -28,7 +28,11 @@ function GuidanceEditor({ scope, value, canWrite, onSave }: { scope: 'general' |
   </form>
 }
 
-export default function RiskGuidanceSettings({ request, instrumentId, scopeQuery, canWrite }: { request: RiskRequest; instrumentId?: string; scopeQuery?: string; canWrite: boolean }) {
+export default function RiskGuidanceSettings(props: GuidanceSettingsProps) {
+  return <GuidanceSettingsSession key={JSON.stringify([props.instrumentId ?? null, props.scopeQuery ?? null])} {...props} />
+}
+
+function GuidanceSettingsSession({ request, instrumentId, scopeQuery, canWrite }: GuidanceSettingsProps) {
   const zh = useLanguage().language === 'zh-Hans'
   const [open, setOpen] = useState(false)
   const [data, setData] = useState<GuidanceResponse | null>(null)
@@ -51,7 +55,7 @@ export default function RiskGuidanceSettings({ request, instrumentId, scopeQuery
       {preview && <details open><summary>{zh ? '已有案例与筛选结果' : 'Retained cases and selection'}</summary><p translate="no">{preview.usage_note}</p>{preview.notice_items.map(item => <p key={item.notice_id} translate="no"><strong>{item.title}</strong> {item.body}</p>)}{preview.cases.map(item => <details key={item.case_id}><summary><span translate="no">{item.title}</span> · {({ selected: zh ? '已入选' : 'Selected', not_selected: zh ? '未入选' : 'Not selected', not_assessed: zh ? '未评估' : 'Not assessed' } as Record<string, string>)[item.selection] || item.selection}</summary><p translate="no">{item.body}</p><p translate="no">{item.assessment_reason}</p></details>)}</details>}
       {[...data.constraints].map(constraint => <p key={constraint} className="risk-officer-muted">{constraint}</p>)}<div className="risk-guidance-layers">{(['general', ...(instrumentId ? ['instrument'] : [])] as Array<'general' | 'instrument'>).map(scope => {
       const value = data[scope]
-      return value && <GuidanceEditor key={scope} scope={scope} value={value} canWrite={canWrite} onSave={async (scope, text, reason, revision) => {
+      return value && <GuidanceEditor key={JSON.stringify([scope, value.revision, value.text])} scope={scope} value={value} canWrite={canWrite} onSave={async (scope, text, reason, revision) => {
         const updated = await request<GuidanceResponse>('/risk/guidance', { method: 'PUT', body: JSON.stringify({ scope, ...(instrumentId ? { instrument_id: instrumentId } : {}), text, expected_revision: revision, reason }) })
         setData(updated); setMessage(zh ? '指导已保存，将作用于后续分析。' : 'Guidance saved for future reviews.')
       }} />
