@@ -190,6 +190,8 @@ def queue_retry(session, run, *, now=None, manual=False, recheck_review=False,
     Automatic recovery is bounded to two retries of an identified transient fault.
     Manual recovery is useful after an operator repairs a deterministic defect;
     publication still verifies the studied dossier versions and current access.
+    It adopts this retained run as manual work, including its bounded retries;
+    the failure receipt preserves whether the preceding attempt was scheduled.
     Explicit manual rechecking retains the accepted draft and all old receipts,
     but only checkpoints written after that request may be reused.
     Optional operator guidance belongs only to that explicit recheck, not to
@@ -231,7 +233,7 @@ def queue_retry(session, run, *, now=None, manual=False, recheck_review=False,
     failure = {
         "attempt": attempt, "failed_at": ended.isoformat() if ended else None,
         "error": error or {"type": "PublicationValidation" if validation_error else "Interrupted"},
-        "manual_recovery": manual}
+        "manual_recovery": manual, "scheduled": bool(context.get("scheduled"))}
     if validation_error:
         failure["validation_error"] = validation_error
     if recheck_review:
@@ -245,6 +247,8 @@ def queue_retry(session, run, *, now=None, manual=False, recheck_review=False,
         failure["review_recheck"] = recheck
     execution["failures"] = [*execution.get("failures", []), failure]
     execution.update(attempt=attempt, stage="queued", resume=True)
+    if manual:
+        context["scheduled"] = False
     context.pop("runtime_error", None)
     context.pop("validation_error", None)
     if context.get("risk_run"):

@@ -62,6 +62,65 @@ def test_peak_hours_defer_automatic_queue_without_blocking_manual_requests(clien
     assert queue.claim_next("offpeak", now=datetime(2026, 10, 13, 4, tzinfo=UTC)).run_id == "automatic-first"
 
 
+@pytest.mark.parametrize("manual", [False, True])
+def test_scheduled_recovery_dispatch_obeys_the_current_request_without_losing_origin(client, monkeypatch, manual):
+    from .test_sector_research import seed_sector
+    seed_sector(client, monkeypatch)
+    peak = datetime(2026, 10, 13, 2, tzinfo=UTC)  # Beijing Tuesday 10:00.
+    actor = current_principal()
+    frozen = {"research_actor": actor.to_dict(), "cutoff": "2026-10-12T00:00:00Z",
+        "input_snapshot_cutoff": "2026-10-12T00:00:00Z", "submitted_draft": {"reviews": []}}
+    save_run("scheduled-recovery", context={"sector_run": True, "instrument_ids": ["xlk"],
+        "scheduled": True, **frozen})
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "scheduled-recovery")
+        run.status, run.completed_at = "failed", peak - timedelta(minutes=2)
+        run.context_json = {**run.context_json, "execution": {"attempt": 1},
+            "runtime_error": {"type": "ProviderUnavailable", "retryable": True}}
+        session.commit()
+        assert runner.queue_retry(session, run, now=peak, manual=manual)
+        assert run.context_json["scheduled"] is (not manual)
+        failure = run.context_json["execution"]["failures"][-1]
+        assert failure["scheduled"] is True and failure["manual_recovery"] is manual
+        assert failure["attempt"] == run.context_json["execution"]["attempt"] == 1
+        assert {key: run.context_json[key] for key in frozen} == frozen
+        session.commit()
+    assert queue.enqueue_run(actor, "scheduled-recovery", attempt=2)
+    claim = queue.claim_next("recovery-worker", now=peak)
+    if not manual:
+        assert claim is None
+        claim = queue.claim_next("offpeak-worker", now=peak + timedelta(hours=2))
+    assert claim.run_id == "scheduled-recovery" and claim.attempt == 2
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, claim.run_id)
+        run.status, run.completed_at = "failed", peak
+        run.context_json = {**run.context_json,
+            "execution": {**run.context_json["execution"], "attempt": 2},
+            "runtime_error": {"type": "ProviderUnavailable", "retryable": True}}
+        session.commit()
+    queue.finish_claim(claim)
+    if manual:
+        # An automatic retry of the explicitly adopted work remains manual;
+        # it still consumes the next attempt under the existing retry bound.
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, "scheduled-recovery")
+            assert runner.queue_retry(session, run, now=peak + timedelta(minutes=6))
+            assert run.context_json["scheduled"] is False
+            assert run.context_json["execution"]["failures"][-1]["scheduled"] is False
+            assert run.context_json["execution"]["failures"][-1]["manual_recovery"] is False
+            assert {key: run.context_json[key] for key in frozen} == frozen
+            session.commit()
+        assert queue.enqueue_run(actor, "scheduled-recovery", attempt=3)
+        claim = queue.claim_next("bounded-retry-worker", now=peak + timedelta(minutes=6))
+        assert claim.run_id == "scheduled-recovery" and claim.attempt == 3
+        with get_session_factory()() as session:
+            session.get(ResearchEntry, claim.run_id).status = "completed"
+            session.commit()
+        queue.finish_claim(claim)
+    save_run("new-scheduled-run", context={"scheduled": True})
+    assert queue.claim_next("new-automatic-worker", now=peak) is None
+
+
 def test_expired_owner_is_fenced_and_checkpoint_retained_with_bounded_recovery(client):
     save_run("resume", context={"sector_run": True, "input_snapshot_cutoff": "2026-10-09T00:00:00Z",
         "submitted_draft": {"reviews": []}, "web_evidence": [{"review": {"checkpoint": "retained"}}]})

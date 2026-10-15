@@ -184,10 +184,14 @@ def test_risk_retry_redelivers_frozen_inputs_and_requires_a_new_proposal(client,
 
 def test_recovery_does_not_adopt_another_users_research(client, monkeypatch):
     from studio_identity import Principal
-    save_run({"sector_run": True, "research_actor": {"kind": "user", "user_id": "original"}})
+    context = {"sector_run": True, "scheduled": True, "execution": {"attempt": 1},
+        "research_actor": {"kind": "user", "user_id": "original"}}
+    save_run(context)
     monkeypatch.setattr(runner, "current_principal", lambda: Principal("other", "Other", "default"))
     with get_session_factory()() as session:
-        assert not runner.queue_retry(session, session.get(ResearchEntry, "recovery"), manual=True)
+        run = session.get(ResearchEntry, "recovery")
+        assert not runner.queue_retry(session, run, manual=True)
+        assert run.status == "failed" and run.context_json == context
 
 
 def test_checkpoint_belongs_to_exact_draft_and_cutoff():
