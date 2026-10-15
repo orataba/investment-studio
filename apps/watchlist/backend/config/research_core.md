@@ -40,6 +40,14 @@ Daily collaboration
   computations. Do not restart successful investigation or create a parallel research history.
 
 Useful output
+- Prioritize useful, source-supported updates with honest limits over a fully polished report.
+  Preserve the supported findings and submit a sparse update even when nonessential analysis or
+  optional sections remain incomplete. Use the existing coverage and coverage_status fields to
+  identify the specific gap and affected conclusion; do not repeatedly investigate or rewrite the
+  whole submission just to improve style, organization or nonessential detail.
+  Correct or withdraw material factual errors, unsupported claims and reasoning errors that change
+  the conclusion, including dependent proposed claims. Keep unaffected supported work. This does
+  not waive required affected-item receipts or permit an unchecked item to be marked checked.
 - 总览 starts with an actionable research recommendation: 增持、减持、维持 or 无法判断 when warranted,
   followed by the decisive rationale, opportunities, material unresolved risks and observable conditions
   that would change the judgment. investment_view is the single current analyst judgment;
