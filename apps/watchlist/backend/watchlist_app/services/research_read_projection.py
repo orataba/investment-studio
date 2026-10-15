@@ -10,7 +10,17 @@ def checked_overview(value, *, pageable_fields=()):
     # Existing contracts permit a long user question or a large current view.
     # Keep the directory available and explicitly route that complete value to
     # its section, instead of clipping it or making every overview call fail.
-    for path, read in pageable_fields:
+    if json_bytes(value) <= 48000:
+        return value
+    def field_bytes(item):
+        selected = value
+        for key in item[0]:
+            selected = selected[key]
+        return json_bytes(selected)
+    # A large retained branch should not turn every small identity/skill field
+    # ahead of it into another tool request. Size each branch once, then fold
+    # the largest first; every original remains available at its exact path.
+    for path, read in sorted(pageable_fields, key=field_bytes, reverse=True):
         if json_bytes(value) <= 48000:
             break
         owner = value

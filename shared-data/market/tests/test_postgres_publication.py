@@ -98,6 +98,17 @@ def test_fmp_text_migration_and_publication_preserve_actual_clocks(publication_s
         store.close()
 
 
+def test_text_search_pagination_preserves_latest_versions_and_complete_records(publication_settings):
+    from studio_market.text.store import TextStore
+    from test_text_store import check_paged_latest_search_contract
+
+    store = TextStore(publication_settings)
+    try:
+        check_paged_latest_search_contract(store)
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize('future_clock', ['observed_at', 'available_at'])
 def test_latest_visibility_uses_full_postgres_scope_and_exact_cutoff(publication_settings, monkeypatch, future_clock):
     store = NumericStore(publication_settings)

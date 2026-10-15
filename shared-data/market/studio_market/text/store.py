@@ -298,24 +298,38 @@ class TextStore:
         return dict(row) if row else None
 
     def _row(self, connection, row) -> dict:
-        result = dict(row)
-        result.pop("version_rank", None)
-        result.pop("record_sha256", None)
-        for key in ("published_at", "occurred_at", "observed_at", "received_at"):
-            result[key] = _iso(result[key])
-        for key, date_key in (("published_at", "published_date"), ("occurred_at", "occurred_date")):
-            day = result.pop(date_key)
-            if day is not None:
-                result[key] = day.isoformat()
-        result["withdrawn"] = result["status"] in {"withdrawn", "superseded"}
-        result["entities"] = [dict(entity) for entity in connection.execute(
-            select(entities).join(document_entities).where(document_entities.c.version_id == result["version_id"]).order_by(entities.c.entity_id)
-        ).mappings()]
-        result["event_ids"] = list(connection.execute(
-            select(document_events.c.event_id).where(document_events.c.version_id == result["version_id"]).order_by(document_events.c.event_id)
-        ).scalars())
-        result["raw_path"] = str(self.data_root / "objects" / result["raw_sha256"][:2] / result["raw_sha256"])
-        return result
+        return self._rows(connection, [row])[0]
+
+    def _rows(self, connection, rows) -> list[dict]:
+        results = [dict(row) for row in rows]
+        if not results:
+            return []
+        version_ids = [row["version_id"] for row in results]
+        related_entities = {version_id: [] for version_id in version_ids}
+        for row in connection.execute(select(document_entities.c.version_id, entities)
+                .join(document_entities).where(document_entities.c.version_id.in_(version_ids))
+                .order_by(entities.c.entity_id)).mappings():
+            entity = dict(row)
+            related_entities[entity.pop("version_id")].append(entity)
+        related_events = {version_id: [] for version_id in version_ids}
+        for version_id, event_id in connection.execute(select(document_events)
+                .where(document_events.c.version_id.in_(version_ids))
+                .order_by(document_events.c.event_id)):
+            related_events[version_id].append(event_id)
+        for result in results:
+            result.pop("version_rank", None)
+            result.pop("record_sha256", None)
+            for key in ("published_at", "occurred_at", "observed_at", "received_at"):
+                result[key] = _iso(result[key])
+            for key, date_key in (("published_at", "published_date"), ("occurred_at", "occurred_date")):
+                day = result.pop(date_key)
+                if day is not None:
+                    result[key] = day.isoformat()
+            result["withdrawn"] = result["status"] in {"withdrawn", "superseded"}
+            result["entities"] = related_entities[result["version_id"]]
+            result["event_ids"] = related_events[result["version_id"]]
+            result["raw_path"] = str(self.data_root / "objects" / result["raw_sha256"][:2] / result["raw_sha256"])
+        return results
 
     def search(
         self, query: str = "", *, entities: list[str] | None = None,
@@ -353,12 +367,18 @@ class TextStore:
         for term in query.split():
             escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             conditions.append(or_(latest.c.title.ilike(f"%{escaped}%", escape="\\"), latest.c.content_text.ilike(f"%{escaped}%", escape="\\")))
-        statement = select(latest).where(*conditions)
+        # Rank/filter exactly as above, but carry only identities and sort keys
+        # through pagination. Fetch full bodies/provenance for the selected page.
+        page = select(latest.c.version_id, latest.c.document_id,
+            func.coalesce(latest.c.published_at, latest.c.observed_at).label("sort_time"),
+        ).where(*conditions).order_by(
+            func.coalesce(latest.c.published_at, latest.c.observed_at).desc(), latest.c.document_id,
+        ).limit(limit).offset(offset).subquery()
+        statement = select(versions).join(page, versions.c.version_id == page.c.version_id).order_by(
+            page.c.sort_time.desc(), page.c.document_id)
         with self.engine.connect() as connection:
             total = connection.execute(select(func.count()).select_from(latest).where(*conditions)).scalar_one()
-            rows = [self._row(connection, row) for row in connection.execute(statement.order_by(
-                func.coalesce(latest.c.published_at, latest.c.observed_at).desc(), latest.c.document_id,
-            ).limit(limit).offset(offset)).mappings()]
+            rows = self._rows(connection, connection.execute(statement).mappings())
         return {"rows": rows, "total": total, "limit": limit, "offset": offset, "coverage": self.get_coverage(as_of=cutoff), "as_of": cutoff.isoformat()}
 
     def read(self, document_id: str, *, version_id: str | None = None, as_of: datetime | None = None) -> dict | None:

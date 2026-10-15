@@ -54,3 +54,20 @@ def test_section_mcp_preserves_typed_path_in_json(monkeypatch):
     suffix, payload = calls[0]
     assert suffix == "section-context"
     assert payload["path"] == ["pm_views", 0, "body"] and payload["offset"] == 12000
+
+
+def test_large_overview_branch_keeps_small_identity_fields_inline():
+    from watchlist_app.services.research_read_projection import checked_overview, read_page
+    original = {"instrument_id": "xlk", "section": "recent_updates", "skill": "Read relevant evidence",
+                "trigger": {"sources": "A complete retained original " * 10000}}
+    result = checked_overview(dict(original), pageable_fields=[([key], {"tool": "read", "path": [key]}) for key in original])
+    assert result["instrument_id"] == "xlk" and result["skill"] == original["skill"]
+    assert result["trigger"]["inline"] is False
+    pieces, offset = [], 0
+    while True:
+        page = read_page(original, {}, path=["trigger", "sources"], offset=offset)
+        pieces.append(page["data"])
+        if page["next_offset"] is None:
+            break
+        offset = page["next_offset"]
+    assert "".join(pieces) == original["trigger"]["sources"]

@@ -4,7 +4,7 @@ import json
 import zipfile
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from studio_market.text import TextStore
 from studio_market.text.bundle import PROTOCOL, canonical_json, digest
@@ -134,6 +134,84 @@ def test_redelivery_correction_withdrawal_and_explicit_history(store, tmp_path):
     # Out-of-order delivery must not restore the earlier active document.
     assert store.import_bundle(first)["duplicate"] is True
     assert store.read("article-1")["version_id"] == "v3"
+
+
+def check_paged_latest_search_contract(store):
+    """Exercise the same retrieval contract on SQLite and real PostgreSQL."""
+    known = datetime(2026, 1, 4, tzinfo=UTC)
+    records = [
+        document("a-old", document_id="a", text="Needle obsolete"),
+        document("a-new", document_id="a", text="Needle replacement " + "complete body " * 1000,
+                 observed="2026-01-03T10:00:00+00:00"),
+        document("b", document_id="b", text="Needle 50% under_score"),
+        document("c-old", document_id="c", text="Needle withdrawn old"),
+        document("c-new", document_id="c", status="withdrawn", text="Needle withdrawn",
+                 observed="2026-01-03T10:00:00+00:00"),
+        document("d-future", document_id="d", text="Needle future observation",
+                 observed="2026-01-06T10:00:00+00:00"),
+        document("e-late", document_id="e", text="Needle late receipt"),
+        document("f-a", document_id="f", text="Needle replaced tie"),
+        document("f-z", document_id="f", text="Needle latest tie"),
+    ]
+    with store.engine.begin() as connection:
+        for record, body, _raw in records:
+            record["entities"] = ([{"entity_id": key, "label": key, "kind": "issuer"}
+                                   for key in ("ZZZ", "AAA")] if record["version_id"] == "a-new" else [])
+            record["event_ids"] = ["event-z", "event-a"] if record["version_id"] == "a-new" else []
+            record["provenance"] = {"nested": {"payload": "full provenance " * 1000}}
+            received = known + timedelta(days=3) if record["version_id"] == "e-late" else known - timedelta(days=2)
+            store._write_document(connection, record, body.decode(), received)
+
+    all_rows = store.search("needle", as_of=known)
+    assert [row["version_id"] for row in all_rows["rows"]] == ["a-new", "b", "f-z"]
+    assert all_rows["total"] == 3
+    first = store.search("needle", as_of=known, limit=1)
+    remaining = store.search("needle", as_of=known, limit=2, offset=1)
+    assert first["rows"] + remaining["rows"] == all_rows["rows"]
+    assert first["total"] == remaining["total"] == 3
+    assert first["rows"][0] == store.read("a", as_of=known)
+    assert len(first["rows"][0]["content_text"]) > 10000
+    assert len(first["rows"][0]["provenance"]["nested"]["payload"]) > 10000
+    assert [item["entity_id"] for item in first["rows"][0]["entities"]] == ["AAA", "ZZZ"]
+    assert first["rows"][0]["event_ids"] == ["event-a", "event-z"]
+    assert remaining["rows"][0]["entities"] == remaining["rows"][0]["event_ids"] == []
+    assert store.search("obsolete", as_of=known)["rows"] == []
+    assert store.search("replaced", as_of=known)["rows"] == []
+    assert store.search("obsolete", as_of=known - timedelta(days=1))["rows"][0]["version_id"] == "a-old"
+    assert [row["version_id"] for row in store.search("withdrawn", as_of=known, include_withdrawn=True)["rows"]] == ["c-new"]
+    assert [row["version_id"] for row in store.search("50% under_score", as_of=known)["rows"]] == ["b"]
+    assert [row["version_id"] for row in store.search("%", as_of=known)["rows"]] == ["b"]
+    assert [row["version_id"] for row in store.search("_", as_of=known)["rows"]] == ["b"]
+    assert store.search("needle", as_of=known, entities=["AAA"])["rows"] == first["rows"]
+    assert store.search("needle", as_of=known, channel_ids=["absent"])["total"] == 0
+    empty = store.search("needle", as_of=known, offset=3)
+    assert empty["total"] == 3 and empty["rows"] == []
+
+
+def test_paged_latest_search_preserves_full_records_and_cutoffs(store):
+    check_paged_latest_search_contract(store)
+
+
+def test_search_batches_related_entities_and_events_for_the_selected_page(store, tmp_path):
+    store.import_bundle(bundle(tmp_path / "many.zip", [
+        document(f"v{index}", document_id=f"article-{index:02}") for index in range(30)]))
+    statements = []
+
+    def record_statement(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    event.listen(store.engine, "before_cursor_execute", record_statement)
+    try:
+        page = store.search(limit=20)
+        assert len(page["rows"]) == 20 and page["total"] == 30
+        assert all(row["entities"] == [{"entity_id": "BABA", "label": "阿里巴巴", "kind": "issuer"}]
+                   and row["event_ids"] == ["capex-2026"] for row in page["rows"])
+        assert len(statements) == 6  # Count, page, two relation batches, two coverage reads.
+        statements.clear()
+        assert store.search(offset=30)["rows"] == []
+        assert len(statements) == 4  # Empty pages need no relation lookup.
+    finally:
+        event.remove(store.engine, "before_cursor_execute", record_statement)
 
 
 def test_bad_later_member_never_exposes_partial_bundle(store, tmp_path):

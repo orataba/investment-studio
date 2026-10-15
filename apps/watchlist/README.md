@@ -71,7 +71,7 @@ XLB、XLC、XLE、XLF、XLI、XLK、XLP、XLRE、XLU、XLV、XLY 的完整成份
 
 验证：后端 `tests/test_instrument_events.py`、`test_sector_market_data.py`、`test_sector_estimates.py`、`test_sector_web.py`、`test_sector_research.py`、`test_sector_fact_review.py`、`test_research_dossier.py`、`test_research_notebook.py`、`test_risk_officer.py`，以及前端投资研究、研究档案、风控研判和研究助手抽屉的聚焦测试。
 
-模型读取边界：持续跟踪事件和重要主题的目录仅携带当前判断、来源标识/日期及同轮原件读取入口；事件内部的重复证据快照通过精确 `event:<case>:<revision>` 版本读取，主题完整来源通过既有 `source_id` 读取，冻结原件和发布 CAS 不变。工作集不复制增量触发来源清单，改指向同轮 `incremental_trigger` 分区；`affected_event_ids` 与 `affected_theme_ids` 都是必要复核集合，未提交的其他主题不标为已复核。目录和分页读取不等于读取原件，独立复核仍检查实际证据交付。标的概览明确数值工具适用性：公募/私募净值不使用日频事件价格反应，应按真实净值区间读取固定观察，不能补造单日因果。
+模型读取边界：持续跟踪事件和重要主题的目录仅携带当前判断、来源标识/日期及同轮原件读取入口；事件内部的重复证据快照通过精确 `event:<case>:<revision>` 版本读取，主题完整来源通过既有 `source_id` 读取，冻结原件和发布 CAS 不变。工作集不复制增量触发来源清单，改指向同轮 `incremental_trigger` 分区；`affected_event_ids` 与 `affected_theme_ids` 都是必要复核集合，未提交的其他主题不标为已复核。角色分区和任务分页在数据库内按角色及所选分支投影，仅传输实际依赖；概览优先折叠大分支，完整冻结原件仍沿原路径和版本可读。目录和分页读取不等于读取原件，独立复核仍检查实际证据交付。标的概览明确数值工具适用性：公募/私募净值不使用日频事件价格反应，应按真实净值区间读取固定观察，不能补造单日因果。
 
 ## 文档
 

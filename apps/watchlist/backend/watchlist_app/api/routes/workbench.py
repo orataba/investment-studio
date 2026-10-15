@@ -278,15 +278,10 @@ class SectionContextInput(BaseModel):
 def research_section_context(run_id: str, request: SectionContextInput,
         session: Session = Depends(get_db_session)):
     from watchlist_app.services.research_sections import section_context
-    from watchlist_app.services.research_run_context import load_run_fields
-    record = load_run_fields(session, run_id, {"instrument_ids", "research_dossiers", "research_working_sets",
-        "research_tasks", "input_snapshot_cutoff", "cutoff", "execution", "sector_run", "research_guidance",
-        "prior_events", "incremental_trigger", "last_successful_review_cutoff",
-        "data_gaps", "market_coverage", "initialization", "fmp_inputs", "sector_estimate_evidence"})
-    record.context_json["computed_metrics"] = load_run_fields(session, run_id, {"computed_metrics"}, summary_only=True).context_json.get("computed_metrics", [])
-    from watchlist_app.services.research_run_evidence import attach_computed_sources
-    context = attach_computed_sources(session, run_id, record.context_json, metadata_only=True)
+    from watchlist_app.services.research_section_inputs import load_section_inputs
     try:
+        context = load_section_inputs(session, run_id, instrument_id=request.instrument_id,
+            section=request.section, path=request.path)
         result = section_context(context, request.instrument_id, request.section)
         from watchlist_app.services.research_read_projection import checked_overview, read_page
         if request.path or request.offset:
@@ -326,19 +321,14 @@ def research_task_context(run_id: str, task_id: str, offset: int = Query(default
         limit: int = Query(default=20, ge=1, le=100), path: str | None = None,
         session: Session = Depends(get_db_session)):
     import json
-    from watchlist_app.services.research_run_context import load_run_fields
-    record = load_run_fields(session, run_id, {"instrument_ids", "research_dossiers", "research_working_sets",
-        "research_tasks", "input_snapshot_cutoff", "cutoff", "execution", "sector_run", "prior_events", "research_guidance",
-        "incremental_trigger", "last_successful_review_cutoff", "data_gaps", "market_coverage", "initialization", "fmp_inputs", "sector_estimate_evidence"})
-    record.context_json["computed_metrics"] = load_run_fields(session, run_id, {"computed_metrics"}, summary_only=True).context_json.get("computed_metrics", [])
-    from watchlist_app.services.research_run_evidence import attach_computed_sources
-    record.context_json = attach_computed_sources(session, run_id, record.context_json, metadata_only=True)
+    from watchlist_app.services.research_section_inputs import load_section_inputs
     try:
         selector = json.loads(path) if path is not None else None
         if selector is not None and (not isinstance(selector, list) or
                 any(type(item) not in (str, int) for item in selector)):
             raise ValueError("path须为字符串或整数的JSON数组")
-        return _task_context_page(record.context_json, task_id, offset=offset, limit=limit, path=selector)
+        context = load_section_inputs(session, run_id, task_id=task_id, path=selector)
+        return _task_context_page(context, task_id, offset=offset, limit=limit, path=selector)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
 
