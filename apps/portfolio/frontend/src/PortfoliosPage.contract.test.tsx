@@ -148,7 +148,7 @@ describe('Portfolios rendered page contract', () => {
       })
     })
     expect((await screen.findByText(/historical values are recalculating/i)).closest('[role="status"]')).toHaveClass('investment-studio-notice-toast-success')
-    expect(screen.getByText('Recalculating')).toBeInTheDocument()
+    expect(screen.getByText('Valuation incomplete')).toBeInTheDocument()
   })
 
   it.each([false, true])('keeps deletion and copying unavailable to a non-manager with can_edit=%s', async (canEdit) => {

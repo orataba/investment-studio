@@ -287,6 +287,24 @@ it('shows a discovery quota failure separately from missing collection records',
   expect(screen.getByText(/检索：失败.*采集：未保留记录/)).toBeTruthy()
 })
 
+it('counts completeness from the same retained material set used by the directory', async () => {
+  const report = structuredClone(detail)
+  report.sources = ['full_text', 'source_excerpt', 'title_only', 'unavailable', undefined, 'future_state'].map((content_completeness, index) => ({
+    source_id: `text:${index}`, source_type: 'public_document', title: `资料 ${index}`, content_completeness,
+  }))
+  report.coverage.documents = { current: 6, by_completeness: { full_text: 1, source_excerpt: 1, unavailable: 1 } }
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { harness_available: false, can_generate: false, can_read_sources: true }
+    : url.includes('/reports?') ? { rows: [report], total: 1 } : report })))
+  page(<App />)
+  await screen.findByRole('heading', { name: '央行继续观察就业' })
+  fireEvent.click(screen.getByText('来源与覆盖范围'))
+  expect(screen.getByText('完整正文 1 · 来源节选 1 · 仅标题 1 · 正文不可用 1 · 完整性未留存 1 · 完整性状态未识别 1')).toBeTruthy()
+  fireEvent.change(screen.getByRole('combobox', { name: '正文覆盖' }), { target: { value: 'title_only' } })
+  expect(screen.getByText('匹配 1 / 6 份材料')).toBeTruthy()
+  expect(screen.getByText('资料 2')).toBeTruthy()
+})
+
 
 it('keeps anonymous published editions readable without production or retained-input controls', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')

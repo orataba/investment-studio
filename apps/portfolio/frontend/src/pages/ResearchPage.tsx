@@ -114,13 +114,31 @@ function TableStatusRow({
 }
 
 function extractErrorMessage(error: unknown) {
-  if (error instanceof Error) {
-    return error.message && error.message !== '[object Object]' ? error.message : 'Request failed.'
+  const message = error instanceof Error ? error.message : typeof error === 'object' && error && 'message' in error && typeof error.message === 'string' ? error.message : ''
+  if (!message || message === '[object Object]') return 'Request failed.'
+  // Validation payloads can contain complete private inputs. Show only readable messages.
+  try {
+    const parsed = JSON.parse(message)
+    const details = Array.isArray(parsed) ? parsed : parsed.detail
+    if (Array.isArray(details)) return details.map((item: { msg?: string }) => item.msg).filter(Boolean).join(' ') || 'Check the optimization parameters and try again.'
+    if (typeof details === 'string') return details
+    return 'Check the optimization parameters and try again.'
+  } catch { return message }
+}
+
+type CapitalField = 'targetVolatilityPct' | 'grossExposure' | 'maxGrossExposure'
+function capitalInputError(draft: ResearchRunSetupDraft): { field: CapitalField; message: string } | null {
+  if (isVolatilityCapitalMode(draft.capitalMode)) {
+    const value = Number(draft.targetVolatilityPct)
+    if (!draft.targetVolatilityPct.trim() || !Number.isFinite(value) || value <= 0 || value > 100) {
+      return { field: 'targetVolatilityPct', message: 'Enter a target volatility greater than 0% and no more than 100%.' }
+    }
   }
-  if (typeof error === 'object' && error && 'message' in error && typeof error.message === 'string') {
-    return error.message && error.message !== '[object Object]' ? error.message : 'Request failed.'
+  const field = draft.capitalMode === 'fixed_gross' ? 'grossExposure' : draft.capitalMode === 'target_volatility' ? 'maxGrossExposure' : null
+  if (field && (!draft[field].trim() || !Number.isFinite(Number(draft[field])) || Number(draft[field]) <= 0)) {
+    return { field, message: field === 'grossExposure' ? 'Enter a gross exposure greater than 0.' : 'Enter a maximum gross exposure greater than 0.' }
   }
-  return 'Request failed.'
+  return null
 }
 
 function formatTimestamp(value: string | null | undefined) {
@@ -274,6 +292,8 @@ export default function ResearchPage() {
   const [capitalMode, setCapitalMode] = useState<PortfolioResearchCapitalMode>('unit_notional')
   const [grossExposure, setGrossExposure] = useState('')
   const [targetVolatilityPct, setTargetVolatilityPct] = useState('')
+  const capitalFieldRefs = useRef<Partial<Record<CapitalField, HTMLInputElement | null>>>({})
+  const [capitalValidation, setCapitalValidation] = useState<ReturnType<typeof capitalInputError>>(null)
   const [maxGrossExposure, setMaxGrossExposure] = useState('')
   const [frozenNodeIds, setFrozenNodeIds] = useState<string[]>([])
   const [topSleeveBounds, setTopSleeveBounds] = useState<ResearchTopSleeveBoundDraft[]>([])
@@ -323,6 +343,7 @@ export default function ResearchPage() {
   }
 
   function openSettings() {
+    setCapitalValidation(null)
     applyRunSetupDraft(savedRunSetupDraftRef.current)
     setActionError(null)
     setSettingsOpen(true)
@@ -759,6 +780,8 @@ export default function ResearchPage() {
     if (!targetPortfolioId || currentPortfolioIdRef.current !== targetPortfolioId) {
       return null
     }
+    const invalidCapital = capitalInputError(draft)
+    if (invalidCapital) throw new Error(invalidCapital.message)
     const parsedGrossExposure = draft.grossExposure.trim() ? Number(draft.grossExposure) : null
     const parsedTargetVolatility = draft.targetVolatilityPct.trim() ? Number(draft.targetVolatilityPct) / 100 : null
     const parsedMaxGrossExposure = draft.maxGrossExposure.trim() ? Number(draft.maxGrossExposure) : null
@@ -814,6 +837,12 @@ export default function ResearchPage() {
   async function handleSaveSettings() {
     const targetPortfolioId = portfolioId
     if (!canEditPortfolio || actionPending || scopeActionBlocked || !targetPortfolioId) return
+    const invalidCapital = capitalInputError(runSetupDraftRef.current)
+    setCapitalValidation(invalidCapital)
+    if (invalidCapital) {
+      capitalFieldRefs.current[invalidCapital.field]?.focus()
+      return
+    }
     const request = beginRequest(settingsRequestSequenceRef, targetPortfolioId)
     setActionPending('save')
     setActionError(null)
@@ -1066,15 +1095,19 @@ export default function ResearchPage() {
                         <span>{capitalMode === 'volatility_cap' ? 'Vol Cap (%)' : 'Target Vol (%)'}</span>
                         <input
                           type="number"
-                          step="0.1"
+                          step="any"
                           min="0"
                           value={targetVolatilityPct}
+                          ref={(element) => { capitalFieldRefs.current.targetVolatilityPct = element }}
+                          aria-invalid={capitalValidation?.field === 'targetVolatilityPct'}
+                          aria-describedby={capitalValidation?.field === 'targetVolatilityPct' ? 'research-capital-error' : undefined}
                           onChange={(event) => {
                             setTargetVolatilityPct(event.target.value)
                             updateRunSetupDraft({ targetVolatilityPct: event.target.value })
                           }}
                           placeholder="7.0"
                         />
+                        {capitalValidation?.field === 'targetVolatilityPct' ? <span id="research-capital-error" className="transaction-ticket-hint transaction-ticket-hint-warning" role="alert">{capitalValidation.message}</span> : null}
                       </label>
                     </>
                   ) : null}
@@ -1084,15 +1117,19 @@ export default function ResearchPage() {
                         <span>Max Gross</span>
                         <input
                           type="number"
-                          step="0.01"
+                          step="any"
                           min="0"
                           value={maxGrossExposure}
+                          ref={(element) => { capitalFieldRefs.current.maxGrossExposure = element }}
+                          aria-invalid={capitalValidation?.field === 'maxGrossExposure'}
+                          aria-describedby={capitalValidation?.field === 'maxGrossExposure' ? 'research-capital-error' : undefined}
                           onChange={(event) => {
                             setMaxGrossExposure(event.target.value)
                             updateRunSetupDraft({ maxGrossExposure: event.target.value })
                           }}
                           placeholder="1.00"
                         />
+                        {capitalValidation?.field === 'maxGrossExposure' ? <span id="research-capital-error" className="transaction-ticket-hint transaction-ticket-hint-warning" role="alert">{capitalValidation.message}</span> : null}
                       </label>
                     </>
                   ) : null}
@@ -1104,12 +1141,16 @@ export default function ResearchPage() {
                         step="0.01"
                         min="0"
                         value={grossExposure}
+                        ref={(element) => { capitalFieldRefs.current.grossExposure = element }}
+                        aria-invalid={capitalValidation?.field === 'grossExposure'}
+                        aria-describedby={capitalValidation?.field === 'grossExposure' ? 'research-capital-error' : undefined}
                         onChange={(event) => {
                           setGrossExposure(event.target.value)
                           updateRunSetupDraft({ grossExposure: event.target.value })
                         }}
                         placeholder="1.00"
                       />
+                      {capitalValidation?.field === 'grossExposure' ? <span id="research-capital-error" className="transaction-ticket-hint transaction-ticket-hint-warning" role="alert">{capitalValidation.message}</span> : null}
                     </label>
                   ) : null}
                   <div className="research-freeze-field" ref={frozenMenuRef}>

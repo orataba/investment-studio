@@ -1,7 +1,7 @@
 """Public company-document scope from actual holdings and explicit research choices."""
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from studio_identity import current_principal
 
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
@@ -19,20 +19,21 @@ def latest_research_focus(session, instrument_id, as_of):
     extra focus. Private/portfolio conversations never establish this scope.
     """
     from watchlist_app.services.research_access import instrument_run_scope, topic_portfolio_ids
-    from watchlist_app.services.research_run_context import load_run_fields
+    from watchlist_app.services.research_run_context import load_shared_history_fields
     statement = select(ResearchEntry.entry_id, ResearchEntry.topic_id).join(ResearchTopic).where(
         ResearchEntry.kind == "analysis", ResearchEntry.created_at <= as_of,
         ResearchEntry.team_id == current_principal().team_id,
         ResearchTopic.visibility == "team", ResearchTopic.portfolio_id.is_(None),
         ResearchTopic.team_id == current_principal().team_id,
         instrument_run_scope(session, instrument_id),
+        or_(ResearchEntry.read_context_json["sector_run"].as_boolean().is_(True),
+            ResearchEntry.read_context_json["research_run"].as_boolean().is_(True)),
     ).order_by(ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc())
     for row in session.execute(statement):
         if topic_portfolio_ids(session, session.get(ResearchTopic, row.topic_id)):
             continue
-        context = load_run_fields(session, row.entry_id, {
-            "sector_run", "research_run", "instrument_ids", "cutoff", "input_snapshot_cutoff", "market_queries", "incremental_trigger"},
-            summary_only=True).context_json
+        context = load_shared_history_fields(session, row.entry_id, instrument_id, {
+            "sector_run", "research_run", "instrument_ids", "cutoff", "input_snapshot_cutoff", "market_queries", "incremental_trigger"}).context_json
         if not (context.get("sector_run") or context.get("research_run")):
             continue
         from watchlist_app.services.research_triggers import _queries

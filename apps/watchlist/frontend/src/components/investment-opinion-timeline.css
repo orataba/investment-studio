@@ -39,6 +39,7 @@
 .investment-opinion-message { padding: 16px 0; }
 .investment-opinion-message[role='alert'] { color: #b42318; }
 .investment-opinion-heading button { flex-shrink: 0; }
+.investment-opinion-timeline button { border-radius: 0; }
 
 .investment-opinion-current {
   padding: 20px 0;

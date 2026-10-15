@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { getTeamResearchGuidance, saveTeamResearchGuidance, type TeamResearchGuidance, type TeamResearchRole } from '../lib/researchDossierApi'
 import { useStudioAccount } from './AccountBoundary'
 import { dateLabel } from './ResearchEvidence'
@@ -17,6 +17,9 @@ export default function TeamResearchGuidanceRecord() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [refresh, setRefresh] = useState(0)
+  const editButton = useRef<HTMLButtonElement>(null)
+  const restoreEditFocus = useRef(false)
+  useEffect(() => { if (!draft && restoreEditFocus.current) { restoreEditFocus.current = false; editButton.current?.focus() } }, [draft])
   useEffect(() => {
     const controller = new AbortController()
     setError('')
@@ -43,7 +46,7 @@ export default function TeamResearchGuidanceRecord() {
     finally { setBusy(false) }
   }
   return <section className="research-guidance" aria-label="团队通用研究指导">
-    <div className="research-dossier-section-heading"><h4>团队通用研究指导</h4>{saved && !draft && canWrite && <button type="button" onClick={() => { setDraft(edit(saved)); setLatest(null); setError('') }}>编辑团队指导</button>}</div>
+    <div className="research-dossier-section-heading"><h4>团队通用研究指导</h4>{saved && !draft && canWrite && <button ref={editButton} type="button" onClick={() => { setDraft(edit(saved)); setLatest(null); setError('') }}>编辑团队指导</button>}</div>
     <p className="sector-research-note">用于团队所有适用标的。此处可调整分析框架、范围与重点；来源核证、访问权限和独立审核规则由系统维护。</p>
     {!saved && !error && <p role="status">Loading</p>}
     {error && <p role="alert">{error}</p>}
@@ -55,7 +58,7 @@ export default function TeamResearchGuidanceRecord() {
       <p className="research-material-wide sector-research-note">保存后用于后续研究，不会立即启动研究。</p>
       {latest && <section className="research-guidance-latest research-material-wide"><h4>最新已保存指导</h4><p translate="no">{latest.guidance || '—'}</p>{Object.entries(roles).map(([key, label]) => <details key={key}><summary>{label}</summary><p className="research-dossier-text" translate="no">{latest.section_skills[key as TeamResearchRole]}</p></details>)}<p>你的草稿已保留。核对后保存，将替换上面的最新指导。</p><button type="button" disabled={busy} onClick={() => setDraft(edit(latest))}>用最新指导替换草稿</button></section>}
       {error && <button className="research-material-wide" type="button" disabled={busy} onClick={() => void readLatest()}>读取最新指导并核对</button>}
-      <div className="sector-research-actions research-material-wide"><button type="submit" disabled={busy || (riskChanged && !draft.reason.trim())}>{busy ? '保存中…' : '保存团队指导'}</button><button type="button" disabled={busy} onClick={() => { setDraft(null); setLatest(null); setError('') }}>取消</button></div>
+      <div className="sector-research-actions research-material-wide"><button type="submit" disabled={busy || (riskChanged && !draft.reason.trim())}>{busy ? '保存中…' : '保存团队指导'}</button><button type="button" disabled={busy} onClick={() => { restoreEditFocus.current = true; setDraft(null); setLatest(null); setError('') }}>取消</button></div>
     </form> : saved && <>
       <p className="research-dossier-text" translate="no">{saved.guidance || '—'}</p>
       <div className="research-section-skills">{Object.entries(roles).map(([key, label]) => <details key={key}><summary>{label}</summary><p className="research-dossier-text" translate="no">{saved.section_skills[key as TeamResearchRole]}</p></details>)}</div>

@@ -20,6 +20,7 @@ import { renderPortfolioPage } from './test/renderPortfolioPage'
 const apiMocks = vi.hoisted(() => ({
   getWorkspaceSummaryForPortfolio: vi.fn(),
   getHoldingsWorkspace: vi.fn(),
+  getPortfolioCalculationStatus: vi.fn(),
   getPortfolioTaxonomyCatalog: vi.fn(),
   getPortfolioPerformance: vi.fn(),
   getPortfolioInstruments: vi.fn(),
@@ -36,6 +37,7 @@ vi.mock('./components/PortfolioWorkspaceLayout', () => ({
 describe('Overview rendered page contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    apiMocks.getPortfolioCalculationStatus.mockResolvedValue({ status: 'failed', error_message: 'AAPL valuation price missing for 2026-10-15', refreshed_to: '2026-10-14' })
     localStorage.removeItem('investment_studio.portfolio.overview.taxonomy.3')
     apiMocks.getWorkspaceSummaryForPortfolio.mockResolvedValue(workspaceSummaryFixture())
     apiMocks.getConcentration.mockResolvedValue({ scopes: [] })
@@ -63,6 +65,17 @@ describe('Overview rendered page contract', () => {
     })
     apiMocks.getPortfolioPerformance.mockResolvedValue(performanceFixture())
     apiMocks.getPortfolioInstruments.mockResolvedValue({ instruments: [] })
+  })
+
+  it('keeps a missing-price recovery explanation and the prior published date on screen', async () => {
+    apiMocks.getHoldingsWorkspace.mockRejectedValue(new Error('AAPL valuation price missing for 2026-10-15'))
+    renderPortfolioPage(<OverviewPage />, '/portfolios/3/overview', '/portfolios/:portfolioId/overview')
+    expect(await screen.findByText('Valuation unavailable')).toBeInTheDocument()
+    expect(await screen.findByText('Last published valuation: 2026-10-14')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Review this valuation date' })).toHaveAttribute('href', '/portfolios/3/performance?end_date=2026-10-14')
+    expect(screen.getByRole('link', { name: 'View ledger positions' })).toHaveAttribute('href', '/portfolios/3/accounts')
+    expect(screen.queryByText('No data.')).not.toBeInTheDocument()
+    expect(document.querySelector('.investment-studio-notice-toast-error')).not.toBeInTheDocument()
   })
 
   it('loads holdings and performance without waiting for classification and reports its failure locally', async () => {
@@ -107,7 +120,7 @@ describe('Overview rendered page contract', () => {
     expect(metrics).toHaveTextContent('Eligible market observations 2026-10-01 → 2026-10-02')
     expect(within(metrics).getByRole('row', { name: 'Market Current DD 0.00%' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /^Market-risk return basis:/ }))
-    expect(screen.getAllByRole('tooltip').some(tip => tip.textContent?.includes('exclude recorded fees'))).toBe(true)
+    expect(screen.getAllByRole('tooltip').some(tip => tip.textContent?.includes('retain security transaction fees'))).toBe(true)
   })
 
   it.each(['', 'deleted-taxonomy'])('requires an explicit choice for multiple or unavailable classifications (%s)', async (savedTaxonomyId) => {

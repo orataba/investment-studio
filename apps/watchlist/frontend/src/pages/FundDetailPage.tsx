@@ -455,8 +455,8 @@ const SYSTEM_LABELS: Record<string, LocalizedText> = {
   unspecified: { en: 'Unspecified', zh: '未设置' },
   uploadFailed: { en: 'Failed to upload document.', zh: '文档上传失败。' },
   unavailableBasis: {
-    en: 'is unavailable for the current currency or date window. Switch Data Type, Currency, or range.',
-    zh: '在当前币种或日期区间不可用。请切换数据类型、币种或区间。',
+    en: 'is unavailable for the selected period: return observations, interval evidence or the calendar are incomplete. NAV quotes remain available above. Chart settings and the period controls show any available alternatives.',
+    zh: '在所选区间不可用：收益观察值、区间证据或日历不完整；上方净值报价仍可查看。图表设置与区间控件保留可用的替代选择。',
   },
   selectType: { en: 'Select type', zh: '选择类型' },
   size: { en: 'Size', zh: '大小' },
@@ -2789,6 +2789,7 @@ export default function FundDetailPage({
   }
   function setActiveTab(tab: DetailTab) {
     setActiveTabState(tab)
+    document.querySelector('.instrument-detail-tabs')?.scrollIntoView?.({ block: 'start' })
     setDetailSearchParams((params) => {
       const next = new URLSearchParams(params)
       next.set('tab', tab)
@@ -4370,6 +4371,8 @@ export default function FundDetailPage({
         )
       : ''
   const chartTickValues = getLinearTickValues(chartMin, chartMax, 5)
+  const chartTickStep = Math.abs(chartTickValues[1] - chartTickValues[0]) || 1
+  const chartAxisDigits = Math.min(8, Math.max(2, 1 - Math.floor(Math.log10(chartTickStep))))
   const combinedDrawdownSeries = [...drawdownSeries, ...benchmarkDrawdownSeries]
   const drawdownBounds = getDrawdownAxisBounds(combinedDrawdownSeries)
   const drawdownBands = buildChartBands(drawdownSeries, DRAWDOWN_CHART_GEOMETRY, 10)
@@ -4829,6 +4832,13 @@ export default function FundDetailPage({
   const peerModeAvailable = (mode: PerformanceMatrixMode) => mode === 'values'
     || (!selectedBenchmark && (mode === 'peer_median_delta' ? peerMedianAvailable : peerRankingAvailable))
   const activePerformanceMatrixMode = peerModeAvailable(performanceMatrixMode) ? performanceMatrixMode : 'values'
+  const peerUnavailableReason = selectedBenchmark
+    ? (language === 'zh-Hans' ? '移除比较基准后可查看独立同类比较。' : 'Clear the benchmark to inspect standalone peer comparisons.')
+    : !peerMedianAvailable
+      ? (language === 'zh-Hans' ? '暂无实际起止日、币种、频率和收益口径一致的完整同类区间。' : 'No complete peer windows with matching dates, currency, frequency and return basis are available.')
+      : !peerRankingAvailable
+        ? (language === 'zh-Hans' ? '完整可比样本不足以排名；仍可查看同类中位数差异。' : 'The comparable sample supports medians only; percentile and rank are unavailable.')
+        : ''
   const formatRecoveryValue = (snapshot: PerformanceMetricSnapshot | null) => {
     if (!snapshot || snapshot.maxDrawdown == null) {
       return null
@@ -5906,6 +5916,31 @@ export default function FundDetailPage({
                 <div className="instrument-quote-control-bar">
                   <div className="instrument-quote-toolbar-primary">
                     {renderBenchmarkSearch('Compare benchmark')}
+                    <div className="instrument-chart-menu instrument-chart-settings-menu" ref={quoteChartMenuRef}>
+                      <button
+                        type="button"
+                        className={
+                          openQuoteChartMenu === 'settings'
+                            ? 'instrument-chart-settings-trigger instrument-chart-settings-trigger-active'
+                            : 'instrument-chart-settings-trigger'
+                        }
+                        aria-label="Chart settings"
+                        aria-expanded={openQuoteChartMenu === 'settings'}
+                        onClick={() =>
+                          setOpenQuoteChartMenu((current) => (current === 'settings' ? null : 'settings'))
+                        }
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M4 7h4" />
+                          <path d="M14 7h6" />
+                          <circle cx="11" cy="7" r="2.25" />
+                          <path d="M4 17h7" />
+                          <path d="M17 17h3" />
+                          <circle cx="14" cy="17" r="2.25" />
+                        </svg>
+                      </button>
+                      {chartSettingsMenu}
+                    </div>
                   </div>
                 </div>
 
@@ -5947,31 +5982,6 @@ export default function FundDetailPage({
                         <span>
                           Growth Index · Base 100 · Anchor {formatDate(fundReturnWindow?.anchorDate)} → {formatDate(fundReturnWindow?.endDate)}
                         </span>
-                        <div className="instrument-chart-menu instrument-chart-settings-menu" ref={quoteChartMenuRef}>
-                          <button
-                            type="button"
-                            className={
-                              openQuoteChartMenu === 'settings'
-                                ? 'instrument-chart-settings-trigger instrument-chart-settings-trigger-active'
-                                : 'instrument-chart-settings-trigger'
-                            }
-                            aria-label="Chart settings"
-                            aria-expanded={openQuoteChartMenu === 'settings'}
-                            onClick={() =>
-                              setOpenQuoteChartMenu((current) => (current === 'settings' ? null : 'settings'))
-                            }
-                          >
-                            <svg viewBox="0 0 24 24" aria-hidden="true">
-                              <path d="M4 7h4" />
-                              <path d="M14 7h6" />
-                              <circle cx="11" cy="7" r="2.25" />
-                              <path d="M4 17h7" />
-                              <path d="M17 17h3" />
-                              <circle cx="14" cy="17" r="2.25" />
-                            </svg>
-                          </button>
-                          {chartSettingsMenu}
-                        </div>
                       </div>
                     </div>
 
@@ -6051,7 +6061,7 @@ export default function FundDetailPage({
                               x={String(getYAxisStubEndX(PRIMARY_CHART_GEOMETRY))}
                               y={getYAxisLabelTextY(projectedY, PRIMARY_CHART_GEOMETRY, isBottomTick ? 'above' : 'below')}
                             >
-                              {formatNumber(tick, 2)}
+                              {formatNumber(tick, chartAxisDigits)}
                             </text>
                           </g>
                         )
@@ -6581,6 +6591,15 @@ export default function FundDetailPage({
                         </div>
                       </div>
                     ) : null}
+
+                    </>
+                  ) : (
+                    <div className="instrument-placeholder">
+                      {navSeries.rows.length
+                        ? `${quoteBasisLabel} ${localize(language, SYSTEM_LABELS.unavailableBasis)}`
+                        : localize(language, SYSTEM_LABELS.noNavHistory)}
+                    </div>
+                  )}
                     {canUseZoom ? (
                       <div className="instrument-chart-zoom">
                         <div className="instrument-chart-zoom-meta">
@@ -6628,14 +6647,6 @@ export default function FundDetailPage({
                         </div>
                       </div>
                     ) : null}
-                    </>
-                  ) : (
-                    <div className="instrument-placeholder">
-                      {navSeries.rows.length
-                        ? `${quoteBasisLabel} ${localize(language, SYSTEM_LABELS.unavailableBasis)}`
-                        : localize(language, SYSTEM_LABELS.noNavHistory)}
-                    </div>
-                  )}
                 </div>
               </div>
 
@@ -6679,6 +6690,7 @@ export default function FundDetailPage({
                       type="button"
                       className={option.value === activePerformanceMatrixMode ? 'instrument-performance-toggle-active' : undefined}
                       disabled={!peerModeAvailable(option.value)}
+                      aria-describedby={!peerModeAvailable(option.value) ? "peer-availability-reason" : undefined}
                       title={option.value !== 'values' && selectedBenchmark ? language === 'zh-Hans' ? '移除比较基准后查看独立同类排名' : 'Clear the benchmark to inspect standalone peer rankings' : undefined}
                       onClick={() => setPerformanceMatrixMode(option.value)}
                     >
@@ -6689,6 +6701,7 @@ export default function FundDetailPage({
               </div>
             </div>
             <div className="instrument-performance-section-body">
+              {peerUnavailableReason && <p id="peer-availability-reason" className="fund-overview-date-note">{peerUnavailableReason}</p>}
               <p className="fund-overview-date-note" role={comparisonPending ? "status" : "note"}>{comparisonPending ? (language === 'zh-Hans' ? '正在读取比较数据，完成后显示共同观察区间。' : 'Loading comparison data; common observation windows will appear when ready.') : benchmarkLoadError ? benchmarkStatusText : selectedBenchmark
                 ? language === 'zh-Hans'
                   ? `比较矩阵：所有周期按共同观察日计算，截至 ${comparisonReferenceEndDate || '尚无共同日期'}；覆盖不足的周期不展示独立最新值。标的独立最新指标及月表截至 ${performanceReferenceEndDate || '—'}。`

@@ -183,8 +183,7 @@ export default function WatchlistEntryPage() {
         name,
         description: createWatchlistDescription.trim() || null,
       })
-      const nextWatchlists = await getWatchlists()
-      setWatchlists(nextWatchlists)
+      // The POST response confirms creation; opening its ID does not depend on a directory refresh.
       resetCreateWatchlistForm()
       setCreateModalOpen(false)
       setNotice(`Created watchlist "${created.name}".`)

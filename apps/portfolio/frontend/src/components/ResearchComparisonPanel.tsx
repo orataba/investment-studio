@@ -28,12 +28,14 @@ function ComparisonChart({ lines, zh, inception }: { lines: ChartLine[]; zh: boo
   const dates = [...new Set(all.map((point) => point.date))].sort()
   const minTime = timestamp(dates[0]), maxTime = timestamp(dates[dates.length - 1])
   const minValue = Math.min(...all.map((point) => point.value)), maxValue = Math.max(...all.map((point) => point.value))
-  const padding = Math.max((maxValue - minValue) * 0.12, mode === 'drawdown' ? 0.005 : 0.01)
+  const padding = maxValue === minValue ? (mode === 'drawdown' ? 0.005 : 0.01) : (maxValue - minValue) * 0.12
   const yMin = minValue - padding, yMax = mode === 'drawdown' ? 0 : maxValue + padding
   const x = (date: string) => left + (timestamp(date) - minTime) / Math.max(maxTime - minTime, 1) * (right - left)
   const y = (value: number) => bottom - (value - yMin) / (yMax - yMin) * (bottom - top)
   const selectedDate = hoverDate && dates.includes(hoverDate) ? hoverDate : dates[dates.length - 1]
-  const labelValue = (value: number) => mode === 'drawdown' ? formatPercent(value) : formatNumber(value, 3)
+  const axisDigits = Math.max(2, Math.min(8, Math.ceil(-Math.log10((yMax - yMin) / 4)) + 1))
+  const dateTicks = [...new Set([0, 1, 2, 3].map(tick => dates[Math.round((dates.length - 1) * tick / 3)]))]
+  const labelValue = (value: number) => mode === 'drawdown' ? formatPercent(value, Math.max(2, axisDigits - 2)) : formatNumber(value, Math.max(3, axisDigits))
   return <div className="research-comparison-chart">
     <div className="research-comparison-chart-toolbar">
       <div className="research-comparison-legend">
@@ -58,12 +60,9 @@ function ComparisonChart({ lines, zh, inception }: { lines: ChartLine[]; zh: boo
       {[0, 1, 2, 3, 4].map((tick) => {
         const value = yMin + (yMax - yMin) * tick / 4
         return <g key={tick}><line x1={left} x2={right} y1={y(value)} y2={y(value)} className="research-comparison-gridline" />
-          <text x={left - 9} y={y(value) + 4} textAnchor="end">{mode === 'drawdown' ? formatPercent(value, 1) : formatNumber(value, 2)}</text></g>
+          <text x={left - 9} y={y(value) + 4} textAnchor="end">{mode === 'drawdown' ? formatPercent(value, Math.max(1, axisDigits - 2)) : formatNumber(value, axisDigits)}</text></g>
       })}
-      {[0, 1, 2, 3].map((tick) => {
-        const date = dates[Math.round((dates.length - 1) * tick / 3)]
-        return <text key={tick} x={x(date)} y={bottom + 24} textAnchor={tick === 0 ? 'start' : tick === 3 ? 'end' : 'middle'}>{inception && date < inception ? inception : date}</text>
-      })}
+      {dateTicks.map((date, index) => <text key={date} x={x(date)} y={bottom + 24} textAnchor={index === 0 ? 'start' : index === dateTicks.length - 1 ? 'end' : 'middle'}>{inception && date < inception ? `${inception} · ${zh ? '锚点' : 'anchor'}` : date}</text>)}
       {chartLines.map((line, index) => <path key={line.label} d={line.points.map((point, i) => `${i ? 'L' : 'M'}${x(point.date)},${y(point.value)}`).join(' ')} fill="none" stroke={CHART_SERIES_COLORS[index]} strokeWidth={2} />)}
       <line x1={x(selectedDate)} x2={x(selectedDate)} y1={top} y2={bottom} className="research-comparison-crosshair" />
     </svg>

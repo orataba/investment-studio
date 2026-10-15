@@ -41,7 +41,8 @@
       clock is local receipt is late_received context: its count is explicit and its titles/entities
       remain searchable with list_briefing_sources(scope=late_received, query=...). Consult it when
       relevant; a first archive import is not thousands of new market events. content_completeness
-      distinguishes full_text, source_excerpt and unavailable. Never invent the missing continuation
+      distinguishes full_text, source_excerpt, title_only and unavailable. A title-only record does
+      not contain article text. Never invent the missing continuation
       of an excerpt or claim a full publisher article was read when only an excerpt was supplied.
       Daily: exactly one takeaway_section titled 重点信息, with 宏观 then 微观 groups.
       Weekly: topic_recommendations titled 本周话题推荐, followed by opportunity_leads titled

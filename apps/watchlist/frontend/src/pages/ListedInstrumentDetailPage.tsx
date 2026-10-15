@@ -597,6 +597,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const requestedTab = searchParams.get('tab')
   const tab = resolveListedDetailTab(requestedTab)
   function setTab(nextTab: ListedDetailTab) {
+    document.querySelector('.instrument-detail-tabs')?.scrollIntoView?.({ block: 'start' })
     const next = new URLSearchParams(searchParams)
     next.set('tab', nextTab)
     setSearchParams(next, { replace: true })

@@ -35,7 +35,7 @@ export type ResearchAssistantProps = {
   saveNote?: (note: ResearchAssistantNote) => Promise<unknown>
   attachmentHref: (source: string) => string
   announcePublication?: (instrumentIds: string[]) => void
-  renderMarkdown: (body: string) => ReactNode
+  renderMarkdown: (body: string, sourceUrls: string[]) => ReactNode
   backLink?: ReactNode
 }
 
@@ -86,6 +86,7 @@ type Evidence = {
   citation_only?: boolean
   title?: string
   source_type?: string
+  url?: string
 }
 type UserRecord = { kind: 'theme' | 'investment_view' | 'research_publication'; instrument_id: string; id: string; title?: string }
 type PublicSource = { source_id?: string; title?: string; url?: string; published_at?: string | null }
@@ -113,6 +114,15 @@ function linkedAnswer(entry: Entry, evidence: Evidence[]) {
   let body = entry.body
   for (const item of evidence) body = body.split(`[${item.source_id}]`).join(`[${item.source_id}](#${evidenceId(entry.entry_id, item.source_id)})`)
   return body
+}
+function evidenceUrls(evidence: Evidence[]) {
+  return evidence.flatMap(item => {
+    const result = item.result
+    const retained = result?.retained_source as PublicSource | undefined
+    const sources = Array.isArray(result?.sources) ? result.sources as PublicSource[] : []
+    return [item.url, result?.url, retained?.url, ...sources.map(source => source.url), item.request?.url]
+      .filter((value): value is string => typeof value === 'string' && Boolean(publicHref(value)))
+  })
 }
 // Bound the rendered text, not the retained evidence. Large originals can contain
 // years of input observations and otherwise stall layout/accessibility snapshots.
@@ -652,8 +662,8 @@ export default function ResearchAssistant({
               <article className="assistant-answer">
                 <small>DeepSeek · {stateLabels[entry.status] || entry.status}</small>
                 <ResearchRunStatus runId={entry.entry_id} status={entry.status} createdAt={entry.created_at} completedAt={entry.completed_at} execution={entry.context_json.execution as ResearchRunExecution | undefined} error={entry.context_json.runtime_error as ResearchRunError | undefined} />
-                <p className="assistant-scope"><span>回答范围与证据时点</span> · <span>组合编号</span> <code translate="no">{String(entry.context_json.portfolio_id || '—')}</code> · <span>标的编号</span> <code translate="no">{((entry.context_json.instrument_ids || []) as string[]).join(', ') || '—'}</code> · <span>信息截至</span> {stamp(String(entry.context_json.cutoff || entry.created_at))}</p>
-                <p className="assistant-scope">研究原文保留生成时的语言；历史回答和证据快照不会随当前持仓变化。</p>
+                <details className="assistant-answer-context"><summary>回答范围与证据时点</summary><p className="assistant-scope"><span>组合编号</span> <code translate="no">{String(entry.context_json.portfolio_id || '—')}</code> · <span>标的编号</span> <code translate="no">{((entry.context_json.instrument_ids || []) as string[]).join(', ') || '—'}</code> · <span>信息截至</span> {stamp(String(entry.context_json.cutoff || entry.created_at))}</p>
+                <p className="assistant-scope">研究原文保留生成时的语言；历史回答和证据快照不会随当前持仓变化。</p></details>
                 {['queued', 'running'].includes(entry.status) ? (
                   <p role="status">
                     {entry.status === 'queued' ? '问题已排队，等待回复。' : evidence.length
@@ -672,7 +682,7 @@ export default function ResearchAssistant({
                     target?.focus()
                     target.scrollIntoView?.({ block: 'start' })
                   }}>
-                    {renderMarkdown(linkedAnswer(entry, evidence))}
+                    {renderMarkdown(linkedAnswer(entry, evidence), evidenceUrls(evidence))}
                   </div>
                 )}
                 {publication && publication.status !== 'not_requested' && <p className="assistant-scope" role={publication.status === 'published' ? 'status' : 'alert'}>

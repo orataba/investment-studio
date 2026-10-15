@@ -474,6 +474,46 @@ describe('Accounts rendered page contract', () => {
     expect(within(detail).getByRole('heading', { name: 'Open positions' })).toBeInTheDocument()
   })
 
+  it.each(['click', 'keyboard'])('locks the old account synchronously on %s selection in both directions', async (input) => {
+    const initial = accountsWorkspaceFixture()
+    let finish!: (value: PortfolioAccountsWorkspaceResponse) => void
+    apiMocks.getPortfolioAccountsWorkspace.mockResolvedValueOnce(initial).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    renderPortfolioPage(<AccountsPage />, '/portfolios/3/accounts?account_id=broker-1', '/portfolios/:portfolioId/accounts')
+    await screen.findByRole('heading', { name: 'Private Fund Account' })
+    for (const account of [cashAccount, securitiesAccount]) {
+      const edit = screen.getByRole('button', { name: 'Edit Account' })
+      const target = within(screen.getByRole('navigation', { name: 'Accounts' })).getByRole('button', { name: new RegExp(account.account_name) })
+      act(() => {
+        if (input === 'keyboard') target.focus()
+        target.click()
+        edit.click()
+      })
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(edit).toBeDisabled()
+      await act(async () => finish({ ...initial, selected_account_id: account.account_id }))
+      await waitFor(() => expect(edit).toBeEnabled())
+      fireEvent.click(edit)
+      const dialog = screen.getByRole('dialog', { name: 'Edit account' })
+      expect(within(dialog).getByLabelText('Account Name')).toHaveValue(account.account_name)
+      expect(dialog).toHaveTextContent(account.account_id)
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    }
+    expect(apiMocks.updatePortfolioAccount).not.toHaveBeenCalled()
+  })
+
+  it.each(['Escape', 'Cancel'])('returns mouse-opened Add Account focus to its trigger after %s', async (exit) => {
+    renderPortfolioPage(<AccountsPage />, '/portfolios/3/accounts?account_id=broker-1', '/portfolios/:portfolioId/accounts')
+    await screen.findByRole('heading', { name: 'Private Fund Account' })
+    const trigger = screen.getByRole('button', { name: 'Add Account' })
+    document.body.focus()
+    fireEvent.click(trigger)
+    const dialog = screen.getByRole('dialog', { name: 'Add account' })
+    within(dialog).getByLabelText('Account Name').focus()
+    if (exit === 'Escape') fireEvent.keyDown(document, { key: 'Escape' })
+    else fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(trigger).toHaveFocus())
+  })
+
   it('ignores a late account response after switching back and keeps the URL tab context', async () => {
     const user = userEvent.setup()
     const lateResponse = deferred<PortfolioAccountsWorkspaceResponse>()

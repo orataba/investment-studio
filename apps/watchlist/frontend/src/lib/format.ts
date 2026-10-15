@@ -15,7 +15,8 @@ export function formatPercent(value: unknown, digits = 2) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
     return '—'
   }
-  return `${value.toFixed(digits)}%`
+  const rounded = Number(value.toFixed(digits))
+  return `${(Object.is(rounded, -0) ? 0 : rounded).toFixed(digits)}%`
 }
 
 export function formatNumber(value: unknown, digits = 2) {
@@ -66,6 +67,8 @@ export function formatDateTime(value: unknown) {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
+    timeZone: 'UTC',
+    timeZoneName: 'short',
   }).format(date)
 }
 

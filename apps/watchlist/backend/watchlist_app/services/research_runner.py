@@ -330,13 +330,27 @@ def run_analysis(run_id: str, token: str | None = None, issuer=None, *, attempt:
 
 
 def _fail_authorization(run_id, error, *, attempt):
-    message = "账号或研究范围授权不可用，本轮没有发布成果；恢复授权后可重新发起。"
-    # Preserve the failure class without storing credentials, response bodies or
-    # private provider details. A generic message alone cannot distinguish a
-    # rejected credential/scope from an unavailable identity service afterwards.
-    _fail_run(run_id, message, attempt=attempt, runtime_error={"type": "AuthorizationUnavailable",
-        "status_code": error.status_code, "summary": message,
-        **({"retryable": True} if isinstance(error, IdentityError) and error.retryable else {})})
+    from watchlist_app.services.research_access import ResearchRunScopeMismatch
+    status = error.status_code
+    retryable = isinstance(error, IdentityError) and error.retryable
+    if isinstance(error, ResearchRunScopeMismatch):
+        kind, message = "ResearchRunScopeMismatch", "研究资料读取超出本轮任务范围，本轮未发布；请修复资料准备流程后恢复任务。"
+    elif status in {401, 403}:
+        kind, message = "AuthorizationUnavailable", "账号或研究范围授权不可用，本轮没有发布成果；恢复授权后可重新发起。"
+    elif isinstance(error, IdentityError) and status >= 500:
+        kind, message = "IdentityServiceUnavailable", "身份核验服务暂不可用，本轮未发布；请检查服务恢复情况后重试。"
+    elif status >= 500:
+        kind, message = "ResearchServiceUnavailable", "研究依赖服务暂不可用，本轮未发布；请检查服务诊断后重试。"
+        retryable = status in {502, 503, 504}
+    elif status == 409:
+        kind, message = "ResearchStateConflict", "研究任务或资料状态已变化，本轮未发布；请刷新后核对当前任务。"
+    else:
+        kind, message = "ResearchInputRejected", "研究资料请求未通过校验，本轮未发布；请核对资料与任务范围。"
+    # Never retain response bodies, tokens or provider details as diagnostics.
+    logging.getLogger(__name__).warning("Research request failed run_id=%s attempt=%s type=%s status_code=%s retryable=%s",
+                                      run_id, attempt, kind, status, retryable)
+    _fail_run(run_id, message, attempt=attempt, runtime_error={"type": kind,
+        "status_code": status, "summary": message, "retryable": retryable})
 
 
 def _fail_run(run_id, message, *, attempt, runtime_error=None):

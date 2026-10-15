@@ -188,8 +188,8 @@ def _read_instrument_evidence(session: Session, ids: list[str], *, include_dossi
             previous = completed_research.get(iid) or {}
             numeric_cutoff = previous.get("checked_at")
             if previous.get("run_id"):
-                from watchlist_app.services.research_run_context import load_run_fields
-                fields = load_run_fields(session, previous["run_id"], {"input_snapshot_cutoff"}, summary_only=True).context_json
+                from watchlist_app.services.research_run_context import load_shared_history_fields
+                fields = load_shared_history_fields(session, previous["run_id"], iid, {"input_snapshot_cutoff"}).context_json
                 numeric_cutoff = fields.get("input_snapshot_cutoff") or numeric_cutoff
             since = datetime.fromisoformat(numeric_cutoff.replace("Z", "+00:00")) if numeric_cutoff else None
             asset["analyst_estimate_history"] = read_estimate_evidence(session, iid, as_of=as_of,

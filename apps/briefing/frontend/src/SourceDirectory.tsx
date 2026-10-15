@@ -3,6 +3,7 @@ import { useLanguage } from '../../../../packages/ui/src/i18n'
 import type { Source } from './types'
 import { safeUrl } from './SourceEvidence'
 import { EvidenceTime, ExternalLinkIcon } from './reading'
+import { completenessLabels, sourceCompleteness } from './sourceCompleteness'
 
 /** A bounded reading list over this edition's retained source identities. */
 export default function SourceDirectory({ sources, timezone, canReadSources, onSource }: {
@@ -17,13 +18,10 @@ export default function SourceDirectory({ sources, timezone, canReadSources, onS
   const search = query.trim().toLocaleLowerCase()
   const matches = documents.filter(item => (!search || [item.title, item.source_name, item.url].some(value =>
     String(value || '').toLocaleLowerCase().includes(search))) && (completeness === 'all'
-    || (item.content_completeness || 'unknown') === completeness))
+    || sourceCompleteness(item.content_completeness) === completeness))
   const pageCount = Math.max(1, Math.ceil(matches.length / 30))
   const currentPage = Math.min(page, pageCount - 1)
-  const labels: Record<string, string> = {
-    full_text: copy('完整正文', 'Full text'), source_excerpt: copy('来源节选', 'Source excerpt'),
-    unavailable: copy('正文不可用', 'Content unavailable'), unknown: copy('完整性未留存', 'Completeness not retained'),
-  }
+  const labels = completenessLabels(copy)
   return <section className="source-directory" aria-label={copy('材料目录', 'Material directory')}>
     <div className="source-directory-controls">
       <label>{copy('查找材料', 'Find material')}<input type="search" value={query}
@@ -41,7 +39,7 @@ export default function SourceDirectory({ sources, timezone, canReadSources, onS
     <ul className="all-sources">{matches.slice(currentPage * 30, (currentPage + 1) * 30).map(item => <li key={item.source_id}>
       {safeUrl(item.url) ? <a href={safeUrl(item.url)} target="_blank" rel="noreferrer" translate="no">{item.title} <ExternalLinkIcon /></a> : <span translate="no">{item.title}</span>}
       <span><span translate="no">{item.source_name}</span> · {item.published_at ? <EvidenceTime value={item.published_at} timezone={timezone} /> : copy('首发时间未知', 'Publication time unknown')}
-        {' · '}{labels[item.content_completeness || 'unknown'] || labels.unknown}
+        {' · '}{labels[sourceCompleteness(item.content_completeness)]}{sourceCompleteness(item.content_completeness) === 'unknown' && <> (<span translate="no">{item.content_completeness}</span>)</>}
         {canReadSources && <> · <button onClick={() => onSource(item.source_id)}>{copy('留存版本', 'Retained version')}</button></>}
       </span>
     </li>)}</ul>

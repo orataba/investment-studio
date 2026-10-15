@@ -135,7 +135,7 @@ def test_answer_citations_resolve_only_bound_originals_without_claiming_tool_del
     context = {"research_actor": principals["alice"].to_dict(), "execution": {"attempt": 1},
         "cutoff": "2026-10-01T00:00:00Z", "instrument_ids": ["fund-us-agg"],
         "instrument_inputs": [{"source_id": ids[0], "instrument_id": "fund-us-agg", "name": "Frozen instrument", "original": huge}],
-        "market_text_sources": [{"source_id": ids[2], "document_id": "bound", "version_id": "original-version", "title": "Original article"}],
+        "market_text_sources": [{"source_id": ids[2], "document_id": "bound", "version_id": "original-version", "title": "Original article", "url": "https://issuer.example/article?date=2026-10-01"}],
         "research_dossiers": [{"instrument_id": "fund-us-agg", "notebook": {"investment_view": {
             "version_id": "old:investment-view", "summary": "Original judgment", "versions": None}}}],
         "unrelated_original": huge}
@@ -159,6 +159,7 @@ def test_answer_citations_resolve_only_bound_originals_without_claiming_tool_del
         receipts = response.json()["entries"][0]["context_json"]["tool_evidence"]
         assert [row["source_id"] for row in receipts] == ids
         assert all(row["citation_only"] and row["tool"] == "source" for row in receipts)
+        assert next(row for row in receipts if row["source_id"] == ids[2])["url"] == "https://issuer.example/article?date=2026-10-01"
         assert huge not in response.text and "Original judgment" not in response.text
         assert len(response.content) < 6000
         path = "/api/research/runs/citation-run/evidence"

@@ -214,7 +214,7 @@ def test_workbench_uses_successful_frozen_input_cutoff_and_shared_company_scope(
     monkeypatch.setattr(workbench, "read_research_records", lambda *a: {})
     monkeypatch.setattr(shared_instrument_registry, "get_shared_reference_data", lambda *a, **k: {})
     monkeypatch.setattr(sector_research, "latest_reviews", lambda *a, **k: {"xlk": {"run_id": "success", "checked_at": clock(6).isoformat()}})
-    monkeypatch.setattr(research_run_context, "load_run_fields", lambda *a, **k: SimpleNamespace(context_json={"input_snapshot_cutoff": clock(2).isoformat()}))
+    monkeypatch.setattr(research_run_context, "load_shared_history_fields", lambda *a, **k: SimpleNamespace(context_json={"input_snapshot_cutoff": clock(2).isoformat()}))
     monkeypatch.setattr(research_fmp_scope, "build_fmp_research_scope", lambda *a, **k: {"instruments": [scope]})
     seen = []
     monkeypatch.setattr(estimates, "read_estimate_evidence", lambda *a, **k: seen.append(k) or {})

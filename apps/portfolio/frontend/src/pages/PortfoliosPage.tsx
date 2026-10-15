@@ -166,7 +166,7 @@ export default function PortfoliosPage() {
       : !resolvedPortfolios.length
         ? 'No portfolios'
         : resolvedPortfolios.some((item) => item.nav == null)
-          ? 'Recalculating'
+          ? text('Valuation incomplete', '估值不完整')
           : !commonBaseCurrency
             ? 'Multiple base currencies'
             : !commonAsOfDate
@@ -457,11 +457,12 @@ export default function PortfoliosPage() {
               <div className="portfolio-entry-card-title-stack">
                 <strong translate="no">{portfolio.portfolio_name}</strong>
                 <span>
-                  {portfolio.securities_count} Securities | Started {formatAsOfDate(portfolio.inception_date)} | As of {formatAsOfDate(portfolio.as_of_date)}
+                  {portfolio.nav == null ? text('Holdings valuation unavailable', '持仓估值不可用') : `${portfolio.securities_count} Securities`} | Started {formatAsOfDate(portfolio.inception_date)} | As of {formatAsOfDate(portfolio.as_of_date)}
                 </span>
               </div>
               <div className="portfolio-entry-card-metrics">
                 <strong>{formatCurrency(portfolio.nav, portfolio.base_currency)}</strong>
+                {portfolio.nav == null ? <span>{text('NAV unavailable · Open for valuation details', '净值不可用 · 打开查看估值详情')}</span> : null}
                 <span className={signedValueClass(portfolio.day_change_value)}>
                   <span title="Daily investment P&L and cash-flow-adjusted daily return at the displayed valuation date">1D · </span>{formatSignedCurrency(portfolio.day_change_value, portfolio.base_currency)} ({formatDailyPercent(portfolio.day_change_pct)})
                 </span>

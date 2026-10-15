@@ -981,13 +981,15 @@ $$
 - 任何带 `start_date / end_date` 的区间 summary 都必须用区间内 `daily_twr` 重新复合并重算 drawdown，不能直接复用 inception-to-date 的 `cumulative_twr` 或 snapshot-level drawdown；
 - 区间第一笔有效收益如果已经形成回撤，drawdown peak 应以区间起点锚点为基准，而不是把第一条收益观察日误当作峰值日；
 - 若主图显示 `Portfolio Value`，下方 drawdown 仍然使用 `TWR Index`，因为外部出入金不应制造或稀释投资回撤。
-- Overview 下方明确标识 `Portfolio TWR Drawdown`，对应包含费用和事件损益的实际组合收益。`Market Risk Watch` 的当前与最大回撤属于独立市场风险收益链，始终解释费用等排除项，即使组合没有衍生品。`risk_observation_start_date/end_date` 来自后端实际采用的合格风险收益样本，界面显示完整样本起止区间；不能用组合估值日或主图缩放区间冒充。市场回撤为零不表示实际投资没有亏损或全面无风险。
+- Overview 下方明确标识 `Portfolio TWR Drawdown`，对应包含费用和事件损益的实际组合收益。`Market Risk Watch` 的当前与最大回撤属于独立市场风险收益链，始终解释实际排除项，即使组合没有衍生品。证券交易附带费用和税保留在市场风险收益中；独立现金费用／税、现金利息，以及事件记账型衍生品收入、已实现损益和费用被排除。不能笼统声称所有已记费用均被排除。`risk_observation_start_date/end_date` 来自后端实际采用的合格风险收益样本，界面显示完整样本起止区间；不能用组合估值日或主图缩放区间冒充。市场回撤为零不表示实际投资没有亏损或全面无风险。
 
 ### 5.8 Volatility / Sharpe / Sortino / Tracking Error
 
 ### Portfolio volatility
 
 默认使用组合 `market_risk_daily_return` 的 simple returns 构造内部区间风险统计；`daily_twr` 只用于 operational performance。市场风险收益不是衍生品公允价值回报，也不得作为正式 GIPS performance return。若未来输出正式 GIPS Report 风格披露，必须另行满足完整 fair-value return 与 monthly-return 要求，不能直接把本风险链改名复用。资产规模 `NAV_t` 的变化本身不得作为组合级 volatility / Sharpe / Sortino 的输入。
+
+Performance 在风险主指标旁始终显示实际样本数与期间；日频样本少于现有 Risk 1M 最低观察数（15）时，明确提示短样本、年化波动率与 Sharpe 可能剧烈变化。该提示不改变 Performance 两个观察即可计算样本统计量的合同，也不把达到 15 个观察视为长期稳定性证据；Risk 1M 仍另行检查完整窗口覆盖。
 
 `risk_result_status = unavailable` 时，mean、volatility / downside volatility、Sharpe / Sortino 等依赖样本统计的字段在 API 返回空值，UI/export 显示不可用及原因。样本数、coverage 与期间可以保留用于解释。Drawdown 独立地基于完整风险收益链计算，即使只有一个有效收益也可能有数学定义，因此 API 可以保留合法回撤值；Performance 的 headline 风险展示仍统一服从风险状态。
 

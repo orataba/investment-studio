@@ -10,6 +10,11 @@ from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
 from watchlist_app.db.research_scope import JSON_NUL_ESCAPE, research_scope_expression
 
 
+class ResearchRunScopeMismatch(HTTPException):
+    def __init__(self):
+        super().__init__(403, "运行凭证不能访问其他研究记录")
+
+
 def require_team_write():
     principal = current_principal()
     if principal.local_unrestricted:
@@ -198,7 +203,7 @@ def require_entry_access(session, entry, *, tool_write=False):
         raise HTTPException(404, "研究记录不存在")
     scope = principal.resource_scope
     if scope and (scope.get("kind") != "run" or scope.get("id") != entry.entry_id):
-        raise HTTPException(403, "运行凭证不能访问其他研究记录")
+        raise ResearchRunScopeMismatch()
     if scope:
         if (entry.status not in {"queued", "running"} or run_attempt(entry) < 1
                 or scope.get("attempt") != str(run_attempt(entry))):

@@ -93,7 +93,7 @@
 @media print { .research-reading-nav, .sector-research-actions, .sector-event-ask, .research-theme-actions { display: none; } .research-module-layout { display: block; } .research-domain-module { break-inside: avoid; } }
 
 .research-reading-nav { display: flex; flex-wrap: wrap; gap: 16px 28px; background: #fff; padding: 14px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.research-guidance-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px 20px; flex-wrap: wrap; margin-bottom: 12px; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.research-guidance-bar { position: sticky; top: 0; z-index: 10; background: #fff; display: flex; align-items: center; justify-content: space-between; gap: 10px 20px; flex-wrap: wrap; margin-bottom: 12px; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .research-guidance-bar .research-reading-nav { border: 0; padding: 0; }
 .research-guidance-bar > .research-support-link { border: 1px solid var(--line); padding: 5px 10px; font-size: 12px; }
 .research-guidance-latest { border-left: 2px solid var(--accent); padding: 4px 16px; background: var(--studio-warning-soft); }
@@ -418,3 +418,10 @@ body:has(.research-aside-backdrop) { overflow: hidden; }
 .research-retained-notice details { margin-top: 8px; }
 .research-retained-notice details p { overflow-wrap: anywhere; color: var(--muted); }
 .research-quant-coverage { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 20px; margin: 16px 0; color: var(--muted); font-size: 12px; }
+
+.research-current-section:has([data-research-empty="true"]) .research-dossier-section-heading { margin: 0 0 4px; }
+[data-research-empty="true"] .research-empty-judgment { padding: 0; }
+[data-research-empty="true"] p { margin: 4px 0; }
+.research-theme-prose, .research-theme-card-summary { line-height: 1.75; overflow-wrap: anywhere; }
+.research-theme-prose p, .research-theme-card-summary p { white-space: pre-line; }
+@media print { .research-guidance-bar { position: static; } }

@@ -146,9 +146,10 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; line-heig
 .coverage-gaps[open] { flex-basis: 100%; }
 .coverage-gaps summary { cursor: pointer; color: var(--studio-muted); }
 .coverage-gaps p { margin: 8px 0 0; overflow-wrap: anywhere; }
-.report-contents { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 4px 0; font-size: 12px; }
-.report-contents a { border-bottom: 1px solid transparent; }
+.report-contents { position: sticky; top: 0; z-index: 4; display: flex; gap: 18px; overflow-x: auto; padding: 12px 0; background: var(--studio-surface); border-bottom: 1px solid var(--studio-line); font-size: 12px; }
+.report-contents a { flex-shrink: 0; border-bottom: 1px solid transparent; }
 .report-contents a:hover { border-bottom-color: currentColor; }
+.report-section, .briefing-item, .reading-order, #source-coverage { scroll-margin-top: 64px; }
 .edition-history { padding: 8px 0; color: var(--studio-muted); font-size: 12px; }
 .edition-history summary { cursor: pointer; }
 .edition-history button { display: flex; justify-content: space-between; gap: 14px; width: 100%; padding: 7px 10px; border: 0; font-size: 12px; }

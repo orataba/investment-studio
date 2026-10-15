@@ -359,6 +359,11 @@ it('withholds affected fund calculations across missing observations', async () 
   }
   expect([...rowValues('Period Return')].every((node) => node.textContent === '—')).toBe(true)
   expect(screen.getByText(/不存在缺失观测或待确认的收益断点/)).toBeTruthy()
+  expect(screen.queryByRole('img', { name: /Interactive.*chart/ })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Chart settings' }))
+  expect(screen.getByLabelText('Currency')).toBeTruthy()
+  expect(screen.getByRole('slider', { name: 'Chart period start' })).toBeTruthy()
+  expect(screen.getByRole('slider', { name: 'Chart period end' })).toBeTruthy()
 })
 
 it.each(['price_return', null, 'total_return'] as const)('requires matched known return semantics for benchmark relative metrics: %s', async (returnKind) => {

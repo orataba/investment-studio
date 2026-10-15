@@ -553,7 +553,9 @@ export default function AccountsPage() {
   }
 
   function openEditAccountModal() {
-    if (!selectedAccount || detailBusy) {
+    if (!canEditPortfolio || !selectedAccount || detailBusy ||
+      requestedAccountIdRef.current !== selectedAccount.account.account_id ||
+      loadedWorkspaceResourceRef.current !== currentWorkspaceResourceRef.current) {
       return
     }
     setEditorMode('edit')
@@ -583,7 +585,7 @@ export default function AccountsPage() {
                 {countLabel(workspace.summary.open_option_obligation_count, 'open option obligation')}
               </span>
             ) : null}
-            <button type="button" className="toolbar-link button-primary" disabled={!canEditPortfolio} onClick={openCreateAccountModal}>
+            <button type="button" className="toolbar-link button-primary" disabled={!canEditPortfolio} onClick={(event) => { event.currentTarget.focus(); openCreateAccountModal() }}>
               Add Account
             </button>
           </div>
@@ -672,7 +674,7 @@ export default function AccountsPage() {
                       >
                         Transaction Workbench
                       </Link>
-                      <button type="button" className="toolbar-link" disabled={!canEditPortfolio || detailBusy} onClick={openEditAccountModal}>
+                      <button type="button" className="toolbar-link" disabled={!canEditPortfolio || detailBusy} onClick={(event) => { event.currentTarget.focus(); openEditAccountModal() }}>
                         Edit Account
                       </button>
                     </div>
@@ -1021,6 +1023,7 @@ export default function AccountsPage() {
             <div className="transaction-entry-modal-header">
               <div>
                 <div className="panel-title">{editorMode === 'edit' ? 'Edit Account' : 'Add Account'}</div>
+                {editorMode === 'edit' ? <p className="transaction-ticket-hint" translate="no">{editingAccountId} · {editingAccount?.account_name} · {editingAccount?.currency}</p> : null}
               </div>
               <button type="button" className="toolbar-link" onClick={() => setEditorOpen(false)}>
                 Close

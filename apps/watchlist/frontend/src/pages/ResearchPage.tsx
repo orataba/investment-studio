@@ -1,6 +1,7 @@
 import { Link, useSearchParams } from 'react-router'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkResearchLinks from '../../../../../packages/ui/src/remarkResearchLinks'
 import ResearchAssistant, { type ResearchAssistantNote } from '../../../../../packages/ui/src/ResearchAssistant'
 import { resolveWorkspaceUrl } from '../../../../../packages/ui/src/navigation'
 import { API_BASE_URL, createInstrumentResearchNote } from '../lib/api'
@@ -68,7 +69,7 @@ export default function ResearchPage(props: {
     saveNote={saveNote}
     attachmentHref={(source) => `${API_BASE_URL}${source}`}
     announcePublication={announceResearchPublication}
-    renderMarkdown={(body) => <Markdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{body}</Markdown>}
+    renderMarkdown={(body, sourceUrls) => <Markdown remarkPlugins={[remarkGfm, [remarkResearchLinks, { sourceUrls }]]} components={{ img: () => null }}>{body}</Markdown>}
     backLink={portfolioId
       ? <a data-workspace-link href={`${resolveWorkspaceUrl(import.meta.env.VITE_PORTFOLIO_URL, 'portfolio')}/portfolios/${encodeURIComponent(portfolioId)}/${portfolioSection}`}>返回组合</a>
       : <Link to={listId ? `/watchlists/${listId}` : '/watchlists'}>返回关注列表</Link>}

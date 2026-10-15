@@ -32,15 +32,22 @@ beforeEach(() => getHoldingsWorkspace.mockResolvedValue(holdingsWorkspaceFixture
 describe('Correlation observation presentation', () => {
   it('keeps a small flagged change readable instead of rounding it to zero', () => {
     renderWithLanguage(<CorrelationObservation scopeLabel="Current classifications" observation={observation()} />)
-    expect(screen.getByText('+7.00e-6')).toBeInTheDocument()
+    expect(screen.getByText('+0.000007')).toBeInTheDocument()
     expect(screen.queryByText('+0.000')).not.toBeInTheDocument()
     expect(screen.getByText('Unusual correlation rise — diversification may weaken')).toBeInTheDocument()
   })
 
   it('preserves the sign of a small decline without inventing an attention cue', () => {
     renderWithLanguage(<CorrelationObservation scopeLabel="Current classifications" observation={observation({ averageChange: -0.000007, attention: false, risingPairCount: 0 })} />)
-    expect(screen.getByText('-7.00e-6')).toBeInTheDocument()
+    expect(screen.getByText('-0.000007')).toBeInTheDocument()
     expect(screen.queryByText(/Unusual correlation rise/)).not.toBeInTheDocument()
+  })
+
+  it.each([[0.00000000712, '+0.00000000712'], [-0.00000000712, '-0.00000000712']] as const)('preserves a sub-millionth change and its sign: %s', (averageChange, expected) => {
+    renderWithLanguage(<CorrelationObservation scopeLabel="Current classifications" observation={observation({ averageChange, attention: false })} />)
+    expect(screen.getByText(expected)).toBeInTheDocument()
+    expect(screen.queryByText('+0.000')).not.toBeInTheDocument()
+    expect(screen.queryByText('-0.000')).not.toBeInTheDocument()
   })
 
   it('omits descriptive non-alert observations from the risk drawer while preserving assessed risks', async () => {

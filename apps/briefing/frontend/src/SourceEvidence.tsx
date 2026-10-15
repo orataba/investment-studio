@@ -2,6 +2,7 @@ import InfoHint from '../../../../packages/ui/src/InfoHint'
 import { useLanguage } from '../../../../packages/ui/src/i18n'
 import type { Source } from './types'
 import { EvidenceTime, ExternalLinkIcon, quoteUnit } from './reading'
+import { completenessDescription, completenessLabels, sourceCompleteness } from './sourceCompleteness'
 
 export const safeUrl = (value?: string) => {
   try { const url = new URL(value || ''); return ['https:', 'http:'].includes(url.protocol) ? url.href : undefined } catch { return undefined }
@@ -31,6 +32,7 @@ export function SourceEvidence({ source, onClose, onSource, canReadSources = tru
   const macro = source.source_type === 'macro_row'
   const numeric = source.source_type === 'numeric'
   const document = source.source_type === 'public_document'
+  const completeness = sourceCompleteness(source.content_completeness)
   const sourceIds = Array.isArray(source.source_ids) ? source.source_ids.filter((id): id is string => typeof id === 'string') : []
   const fields: [string, unknown][] = market ? [
     [copy('价格单位', 'Price unit'), quoteUnit(source, language === 'zh-Hans')],
@@ -64,8 +66,9 @@ export function SourceEvidence({ source, onClose, onSource, canReadSources = tru
   ].filter((value): value is string => Boolean(value)) : []
 
   return <>
-    <div className={showHeading ? "source-panel-title" : "source-basis"}><div className="source-heading-text"><h2 translate="no" hidden={!showHeading}>{display(source.title || source.label || source.symbol || copy('留存资料', 'Retained source'))}</h2>{priceBasis.length > 0 && <InfoHint label={copy('价格口径', 'Price basis')} detail={priceBasis} kind={(market ? basis(source.return_basis) : basis(source.ohlc_adjustment)) ? 'explanation' : 'attention'} />}{source.content_completeness === 'source_excerpt' && <InfoHint kind="attention" label={copy('来源完整性', 'Source completeness')} detail={copy('来源提供的节选，未包含完整正文。', 'Source excerpt; the full article is not included.')} />}</div>{showHeading && <button onClick={onClose} aria-label={copy('关闭来源', 'Close source')}>{copy('关闭', 'Close')}</button>}</div>
+    <div className={showHeading ? "source-panel-title" : "source-basis"}><div className="source-heading-text"><h2 translate="no" hidden={!showHeading}>{display(source.title || source.label || source.symbol || copy('留存资料', 'Retained source'))}</h2>{priceBasis.length > 0 && <InfoHint label={copy('价格口径', 'Price basis')} detail={priceBasis} kind={(market ? basis(source.return_basis) : basis(source.ohlc_adjustment)) ? 'explanation' : 'attention'} />}{document && <InfoHint kind={completeness === 'full_text' ? 'explanation' : 'attention'} label={copy('来源完整性', 'Source completeness')} detail={completenessDescription(source.content_completeness, copy)} />}</div>{showHeading && <button onClick={onClose} aria-label={copy('关闭来源', 'Close source')}>{copy('关闭', 'Close')}</button>}</div>
     {providerName && <p>{copy('来源', 'Source')} · <span translate="no">{providerName}</span></p>}
+    {document && <p>{copy('正文覆盖', 'Text coverage')} · {completenessLabels(copy)[completeness]}{completeness === 'unknown' && <> (<span translate="no">{source.content_completeness}</span>)</>}</p>}
     {originalUrl && <a href={originalUrl} target="_blank" rel="noreferrer">{copy('打开原始链接', 'Open original link')} <ExternalLinkIcon /></a>}
     {fields.length > 0 && <dl className="source-dates">{fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd translate="no">{display(value)}</dd></div>)}</dl>}
     {showSourceLinks && canReadSources && sourceIds.length > 0 && <div className="source-links">{sourceIds.map((id, index) => <button key={`${id}-${index}`} onClick={() => onSource(id)}>{market ? index === 0 ? copy('查看起始价格来源', 'View starting price source') : copy('查看截至价格来源', 'View ending price source') : copy('查看原始数值来源', 'View original value source')}</button>)}</div>}

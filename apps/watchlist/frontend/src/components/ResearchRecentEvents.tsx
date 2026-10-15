@@ -46,7 +46,7 @@ export default function ResearchRecentEvents({ instrumentId, reviewRunId, review
   const groups = new Map<string, ResearchUpdate[]>()
   for (const update of data?.events || []) { const day = update.timeline_date || '日期待核实'; groups.set(day, [...(groups.get(day) || []), update]) }
   if (hideWhenEmpty && data && !data.events.length && !error && !loading && scope === initialScope) return null
-  return <section className="research-recent-events" aria-label="标的动态" aria-busy={loading}>
+  return <section className="research-recent-events" data-research-empty={Boolean(data && !data.events.length && !data.late_arrivals.length && !error)} aria-label="标的动态" aria-busy={loading}>
     <div className="research-dossier-section-heading"><div className="research-section-title"><h2>标的动态</h2><InfoHint label="重要进展范围" detail="公司、行业与底层资产的新闻、公告、观点及会议进展；持续跟进不受日期限制。时间线按进展、发生或披露日期归组（UTC），未知发生时间保持未知。" /></div><div className="research-event-filters" aria-label="事件范围">
       {([['recent', '近 7 天'], ['watch', '仍在跟进'], ['history', '历史']] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={scope === value} onClick={() => { setScope(value); setOffset(0) }}>{label}</button>)}
     </div></div>

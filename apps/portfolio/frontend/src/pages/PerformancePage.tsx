@@ -1,3 +1,4 @@
+import { riskMinObservationsForWindow } from '../lib/riskWindowCoverage'
 import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 import { matchesSystemLabel } from '../../../../../packages/ui/src/i18n'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
@@ -1214,7 +1215,7 @@ export function buildPerformanceMetricRows(
       : undefined
   const riskReliabilityNote =
     summary.risk_result_status === 'available'
-      ? undefined
+      ? `${summary.risk_sample_count} daily observations${summary.risk_sample_count < riskMinObservationsForWindow('daily', 30) ? ' · short sample; annualized estimates are unstable' : ''}`
       : summary.risk_unavailable_reason === 'insufficient_return_samples'
         ? `Requires ≥ ${summary.risk_minimum_sample_count} ${summary.risk_calculation_frequency} return samples (${summary.risk_sample_count} available)`
         : performanceUnavailableReason(summary.risk_unavailable_reason) ?? 'Risk metrics unavailable'
@@ -2817,6 +2818,7 @@ function PerformancePage() {
       ['Valuation timezone', workspace?.valuation_timezone ?? ''],
       ['Valuation cutoff', workspace?.valuation_cutoff_policy ?? ''],
       ['Fees and taxes', 'Recorded fees and taxes deducted'],
+      ['Market risk exclusions', 'Security fees/taxes remain included. Standalone cash fees/taxes, cash interest, and event-valued derivative income, realized P&L and charges are excluded.'],
       ['Risk method', 'Daily observations; annualized by actual period length; risk-free rate and minimum acceptable return = 0'],
       ['Return units', 'Decimal fractions: 0.01 = 1%'],
       ['Contribution method', 'Linked contribution = sum of daily contributions multiplied by preceding portfolio TWR growth; top-level rows sum to period TWR, children sum to their parent. Arithmetic contribution is the unlinked daily sum.'],
@@ -3001,6 +3003,11 @@ function PerformancePage() {
                   <span>Risk metrics unavailable</span>: {performanceUnavailableReason(summary.risk_unavailable_reason) ?? 'Risk calculation is unavailable'}
                 </div>
               ) : null}
+              {summary.risk_result_status === 'available' ? <div className={summary.risk_sample_count < riskMinObservationsForWindow('daily', 30) ? 'inline-notice inline-notice-warning' : 'performance-sample-note'} role="status">
+                <strong>{summary.risk_sample_count} daily risk observations{summary.risk_sample_count < riskMinObservationsForWindow('daily', 30) ? ' · Short sample' : ''}</strong>
+                {' · '}{summary.risk_observation_start_date ?? summary.start_date} → {summary.risk_observation_end_date ?? summary.end_date}.
+                {summary.risk_sample_count < riskMinObservationsForWindow('daily', 30) ? ' Annualized volatility and Sharpe can vary sharply with a few returns. Performance permits calculation from 2 observations; Risk 1M requires at least 15 observations plus window coverage. These are different calculation windows, not evidence of long-term reliability.' : ' Sample count describes this estimate; meeting a calculation minimum does not establish long-term reliability.'}
+              </div> : null}
               <MetricGrid rows={metricRows} />
             </section>
 

@@ -1,5 +1,5 @@
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
-import { LanguageSelector } from '../../../../../packages/ui/src/i18n'
+import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 
@@ -35,6 +35,7 @@ function formatDateTime(value: string | null | undefined) {
     minute: '2-digit',
     hour12: false,
     timeZoneName: 'short',
+    timeZone: 'UTC',
   }).format(parsed)
 }
 
@@ -138,16 +139,18 @@ function OverviewStat({
   label,
   value,
   tone,
+  status,
 }: {
   label: string
   value: number
   tone?: string
+  status?: string
 }) {
   return (
     <div className="monitoring-overview-stat">
       <span>{label}</span>
-      <strong>{value}</strong>
-      {tone ? <span className={statusBadgeClass(tone)}>{formatLabel(tone)}</span> : null}
+      <strong>{Number.isFinite(value) ? value : '—'}</strong>
+      {!Number.isFinite(value) ? <span className={statusBadgeClass(undefined)}>Unknown</span> : status ? <span className={statusBadgeClass(tone)}>{status}</span> : null}
     </div>
   )
 }
@@ -168,6 +171,8 @@ function OpenDetailAction({
 }
 
 export default function MonitoringPage() {
+  const { language } = useLanguage()
+  const zh = language === 'zh-Hans'
   const [monitoringSearchParams, setMonitoringSearchParams] = useSearchParams()
   const [dashboard, setDashboard] = useState<MonitoringDashboardResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -313,6 +318,8 @@ export default function MonitoringPage() {
         ? dashboard.overview.failed_recalc_job_count
         : visibleOpenRecalcJobs.filter((item) => item.job_status === 'failed').length
 
+    const runningRecalcCount = visibleOpenRecalcJobs.filter(item => item.job_status === 'running').length
+    const queuedRecalcCount = visibleOpenRecalcJobs.filter(item => item.job_status === 'queued').length
     const summary = selectedWatchlist
       ? {
           watchlist_count: 1,
@@ -340,37 +347,48 @@ export default function MonitoringPage() {
       {
         label: 'Needs Refresh',
         value: summary.needs_refresh_count,
-        tone: 'pending_recalc',
+        tone: summary.needs_refresh_count ? 'pending_recalc' : undefined,
+        status: summary.needs_refresh_count ? 'Refresh needed' : 'No refresh needed',
       },
       {
         label: 'Missing Quote',
         value: summary.missing_quote_count,
-        tone: 'unavailable',
+        tone: summary.missing_quote_count ? 'unavailable' : undefined,
+        status: summary.missing_quote_count ? 'Quotes unavailable' : 'No missing quotes',
       },
       {
         label: 'Missing Required Metadata',
         value: summary.missing_required_metadata_count,
-        tone: 'partial',
+        tone: summary.missing_required_metadata_count ? 'partial' : undefined,
+        status: summary.missing_required_metadata_count ? 'Metadata missing' : 'No missing metadata',
       },
       {
         label: 'Research Reviews Due',
         value: summary.research_review_due_count,
-        tone: 'partial',
+        tone: summary.research_review_due_count ? 'partial' : undefined,
+        status: summary.research_review_due_count ? 'Reviews due' : 'No reviews due',
       },
       {
         label: 'Follow-ups Due',
         value: summary.research_follow_up_due_count,
-        tone: 'partial',
+        tone: summary.research_follow_up_due_count ? 'partial' : undefined,
+        status: summary.research_follow_up_due_count ? 'Follow-ups due' : 'No follow-ups due',
       },
       {
         label: 'Missing Investment View',
         value: summary.missing_investment_view_count,
-        tone: 'partial',
+        tone: summary.missing_investment_view_count ? 'partial' : undefined,
+        status: summary.missing_investment_view_count ? 'Views missing' : 'No missing views',
       },
       {
         label: 'Open Recalc',
         value: summary.open_recalc_job_count,
-        tone: failedRecalcCount ? 'failed' : 'queued',
+        tone: failedRecalcCount ? 'failed' : runningRecalcCount ? 'running' : queuedRecalcCount ? 'queued' : undefined,
+        status: !summary.open_recalc_job_count ? 'No open jobs' : [
+          failedRecalcCount ? zh ? `${failedRecalcCount} 项失败` : `${failedRecalcCount} failed` : '',
+          runningRecalcCount ? zh ? `${runningRecalcCount} 项运行中` : `${runningRecalcCount} running` : '',
+          queuedRecalcCount ? zh ? `${queuedRecalcCount} 项排队` : `${queuedRecalcCount} queued` : '',
+        ].filter(Boolean).join(' · ') || 'Open jobs',
       },
     ]
   }, [
@@ -379,6 +397,7 @@ export default function MonitoringPage() {
     selectedWatchlistId,
     visibleOpenRecalcJobs,
     visibleResearchQueue,
+    zh,
   ])
 
   async function handleRecalcNow(instrumentId: string) {
@@ -481,6 +500,7 @@ export default function MonitoringPage() {
                 label={item.label}
                 value={item.value}
                 tone={item.tone}
+                status={item.status}
               />
             ))}
           </div>

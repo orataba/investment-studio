@@ -371,6 +371,16 @@ describe('Performance rendered page contract', () => {
     }
   })
 
+  it.each([2, 14, 15, 250])('shows %s risk observations next to headline metrics without changing calculation eligibility', async (count) => {
+    const fixture = performanceFixture()
+    apiMocks.getPortfolioPerformance.mockResolvedValue({ ...fixture, summary: { ...fixture.summary, risk_result_status: 'available', risk_sample_count: count, sharpe_ratio: 33.2, risk_observation_start_date: '2026-07-01', risk_observation_end_date: '2026-07-15' } })
+    renderPortfolioPage(<PerformancePage />, '/portfolios/3/performance', '/portfolios/:portfolioId/performance')
+    const note = await screen.findByText(new RegExp(`^${count} daily risk observations`))
+    expect(note).toHaveTextContent(count < 15 ? 'Short sample' : 'daily risk observations')
+    if (count >= 15) expect(note).not.toHaveTextContent('Short sample')
+    expect(note.closest('[role="status"]')).toHaveTextContent(count < 15 ? 'Performance permits calculation from 2 observations' : 'does not establish long-term reliability')
+  })
+
   it('shows available row risk metrics independently of aggregate metric availability', async () => {
     const response = await apiMocks.getPortfolioPerformanceCalculationGroups()
     apiMocks.getPortfolioPerformanceCalculationGroups.mockResolvedValue({

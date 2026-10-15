@@ -3,7 +3,7 @@
 .investment-views-heading h1 { font-size: 26px; margin: 0 0 8px; font-weight: 600; }
 .investment-views-heading h2, .investment-view-form h2 { margin: 0; font-size: 18px; font-weight: 600; }
 .investment-views-heading p, .investment-views-muted { color: var(--portfolio-muted, #667085); font-size: 13px; }
-.investment-views-page button { border: 1px solid var(--portfolio-line, #dbe1e8); border-radius: 5px; background: white; padding: 7px 11px; cursor: pointer; font-size: 13px; }
+.investment-views-page button { border: 1px solid var(--portfolio-line, #dbe1e8); border-radius: 0; background: white; padding: 7px 11px; cursor: pointer; font-size: 13px; }
 .investment-views-page button:disabled { opacity: .5; cursor: default; }
 .investment-views-page button.button-primary { color: white; background: var(--portfolio-accent, #385977); border-color: transparent; }
 .investment-current-view { border-left: 3px solid var(--portfolio-accent, #385977); background: var(--portfolio-band, #f6f8fa); padding: 20px 24px; margin: 24px 0; }

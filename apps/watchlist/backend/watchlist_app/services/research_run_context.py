@@ -30,6 +30,46 @@ def load_run_fields(session, run_id, fields, *, summary_only=False):
     return record
 
 
+def load_shared_history_fields(session, run_id, instrument_id, fields):
+    """Prepare a run from narrowly selected shared history, not another run's tools.
+
+    Run credentials remain fenced to their current attempt. The server may bind
+    public team research metadata for an instrument in that run; private and
+    portfolio history and retained originals never enter this projection.
+    """
+    from studio_identity import current_principal
+    from watchlist_app.db.models.workbench import ResearchTopic
+    from watchlist_app.services.research_access import instrument_run_scope, topic_portfolio_ids
+
+    allowed = {"sector_run", "research_run", "instrument_ids", "cutoff",
+               "input_snapshot_cutoff", "market_queries", "incremental_trigger"}
+    if not set(fields) <= allowed:
+        raise ValueError("Unsupported shared research history fields")
+    principal = current_principal()
+    if principal.resource_scope:
+        current = load_run_fields(session, principal.resource_scope.get("id"), {"instrument_ids"}, summary_only=True)
+        if instrument_id not in current.context_json.get("instrument_ids", []):
+            raise HTTPException(403, "本轮研究不能绑定范围外标的的历史资料")
+    names = sorted(set(fields) | {"sector_run", "research_run"})
+    relation, values = research_context_projection(session, {name: JSON for name in names},
+                                                   json_column=ResearchEntry.read_context_json)
+    query = select(ResearchEntry.topic_id, *(values[name].label(name) for name in names)).select_from(
+        ResearchEntry).join(ResearchTopic, ResearchTopic.topic_id == ResearchEntry.topic_id)
+    if relation is not None:
+        query = query.join(relation, true())
+    query = query.where(ResearchEntry.entry_id == run_id, ResearchEntry.kind == "analysis",
+        ResearchEntry.team_id == principal.team_id, ResearchTopic.team_id == principal.team_id,
+        ResearchTopic.visibility == "team", ResearchTopic.portfolio_id.is_(None),
+        instrument_run_scope(session, instrument_id))
+    rows = research_projection_rows(session, query, {name: (name,) for name in names},
+                                    json_column=ResearchEntry.read_context_json)
+    if (not rows or not (rows[0].sector_run or rows[0].research_run)
+            or topic_portfolio_ids(session, session.get(ResearchTopic, rows[0].topic_id))):
+        raise HTTPException(404, "共享标的研究历史不存在")
+    return SimpleNamespace(context_json={name: getattr(rows[0], name) for name in fields
+                                         if getattr(rows[0], name) is not None})
+
+
 def load_run_list_item(session, run_id, field, source_id):
     """Select one retained source in SQL, never transport the entire source list."""
     import json

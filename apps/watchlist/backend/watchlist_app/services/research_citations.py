@@ -19,7 +19,7 @@ _JUDGMENT_PATHS = tuple(
     for suffix in (((), ("versions", "*")) if field in {"investment_view", "decision_brief"}
                    else (("*",), ("*", "versions", "*")))
 )
-_METADATA = (*INDEX_KEYS, "name", "snapshot_cutoff", "version_id", "updated_at")
+_METADATA = (*INDEX_KEYS, "name", "snapshot_cutoff", "version_id", "updated_at", "url")
 
 
 def cited_source_ids(body):
@@ -71,6 +71,7 @@ def citation_receipt(source):
             "retrieved_at": source.get("retrieved_at"),
             "as_of": source.get("as_of") or source.get("snapshot_cutoff"),
             "recorded_at": source.get("updated_at"),
+            **({"url": source["url"]} if source.get("url") else {}),
             "source_type": source.get("source_type") or (
                 "instrument_snapshot" if source["source_id"].startswith("instrument:") else None),
             "source_ids": [source["source_id"]]}

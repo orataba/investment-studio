@@ -2274,6 +2274,9 @@ export default function WatchlistsPage() {
     })
   }, [collapsedGroupKeys, groupedRows])
 
+  const expandedInstrumentCount = visibleGroupedRows.reduce((total, group) => total + group.rows.length, 0)
+  const collapsedInstrumentCount = searchedRows.length - expandedInstrumentCount
+
   const renderedGroupedRows = useMemo(() => {
     const rendered: WatchlistRowGroup[] = []
     let remaining = renderRowLimit
@@ -3287,6 +3290,7 @@ export default function WatchlistsPage() {
                       }
                       className={[
                         requiredColumns.includes(column) ? '' : 'watchlists-column-draggable',
+                        column === primaryDisplayColumn ? 'watchlists-identity-col' : '',
                         isChartFieldKey(column) ? 'chart-cell' : '',
                         columnDropTarget === column ? 'watchlists-column-drop-target' : '',
                       ]
@@ -3397,7 +3401,7 @@ export default function WatchlistsPage() {
                           {visibleColumns.map((column, columnIndex) => {
                             if (columnIndex === 0) {
                               return (
-                                <td key={column} className="watchlists-group-name-cell">
+                                <td key={column} className="watchlists-group-name-cell watchlists-identity-col">
                                   <button
                                     type="button"
                                     className="watchlists-group-header"
@@ -3493,7 +3497,7 @@ export default function WatchlistsPage() {
                               return (
                                 <td
                                   key={column}
-                                  className={isChartFieldKey(column) ? 'chart-cell' : undefined}
+                                  className={column === primaryDisplayColumn ? 'watchlists-identity-col' : isChartFieldKey(column) ? 'chart-cell' : undefined}
                                   style={
                                     isGroupedInstrumentName
                                       ? {
@@ -3558,11 +3562,12 @@ export default function WatchlistsPage() {
                     : `Showing ${renderedInstrumentCount} of ${screenerResult.total_rows} rows`
                   : 'No rows in this watchlist view'}
               </span>
+              {collapsedInstrumentCount > 0 && <span>{zh ? `${collapsedInstrumentCount} 行位于已折叠分组` : `${collapsedInstrumentCount} rows in collapsed groups`}</span>}
               <span title="Return and risk windows are anchored independently for each instrument.">
                 {metricAsOfRangeLabel}
               </span>
             </div>
-            {renderedInstrumentCount < searchedRows.length ? (
+            {renderedInstrumentCount < expandedInstrumentCount ? (
               <div className="watchlists-pagination-actions">
                 <button
                   type="button"
@@ -3570,17 +3575,17 @@ export default function WatchlistsPage() {
                   onClick={() =>
                     startTransition(() =>
                       setRenderRowLimit((current) =>
-                        Math.min(current + WATCHLIST_INITIAL_RENDER_ROWS, searchedRows.length),
+                        Math.min(current + WATCHLIST_INITIAL_RENDER_ROWS, expandedInstrumentCount),
                       ),
                     )
                   }
                 >
-                  Show {Math.min(WATCHLIST_INITIAL_RENDER_ROWS, searchedRows.length - renderedInstrumentCount)} more
+                  Show {Math.min(WATCHLIST_INITIAL_RENDER_ROWS, expandedInstrumentCount - renderedInstrumentCount)} more
                 </button>
                 <button
                   type="button"
                   className="watchlists-pagination-button"
-                  onClick={() => startTransition(() => setRenderRowLimit(searchedRows.length))}
+                  onClick={() => startTransition(() => setRenderRowLimit(expandedInstrumentCount))}
                 >
                   Show all
                 </button>

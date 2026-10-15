@@ -1,15 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest'
-import { act, cleanup, render, screen, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 import WatchlistEntryPage from './WatchlistEntryPage'
 import type { WatchlistRecord } from '../lib/api'
 
-const mocks = vi.hoisted(() => ({ getWatchlists: vi.fn() }))
+const mocks = vi.hoisted(() => ({ getWatchlists: vi.fn(), createWatchlist: vi.fn() }))
 vi.mock('../lib/api', async (original) => ({
   ...(await original<typeof import('../lib/api')>()),
   getWatchlists: mocks.getWatchlists,
+  createWatchlist: mocks.createWatchlist,
 }))
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 
@@ -51,4 +52,21 @@ it('counts the full instrument universe once when system and custom lists overla
   expect(screen.queryByText('7 Watchlists · 343 Securities')).toBeNull()
   expect(screen.getByText(/Created by Alice|创建人 Alice/)).toBeTruthy()
   expect(screen.getAllByText(/Creator not recorded|创建人未记录/)).toHaveLength(2)
+})
+
+it('opens a committed new watchlist without requiring another directory read', async () => {
+  mocks.getWatchlists.mockResolvedValueOnce([]).mockRejectedValue(new Error('Directory unavailable'))
+  mocks.createWatchlist.mockResolvedValue({ watchlist_id: 'committed', name: 'Committed' })
+  render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/watchlists']}><Routes>
+    <Route path="/watchlists" element={<WatchlistEntryPage />} />
+    <Route path="/watchlists/committed" element={<h1>Created list opened</h1>} />
+  </Routes></MemoryRouter></LanguageProvider>)
+  await screen.findByText('0 Watchlists · 0 Securities')
+  fireEvent.click(screen.getByRole('button', { name: /Create Watchlist/i }))
+  const dialog = screen.getByRole('dialog')
+  fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Committed' } })
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Create Watchlist' }))
+  await screen.findByRole('heading', { name: 'Created list opened' })
+  expect(mocks.createWatchlist).toHaveBeenCalledTimes(1)
+  expect(mocks.getWatchlists).toHaveBeenCalledTimes(1)
 })

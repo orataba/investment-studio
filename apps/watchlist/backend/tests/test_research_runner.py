@@ -38,11 +38,11 @@ def test_rejected_dispatch_does_not_leave_a_permanently_queued_run(client, monke
         runs = list(session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "analysis")))
         assert len(runs) == 2
         assert all(run.status == "failed" and run.completed_at is not None for run in runs)
-        assert all("授权" in run.body for run in runs)
+        assert all("身份核验服务" in run.body for run in runs)
 
 
 @pytest.mark.parametrize("failure_point", ["service_identity", "delegation"])
-@pytest.mark.parametrize("status_code", [401, 403, 503])
+@pytest.mark.parametrize("status_code", [401, 403, 409, 503])
 def test_background_dispatch_failure_finishes_queued_record(client, monkeypatch, failure_point, status_code):
     from studio_identity import IdentityError
     from fastapi import HTTPException
@@ -60,8 +60,12 @@ def test_background_dispatch_failure_finishes_queued_record(client, monkeypatch,
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, "dispatch-run")
         assert run.status == "failed" and run.completed_at is not None
-        assert run.context_json["runtime_error"] == {"type": "AuthorizationUnavailable",
-            "status_code": status_code, "summary": run.body}
+        kind = ("AuthorizationUnavailable" if status_code in {401, 403} else
+                "ResearchStateConflict" if status_code == 409 else
+                "IdentityServiceUnavailable" if failure_point == "service_identity" else "ResearchServiceUnavailable")
+        assert run.context_json["runtime_error"] == {"type": kind,
+            "status_code": status_code, "summary": run.body,
+            "retryable": failure_point == "delegation" and status_code == 503}
         assert "private-response" not in json.dumps(run.context_json) + run.body
 
 

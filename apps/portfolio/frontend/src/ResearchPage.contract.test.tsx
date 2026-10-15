@@ -561,6 +561,42 @@ describe('Research rendered page contract', () => {
     expect(within(reopened).getByLabelText('Gross Exposure')).toHaveValue(1.2)
   })
 
+  it.each(['', '0', '101', 'invalid'])('rejects invalid target volatility %s before saving and focuses its field', async (value) => {
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    const dialog = await openParameters()
+    fireEvent.change(within(dialog).getByLabelText('Capital Mode'), { target: { value: 'target_volatility' } })
+    const input = within(dialog).getByLabelText('Target Vol (%)')
+    fireEvent.change(input, { target: { value } })
+    fireEvent.submit(dialog.querySelector('form')!)
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('greater than 0% and no more than 100%')
+    expect(input).toHaveFocus()
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    const reopened = await openParameters()
+    expect(within(reopened).getByLabelText('Capital Mode')).toHaveValue(workbenchFixture.settings.capital_mode)
+    expect(within(reopened).queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it.each(['0.0001', '100'])('saves valid target volatility boundary %s without rounding the input', async (value) => {
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    const dialog = await openParameters()
+    fireEvent.change(within(dialog).getByLabelText('Capital Mode'), { target: { value: 'target_volatility' } })
+    fireEvent.change(within(dialog).getByLabelText('Target Vol (%)'), { target: { value } })
+    fireEvent.submit(dialog.querySelector('form')!)
+    await waitFor(() => expect(apiMocks.updatePortfolioResearchSettings).toHaveBeenCalledWith('3', expect.objectContaining({ target_volatility: Number(value) / 100 })))
+  })
+
+  it('summarizes backend validation without exposing the submitted private payload', async () => {
+    apiMocks.updatePortfolioResearchSettings.mockRejectedValue(new Error(JSON.stringify({ detail: [{ loc: ['body', 'target_volatility'], msg: 'Target volatility is required.', input: { planning_taxonomy_id: 'private-internal-id' } }] })))
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    const dialog = await openParameters()
+    fireEvent.submit(dialog.querySelector('form')!)
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Target volatility is required.')
+    expect(dialog).not.toHaveTextContent('private-internal-id')
+    expect(dialog).not.toHaveTextContent('"detail"')
+  })
+
   it('saves a selected custom taxonomy and clears constraints from the previous taxonomy', async () => {
     apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
       settings: { ...workbenchFixture.settings, frozen_taxonomy_node_ids: ['risk-assets'] },

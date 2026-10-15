@@ -93,10 +93,12 @@ def _run_command(arguments: list[str], *, payload: dict) -> dict:
 
 
 def search_catalog(query: str, limit: int, *, session_factory) -> SecuritySearchResponse:
-    from investment_studio_instrument_core.security_directory import search_directory
+    from investment_studio_instrument_core.security_directory import SecurityDirectoryError, search_directory
     try:
         results, errors = search_directory(session_factory, query, limit)
         return SecuritySearchResponse.model_validate({"results": results, "catalog_errors": errors})
+    except SecurityDirectoryError as error:
+        raise SecurityCatalogError(f"Security catalog identity conflict: {error} Ask an administrator to reconcile the registered listing with the provider catalog.") from error
     except ValueError as error:
         raise SecurityCatalogError("证券目录返回的数据格式无效。") from error
 

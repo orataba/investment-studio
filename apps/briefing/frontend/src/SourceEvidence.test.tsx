@@ -79,3 +79,14 @@ it.each([['USD per share', 'USD / 股'], ['HKD per share', 'HKD / 股'], ['index
   page({ source_id: 'price', source_type: 'numeric', close: 123.4, unit })
   expect(screen.getByText(label)).toBeTruthy()
 })
+
+it.each([
+  ['title_only', '仅标题', '来源仅保留标题，未提供正文。'],
+  [undefined, '完整性未留存', '没有留存正文完整性元数据，不能据此确认正文是否完整。'],
+  ['future_state', '完整性状态未识别', '留存的完整性状态尚未识别：future_state。不能据此确认正文是否完整。'],
+])('keeps %s completeness distinct in retained evidence', (content_completeness, label, description) => {
+  page({ source_id: 'text:version', source_type: 'public_document', title: 'Material', content_completeness })
+  expect(screen.getByText(new RegExp(label))).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: /来源完整性:/ }))
+  expect(screen.getByRole('tooltip').textContent).toContain(description)
+})

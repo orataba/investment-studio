@@ -14,6 +14,7 @@ function today() {
   const now = new Date()
   return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
 }
+function recordedTime(value: string) { return `${new Date(value).toLocaleString('en-GB', { timeZone: 'UTC', hour12: false })} UTC` }
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : 'Request failed.' }
 
 export default function InvestmentViewsPage() {
@@ -169,7 +170,7 @@ function InvestmentViewsWorkspace({ portfolioId, instrumentId }: { portfolioId: 
       <details className="investment-view-context"><summary>{text('Context and record details', '当时背景与记录信息')}</summary>
         <p>{note.context}</p>
         {note.source && <p><strong>{text('Source', '来源')}</strong> · {note.source}</p>}
-        <small>{text('Recorded', '记录时间')} {new Date(note.created_at).toLocaleString()} · {text('Version saved by', '本版本保存人')} {note.revised_by_name} · {new Date(note.updated_at).toLocaleString()}</small>
+        <small>{text('Recorded', '记录时间')} {recordedTime(note.created_at)} · {text('Version saved by', '本版本保存人')} {note.revised_by_name} · {recordedTime(note.updated_at)}</small>
       </details>
       {note.instruments.length > 0 && <div className="investment-view-assets">{note.instruments.map((item) => <Link key={item.instrument_id}
         to={`?${new URLSearchParams({ instrument_id: item.instrument_id })}`}>{item.instrument_name}</Link>)}</div>}
@@ -192,7 +193,7 @@ function InvestmentViewsWorkspace({ portfolioId, instrumentId }: { portfolioId: 
     <section className="investment-current-view" aria-label={text('Current overall view', '当前总体观点')}>
       <div className="investment-views-heading"><h2>{text('Current overall view', '当前总体观点')}</h2>
         {current && canWrite && <button type="button" disabled={saving || loading} onClick={() => void selectCurrent(null)}>{text('Clear selection', '取消选定')}</button>}</div>
-      {current ? <>{noteContent(current.note, true)}<small>{text('Selected by', '选定人')} {current.selected_by_name} · {new Date(current.selected_at).toLocaleString()}</small></>
+      {current ? <>{noteContent(current.note, true)}<small>{text('Selected by', '选定人')} {current.selected_by_name} · {recordedTime(current.selected_at)}</small></>
         : <p className="investment-views-muted">{loading ? text('Loading…', '正在读取…')
           : !data ? text('The current overall view is unavailable until the timeline is loaded.', '需成功读取时间线后才能确认当前总体观点。')
           : !instrumentId && !data.notes.some(note => !note.instrument_ids.length) ? text('Record a portfolio-wide judgment first, then select its version as the current overall view.', '先记录一条组合整体判断，再将其具体版本设为当前总体观点。')

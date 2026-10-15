@@ -14,6 +14,7 @@ import { safeUrl, SourceEvidence } from './SourceEvidence'
 import GenerateEditionForm from './GenerateEditionForm'
 import EditionStatus from './EditionStatus'
 import SourceDirectory from './SourceDirectory'
+import { completenessKinds, completenessLabels, countSourceCompleteness } from './sourceCompleteness'
 import { EvidenceTime, ExternalLinkIcon, navigateToSection, quoteUnit } from './reading'
 
 const api = (import.meta.env.VITE_API_BASE_URL || '/api/briefing').replace(/\/$/, '')
@@ -89,12 +90,15 @@ function Coverage({ detail }: { detail: ReportDetail }) {
   const copy = useCopy()
   const text = detail.coverage.text
   const documents = detail.coverage.documents
+  const completenessCounts = countSourceCompleteness(detail.sources)
+  const completenessText = completenessLabels(copy)
   const notes = Array.isArray(detail.coverage.numeric) ? detail.coverage.numeric : []
   const channels = Array.isArray(text.sources) ? text.sources as Record<string, unknown>[] : []
   const numericStatus: Record<string, string> = { historical_price_window_unverified: copy('旧版报告未核验行情交易日期间；保留原始结果，不作为当前算法结果', 'Historical price windows were not session-verified; original results are retained as historical evidence'), available: copy('已覆盖', 'Available'), insufficient_history: copy('可比较历史不足', 'Insufficient history'), missing_comparable_prices: copy('缺少可比较价格', 'Comparable prices missing'), unavailable: copy('尚无可用数据', 'Unavailable'), unresolved_security: copy('尚未匹配到明确的上市证券', 'No confirmed listed security'), missing_expected_observations: copy('应有交易日行情缺失，涨跌幅不可用', 'Expected session prices missing; return unavailable'), observation_schedule_unverified: copy('交易日历尚未确认，涨跌幅不可用', 'Session calendar unverified; return unavailable'), security_type_unverified: copy('证券类型尚未确认', 'Security type unverified') }
   const channelStatus: Record<string, string> = { active: copy('可用', 'Available'), succeeded: copy('成功', 'Succeeded'), failed: copy('失败', 'Failed'), partial: copy('部分完成', 'Partially completed'), skipped: copy('本轮跳过', 'Skipped this run') }
   return <>
-    {documents && <><p>{copy('本期发布或采集的资料', 'Published or source-observed this period')} {documents.current ?? 0} · {copy('本期补录的历史资料', 'Historical material received this period')} {documents.late_received ?? 0}</p><p>{copy('完整正文', 'Full text')} {documents.by_completeness?.full_text ?? 0} · {copy('来源节选', 'Source excerpts')} {documents.by_completeness?.source_excerpt ?? 0} · {copy('正文不可用', 'Content unavailable')} {documents.by_completeness?.unavailable ?? 0}</p></>}
+    {documents && <p>{copy('本期发布或采集的资料', 'Published or source-observed this period')} {documents.current ?? 0} · {copy('本期补录的历史资料', 'Historical material received this period')} {documents.late_received ?? 0}</p>}
+    <p>{completenessKinds.map(kind => `${completenessText[kind]} ${completenessCounts[kind]}`).join(' · ')}</p>
     <details className="coverage-records"><summary>{copy('数据与采集记录', 'Data and collection records')}</summary>
     <dl className="source-dates"><div><dt>{copy('最近接收时间', 'Latest receipt')}</dt><dd><EvidenceTime value={typeof text.latest_received_at === 'string' ? text.latest_received_at : undefined} timezone={detail.window.timezone} /></dd></div><div><dt>{copy('最新来源采集时间', 'Latest source observation')}</dt><dd><EvidenceTime value={typeof text.latest_source_observed_at === 'string' ? text.latest_source_observed_at : undefined} timezone={detail.window.timezone} /></dd></div><div><dt>{copy('已接收资料包', 'Received packages')}</dt><dd>{String(text.bundle_count || 0)}</dd></div></dl>
 
@@ -209,12 +213,12 @@ export function ReportBody({ detail, onSource, canReadSources = true }: { detail
   const visibleSections = detail.report?.sections.filter(section => section.kind !== 'macro_data_calendar' || section.rows?.length) || []
   const sectionLinks = [...visibleSections.map(section => ({ id: `section-${section.kind}`, label: sectionTitles[section.kind] })), ...(displayedMarketRows.length ? [{ id: 'market-performance', label: copy('市场表现', 'Market performance') }] : []), ...(displayedMacroRows.length ? [{ id: 'macro-indicators', label: copy('相关指标', 'Related indicators') }] : []), { id: 'source-coverage', label: copy('来源覆盖', 'Source coverage') }]
   return <>
-    {readingOrder.length > 0 && <section className="reading-order" aria-label={copy('本期阅读顺序', 'In this edition')}>
+    {readingOrder.length > 0 && <section id="reading-order" className="reading-order" aria-label={copy('本期阅读顺序', 'In this edition')}>
       <div className="section-heading"><h2>{copy('本期阅读顺序', 'In this edition')}</h2><InfoHint label={copy('阅读顺序说明', 'Reading order')} detail={copy('按本期报告原有重点顺序列出；原文与来源保留在下方。', 'Listed in the saved report’s order. Original text and sources remain below.')} /></div>
       <ol>{readingOrder.slice(0, 4).map(readingLink)}</ol>
       {readingOrder.length > 4 && <details><summary>{copy(`其余 ${readingOrder.length - 4} 条重点`, `${readingOrder.length - 4} more developments`)}</summary><ol start={5}>{readingOrder.slice(4).map(readingLink)}</ol></details>}
     </section>}
-    <nav className="report-contents" aria-label={copy('报告章节', 'Report sections')}>{sectionLinks.map(section => <a key={section.id} id={`link-${section.id}`} href={`#${section.id}`} onClick={event => { event.preventDefault(); navigateToSection(section.id) }}>{section.label}</a>)}</nav>
+    <nav className="report-contents" aria-label={copy('报告章节', 'Report sections')}>{readingOrder.length > 0 && <a href="#reading-order" onClick={event => { event.preventDefault(); navigateToSection('reading-order') }}>{copy('回到导读', 'Reading guide')}</a>}{sectionLinks.map(section => <a key={section.id} id={`link-${section.id}`} href={`#${section.id}`} onClick={event => { event.preventDefault(); navigateToSection(section.id) }}>{section.label}</a>)}</nav>
     {detail.report?.sections.filter(section => section.kind !== 'macro_data_calendar' || section.rows?.length).map(section => <section className="report-section" id={`section-${section.kind}`} key={section.kind}>
       <h2>{sectionTitles[section.kind]}</h2>
       {section.kind === 'macro_data_calendar' && <MacroReleases rows={section.rows || []} renderSources={renderSources} />}

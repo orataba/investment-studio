@@ -1,7 +1,6 @@
 import { sameReturnSegment } from '../../../../../shared-data/instruments/ts/src'
 import { dayDiff } from '../lib/riskReturnAlignment'
 import { CHART_SERIES_COLORS } from '../lib/chartPalette'
-import NoticeToast from '../../../../../packages/ui/src/NoticeToast'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
@@ -11,6 +10,7 @@ import BenchmarkSearchBox, {
   instrumentPrimaryIdentifier,
 } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
+import PortfolioCalculationNotice from '../components/PortfolioCalculationNotice'
 import ConcentrationAlerts from '../components/ConcentrationAlerts'
 import InfoHint from '../components/InfoHint'
 import MonthlyReturnMatrix from '../components/MonthlyReturnMatrix'
@@ -1403,7 +1403,7 @@ export default function OverviewPage() {
     },
     {
       label: 'Market Risk Watch',
-      detail: 'Market-risk returns exclude recorded fees and other non-market P&L; derivatives and base-currency cash are modeled at zero return. Portfolio TWR and its drawdown include those effects. Zero market drawdown does not mean zero investment loss or no risk.',
+      detail: 'Market-risk returns retain security transaction fees and taxes. They exclude standalone cash fees/taxes, cash interest, and event-valued derivative income, realized P&L and charges; derivatives and base-currency cash are modeled at zero return. Portfolio TWR and its drawdown include those effects. Zero market drawdown does not mean zero investment loss or no risk.',
       rows: [
         {
           label: 'Market Current DD',
@@ -1631,8 +1631,15 @@ export default function OverviewPage() {
       busy={workspaceLoading || performanceLoading || benchmarkLoading}
     >
       <section className="portfolio-detail-surface portfolio-overview-surface">
-        <NoticeToast notice={workspaceError ? { id: 0, tone: 'error', message: workspaceError } : null} onDismiss={() => setWorkspaceError(null)} />
-        <NoticeToast notice={performanceError ? { id: 0, tone: 'error', message: performanceError } : null} onDismiss={() => setPerformanceError(null)} />
+        {workspaceError ? <div className="inline-notice inline-notice-warning" role="status">
+          <strong>{zh ? '估值暂不可用' : 'Valuation unavailable'}</strong>
+          <PortfolioCalculationNotice portfolioId={portfolioId} revision={workspaceError} fallbackError={workspaceError} />
+          <p>{zh ? '交易与账本持仓仍保留。跨市场交易日按交易记录的时区确定；未完成市场交易日可能尚无正式价格，不能用旧价公布当前净值。请核对交易日期、时区和所需报价日期，或查看已完成日期。' : 'Transactions and ledger positions are retained. Trade dates follow the recorded trade timezone; an unfinished market session may not yet have an official price. Current NAV cannot use stale prices. Review the trade date, timezone and required quote date, or select a completed date.'}</p>
+          <Link to={`/portfolios/${portfolioId}/transactions`}>{zh ? '核对交易与时区' : 'Review trades and timezone'}</Link>{' · '}
+          <Link to={`/portfolios/${portfolioId}/accounts`}>{zh ? '查看账本持仓' : 'View ledger positions'}</Link>{' · '}
+          <Link to={`/portfolios/${portfolioId}/performance`}>{zh ? '查看已完成估值日期' : 'Review completed valuation dates'}</Link>
+        </div> : null}
+        <div role="status">{performanceError ? <p className="inline-notice inline-notice-warning">{performanceError}</p> : null}</div>
         {workspaceLoading ? <CalculationStatus /> : null}
 
         {!workspaceLoading && !holdingsWorkspace && !workspaceError ? (

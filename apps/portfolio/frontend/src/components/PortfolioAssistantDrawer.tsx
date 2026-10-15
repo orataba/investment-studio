@@ -1,3 +1,4 @@
+import remarkResearchLinks from '../../../../../packages/ui/src/remarkResearchLinks'
 import { useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -24,6 +25,6 @@ export default function PortfolioAssistantDrawer({ initialParams, onClose }: {
     uploadTopicFile={uploadResearchAssistantFile}
     canSaveNote={false}
     attachmentHref={researchAssistantUrl}
-    renderMarkdown={(body) => <Markdown remarkPlugins={[remarkGfm]} skipHtml components={{ img: () => null }}>{body}</Markdown>}
+    renderMarkdown={(body, sourceUrls) => <Markdown remarkPlugins={[remarkGfm, [remarkResearchLinks, { sourceUrls }]]} skipHtml components={{ img: () => null }}>{body}</Markdown>}
   />
 }

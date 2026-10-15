@@ -8194,3 +8194,11 @@ input[type='checkbox'] {
 
 .instrument-metrics-table-core { min-width: 900px; }
 .instrument-metrics-table-core th:not(:first-child), .instrument-metrics-table-core td:not(:first-child) { width: auto; }
+
+/* Keep the name and code visible while inspecting wide metric tables. */
+.watchlists-table .watchlists-select-col { position: sticky; left: 0; z-index: 2; background: var(--surface, #fff); }
+.watchlists-table .watchlists-identity-col { position: sticky; left: 44px; z-index: 2; background: var(--surface, #fff); box-shadow: 1px 0 0 var(--line); }
+.watchlists-table thead .watchlists-select-col,
+.watchlists-table thead .watchlists-identity-col { z-index: 3; background: var(--band); }
+.watchlists-table .watchlists-group-row .watchlists-select-col,
+.watchlists-table .watchlists-group-row .watchlists-identity-col { background: var(--band); }

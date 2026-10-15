@@ -67,7 +67,8 @@ function SleeveChart({ points, series, kind, domain, zh }: {
     ...segment.map((point, index) => `${index ? 'L' : 'M'}${x(point.time)},${y(point.upper)}`),
     ...[...segment].reverse().map((point) => `L${x(point.time)},${y(point.lower)}`), 'Z',
   ].join(' ')
-  const tickTimes = domain ? domain.min === domain.max ? [domain.min] : Array.from({ length: 4 }, (_, index) => domain.min + (domain.max - domain.min) * index / 3) : []
+  const tickTimes = [...new Set(domain ? domain.min === domain.max ? [domain.min] : Array.from({ length: 4 }, (_, index) => Math.round((domain.min + (domain.max - domain.min) * index / 3) / 86400000) * 86400000) : [])]
+  const axisDigits = Math.max(1, Math.min(8, Math.ceil(-Math.log10((axis.ticks[1] - axis.ticks[0]) * 100)) + 1))
 
   return <section className="research-sleeve-chart" aria-labelledby={headingId}>
     <div className="research-sleeve-heading">
@@ -95,7 +96,7 @@ function SleeveChart({ points, series, kind, domain, zh }: {
         }}>
         {axis.ticks.map((value, index) => <g key={index}>
           <line x1={LEFT} x2={RIGHT} y1={y(value)} y2={y(value)} className={`research-sleeve-gridline${Math.abs(value) < 1e-12 ? ' research-sleeve-zero-line' : ''}`} />
-          <text x={LEFT - 9} y={y(value) + 4} textAnchor="end">{formatPercent(value, 1)}</text>
+          <text x={LEFT - 9} y={y(value) + 4} textAnchor="end">{formatPercent(value, axisDigits)}</text>
         </g>)}
         {kind === 'weight' ? stacked.stacks.map((item) => <g key={item.key} data-sleeve-key={item.key}>
           {(['positive', 'negative'] as const).map((sign) => contiguousChartSegments(item[sign]).filter((segment) => segment.some((point) => point.upper !== point.lower)).map((segment, index) => <path key={`${sign}-${index}`} data-stack-sign={sign} d={areaPath(segment)} fill={item.color} fillOpacity={0.65} />))}

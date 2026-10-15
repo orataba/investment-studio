@@ -155,6 +155,13 @@ def test_registered_listing_exchange_must_match_the_catalog(directory):
         search_directory(directory, "GOOGL")
 
 
+def test_catalog_reports_identity_conflict_without_disguising_it_as_invalid_json(directory):
+    from investment_studio_instrument_core.security_catalog import SecurityCatalogError, search_catalog
+    register(directory, "GOOGL", exchange="XNYS")
+    with pytest.raises(SecurityCatalogError, match="identity conflict.*registered exchange.*reconcile"):
+        search_catalog("GOOGL", 10, session_factory=directory)
+
+
 def test_registered_currency_is_authoritative_over_generic_catalog_currency(directory):
     registered = instrument_store.create_instrument(directory, instrument_name="London dollar counter",
         instrument_type="equity", exchange_code="XLON", currency="USD", identifiers=[

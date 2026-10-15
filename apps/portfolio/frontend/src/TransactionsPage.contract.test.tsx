@@ -589,6 +589,42 @@ describe('Transactions rendered page contract', () => {
     expect(apiMocks.getPortfolioTransactionsWorkspace).toHaveBeenCalledTimes(3)
   })
 
+  it.each(['click', 'keyboard'])('blocks edit and delete in the same event batch as a %s selection, in both directions', async (input) => {
+    const workspace = await apiMocks.getPortfolioTransactionsWorkspace()
+    const second = { ...selectedTransaction, transaction_id: 'txn-2', trade_date: '2026-07-16', gross_amount: 999, source_gross_amount: '999', row_version: 2 }
+    const records = [selectedTransaction, second]
+    let finish!: (value: unknown) => void
+    apiMocks.getPortfolioTransactionsWorkspace.mockReset().mockResolvedValueOnce({ ...workspace, transactions: records })
+      .mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions?transaction_id=txn-1', '/portfolios/:portfolioId/transactions')
+    const inspector = await screen.findByRole('complementary', { name: 'Selected transaction details' })
+    await waitFor(() => expect(within(inspector).getByRole('button', { name: 'Edit' })).toBeEnabled())
+    for (const target of [second, selectedTransaction]) {
+      const edit = within(inspector).getByRole('button', { name: 'Edit' })
+      const remove = within(inspector).getByRole('button', { name: 'Delete' })
+      const rows = document.querySelectorAll('.transaction-table-shell tbody tr')
+      const row = Array.from(rows).find(item => item.textContent?.includes(target.trade_date))!
+      act(() => {
+        if (input === 'click') (row as HTMLElement).click()
+        else fireEvent.keyDown(row, { key: 'Enter' })
+        edit.click()
+        remove.click()
+      })
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(edit).toBeDisabled()
+      expect(remove).toBeDisabled()
+      await act(async () => finish({ ...workspace, transactions: records, selected_transaction_id: target.transaction_id, selected_transaction: target }))
+      await waitFor(() => expect(edit).toBeEnabled())
+      fireEvent.click(edit)
+      const dialog = screen.getByRole('dialog', { name: 'Correct transaction' })
+      expect(dialog).toHaveTextContent(target.transaction_id)
+      expect(within(dialog).getByLabelText('Trade Date')).toHaveValue(target.trade_date)
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
+    }
+    expect(apiMocks.updatePortfolioTransaction).not.toHaveBeenCalled()
+    expect(apiMocks.deletePortfolioTransaction).not.toHaveBeenCalled()
+  })
+
   it('keeps reader exports and filters available without import or recording actions', async () => {
     accessState.can_edit = false
     const user = userEvent.setup()

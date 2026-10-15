@@ -67,3 +67,13 @@ it('allows readers to inspect the six saved roles without exposing edit actions'
   await act(async () => {})
   expect(api.save).not.toHaveBeenCalled()
 })
+
+it('returns focus to the edit control after cancel removes the form', async () => {
+  render(<TeamResearchGuidanceRecord />)
+  fireEvent.click(await screen.findByRole('button', { name: '编辑团队指导' }))
+  const cancel = screen.getByRole('button', { name: '取消' })
+  cancel.focus()
+  fireEvent.click(cancel)
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: '编辑团队指导' }))
+  expect(api.save).not.toHaveBeenCalled()
+})

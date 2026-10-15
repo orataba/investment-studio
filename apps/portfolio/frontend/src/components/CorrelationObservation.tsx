@@ -12,7 +12,7 @@ export default function CorrelationObservation({ scopeLabel, observation, alertO
   const { current, previous, averageChange, risingPairCount, pairCount, attention } = observation
   if (current.averageCorrelation === null || (alertOnly && !attention)) return null
   const correlationNumber = (value: number) => value !== 0 && Math.abs(value) < 0.001
-    ? value.toExponential(2) : formatNumber(value, 3)
+    ? new Intl.NumberFormat('en-US', { maximumSignificantDigits: 3, useGrouping: false }).format(value) : formatNumber(value, 3)
   const reason = {
     too_few_members: zh ? '至少需要三个标的或分类，才能判断相关性是否普遍上升。' : 'Broad-rise screening requires at least three instruments or categories.',
     current_window: zh ? '所选截止日前一个月的样本不可用。' : 'The monthly sample ending at the selected cutoff is unavailable.',

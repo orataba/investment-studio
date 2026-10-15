@@ -1122,6 +1122,7 @@ export default function TransactionsPage() {
   const [eventTasksRefreshKey, setEventTasksRefreshKey] = useState(0)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null)
+  const [editingTransactionSnapshot, setEditingTransactionSnapshot] = useState<PortfolioTransactionRecord | null>(null)
   const [submittingTransaction, setSubmittingTransaction] = useState(false)
   const [importingFile, setImportingFile] = useState(false)
   const [uploadingCapture, setUploadingCapture] = useState(false)
@@ -1219,6 +1220,8 @@ export default function TransactionsPage() {
     end_date: searchParams.get('end_date') ?? '',
   }
   const selectedTransactionId = searchParams.get('transaction_id') ?? ''
+  const selectionIntentRef = useRef({ portfolioId, query: searchParams.toString() })
+  selectionIntentRef.current = { portfolioId, query: searchParams.toString() }
 
   const patchSearchParams = useCallback((
     patch: Record<string, string | null | undefined>,
@@ -1231,8 +1234,12 @@ export default function TransactionsPage() {
         next.set(key, value)
       }
     }
-    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true })
-  }, [searchParams, setSearchParams])
+    if (next.toString() !== searchParams.toString()) {
+      // Lock write actions synchronously, before React commits the new selection.
+      selectionIntentRef.current = { portfolioId, query: next.toString() }
+      setSearchParams(next, { replace: true })
+    }
+  }, [portfolioId, searchParams, setSearchParams])
 
   useEffect(() => {
     transactionCaptureDraftFilesRef.current = captureDraftFiles
@@ -3292,8 +3299,19 @@ export default function TransactionsPage() {
     setDrawerOpen(true)
   }
 
+  function selectedTransactionCanBeChanged(transaction: PortfolioTransactionRecord) {
+    return canEditPortfolio && !loadingTransactions && !ledgerError &&
+      selectionIntentRef.current.portfolioId === portfolioId &&
+      selectionIntentRef.current.query === searchParams.toString() &&
+      transaction.portfolio_id === portfolioId &&
+      transaction.transaction_id === selectedTransactionId &&
+      transactionsWorkspace?.selected_transaction_id === selectedTransactionId &&
+      loadedWorkspaceQueryRef.current === transactionWorkspaceQueryKey(portfolioId, filters, selectedTransactionId)
+  }
+
   function openEditDrawer(transaction: PortfolioTransactionRecord) {
-    if (!canEditPortfolio) return
+    if (!selectedTransactionCanBeChanged(transaction) || !canEditTransaction(transaction)) return
+    setEditingTransactionSnapshot(transaction)
     transactionRequestRef.current = null
     setEditingTransactionId(transaction.transaction_id)
     setActiveEventTask(null)
@@ -3389,11 +3407,10 @@ export default function TransactionsPage() {
     setFormError(null)
     setNotice(null)
     const isEditingTransaction = editingTransactionId !== null
-    const editingTransaction = isEditingTransaction
-      ? transactionsWorkspace?.transactions.find(
-          (transaction) => transaction.transaction_id === editingTransactionId,
-        ) ?? null
-      : null
+    const editingTransaction = isEditingTransaction &&
+      editingTransactionSnapshot?.transaction_id === editingTransactionId &&
+      editingTransactionSnapshot.portfolio_id === portfolioId
+      ? editingTransactionSnapshot : null
 
     if (isEditingTransaction && !editingTransaction) {
       setFormError('This transaction changed or is no longer visible. Reload the ledger and retry.')
@@ -4718,7 +4735,7 @@ export default function TransactionsPage() {
                         className="toolbar-link"
                         aria-describedby={selectedTransactionIsPaired ? 'paired-transaction-correction-help' : undefined}
                         disabled={
-                          !canEditPortfolio || selectedTransactionIsPaired ||
+                          !selectedTransactionCanBeChanged(selectedTransaction) || selectedTransactionIsPaired ||
                           !canEditTransaction(selectedTransaction)
                         }
                         onClick={() => openEditDrawer(selectedTransaction)}
@@ -4728,8 +4745,9 @@ export default function TransactionsPage() {
                       <button
                         type="button"
                         className="toolbar-link transaction-danger-action"
-                        disabled={!canEditPortfolio}
+                        disabled={!selectedTransactionCanBeChanged(selectedTransaction)}
                         onClick={() => {
+                          if (!selectedTransactionCanBeChanged(selectedTransaction)) return
                           setDeleteError(null)
                           setPendingDeleteTransaction(selectedTransaction)
                         }}
@@ -6675,6 +6693,9 @@ export default function TransactionsPage() {
                 <div className="panel-title">
                   {isEditingTransaction ? 'Correct Transaction' : 'Record Transaction'}
                 </div>
+                {isEditingTransaction && editingTransactionSnapshot ? <p className="transaction-ticket-hint" translate="no">
+                  {editingTransactionSnapshot.transaction_id} · {transactionActivityLabel(editingTransactionSnapshot.transaction_type, editingTransactionSnapshot.asset_subtype, editingTransactionSnapshot.option_action, editingTransactionSnapshot.lifecycle_event_type)} · {editingTransactionSnapshot.trade_date} · {formatCurrency(editingTransactionSnapshot.gross_amount, editingTransactionSnapshot.currency)}
+                </p> : null}
               </div>
               <button
                 type="button"

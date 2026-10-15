@@ -1,2 +1,6 @@
-.assistant-run-status { padding: .65rem .85rem; border: 1px solid var(--border, #d7dde6); border-radius: .5rem; font-size: .8rem; overflow-wrap: anywhere; }
+.assistant-run-status { padding: .4rem 0; font-size: .8rem; color: var(--studio-muted); overflow-wrap: anywhere; }
 .assistant-run-status p { margin: .35rem 0; }
+.assistant-run-summary { color: var(--studio-ink); }
+.assistant-run-details > summary, .assistant-answer-context > summary { cursor: pointer; width: fit-content; font-size: .8rem; color: var(--studio-muted); }
+.assistant-run-details[open] { border-left: 2px solid var(--studio-line); padding-left: .75rem; margin-top: .5rem; }
+.assistant-answer-context { margin: .4rem 0 .75rem; }
