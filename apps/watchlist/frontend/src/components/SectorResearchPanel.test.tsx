@@ -176,7 +176,7 @@ it('shows a shared risk case as withdrawn, with the incorrect body kept in read-
     evidence_json: { direction: 'risk', withdrawn: true, withdrawal_reason: '原文未支持旧稿，已撤回。', withdrawn_at: '2026-09-06T09:00:00+08:00', sources: original.sources },
     history_json: [{ at: '2026-09-06T09:00:00+08:00', action: 'withdrawn', detail: '核证后保留撤回前记录' }],
   }] })
-  render(<InstrumentRiskPanel instrumentId={original.instrument_id} />)
+  render(<LanguageProvider enableDomTranslation={false}><InstrumentRiskPanel instrumentId={original.instrument_id} /></LanguageProvider>)
   await load()
   expect(screen.queryByText(original.body)).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: '全部记录 1' }))
@@ -195,7 +195,7 @@ it('shows a shared risk case as withdrawn, with the incorrect body kept in read-
 
 it('opens list risk directly without research execution controls', async () => {
   request.mockResolvedValue({ instruments: [{ instrument_id: 'xlk-us', name: 'XLK 信息技术' }], cases: [] })
-  render(<InstrumentRiskPanel watchlistId="sector-list" />)
+  render(<LanguageProvider enableDomTranslation={false}><InstrumentRiskPanel watchlistId="sector-list" /></LanguageProvider>)
   await load()
   expect(screen.queryByLabelText('每日研究更新')).toBeNull()
   expect(screen.queryByRole('button', { name: '更新共享研究' })).toBeNull()
@@ -212,7 +212,7 @@ it('distinguishes historical coverage episodes and labels trigger transitions wi
     history_json: [{ at: `2026-09-0${day}T00:00:00Z`, action: 'triggered' },
       { at: `2026-09-0${day}T01:00:00Z`, action: 'cleared' }],
   })) })
-  const { container } = render(<InstrumentRiskPanel instrumentId="xlk-us" />)
+  const { container } = render(<LanguageProvider enableDomTranslation={false}><InstrumentRiskPanel instrumentId="xlk-us" /></LanguageProvider>)
   await load()
   fireEvent.click(screen.getByRole('button', { name: '全部记录 2' }))
   expect(screen.getAllByText('首次触发')).toHaveLength(2)
