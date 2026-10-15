@@ -12,12 +12,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize('mode,briefing_mode,budget,finish', [
-    ('sector', '', 65536, 'length'), ('review', '', 65536, 'length'),
-    ('sector', '', 65536, 'content_filter'),
-    ('risk', '', 32768, 'stop'), ('', '', 32768, 'stop'), ('', 'review', 65536, 'stop'),
+@pytest.mark.parametrize('mode,briefing_mode,budget,finish,effort', [
+    ('sector', '', 65536, 'length', 'low'), ('review', '', 65536, 'length', 'high'),
+    ('sector', '', 65536, 'content_filter', 'low'),
+    ('risk', '', 32768, 'stop', 'high'), ('conversation', '', 32768, 'stop', 'high'),
+    ('', '', 32768, 'stop', 'high'), ('', 'review', 65536, 'stop', 'high'),
 ])
-def test_native_output_boundary_and_product_budget_scope(tmp_path, mode, briefing_mode, budget, finish):
+def test_native_output_boundary_and_product_budget_scope(tmp_path, mode, briefing_mode, budget, finish, effort):
     if not (ROOT / 'infra/harness/node_modules/@deepseek-ai/dsh/lib/bin.js').exists() or not shutil.which('node'):
         pytest.skip('Pinned Harness and Node must be provisioned for the native contract probe')
     from studio_runtime.provider_usage import UsageCapture
@@ -67,6 +68,9 @@ def test_native_output_boundary_and_product_budget_scope(tmp_path, mode, briefin
         server.shutdown()
     assert len(requests) == 1, result.stderr
     assert requests[0]['stream'] is True
+    assert requests[0]['model'] == 'deepseek-v4.1-flash'
+    assert requests[0]['thinking'] == {'type': 'enabled'}
+    assert requests[0]['reasoning_effort'] == effort
     assert requests[0]['max_tokens'] == budget
     marker = 'RESEARCH_HARNESS_END {"reason":"max-tokens"}'
     if finish == 'length':
