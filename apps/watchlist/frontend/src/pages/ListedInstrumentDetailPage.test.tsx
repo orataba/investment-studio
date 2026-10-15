@@ -12,6 +12,7 @@ import { announceResearchPublication } from '../lib/researchUpdates'
 const apiMocks = vi.hoisted(() => ({
   getInstrumentAttributes: vi.fn(),
   getInstrumentChart: vi.fn(),
+  getInstrumentQuote: vi.fn(),
   getInstrumentMonitoring: vi.fn(),
   getInstrumentPerformance: vi.fn(),
   getInstrumentPriceBars: vi.fn(),
@@ -19,12 +20,14 @@ const apiMocks = vi.hoisted(() => ({
   getInstrumentResearch: vi.fn(),
   getInstrumentRisk: vi.fn(),
   getInstrumentSummary: vi.fn(),
+  getInstrumentTaxonomyTree: vi.fn(),
 }))
 
 vi.mock('../lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/api')>()),
   getInstrumentAttributes: apiMocks.getInstrumentAttributes,
   getInstrumentChart: apiMocks.getInstrumentChart,
+  getInstrumentQuote: apiMocks.getInstrumentQuote,
   getInstrumentMonitoring: apiMocks.getInstrumentMonitoring,
   getInstrumentPerformance: apiMocks.getInstrumentPerformance,
   getInstrumentPriceBars: apiMocks.getInstrumentPriceBars,
@@ -32,6 +35,7 @@ vi.mock('../lib/api', async (importOriginal) => ({
   getInstrumentResearch: apiMocks.getInstrumentResearch,
   getInstrumentRisk: apiMocks.getInstrumentRisk,
   getInstrumentSummary: apiMocks.getInstrumentSummary,
+  getInstrumentTaxonomyTree: apiMocks.getInstrumentTaxonomyTree,
 }))
 
 vi.mock('../components/InstrumentRiskPanel', () => ({ default: ({ mode, instrumentId, onAskAssistant }: { mode?: string; instrumentId?: string; onAskAssistant?: (id: string, question: string) => void }) => <div data-testid="risk-panel" data-mode={mode} data-instrument={instrumentId}><button onClick={() => onAskAssistant?.(instrumentId!, '分析这项风险')}>追问当前风险</button></div> }))
@@ -109,6 +113,13 @@ beforeEach(() => {
     series: [{ name: '中证全债', points: chartPoints }],
     available_compare_targets: [],
   })
+  apiMocks.getInstrumentQuote.mockResolvedValue({
+    instrument_id: 'h11001-csi', base_series_type: 'index_close',
+    selected_series: { label: 'Total Return Index', return_kind: 'total_return' },
+    currency: 'CNY', date_range: { start: '2025-12-31', end: '2026-08-28' },
+    price_series: { quote_basis: 'close', currency: 'CNY', points: chartPoints.slice(-2) },
+    series: [], available_compare_targets: [],
+  })
   apiMocks.getInstrumentPerformance.mockResolvedValue({
     growth_chart_series: [],
     annual_returns: [],
@@ -146,6 +157,7 @@ beforeEach(() => {
     values: {},
     taxonomy,
   })
+  apiMocks.getInstrumentTaxonomyTree.mockResolvedValue({ nodes: [] })
   apiMocks.getInstrumentReferenceData.mockReturnValue(new Promise(() => {}))
 })
 
@@ -185,7 +197,7 @@ describe('independent detail loading', () => {
   })
 
   it('opens research while every market and supporting request is still pending', async () => {
-    for (const name of ['getInstrumentPriceBars', 'getInstrumentSummary', 'getInstrumentChart', 'getInstrumentPerformance',
+    for (const name of ['getInstrumentPriceBars', 'getInstrumentSummary', 'getInstrumentChart', 'getInstrumentQuote', 'getInstrumentPerformance',
       'getInstrumentRisk', 'getInstrumentResearch', 'getInstrumentAttributes'] as const) {
       apiMocks[name].mockReturnValue(new Promise(() => {}))
     }
@@ -195,6 +207,11 @@ describe('independent detail loading', () => {
     expect(screen.getByTestId('sector-panel').getAttribute('data-variant')).toBe('timeline')
     expect(apiMocks.getInstrumentPerformance).not.toHaveBeenCalled()
     expect(apiMocks.getInstrumentRisk).not.toHaveBeenCalled()
+    expect(apiMocks.getInstrumentChart).not.toHaveBeenCalled()
+    expect(apiMocks.getInstrumentResearch).not.toHaveBeenCalled()
+    expect(apiMocks.getInstrumentAttributes).not.toHaveBeenCalled()
+    expect(apiMocks.getInstrumentQuote).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getInstrumentPriceBars).toHaveBeenCalledWith('xlk', { limit: 2 }, expect.any(AbortSignal))
     fireEvent.click(screen.getByRole('button', { name: 'Investment Views' }))
     expect(screen.getAllByRole('status').some(node => node.textContent?.includes('Investment views'))).toBe(true)
     expect(screen.queryByText(/No overall view selected/)).toBeNull()
@@ -203,9 +220,131 @@ describe('independent detail loading', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Overview' })[0])
     await waitFor(() => expect(apiMocks.getInstrumentPerformance).toHaveBeenCalledTimes(1))
     expect(apiMocks.getInstrumentRisk).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getInstrumentChart).toHaveBeenCalledTimes(1)
+    expect((apiMocks.getInstrumentQuote.mock.calls[0][1] as AbortSignal).aborted).toBe(true)
+    expect((apiMocks.getInstrumentPriceBars.mock.calls[0][2] as AbortSignal).aborted).toBe(true)
+    expect(apiMocks.getInstrumentPriceBars).toHaveBeenLastCalledWith('xlk', undefined, expect.any(AbortSignal))
     fireEvent.click(screen.getByRole('button', { name: 'Investment Research' }))
     fireEvent.click(screen.getAllByRole('button', { name: 'Overview' })[0])
     expect(apiMocks.getInstrumentPerformance).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['etf', 'equity', 'index', 'crypto'] as const)('keeps the canonical %s header quote while deferring full history to overview', async (kind) => {
+    const quote = await apiMocks.getInstrumentQuote()
+    apiMocks.getInstrumentQuote.mockClear()
+    const full = await apiMocks.getInstrumentChart()
+    apiMocks.getInstrumentChart.mockClear()
+    const fullRequest = deferred<typeof full>()
+    apiMocks.getInstrumentChart.mockReturnValue(fullRequest.promise)
+    const oldQuote = deferred<typeof quote>()
+    apiMocks.getInstrumentQuote.mockReturnValue(oldQuote.promise)
+    const raw = (date: string, close: string) => ({ date, open: close, high: close, low: close, close,
+      previous_close: null, adjustment_factor: null, volume: null, turnover: null,
+      currency: 'CNY', volume_unit: null, turnover_unit: null, provider: 'fixture', status: 'complete' })
+    apiMocks.getInstrumentPriceBars.mockImplementation((_id, options) => Promise.resolve({
+      instrument_id: 'xlk', currency: 'CNY', bars: [raw('2026-01-01', '90'), raw('2026-08-27', '103'), raw('2026-08-28', '104')].slice(options?.limit ? -2 : 0),
+    }))
+    const { container } = render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/?tab=risk']}>
+      <ListedInstrumentDetailPage instrument={{ ...loadingInstrument, instrument_type: kind }} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    expect(apiMocks.getInstrumentChart).not.toHaveBeenCalled()
+    expect(apiMocks.getInstrumentResearch).not.toHaveBeenCalled()
+    expect(apiMocks.getInstrumentAttributes).not.toHaveBeenCalled()
+    await act(async () => oldQuote.resolve(quote))
+    expect(container.querySelector('.listed-hero-quote strong')?.textContent).toBe('108.00')
+    expect(container.querySelector('.listed-hero-quote em')?.textContent).toBe('0.93%')
+    expect(container.querySelector('.listed-hero-quote em')?.getAttribute('title')).toBe('2026-07-31 → 2026-08-28')
+    if (kind === 'index' || kind === 'crypto') expect(apiMocks.getInstrumentPriceBars).not.toHaveBeenCalled()
+    else expect(apiMocks.getInstrumentPriceBars).toHaveBeenCalledWith('xlk', { limit: 2 }, expect.any(AbortSignal))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Overview' })[0])
+    expect(apiMocks.getInstrumentChart).toHaveBeenCalledTimes(1)
+    expect((apiMocks.getInstrumentQuote.mock.calls[0][1] as AbortSignal).aborted).toBe(true)
+    await act(async () => fullRequest.resolve(full))
+    expect(container.querySelector('.listed-hero-quote strong')?.textContent).toBe('108.00')
+    expect(container.querySelector('.listed-hero-quote em')?.textContent).toBe('0.93%')
+    fireEvent.click(screen.getByRole('button', { name: 'Risk Monitoring' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Overview' })[0])
+    expect(apiMocks.getInstrumentChart).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getInstrumentQuote).toHaveBeenCalledTimes(1)
+  })
+
+  it('retains the valid raw quote fallback when a partial row appears among the latest two bars', async () => {
+    apiMocks.getInstrumentQuote.mockResolvedValue({ currency: 'USD', series: [], price_series: { points: [] } })
+    const raw = (date: string, close: string) => ({ date, open: close, high: close, low: close, close,
+      previous_close: null, adjustment_factor: null, volume: null, turnover: null,
+      currency: 'USD', volume_unit: null, turnover_unit: null, provider: 'fixture', status: 'complete' })
+    const history = [raw('2026-09-01', '100'), { ...raw('2026-09-02', '102'), open: null }, raw('2026-09-03', '105')]
+    apiMocks.getInstrumentPriceBars.mockImplementation((_id, options) => Promise.resolve({
+      instrument_id: 'xlk', currency: 'USD', bars: options?.limit ? history.slice(-2) : history,
+    }))
+    const { container } = render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/?tab=risk']}>
+      <ListedInstrumentDetailPage instrument={loadingInstrument} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    await waitFor(() => expect(container.querySelector('.listed-hero-quote strong')?.textContent).toBe('105.00'))
+    expect(container.querySelector('.listed-hero-quote em')?.textContent).toBe('5.00%')
+    expect(container.querySelector('.listed-hero-quote em')?.getAttribute('title')).toBe('2026-09-01 → 2026-09-03')
+    expect(apiMocks.getInstrumentPriceBars).toHaveBeenCalledTimes(2)
+    expect(apiMocks.getInstrumentPriceBars).toHaveBeenLastCalledWith('xlk', undefined, expect.any(AbortSignal))
+    expect(apiMocks.getInstrumentChart).not.toHaveBeenCalled()
+  })
+
+  it('ignores a late header projection after overview has loaded its full canonical series', async () => {
+    const oldQuote = deferred<unknown>()
+    apiMocks.getInstrumentQuote.mockReturnValue(oldQuote.promise)
+    const { container } = render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/?tab=risk']}>
+      <ListedInstrumentDetailPage instrument={loadingInstrument} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Overview' })[0])
+    await waitFor(() => expect(container.querySelector('.listed-hero-quote strong')?.textContent).toBe('108.00'))
+    await act(async () => oldQuote.resolve({ currency: 'USD', series: [], price_series: { points: [{ date: '2026-01-01', value: 999 }] } }))
+    expect(container.querySelector('.listed-hero-quote strong')?.textContent).toBe('108.00')
+  })
+
+  it('loads investment views only on that tab, aborts hidden reads and refreshes after a publication', async () => {
+    const oldResearch = deferred<unknown>()
+    apiMocks.getInstrumentResearch.mockReturnValueOnce(oldResearch.promise)
+    const { unmount } = render(<LanguageProvider enableDomTranslation={false}><MemoryRouter>
+      <ListedInstrumentDetailPage instrument={loadingInstrument} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    expect(apiMocks.getInstrumentResearch).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Investment Views' }))
+    expect(apiMocks.getInstrumentResearch).toHaveBeenCalledTimes(1)
+    const oldSignal = apiMocks.getInstrumentResearch.mock.calls[0][1] as AbortSignal
+    expect(oldSignal.aborted).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Investment Research' }))
+    expect(oldSignal.aborted).toBe(true)
+    await act(async () => announceResearchPublication(['xlk']))
+    expect(apiMocks.getInstrumentResearch).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Investment Views' }))
+    expect(await screen.findByText('No views recorded. Add your first judgment, then choose whether to use it as your overall view.')).toBeTruthy()
+    expect(apiMocks.getInstrumentResearch).toHaveBeenCalledTimes(2)
+    await act(async () => oldResearch.resolve({ ...emptyInstrumentResearchResponse(), profile: {
+      ...emptyInstrumentResearchResponse().profile, thesis: 'Obsolete response must not appear',
+    } }))
+    expect(screen.queryByText('Obsolete response must not appear')).toBeNull()
+    await act(async () => announceResearchPublication(['other']))
+    expect(apiMocks.getInstrumentResearch).toHaveBeenCalledTimes(2)
+    await act(async () => announceResearchPublication(['xlk']))
+    expect(apiMocks.getInstrumentResearch).toHaveBeenCalledTimes(3)
+    expect((apiMocks.getInstrumentResearch.mock.calls[1][1] as AbortSignal).aborted).toBe(true)
+    unmount()
+    expect((apiMocks.getInstrumentResearch.mock.calls[2][1] as AbortSignal).aborted).toBe(true)
+  })
+
+  it('loads settings definitions when opened and keeps a failed views read retryable', async () => {
+    apiMocks.getInstrumentResearch.mockRejectedValueOnce(new Error('Views request failed'))
+    render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/?tab=views']}>
+      <ListedInstrumentDetailPage instrument={loadingInstrument} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    expect(apiMocks.getInstrumentAttributes).not.toHaveBeenCalled()
+    const retry = await screen.findByRole('button', { name: 'Retry' })
+    expect((retry as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(retry)
+    expect(await screen.findByText('No views recorded. Add your first judgment, then choose whether to use it as your overall view.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Instrument settings' }))
+    await waitFor(() => expect(apiMocks.getInstrumentAttributes).toHaveBeenCalledTimes(1))
+    expect(apiMocks.getInstrumentTaxonomyTree).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText('Fixed Income / Broad Bond', { selector: 'strong' })).toBeTruthy()
   })
 
   it('shows price and summary before statistics, then updates each ready section', async () => {
@@ -239,6 +378,20 @@ describe('independent detail loading', () => {
     expect(screen.getAllByRole('status').some(node => node.textContent?.includes('Risk statistics'))).toBe(true)
     await act(async () => risk.resolve({ ...riskValue, current_drawdown: -2 }))
     expect(screen.getByText('-2.00%')).toBeTruthy()
+  })
+
+  it('withholds previous statistics when a retry fails instead of presenting them as the new result', async () => {
+    const performance = await apiMocks.getInstrumentPerformance()
+    apiMocks.getInstrumentPerformance.mockResolvedValueOnce({ ...performance, trailing_returns: [{ window: '1Y', investment_nav: 17 }] })
+      .mockRejectedValueOnce(new Error('Performance unavailable'))
+    apiMocks.getInstrumentRisk.mockRejectedValueOnce(new Error('Risk unavailable'))
+    render(<LanguageProvider enableDomTranslation={false}><MemoryRouter>
+      <ListedInstrumentDetailPage instrument={loadingInstrument} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    expect(await screen.findByText('17.000%')).toBeTruthy()
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Standardized performance data is unavailable'))
+    expect(screen.queryByText('17.000%')).toBeNull()
   })
 
   it('never displays a canonical return series as an ETF quote while OHLCV is pending or empty', async () => {
@@ -279,7 +432,9 @@ describe('independent detail loading', () => {
     </MemoryRouter></LanguageProvider>
     const { rerender, container } = render(view())
     const next = { ...loadingInstrument, instrument_type: 'index' as const, requested_instrument_id: 'spy', canonical_instrument_id: 'spy', detail_subject_id: 'spy', instrument_name: 'New instrument' }
+    const oldSignal = apiMocks.getInstrumentChart.mock.calls[0][1] as AbortSignal
     rerender(view(next))
+    expect(oldSignal.aborted).toBe(true)
     await waitFor(() => expect(container.querySelector('.listed-hero-quote strong')?.textContent).toBe('108.00'))
     await act(async () => oldChart.resolve({ instrument_id: 'xlk', series: [{ points: [{ date: '2026-09-23', value: 999 }] }] }))
     expect(container.querySelector('.listed-hero-quote strong')?.textContent).toBe('108.00')
@@ -295,11 +450,12 @@ describe('ListedInstrumentDetailPage index view', () => {
     const note = { note_id: 'new-view', note_date: '2026-09-23', note_type: 'thesis_update', title: '科技估值', body: '新增主题观点应立即出现在观点页。', summary: '', importance: 'normal', tags: [], source_refs: '', people: '', author: 'Shaw', follow_up_date: null, completed_at: null, created_at: '2026-09-23T09:00:00Z', updated_at: '2026-09-23T09:00:00Z', updated_by: 'terminal_ui', revision_number: 1 }
     apiMocks.getInstrumentResearch.mockResolvedValue({ ...emptyInstrumentResearchResponse(), notes: [note] })
     await act(async () => announceResearchPublication(['other']))
-    expect(apiMocks.getInstrumentResearch).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getInstrumentResearch).not.toHaveBeenCalled()
     await act(async () => announceResearchPublication(['xlk']))
-    expect(apiMocks.getInstrumentResearch).toHaveBeenCalledTimes(2)
+    expect(apiMocks.getInstrumentResearch).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Investment Views' }))
     expect(await screen.findByText(note.body)).toBeTruthy()
+    expect(apiMocks.getInstrumentResearch).toHaveBeenCalledTimes(1)
     expect(apiMocks.getInstrumentSummary).toHaveBeenCalledTimes(1)
   })
 
@@ -534,7 +690,7 @@ describe('ListedInstrumentDetailPage index view', () => {
     expect(screen.queryByRole('region', { name: 'ETF profile and holdings' })).toBeNull()
     expect(screen.queryByRole('button', { name: /Details|资料与明细/ })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Investment Views|投资观点/ }))
-    expect(screen.queryByRole('button', { name: /Add view|新增观点/ })).not.toBeNull()
+    expect(await screen.findByRole('button', { name: /Add view|新增观点/ })).toBeTruthy()
     expect(screen.queryByText('Current Investment View')).toBeNull()
     fireEvent.click(screen.getAllByRole('button', { name: /^Overview$|^总览$/ })[0])
     expect(screen.queryByText('Monthly Return Matrix')).not.toBeNull()
@@ -707,7 +863,7 @@ it('changes raw/front/back display without changing canonical performance or the
     <ListedInstrumentDetailPage instrument={loadingInstrument} watchlistContext={null} />
   </MemoryRouter></LanguageProvider>)
   await screen.findByRole('img', { name: 'Candlestick price and volume chart' })
-  expect(apiMocks.getInstrumentPriceBars).toHaveBeenCalledWith('xlk')
+  expect(apiMocks.getInstrumentPriceBars).toHaveBeenCalledWith('xlk', undefined, expect.any(AbortSignal))
   fireEvent.click(screen.getByRole('button', { name: 'Backward adjusted' }))
   expect(container.querySelector('.listed-hero-quote strong')?.textContent).toBe('60.00')
   expect(screen.getByText('Displayed price · Backward adjusted')).toBeTruthy()

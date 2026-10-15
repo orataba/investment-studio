@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getInstrumentNavSeries, updateInstrumentSettings } from './api'
+import { getInstrumentChart, getInstrumentNavSeries, getInstrumentPerformance, getInstrumentPriceBars, getInstrumentQuote, getInstrumentResearch, getInstrumentRisk, getInstrumentSummary, updateInstrumentSettings } from './api'
 
 describe('instrument NAV series API contract', () => {
   afterEach(() => {
@@ -137,4 +137,30 @@ it('preserves canonical return segment identity through both NAV point adapters'
       expect(rows.map(row => row.segment_id)).toEqual(['old', 'new'])
     }
   } finally { vi.unstubAllGlobals() }
+})
+
+
+describe('listed detail request cancellation', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('forwards the caller signal and explicit latest-quote limit without changing the request scope', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    for (const read of [getInstrumentSummary, getInstrumentChart, getInstrumentPerformance, getInstrumentRisk, getInstrumentResearch]) {
+      await read('equity/a', controller.signal)
+    }
+    await getInstrumentPriceBars('equity/a', { limit: 2 }, controller.signal)
+    await getInstrumentQuote('equity/a', controller.signal)
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/api/instruments/equity%2Fa/summary', '/api/instruments/equity%2Fa/chart',
+      '/api/instruments/equity%2Fa/performance', '/api/instruments/equity%2Fa/risk',
+      '/api/instruments/equity%2Fa/research', '/api/instruments/equity%2Fa/price-bars?limit=2',
+      '/api/instruments/equity%2Fa/chart?projection=quote',
+    ])
+    for (const [, options] of fetchMock.mock.calls) {
+      expect(options.signal).toBe(controller.signal)
+      expect(options.credentials).toBe('include')
+    }
+  })
 })

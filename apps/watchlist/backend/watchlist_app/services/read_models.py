@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
+from math import isfinite
 
 from watchlist_app.db.models.read_models import InstrumentChartReadModel, WatchlistRowReadModel
 from watchlist_app.db.models.watchlists import InstrumentAttributeValue, WatchlistView
@@ -41,6 +42,30 @@ def serialize_payload(value: object) -> object:
     if isinstance(value, list):
         return [serialize_payload(item) for item in value]
     return _serialize_scalar(value)
+
+
+def instrument_quote_payload(payload: dict[str, object]) -> dict[str, object]:
+    """Keep the detail header on the same valuation points as the full chart.
+
+    Project before recursive serialization: return histories and chart series
+    are irrelevant to the header. Filtering matches the listed detail's
+    levelsToBars before selecting the last two points, including segment IDs.
+    """
+    result = {key: payload[key] for key in (
+        "instrument_id", "base_series_type", "selected_series", "currency",
+        "latest_values", "date_range", "freshness",
+    ) if key in payload}
+    price_series = payload.get("price_series")
+    if isinstance(price_series, dict):
+        points = []
+        for point in reversed(price_series.get("points", [])):
+            value = _serialize_scalar(point.get("value"))
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value) and value > 0:
+                points.append(point)
+                if len(points) == 2:
+                    break
+        result["price_series"] = {**price_series, "points": list(reversed(points))}
+    return {**result, "series": [], "available_compare_targets": []}
 
 
 def collapse_latest_attribute_values(

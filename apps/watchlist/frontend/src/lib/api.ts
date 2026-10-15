@@ -1320,6 +1320,7 @@ export function getInstrumentReferenceData(instrumentId: string) {
 export function getInstrumentPriceBars(
   instrumentId: string,
   options?: { start_date?: string; end_date?: string; limit?: number },
+  signal?: AbortSignal,
 ) {
   const params = new URLSearchParams()
   if (options?.start_date) {
@@ -1334,6 +1335,7 @@ export function getInstrumentPriceBars(
   const query = params.toString()
   return fetchJson<InstrumentPriceBarsResponse>(
     `${buildInstrumentDetailApiPath(instrumentId, 'price-bars')}${query ? `?${query}` : ''}`,
+    { signal },
   )
 }
 
@@ -1586,8 +1588,8 @@ function buildInstrumentDetailApiPath(instrumentId: string, suffix: string) {
   return `/api/instruments/${encodeURIComponent(instrumentId)}/${suffix}`
 }
 
-export function getInstrumentSummary(instrumentId: string) {
-  return fetchJson<InstrumentSummaryResponse>(buildInstrumentDetailApiPath(instrumentId, 'summary'))
+export function getInstrumentSummary(instrumentId: string, signal?: AbortSignal) {
+  return fetchJson<InstrumentSummaryResponse>(buildInstrumentDetailApiPath(instrumentId, 'summary'), { signal })
 }
 
 export function getInstrumentLibrary() {
@@ -1596,16 +1598,20 @@ export function getInstrumentLibrary() {
   )
 }
 
-export function getInstrumentChart(instrumentId: string) {
-  return fetchJson<InstrumentChartResponse>(buildInstrumentDetailApiPath(instrumentId, 'chart'))
+export function getInstrumentChart(instrumentId: string, signal?: AbortSignal) {
+  return fetchJson<InstrumentChartResponse>(buildInstrumentDetailApiPath(instrumentId, 'chart'), { signal })
 }
 
-export function getInstrumentPerformance(instrumentId: string) {
-  return fetchJson<InstrumentPerformanceResponse>(buildInstrumentDetailApiPath(instrumentId, 'performance'))
+export function getInstrumentQuote(instrumentId: string, signal?: AbortSignal) {
+  return fetchJson<InstrumentChartResponse>(`${buildInstrumentDetailApiPath(instrumentId, 'chart')}?projection=quote`, { signal })
 }
 
-export function getInstrumentRisk(instrumentId: string) {
-  return fetchJson<InstrumentRiskResponse>(buildInstrumentDetailApiPath(instrumentId, 'risk'))
+export function getInstrumentPerformance(instrumentId: string, signal?: AbortSignal) {
+  return fetchJson<InstrumentPerformanceResponse>(buildInstrumentDetailApiPath(instrumentId, 'performance'), { signal })
+}
+
+export function getInstrumentRisk(instrumentId: string, signal?: AbortSignal) {
+  return fetchJson<InstrumentRiskResponse>(buildInstrumentDetailApiPath(instrumentId, 'risk'), { signal })
 }
 
 export function getInstrumentExposureSummary(instrumentId: string) {
@@ -1636,8 +1642,8 @@ export function getInstrumentDocuments(instrumentId: string) {
   return fetchJson<FundDocumentsResponse>(buildInstrumentDetailApiPath(instrumentId, 'documents'))
 }
 
-export function getInstrumentResearch(instrumentId: string) {
-  return fetchJson<InstrumentResearchResponse>(buildInstrumentDetailApiPath(instrumentId, 'research'))
+export function getInstrumentResearch(instrumentId: string, signal?: AbortSignal) {
+  return fetchJson<InstrumentResearchResponse>(buildInstrumentDetailApiPath(instrumentId, 'research'), { signal })
 }
 
 export function getInstrumentResearchHistory(instrumentId: string) {

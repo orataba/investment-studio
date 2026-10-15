@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from studio_identity import current_principal
@@ -41,6 +41,7 @@ from watchlist_app.services.read_models import (
     default_instrument_performance_payload,
     default_instrument_risk_payload,
     default_instrument_summary_payload,
+    instrument_quote_payload,
     merge_summary_attributes,
     serialize_payload,
 )
@@ -338,11 +339,13 @@ def list_instrument_library(
 def get_instrument_chart_data(
     instrument_id: str,
     session: Session = Depends(get_db_session),
+    projection: Literal["full", "quote"] = "full",
 ) -> dict[str, object]:
     _require_instrument(session, instrument_id)
     _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_chart_read")
     record = read_model_repository.get_chart(session, instrument_id)
-    payload = serialize_payload(record.payload_json) if record is not None else default_instrument_chart_payload(instrument_id)
+    source = record.payload_json if record is not None else default_instrument_chart_payload(instrument_id)
+    payload = serialize_payload(instrument_quote_payload(source) if projection == "quote" else source)
     freshness = recalculation_freshness_overrides(session, [instrument_id]).get(instrument_id)
     if freshness:
         payload["freshness"] = freshness

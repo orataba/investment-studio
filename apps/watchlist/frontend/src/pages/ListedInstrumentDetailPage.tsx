@@ -5,7 +5,7 @@ import RequestRecovery from '../../../../../packages/ui/src/RequestRecovery'
 import FreshnessNote from '../components/FreshnessNote'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useCanWriteTeam } from '../components/AccountBoundary'
-import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { Link, useSearchParams } from 'react-router'
 
 import NoticeToast, { LoadingNotice } from '../../../../../packages/ui/src/NoticeToast'
@@ -33,6 +33,7 @@ import {
   getInstrumentReferenceData,
   getInstrumentSummary,
   getInstrumentChart,
+  getInstrumentQuote,
   getInstrumentTaxonomyTree,
   updateInstrumentSettings,
   type InstrumentChartResponse,
@@ -77,7 +78,7 @@ type Props = {
   watchlistContext: WatchlistBreadcrumbContext | null
 }
 
-const INITIAL_PENDING = { bars: true, summary: true, chart: true, performance: true, risk: true, research: true, attributes: true }
+const INITIAL_PENDING = { bars: true, summary: true, chart: true, performance: true, risk: true, research: true }
 type DataSection = keyof typeof INITIAL_PENDING
 
 const RANGE_OPTIONS: PriceRange[] = ['1M', '3M', '6M', '1Y', 'ALL']
@@ -566,7 +567,14 @@ function ListedReferencePanel({ instrument, language, currency, classification }
   </section>
 }
 
-export default function ListedInstrumentDetailPage({ instrument, watchlistContext }: Props) {
+export default function ListedInstrumentDetailPage(props: Props) {
+  const instrument = props.instrument
+  const instrumentId = instrument.detail_subject_id || instrument.canonical_instrument_id || instrument.requested_instrument_id
+  // No previous instrument's values, lazy-load flags or dialogs survive navigation.
+  return <ListedInstrumentDetailContent key={`${instrument.instrument_type}:${instrumentId}`} {...props} />
+}
+
+function ListedInstrumentDetailContent({ instrument, watchlistContext }: Props) {
   const canWriteTeam = useCanWriteTeam()
   const { language } = useLanguage()
   const instrumentId = instrument.detail_subject_id || instrument.canonical_instrument_id || instrument.requested_instrument_id
@@ -613,7 +621,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const [research, setResearch] = useState<InstrumentResearchResponse>(() => emptyInstrumentResearchResponse())
   const [researchError, setResearchError] = useState<string | null>(null)
   const [pending, setPending] = useState(INITIAL_PENDING)
-  const [statisticsInstrumentId, setStatisticsInstrumentId] = useState<string | null>(null)
+  const [overviewRequested, setOverviewRequested] = useState(tab === 'overview')
   const [retryToken, setRetryToken] = useState(0)
   const [summaryError, setSummaryError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -633,85 +641,98 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
 
   const settingsDialogRef = useModalDialog(settingsOpen, closeSettings)
 
+  // Keep an overview request already started for this instrument across tab
+  // switches. Other tabs need only the shared header, not its full history.
   useEffect(() => {
-    let cancelled = false
-    let researchRequest = 0
-    setAssistant(null)
-    setPending(INITIAL_PENDING)
-    setError(null)
-    setSummaryError(null)
-    setFailedSections([])
-    setResearchError(null)
-    setBarsResponse(null)
-    setSummary(null)
-    setChart(null)
-    setPerformance(null)
-    setRisk(null)
-    setResearch(emptyInstrumentResearchResponse())
-    setAttributeValues(null)
+    if (tab === 'overview') setOverviewRequested(true)
+  }, [tab])
 
-    // Each section publishes independently; research never waits for market data.
-    function load<T>(section: DataSection, promise: Promise<T>, apply: (value: T) => void, onError?: (reason: unknown) => void) {
-      void promise.then(value => {
-        if (!cancelled) apply(value)
-      }).catch(reason => {
-        if (cancelled) return
-        setFailedSections(previous => [...previous, section])
-        onError?.(reason)
-      }).finally(() => {
-        if (!cancelled) setPending(previous => ({ ...previous, [section]: false }))
-      })
+  const loadSection = useCallback(<T,>(
+    section: DataSection, signal: AbortSignal, request: Promise<T>,
+    apply: (value: T) => void, onError?: (reason: unknown) => void,
+  ) => {
+    setPending(previous => ({ ...previous, [section]: true }))
+    setFailedSections(previous => previous.filter(item => item !== section))
+    void request.then(value => {
+      if (!signal.aborted) apply(value)
+    }).catch(reason => {
+      if (signal.aborted) return
+      setFailedSections(previous => [...previous, section])
+      onError?.(reason)
+    }).finally(() => {
+      if (!signal.aborted) setPending(previous => ({ ...previous, [section]: false }))
+    })
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setSummary(null)
+    setSummaryError(null)
+    loadSection('summary', controller.signal, getInstrumentSummary(instrumentId, controller.signal), setSummary,
+      reason => setSummaryError(reason instanceof Error ? reason.message : 'Instrument summary is unavailable.'))
+    return () => controller.abort()
+  }, [instrumentId, retryToken, loadSection])
+
+  useEffect(() => {
+    if (usesCanonicalPriceSeries) return
+    const controller = new AbortController()
+    setBarsResponse(null)
+    setError(null)
+    async function readBars() {
+      const response = await getInstrumentPriceBars(instrumentId, overviewRequested ? undefined : { limit: 2 }, controller.signal)
+      // The old quote fallback uses valid OHLC rows. A partial row among the
+      // last two can hide an earlier valid quote, so retain that fallback.
+      if (!overviewRequested && !controller.signal.aborted && response.bars.length === 2 && adjustPriceBars(response.bars, 'raw').length < 2) {
+        return getInstrumentPriceBars(instrumentId, undefined, controller.signal)
+      }
+      return response
     }
-    function loadResearch() {
-      const request = ++researchRequest
-      void getInstrumentResearch(instrumentId).then(value => {
-        if (cancelled || request !== researchRequest) return
-        setResearch(value)
-        setResearchError(null)
-      }).catch(reason => {
-        if (!cancelled && request === researchRequest) setResearchError(reason instanceof Error ? reason.message : 'Investment research is unavailable.')
-      }).finally(() => {
-        if (!cancelled && request === researchRequest) setPending(previous => ({ ...previous, research: false }))
-      })
-    }
-    load('bars', getInstrumentPriceBars(instrumentId), value => {
+    loadSection('bars', controller.signal, readBars(), value => {
       setBarsResponse(value)
       setMode('raw')
-    }, reason => {
-      if (!usesCanonicalPriceSeries) setError(reason instanceof Error ? reason.message : 'Failed to load OHLCV history.')
-    })
-    load('summary', getInstrumentSummary(instrumentId), setSummary, reason => setSummaryError(reason instanceof Error ? reason.message : 'Instrument summary is unavailable.'))
-    load('chart', getInstrumentChart(instrumentId), setChart, reason => {
+    }, reason => setError(reason instanceof Error ? reason.message : 'Failed to load OHLCV history.'))
+    return () => controller.abort()
+  }, [instrumentId, usesCanonicalPriceSeries, overviewRequested, retryToken, loadSection])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setChart(null)
+    if (usesCanonicalPriceSeries) setError(null)
+    const read = overviewRequested ? getInstrumentChart : getInstrumentQuote
+    loadSection('chart', controller.signal, read(instrumentId, controller.signal), setChart, reason => {
       if (usesCanonicalPriceSeries) setError(reason instanceof Error ? reason.message : 'Failed to load the canonical price series.')
     })
-    load('attributes', getInstrumentAttributes(instrumentId), setAttributeValues)
+    return () => controller.abort()
+  }, [instrumentId, usesCanonicalPriceSeries, overviewRequested, retryToken, loadSection])
+
+  useEffect(() => {
+    if (!overviewRequested) return
+    const controller = new AbortController()
+    setPerformance(null)
+    setRisk(null)
+    loadSection('performance', controller.signal, getInstrumentPerformance(instrumentId, controller.signal), setPerformance)
+    loadSection('risk', controller.signal, getInstrumentRisk(instrumentId, controller.signal), setRisk)
+    return () => controller.abort()
+  }, [instrumentId, overviewRequested, retryToken, loadSection])
+
+  useEffect(() => {
+    if (tab !== 'views') return
+    let controller: AbortController
+    function loadResearch() {
+      controller?.abort()
+      controller = new AbortController()
+      const signal = controller.signal
+      setResearchError(null)
+      loadSection('research', signal, getInstrumentResearch(instrumentId, signal), setResearch,
+        reason => setResearchError(reason instanceof Error ? reason.message : 'Investment research is unavailable.'))
+    }
     loadResearch()
     const updated = (event: Event) => {
       if ((event as CustomEvent<string[]>).detail.includes(instrumentId)) loadResearch()
     }
     window.addEventListener(RESEARCH_UPDATED, updated)
-    return () => { cancelled = true; window.removeEventListener(RESEARCH_UPDATED, updated) }
-  }, [instrument.instrument_type, instrumentId, retryToken])
-
-  // Research and PM views do not consume the full performance/risk calculation.
-  // Start it once when a reading surface actually needs it; tab changes then
-  // keep the same in-flight result without repeatedly refreshing the statistics.
-  useEffect(() => {
-    if (tab === 'overview') setStatisticsInstrumentId(instrumentId)
-  }, [instrumentId, tab])
-
-  useEffect(() => {
-    if (statisticsInstrumentId !== instrumentId) return
-    let cancelled = false
-    function load<T>(section: 'performance' | 'risk', promise: Promise<T>, apply: (value: T) => void) {
-      void promise.then(value => { if (!cancelled) apply(value) })
-        .catch(() => { if (!cancelled) setFailedSections(previous => [...previous, section]) })
-        .finally(() => { if (!cancelled) setPending(previous => ({ ...previous, [section]: false })) })
-    }
-    load('performance', getInstrumentPerformance(instrumentId), setPerformance)
-    load('risk', getInstrumentRisk(instrumentId), setRisk)
-    return () => { cancelled = true }
-  }, [instrumentId, statisticsInstrumentId, retryToken])
+    return () => { controller.abort(); window.removeEventListener(RESEARCH_UPDATED, updated) }
+  }, [instrumentId, tab, retryToken, loadSection])
 
   useEffect(() => {
     if (!settingsOpen) return
@@ -1011,7 +1032,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     ? `Standardized ${failedStandardized.join(' and ')} data is unavailable; affected metrics are withheld.` : null
 
   const loadErrorMessage = [summaryError, tab === 'overview' ? standardizedError : null, tab === 'views' ? researchError : null].filter(Boolean).join(' ')
-  const visibleDataLoading = pending.summary || pending.attributes || (tab === 'views' && pending.research) || (tab === 'overview' && (pending.chart || pending.performance || pending.risk || (!usesCanonicalPriceSeries && pending.bars)))
+  const visibleDataLoading = pending.summary || (tab === 'views' && pending.research) || (tab === 'overview' && (pending.chart || pending.performance || pending.risk || (!usesCanonicalPriceSeries && pending.bars)))
 
   const chartPanel = (
     <section className="panel listed-chart-panel">
@@ -1125,7 +1146,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         </div>
         <div className="listed-hero-side">
           <WorkspaceTools
-            settings={{ label: zh ? '标的设置' : 'Instrument settings', disabled: !canWriteTeam || pending.attributes || pending.summary, onClick: () => setSettingsOpen(true) }}
+            settings={{ label: zh ? '标的设置' : 'Instrument settings', disabled: !canWriteTeam || pending.summary, onClick: () => setSettingsOpen(true) }}
             risk={{ onClick: openRisk }}
             assistant={{ onClick: () => openAssistant() }}
           />

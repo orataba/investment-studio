@@ -49,11 +49,43 @@ def research_capability(session, instrument_id=None, *, risk=False):
         .order_by(Instrument.instrument_id)).all()
     statuses = {"Invested"} if risk else {"Proposed", "Invested"}
     eligible = {iid: kind for iid, kind, status in rows if status in statuses}
-    if not risk:
-        from watchlist_app.services.research_dossier import _registration
+    if not risk and eligible:
+        from investment_studio_instrument_core.db_models import InstrumentReferenceSnapshot
+        from watchlist_app.db.models import InstrumentTaxonomyAssignment, InstrumentTaxonomyNode
+        from watchlist_app.reference_data.instrument_taxonomy import INSTRUMENT_TAXONOMY_CODE
+        from watchlist_app.services.research_access import research_context_projection, research_projection_rows
         from watchlist_app.services.research_applicability import investment_research_supported
-        eligible = {iid: kind for iid, kind in eligible.items() if investment_research_supported(
-            _registration(session, session.get(InstrumentDetail, iid)))}
+        # Even a single-instrument response includes the complete eligible list.
+        # Admission needs only these registration facts, not each instrument's
+        # full dossier, manual profile and taxonomy presentation.
+        reference = InstrumentReferenceSnapshot.value_json
+        relation, values = research_context_projection(session, {"sections": JSON}, json_column=reference)
+        sections = values["sections"]
+        query = select(
+            InstrumentDetail.instrument_id,
+            sections["fund_info"]["assetClass"].label("fund_asset"),
+            sections["fund_info"]["asset_class"].label("fund_asset_class"),
+            sections["index_info"]["asset_class"].label("index_asset"),
+            InstrumentTaxonomyNode.node_id,
+        ).select_from(InstrumentDetail).outerjoin(InstrumentReferenceSnapshot,
+            InstrumentReferenceSnapshot.instrument_id == InstrumentDetail.instrument_id)
+        if relation is not None:
+            query = query.outerjoin(relation, true())
+        query = query.outerjoin(InstrumentTaxonomyAssignment,
+            (InstrumentTaxonomyAssignment.instrument_id == InstrumentDetail.instrument_id)
+            & (InstrumentTaxonomyAssignment.taxonomy_code == INSTRUMENT_TAXONOMY_CODE)).outerjoin(
+                InstrumentTaxonomyNode, InstrumentTaxonomyNode.node_id == InstrumentTaxonomyAssignment.node_id
+            ).where(InstrumentDetail.instrument_id.in_(eligible))
+        registrations = research_projection_rows(session, query, {
+            "fund_asset": ("sections", "fund_info", "assetClass"),
+            "fund_asset_class": ("sections", "fund_info", "asset_class"),
+            "index_asset": ("sections", "index_info", "asset_class"),
+        }, json_column=reference)
+        supported = {row.instrument_id for row in registrations
+            if investment_research_supported({"instrument_type": eligible[row.instrument_id],
+                "asset_class": row.fund_asset or row.fund_asset_class or row.index_asset,
+                "taxonomy": {"assigned_node_id": str(row.node_id or "").strip() or None}})}
+        eligible = {iid: kind for iid, kind in eligible.items() if iid in supported}
     rows = []
     for iid in ([instrument_id] if instrument_id else eligible):
         detail = session.get(InstrumentDetail, iid) if iid not in eligible else None
