@@ -12,13 +12,14 @@ def test_section_pages_keep_integer_array_paths_and_bound_instrument(client, mon
         run.context_json = {**run.context_json, "research_dossiers": [{"instrument_id": "xlk",
             "pm_views": [{"body": original}]}], "last_successful_review_cutoff": "2026-10-12T00:00:00Z"}
         session.commit()
-    from watchlist_app.services import research_run_context
-    load = research_run_context.load_run_fields
+    from watchlist_app.services import research_section_inputs
+    load = research_section_inputs.load_run_fields
     requested = []
     def selected_fields(session, run_id, fields, **kwargs):
         requested.append(set(fields))
         return load(session, run_id, fields, **kwargs)
-    monkeypatch.setattr(research_run_context, "load_run_fields", selected_fields)
+    # Patch the consumer binding even when another test already imported it.
+    monkeypatch.setattr(research_section_inputs, "load_run_fields", selected_fields)
     path = f"/api/research/runs/{run_id}/section-context"
     selector = {"instrument_id": "xlk", "section": "overview"}
     overview = client.post(path, json=selector)
@@ -41,6 +42,7 @@ def test_section_pages_keep_integer_array_paths_and_bound_instrument(client, mon
         offset = data["next_offset"]
     assert "".join(parts) == original
     assert client.post(path, json={**selector, "instrument_id": "unbound"}).status_code == 422
+    assert requested, "The section loader must be observed before checking its selected fields"
     assert not {"instrument_inputs", "sector_inputs", "analyst_estimate_changes", "market_queries"}.intersection(set.union(*requested))
     recent = client.post(path, json={"instrument_id": "xlk", "section": "recent_updates"}).json()
     assert recent["acquisition"]["last_successful_review_cutoff"] == "2026-10-12T00:00:00Z"
