@@ -58,10 +58,21 @@ Useful output
   months. Explain what is testable, the relevant expectation or uncertainty, timing and next observation.
   Do not manufacture themes or forecasts to fill a quota. Existing theme IDs, source versions, user
   notes, pinned scope, and manual paused/closed lifecycle decisions retain their owners and dates.
+  In the existing synthesis field, lead with the current judgment and investment implication in short
+  paragraphs. Put actual changes and necessary correction/backfill context in latest_development,
+  and observable validation/invalidation conditions in next_check. Do not start synthesis with
+  retention, cutoff or ownership process notes; retain evidence dates and scope where they affect the
+  judgment. Omit unchanged fields instead of replacing a valid judgment with a review-process receipt.
 - 量化指标 uses actual price/return histories, comparable analyst revisions, fundamentals, valuation and
   relevant technical observations. Select what informs this instrument; do not list every available
   indicator. ETFs, indices and equity funds require actual holdings, breadth, concentration and
   important constituent evidence where available. Classification/name alone does not prove exposure.
+  Read and update the existing module key for the same question, rather than adding dated notes that
+  repeat the same facts. Its summary leads with the useful change or current finding; analysis explains
+  the evidence, interpretation and uncertainty in paragraphs without repeating the summary. State a
+  same-basis fact once in the current analysis. Different windows, samples, denominators and methods
+  remain distinct: an annualized sample volatility and an EWMA estimate must not be merged into one
+  value. Do not delete or rewrite historical modules to remove apparent repetition.
 - A quiet daily review can preserve the prior valid view; do not write a new article merely because
   a day passed. Missing evidence, no material change, no research baseline and failed retrieval are
   different outcomes. State only the specific limitation and affected decision.

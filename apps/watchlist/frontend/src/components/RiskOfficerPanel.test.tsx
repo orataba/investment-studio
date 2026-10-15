@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { ReactElement } from 'react'
 import RiskOfficerPanel, { type RiskOfficerReview } from '../../../../../packages/ui/src/RiskOfficerPanel'
 import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
+import { riskCoverageText } from '../../../../../packages/ui/src/instrumentRisk'
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -373,10 +374,25 @@ it('summarizes repeated coverage gaps and retains every affected instrument in c
   expect(details.open).toBe(false)
   expect(within(details).getAllByText(gap)).toHaveLength(1)
   for (const item of coverage) expect(details.textContent).toContain(item.name)
-  expect(within(details).getByText('风险监测受限')).toBeTruthy()
+  expect(within(details).getByText('Risk monitoring limited')).toBeTruthy()
   fireEvent.click(screen.getByText('View coverage gaps and affected instruments'))
   expect(details.open).toBe(true)
   expect(screen.queryByText('No risks currently require special attention.')).toBeNull()
+})
+
+it('localizes deterministic coverage dates while retaining names and unknown notes', async () => {
+  const body = '最新数据停留在 2026-10-13，按当前日历应更新至 2026-10-14。计算区间缺少 2 个应有观察值，回撤等路径风险暂不可计算。'
+  const request = vi.fn().mockResolvedValue(payload('000852-sh', { notice_status: 'unavailable',
+    coverage_notes: ['研究原文保持中文。'], coverage_items: [{ case_id: 'gap', instrument_id: '000852-sh', name: '中证1000', title: '风险监测受限', body }] }))
+  renderPanel(<RiskOfficerPanel request={request} scopeQuery="instrument_id=000852-sh" />)
+  await load()
+  const details = screen.getByText('View coverage gaps and affected instruments').closest('details')!
+  expect(details.textContent).toContain('Latest data is dated 2026-10-13; the current calendar requires data through 2026-10-14.')
+  expect(details.textContent).toContain('missing 2 expected observations')
+  expect(details.textContent).toContain('中证1000')
+  expect(details.textContent).toContain('研究原文保持中文。')
+  expect(riskCoverageText(body, true)).toBe(body)
+  expect(riskCoverageText(`${body}另有未定义限制。`, false)).toBe(`${body}另有未定义限制。`)
 })
 
 it('keeps severe facts visible and binds personal read receipts to their exact string version', async () => {

@@ -5,6 +5,7 @@ import RiskChangeAudit from './RiskChangeAudit'
 import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import RiskOfficerPanel from './RiskOfficerPanel'
 import type { ResearchAssistantReference } from './researchReference'
+import { useLanguage } from './i18n'
 import {
   type RiskAsset,
   type PeriodLossReading,
@@ -16,6 +17,7 @@ import {
   type RiskPendingRevision,
   type RiskEvidenceSource,
   riskCasePendingState,
+  riskCoverageText,
   percent,
   today,
 } from './instrumentRisk'
@@ -83,6 +85,7 @@ function CaseRow({
   instrumentHref: (id: string, signal?: string) => string
   onAskAssistant?: (id: string, question: string, reference?: ResearchAssistantReference) => void
 }) {
+  const zh = useLanguage().language === 'zh-Hans'
   const [note, setNote] = useState('')
   const [followUp, setFollowUp] = useState(record.follow_up_date || '')
   const [error, setError] = useState('')
@@ -207,8 +210,8 @@ function CaseRow({
           {pending === 'verification' ? '已评估／待核实' : pending === 'review' && !record.trigger_active ? '已提交／待复核' : record.trigger_active ? statusLabels[record.status] : '当前未触发'}
         </span>
       </div>
-      <h3><a href={instrumentHref(record.instrument_id, record.signal)} translate="no">{title}</a></h3>
-      {body && <p translate="no">{body}</p>}
+      <h3><a href={instrumentHref(record.instrument_id, record.signal)} translate="no">{record.signal === 'data_coverage' && !retainedAssessment ? riskCoverageText(title, zh) : title}</a></h3>
+      {body && <p translate="no">{record.signal === 'data_coverage' && !retainedAssessment ? riskCoverageText(body, zh) : body}</p>}
       {retainedAssessment && <p className="risk-source">上次确认 <time dateTime={assessed?.reviewed_at || undefined}>{researchStamp(assessed?.reviewed_at)}</time> · 原依据 <time dateTime={assessed?.checked_at || undefined}>{researchStamp(assessed?.checked_at)}</time></p>}
       {pendingRevision && <section className="risk-pending-revision" aria-label="新进展待复核">
         <strong>{pendingRevision.urgent_review_required ? '重大限时线索 · 尚未核实' : '新进展待复核'}</strong>

@@ -106,9 +106,12 @@ class AnalystThemeUpdate(BaseModel):
     kind: ThemeKind | None = None
     priority: ThemePriority | None = None
     priority_reason: str | None = Field(default=None, max_length=2000)
-    synthesis: str | None = Field(default=None, max_length=6000)
-    latest_development: str | None = Field(default=None, max_length=3000)
-    next_check: str | None = Field(default=None, max_length=2000)
+    synthesis: str | None = Field(default=None, max_length=6000,
+        description="Lead with the current judgment and investment implication in short paragraphs. Keep evidence-date and scope qualifications, but put review/retention/backfill process notes in latest_development. Omit when unchanged.")
+    latest_development: str | None = Field(default=None, max_length=3000,
+        description="Actual changes since the prior assessment and necessary correction/backfill context. Do not repeat the current synthesis or create a process receipt merely because another review occurred. Omit when unchanged.")
+    next_check: str | None = Field(default=None, max_length=2000,
+        description="Concrete next observation and the condition that would validate or invalidate the current judgment. Omit when unchanged.")
     figure_source_ids: list[str] = Field(default_factory=list,
         description="Retained numeric figures only: computed_metric, sector_snapshot, or analyst_estimate_changes. Text/article references belong in source_ids; omit figures when no numeric original exists.")
 

@@ -127,6 +127,27 @@ export function riskCasePendingState(evidence: Record<string, unknown>): 'review
 }
 
 export type RiskRequest = <T>(path: string, init?: RequestInit) => Promise<T>
+
+/** Translate only known data-coverage templates; saved analysis stays verbatim. */
+export function riskCoverageText(value: string, zh: boolean): string {
+  if (zh) return value
+  if (value === '风险监测受限') return 'Risk monitoring limited'
+  const sentences = value.match(/[^。]+。/g)
+  if (!sentences || sentences.join('') !== value) return value
+  const translated = sentences.map(sentence => {
+    if (sentence === '尚无可用净值或行情日期。') return 'No usable NAV or market-price date is available.'
+    if (sentence === '计算样本尚未就绪，部分风险指标不可用。') return 'The calculation sample is not ready; some risk metrics are unavailable.'
+    const dates = sentence.match(/^最新数据停留在 (\d{4}-\d{2}-\d{2})，按当前日历应更新至 (\d{4}-\d{2}-\d{2})。$/)
+    if (dates) return `Latest data is dated ${dates[1]}; the current calendar requires data through ${dates[2]}.`
+    const stale = sentence.match(/^最新数据停留在 (\d{4}-\d{2}-\d{2})，需要核对更新情况。$/)
+    if (stale) return `Latest data is dated ${stale[1]}; check whether updates are available.`
+    const gap = sentence.match(/^计算区间缺少 (\d+) 个应有观察值，回撤等路径风险暂不可计算。$/)
+    if (gap) return `The calculation window is missing ${gap[1]} expected observations; drawdown and other path-dependent risk metrics are unavailable.`
+    return null
+  })
+  return translated.every(sentence => sentence !== null) ? translated.join(' ') : value
+}
+
 export const percent = (value: number | null | undefined) =>
   value == null ? '—' : `${value.toFixed(2)}%`
 export function today() {

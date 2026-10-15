@@ -3,6 +3,7 @@ import WorkspaceSkeleton from './WorkspaceSkeleton'
 import InfoHint from './InfoHint'
 import { useEffect, useRef, useState } from 'react'
 import type { RiskRequest, RiskCaseHistory, PriceRuleCounts, PriceRuleSummary } from './instrumentRisk'
+import { riskCoverageText } from './instrumentRisk'
 import { PriceRuleCountsLine, PriceRuleDetails } from './PriceRiskRules'
 import { researchStamp } from './ResearchRunStatus'
 import ConfirmDialog from './ConfirmDialog'
@@ -230,8 +231,8 @@ function ScopedRiskOfficer({ canWrite = true, canCorrect = canWrite, canRun = tr
           : `Coverage limited${coverageInstruments.size ? ` for ${coverageInstruments.size} ${coverageInstruments.size === 1 ? 'instrument' : 'instruments'}` : ''} · ${coverageGroups.size} ${coverageGroups.size === 1 ? 'gap category' : 'gap categories'}. Risk selection is incomplete; known risks remain visible.`}</p>
         <details><summary>{zh ? '查看覆盖缺口与涉及标的' : 'View coverage gaps and affected instruments'}</summary>
           {[...coverageGroups].map(([body, group]) => <div key={body} className="risk-officer-coverage-group">
-            {!!group.titles.size && <p translate="no"><strong>{[...group.titles].join(' · ')}</strong></p>}
-            <p translate="no">{body}</p>
+            {!!group.titles.size && <p translate="no"><strong>{[...group.titles].map(title => riskCoverageText(title, zh)).join(' · ')}</strong></p>}
+            <p translate="no">{riskCoverageText(body, zh)}</p>
             {!!group.names.size && <p className="risk-officer-muted" translate="no">{[...group.names.values()].join('、')}</p>}
           </div>)}
         </details>

@@ -237,12 +237,13 @@ class ResearchModule(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$",
-        description="Choose a stable analysis key for the actual question; it need not appear in the method library. Retain the key across updates.")
+        description="Choose a stable analysis key for the actual question; it need not appear in the method library. Read and retain that key across updates, rather than creating dated copies of the same analysis.")
     title: str = Field(default="", max_length=300,
         description="Optional reader-facing title for this question or analytical section.")
-    summary: str = Field(default="", max_length=3000)
+    summary: str = Field(default="", max_length=3000,
+        description="Brief current finding or material change and its investment relevance, not a chronology of research actions. State each same-basis fact once; keep different windows, samples, denominators and methods distinct.")
     analysis: str = Field(default="", max_length=16000,
-        description="Readable paragraphs explaining current conditions, mechanisms, opposing evidence and implications. No HTML or invented chart data.")
+        description="Readable paragraphs explaining evidence, mechanisms, opposing evidence, implications and uncertainty without repeating the summary. Preserve differences between measurement bases, such as sample volatility versus EWMA. No HTML or invented chart data.")
     coverage: Literal["supported", "partial", "insufficient"] = Field(default="insufficient",
         description="Evidence coverage of this analysis, not investment conviction or a quality score.")
     gaps: list[str] = Field(default_factory=list)

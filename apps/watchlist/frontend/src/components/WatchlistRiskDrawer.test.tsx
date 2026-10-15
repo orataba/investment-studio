@@ -14,6 +14,8 @@ import { riskPendingState } from '../../../../../packages/ui/src/instrumentRisk'
 const request = vi.hoisted(() => vi.fn())
 const officer = vi.hoisted(() => ({ onCompleted: undefined as undefined | (() => void) }))
 const permission = vi.hoisted(() => ({ canWrite: true }))
+const language = vi.hoisted(() => ({ value: 'zh-Hans' }))
+vi.mock('../../../../../packages/ui/src/i18n', () => ({ useLanguage: () => ({ language: language.value }) }))
 vi.mock('./AccountBoundary', () => ({ useCanWriteTeam: () => permission.canWrite }))
 vi.mock('../lib/api', () => ({ fetchJson: request }))
 vi.mock('./SectorResearchPanel', () => ({ default: () => null }))
@@ -25,6 +27,7 @@ afterEach(() => {
   cleanup()
   vi.clearAllMocks()
   permission.canWrite = true
+  language.value = 'zh-Hans'
   officer.onCompleted = undefined
 })
 const pendingReceipt = {
@@ -93,6 +96,21 @@ const caseFor = (id: string, severity = 'attention') => ({
   follow_up_date: null,
   evidence_json: {},
   history_json: [],
+})
+it('translates only deterministic coverage text and preserves the saved case', async () => {
+  language.value = 'en'
+  const body = '最新数据停留在 2026-10-13，按当前日历应更新至 2026-10-14。'
+  const coverage = { ...caseFor('000852-sh', 'coverage'), signal: 'data_coverage', title: '风险监测受限', body }
+  const manual = { ...caseFor('000852-sh'), case_id: 'manual', title: '手工研究', body }
+  const snapshot = { instruments: [{ instrument_id: '000852-sh', name: '中证1000' }], cases: [coverage, manual] }
+  request.mockResolvedValue(snapshot)
+  render(<InstrumentRiskDrawer instrumentId="000852-sh" instrumentName="中证1000" onClose={vi.fn()} onAskAssistant={vi.fn()} />)
+  fireEvent.click(await screen.findByRole('button', { name: '全部记录 2' }))
+  expect(screen.getByRole('link', { name: 'Risk monitoring limited' })).toBeTruthy()
+  expect(screen.getByText('Latest data is dated 2026-10-13; the current calendar requires data through 2026-10-14.')).toBeTruthy()
+  expect(screen.getByText(body)).toBeTruthy()
+  expect(coverage.body).toBe(body)
+  expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
 })
 it('lets team readers inspect evidence and ask privately without shared risk mutations', async () => {
   permission.canWrite = false
