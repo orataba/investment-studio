@@ -269,9 +269,14 @@ def get_shared_instrument_summaries(
         raise _registry_error("Failed to query shared instrument registry.") from error
 
 
-def get_shared_instrument(instrument_id: str) -> dict[str, object] | None:
+def get_shared_instrument(instrument_id: str, *, metadata_only: bool = False) -> dict[str, object] | None:
     try:
-        record = shared_store.get_instrument(get_session_factory(), instrument_id)
+        def read(identifier):
+            if metadata_only:
+                return shared_store.get_instrument_metadata(get_session_factory(), [identifier]).get(identifier)
+            return shared_store.get_instrument(get_session_factory(), identifier)
+
+        record = read(instrument_id)
         visited = {instrument_id}
         while isinstance(record, dict):
             lifecycle = record.get("lifecycle_state")
@@ -284,7 +289,7 @@ def get_shared_instrument(instrument_id: str) -> dict[str, object] | None:
             if not canonical_id or canonical_id in visited:
                 return None
             visited.add(canonical_id)
-            canonical = shared_store.get_instrument(get_session_factory(), canonical_id)
+            canonical = read(canonical_id)
             if not isinstance(canonical, dict):
                 return None
             record = canonical

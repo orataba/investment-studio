@@ -492,8 +492,8 @@ def material_index(session, instrument_id, *, actor):
     return serialize_payload(result)
 
 
-def latest_working_set(session, instrument_id, *, actor):
-    from sqlalchemy import JSON, true
+def latest_working_set(session, instrument_id, *, actor, summary_only=False):
+    from sqlalchemy import JSON, case, cast, true, type_coerce
     from watchlist_app.services.research_access import (
         research_context_projection, research_projection_rows, topic_portfolio_ids,
     )
@@ -506,8 +506,19 @@ def latest_working_set(session, instrument_id, *, actor):
     # without gaining arbitrary access to its originating research execution.
     relation, fields = research_context_projection(session, {"research_working_sets": JSON},
         json_column=ResearchEntry.read_context_json)
+    value = fields["research_working_sets"][instrument_id]
+    reading_fields = ("mode", "cutoff", "selected_theme_ids", "reviewed_theme_ids")
+    if summary_only and session.get_bind().dialect.name == "postgresql":
+        # The reader needs review status, not the retained trigger's complete
+        # source revision catalogue. Select before transfer and JSON decoding.
+        is_object = func.json_typeof(value) == "object"
+        members = func.json_each(case((is_object, value), else_=cast({}, JSON))).table_valued(
+            "key", "value").lateral("working_set_reader_fields")
+        compact = select(func.json_object_agg(members.c.key, members.c.value)).select_from(members).where(
+            members.c.key.in_(reading_fields)).scalar_subquery()
+        value = type_coerce(case((is_object, func.coalesce(compact, cast({}, JSON))), else_=value), JSON)
     query = select(ResearchEntry.entry_id,
-        fields["research_working_sets"][instrument_id].label("working_set")).where(
+        value.label("working_set")).where(
             ResearchEntry.topic_id == topic.topic_id, ResearchEntry.kind == "analysis",
             ResearchEntry.status == "completed", ResearchEntry.team_id == actor["team_id"])
     if relation is not None:
@@ -515,7 +526,11 @@ def latest_working_set(session, instrument_id, *, actor):
     rows = research_projection_rows(session, query.order_by(ResearchEntry.completed_at.desc(),
         ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc()).limit(1),
         {"working_set": ("research_working_sets", instrument_id)}, json_column=ResearchEntry.read_context_json)
-    return rows[0].working_set if rows else None
+    working = rows[0].working_set if rows else None
+    # SQLite and the rare exact-original NUL restoration use the same view.
+    if summary_only and isinstance(working, dict):
+        return {key: item for key, item in working.items() if key in reading_fields}
+    return working
 
 
 def add_material(session: Session, instrument_id: str, *, title: str, body: str, source: str,
@@ -842,7 +857,8 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
     applicability = research_applicability(mandate["registration"])
     reading_state = {"research_applicability": applicability,
         "material_index": material_index(session, instrument_id, actor=actor),
-        "working_set": latest_working_set(session, instrument_id, actor=actor)}
+        "working_set": latest_working_set(session, instrument_id, actor=actor,
+                                          summary_only=not include_working_context)}
     if current_only:
         # The four-zone page gets event/theme summaries separately. Its initial
         # notebook read must not hydrate the historical activity/source corpus.

@@ -352,7 +352,8 @@ def test_theme_enqueue_pause_reports_saved_theme_as_paused(client, monkeypatch):
         assert "全局研究已暂停" in response["research_message"]
 
 
-def test_shared_working_set_projection_does_not_grant_other_run_or_private_history_access(client, monkeypatch):
+@pytest.mark.parametrize("summary_only", [False, True])
+def test_shared_working_set_projection_does_not_grant_other_run_or_private_history_access(client, monkeypatch, summary_only):
     from fastapi import HTTPException
     from studio_identity import Principal, principal_context
     from watchlist_app.db.models.workbench import ResearchTopic
@@ -367,18 +368,18 @@ def test_shared_working_set_projection_does_not_grant_other_run_or_private_histo
         session.commit()
         token = Principal("reader", "Reader", "default", resource_scope={"kind": "run", "id": "another-run", "attempt": "1"})
         with principal_context(token):
-            assert latest_working_set(session, "xlk", actor=research_identity()) == value
+            assert latest_working_set(session, "xlk", actor=research_identity(), summary_only=summary_only) == value
             with pytest.raises(HTTPException) as denied:
                 load_run_fields(session, run.entry_id, {"research_working_sets"}, summary_only=True)
             assert denied.value.status_code == 403
             topic = session.get(ResearchTopic, run.topic_id)
             topic.visibility = "private"
             session.flush()
-            assert latest_working_set(session, "xlk", actor=research_identity()) is None
+            assert latest_working_set(session, "xlk", actor=research_identity(), summary_only=summary_only) is None
             topic.visibility = "team"
             topic.portfolio_id = "restricted-portfolio"
             session.flush()
-            assert latest_working_set(session, "xlk", actor=research_identity()) is None
+            assert latest_working_set(session, "xlk", actor=research_identity(), summary_only=summary_only) is None
 
 
 def test_monitor_retires_only_proven_dangling_pending_dependencies_without_applying_them(client, monkeypatch):

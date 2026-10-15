@@ -94,7 +94,8 @@ def holding_type(name, symbol, profile):
 
 
 def read_sector_market_data(session, ticker: str, *, as_of: datetime | None = None,
-                            instrument_type: str = "etf", statement_reader=None) -> dict | None:
+                            instrument_type: str = "etf", statement_reader=None,
+                            scope_only: bool = False) -> dict | None:
     ticker = ticker.strip().upper()
     if instrument_type not in {"equity", "etf", "public_fund"}:
         raise ValueError("Company estimates require an equity or disclosed equity fund holdings")
@@ -110,6 +111,27 @@ def read_sector_market_data(session, ticker: str, *, as_of: datetime | None = No
     symbols = sorted({ticker, *(row["holding_symbol"] for row in holdings if row.get("holding_symbol"))})
     profiles = {row["symbol"]: source_fields(row) for row in store.latest(
         "company_profiles", symbols=symbols, as_of=cutoff, limit=100000)["rows"]}
+    if scope_only:
+        # Estimate comparisons read each capture themselves. Scope resolution
+        # needs classification and exposure dates, not prices or duplicate
+        # current estimates. Preserve the issuer's original no-snapshot test.
+        if issuer and ticker not in profiles and not store.query(
+                "analyst_estimates", symbols=[ticker], as_of=cutoff, limit=1)["rows"]:
+            return None
+        subjects = [{"holding_symbol": ticker,
+                     "holding_name": (profiles.get(ticker) or {}).get("company_name") or ticker,
+                     "holding_key": ticker, "weight_percent": None}] if issuer else holdings
+        scoped = [{"holding_symbol": row.get("holding_symbol"), "holding_name": row["holding_name"],
+                   "holding_key": row["holding_key"], "weight_percent": row.get("weight_percent"),
+                   "as_of_date": row.get("report_date"), "snapshot_date": row.get("snapshot_date"),
+                   "holding_type": "equity" if issuer else holding_type(
+                       row.get("holding_name"), row.get("holding_symbol"), profiles.get(row.get("holding_symbol")))}
+                  for row in subjects]
+        scoped.sort(key=lambda row: (-(row.get("weight_percent") or 0), row["holding_key"]))
+        return {"holdings": [] if issuer else scoped,
+                "companies": [row for row in scoped if row["holding_type"] == "equity"],
+                "gaps": [{"kind": "unclassified_holding", "symbol": row["holding_symbol"]}
+                         for row in scoped if row["holding_type"] == "unclassified"]}
     prices = {row["symbol"]: source_fields(row) for row in store.latest(
         "us_eod_daily", symbols=symbols, as_of=cutoff, limit=100000)["rows"]}
     statements = (statement_reader or reporting_statements)(store, symbols, cutoff)

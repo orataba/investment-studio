@@ -167,7 +167,7 @@ def compare_estimate_snapshots(iid, current, previous=None, *, instrument_type="
 def estimate_scope(session, instrument_id):
     """Resolve a real FMP identity; never turn an index or a fund name into a company."""
     from watchlist_app.services.shared_instrument_registry import get_shared_instrument
-    instrument = get_shared_instrument(instrument_id) if session is not None else None
+    instrument = get_shared_instrument(instrument_id, metadata_only=True) if session is not None else None
     if instrument is not None:
         if instrument.get("instrument_type") not in {"equity", "etf", "public_fund"}:
             return None
@@ -259,11 +259,13 @@ def read_estimate_evidence(session, instrument_id, *, as_of: datetime | None = N
             read_statements(store, list(companies), cutoff)
     else:
         market = read_sector_market_data(session, scope["symbol"], as_of=cutoff,
-                                        instrument_type=scope["instrument_type"], statement_reader=read_statements)
+                                        instrument_type=scope["instrument_type"], scope_only=True)
         if market is None:
             return {**empty, "status": "no_snapshot", "gaps": ["截至当前时点尚无可用的本公司或披露持仓对应的公司观测。"]}
         companies = {row["holding_symbol"]: {"name": row["holding_name"], "weight_percent": row.get("weight_percent"),
             "annual_estimates": [], "quarterly_estimates": []} for row in market["companies"]}
+        if companies:
+            read_statements(store, list(companies), cutoff)
     unconfirmed_holdings = any(row["kind"] == "unclassified_holding" for row in market["gaps"])
     if not companies:
         if unconfirmed_holdings:
