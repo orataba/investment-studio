@@ -10,7 +10,7 @@
         apiKeyEnv: DEEPSEEK_API_KEY
         api: openai-completions
         baseURL: !!js process.env.DEEPSEEK_BASE_URL || 'https://gateway.hzxxf.cn/v1'
-        reasoning: !!js "process.env.INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE === 'sector' ? 'low' : 'high'"
+        reasoning: high
         defaultContextWindow: 1000000
         defaultMaxTokens: !!js "process.env.INVESTMENT_STUDIO_BRIEFING_HARNESS_MODE === 'review' || ['sector', 'review'].includes(process.env.INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE) ? 65536 : 32768"
         compat:
@@ -22,5 +22,4 @@
           - id: deepseek-v4.1-flash
             input: [text, image]
             reasoningEfforts:
-              low: low
               high: high

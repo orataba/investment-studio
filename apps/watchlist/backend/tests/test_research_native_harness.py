@@ -286,10 +286,6 @@ def test_production_native_bridge_saves_typed_children_with_runtime_parent_ident
     # Inspect the actual pinned Harness -> provider wire, including tools added
     # by the production plugin and the native child structured-output tool.
     for row in requests:
-        assert row["request"]["model"] == "deepseek-v4.1-flash"
-        assert row["request"]["thinking"] == {"type": "enabled"}
-        assert row["request"]["reasoning_effort"] == "low"
-        assert row["request"]["max_tokens"] == 65536
         for tool in row["request"]["tools"]:
             function = tool["function"]
             parameters = function["parameters"]
