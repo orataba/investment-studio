@@ -95,7 +95,7 @@ def holding_type(name, symbol, profile):
 
 def read_sector_market_data(session, ticker: str, *, as_of: datetime | None = None,
                             instrument_type: str = "etf", statement_reader=None,
-                            scope_only: bool = False) -> dict | None:
+                            scope_only: bool = False, store=None) -> dict | None:
     ticker = ticker.strip().upper()
     if instrument_type not in {"equity", "etf", "public_fund"}:
         raise ValueError("Company estimates require an equity or disclosed equity fund holdings")
@@ -103,7 +103,7 @@ def read_sector_market_data(session, ticker: str, *, as_of: datetime | None = No
     cutoff = as_of or datetime.now(UTC)
     if cutoff.tzinfo is None:
         raise ValueError("Sector reference cutoff must include a timezone.")
-    store = numeric_store()
+    store = numeric_store() if store is None else store
     holdings = [] if issuer else all_rows(store, "etf_holdings", symbols=[ticker], as_of=cutoff)
     info_rows = [] if issuer else store.latest("etf_info", symbols=[ticker], as_of=cutoff)["rows"]
     if not issuer and not holdings and not info_rows:

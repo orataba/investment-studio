@@ -130,16 +130,16 @@ def test_estimate_currencies_reuse_one_complete_bound_statement_history(market_s
         ingest("analyst_estimates", [{"symbol": "AAA", "estimate_period": frequency,
             "target_period_end": "2026-12-31", "revenue_avg": 110, "eps_avg": 2,
             "num_analysts_revenue": 10, "num_analysts_eps": 9}], clock)
-    query, financial_calls = store.query, []
+    query, financial_calls = type(store).query, []
 
-    def counted_query(dataset, **kwargs):
+    def counted_query(reader, dataset, **kwargs):
         if dataset == "financial_statements":
             financial_calls.append(dict(kwargs))
             if page_limit is not None:
                 kwargs["limit"] = page_limit
-        return query(dataset, **kwargs)
+        return query(reader, dataset, **kwargs)
 
-    monkeypatch.setattr(store, "query", counted_query)
+    monkeypatch.setattr(type(store), "query", counted_query)
     result = estimate_reader(as_of=datetime(2026, 9, 6, 12, tzinfo=UTC))
     assert result["changes"] == []
     assert len(result["observations"]) == 2

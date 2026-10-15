@@ -1,6 +1,10 @@
 """Estimate scope projections preserve identity and complete PIT comparisons."""
 from datetime import UTC, datetime
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from threading import Barrier
 
+import duckdb
 import pytest
 from sqlalchemy import event
 
@@ -121,11 +125,11 @@ def test_complete_estimate_output_matches_full_market_path(market_store, estimat
     with monkeypatch.context() as full:
         full.setattr(estimates, 'read_sector_market_data', full_market_reader)
         expected = estimate_reader(as_of=clock(9), since=since)
-    query, calls = store.query, []
-    def counted(dataset, **kwargs):
+    query, calls = type(store).query, []
+    def counted(reader, dataset, **kwargs):
         calls.append((dataset, kwargs))
-        return query(dataset, **kwargs)
-    monkeypatch.setattr(store, 'query', counted)
+        return query(reader, dataset, **kwargs)
+    monkeypatch.setattr(type(store), 'query', counted)
     actual = estimate_reader(as_of=clock(9), since=since)
     assert actual == expected
     assert actual['status'] == 'limited'
@@ -158,3 +162,75 @@ def test_issuer_without_profile_keeps_visible_snapshot_existence(
     actual = estimate_reader('issuer', as_of=clock(7))
     assert actual == expected
     assert actual['status'] == expected_status
+
+
+def seed_second_capture(ingest):
+    ingest('analyst_estimates', [{'symbol': 'AAA', 'estimate_period': frequency,
+        'target_period_end': '2026-12-31', 'revenue_avg': 110, 'eps_avg': 2,
+        'num_analysts_revenue': 10, 'num_analysts_eps': 9, 'currency': 'USD'}
+        for frequency in ['annual', 'quarter']], clock(6).isoformat())
+
+
+def test_parallel_estimate_reads_own_distinct_capture_contexts(market_store, estimate_reader, monkeypatch):
+    from watchlist_app.services import sector_estimates as estimates
+    base, ingest = market_store
+    seed_second_capture(ingest)
+    expected = [estimate_reader(as_of=clock(day)) for day in [5, 7]]
+    assert expected[0] != expected[1]
+    pool = base.engine.pool
+    rendezvous, stores, connections = Barrier(2), [], []
+    store_type = estimates.NumericStore
+
+    class OverlappingStore(store_type):
+        @contextmanager
+        def query_session(self):
+            stores.append(self)
+            with super().query_session():
+                connections.append(self._history_session[0])
+                assert base._history_session is None
+                rendezvous.wait(timeout=10)
+                yield self
+
+    monkeypatch.setattr(estimates, 'NumericStore', OverlappingStore)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        actual = list(workers.map(lambda day: estimate_reader(as_of=clock(day)), [5, 7]))
+    assert actual == expected
+    assert len(stores) == 2 and stores[0] is not stores[1]
+    assert all(store is not base and store.engine.pool is pool and store._history_session is None for store in stores)
+    assert len(connections) == 2 and connections[0] is not connections[1]
+    assert base._history_session is None and base.engine.pool is pool
+    for connection in connections:
+        with pytest.raises(duckdb.ConnectionException, match='closed'):
+            connection.execute('SELECT 1')
+
+
+def test_capture_failure_closes_only_request_context(market_store, estimate_reader, monkeypatch):
+    from watchlist_app.services import sector_estimates as estimates
+    base, ingest = market_store
+    seed_second_capture(ingest)
+    expected = estimate_reader(as_of=clock(7))
+    pool, stores, connections = base.engine.pool, [], []
+    store_type = estimates.NumericStore
+
+    class FailedCaptureStore(store_type):
+        capture_count = 0
+
+        def query(self, dataset, **kwargs):
+            if dataset == 'analyst_estimates' and kwargs.get('observed_at'):
+                self.capture_count += 1
+                if self.capture_count == 2:
+                    stores.append(self)
+                    connections.append(self._history_session[0])
+                    assert 'analyst_estimates' in self._history_session[1]
+                    raise RuntimeError('fixture capture failure')
+            return super().query(dataset, **kwargs)
+
+    with monkeypatch.context() as failing:
+        failing.setattr(estimates, 'NumericStore', FailedCaptureStore)
+        with pytest.raises(RuntimeError, match='fixture capture failure'):
+            estimate_reader(as_of=clock(7))
+    assert len(stores) == 1 and stores[0]._history_session is None
+    assert base._history_session is None and base.engine.pool is pool
+    with pytest.raises(duckdb.ConnectionException, match='closed'):
+        connections[0].execute('SELECT 1')
+    assert estimate_reader(as_of=clock(7)) == expected

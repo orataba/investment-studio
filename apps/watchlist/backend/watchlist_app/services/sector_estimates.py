@@ -3,6 +3,8 @@ from datetime import UTC, datetime, timedelta
 
 from copy import deepcopy
 
+from studio_market.numeric import NumericStore
+
 from watchlist_app.services.sector_market_data import (
     all_rows, enrich_estimate, numeric_store, read_sector_market_data, reporting_statements_at,
 )
@@ -244,7 +246,10 @@ def read_estimate_evidence(session, instrument_id, *, as_of: datetime | None = N
     if since is not None and since > cutoff:
         raise ValueError("Estimate history boundary must not follow cutoff.")
     statement_history = []
-    store = numeric_store()
+    base = numeric_store()
+    # Reuse the PostgreSQL pool, but keep the serial DuckDB context private to
+    # this request. The cached base store is also used by concurrent readers.
+    store = NumericStore(base.settings, engine=base.engine)
 
     def read_statements(store, symbols, as_of):
         statement_history.extend(all_rows(store, "financial_statements", symbols=symbols,
@@ -259,7 +264,7 @@ def read_estimate_evidence(session, instrument_id, *, as_of: datetime | None = N
             read_statements(store, list(companies), cutoff)
     else:
         market = read_sector_market_data(session, scope["symbol"], as_of=cutoff,
-                                        instrument_type=scope["instrument_type"], scope_only=True)
+                                        instrument_type=scope["instrument_type"], scope_only=True, store=store)
         if market is None:
             return {**empty, "status": "no_snapshot", "gaps": ["截至当前时点尚无可用的本公司或披露持仓对应的公司观测。"]}
         companies = {row["holding_symbol"]: {"name": row["holding_name"], "weight_percent": row.get("weight_percent"),
@@ -284,13 +289,14 @@ def read_estimate_evidence(session, instrument_id, *, as_of: datetime | None = N
         for capture in history:
             scopes_by_clock[capture["observed_at"]].add(symbol)
     captured_rows, source_ids = {}, set()
-    for clock, symbols in scopes_by_clock.items():
-        statements = reporting_statements_at(statement_history, symbols, clock)
-        rows = defaultdict(list)
-        for row in all_rows(store, "analyst_estimates", symbols=list(symbols), as_of=cutoff, observed_at=clock):
-            rows[(row["symbol"], row["estimate_period"])].append(enrich_estimate(row, statements.get(row["symbol"])))
-            source_ids.add(row["source_id"])
-        captured_rows[clock] = rows
+    with store.query_session():
+        for clock, symbols in scopes_by_clock.items():
+            statements = reporting_statements_at(statement_history, symbols, clock)
+            rows = defaultdict(list)
+            for row in all_rows(store, "analyst_estimates", symbols=list(symbols), as_of=cutoff, observed_at=clock):
+                rows[(row["symbol"], row["estimate_period"])].append(enrich_estimate(row, statements.get(row["symbol"])))
+                source_ids.add(row["source_id"])
+            captured_rows[clock] = rows
     current_companies, previous_companies = deepcopy(companies), deepcopy(companies)
     current_clocks, previous_clocks, transitions = [], [], []
 
