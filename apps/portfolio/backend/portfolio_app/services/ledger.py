@@ -4552,15 +4552,17 @@ def build_transaction_accounting_impact(
         base_currency,
         field_name="portfolio base currency",
     )
-    resolved_direct_instruments = (
-        direct_fx_instruments
-        if direct_fx_instruments is not None
-        else valuation_fx.fx_direct_instrument_map(get_shared_fx_rates())
-    )
     resolved_instrument_cache = (
         instrument_detail_cache
         if instrument_detail_cache is not None
-        else {}
+        else valuation_fx.HistoricalInstrumentDetails(end_date=date.max)
+    )
+    resolved_direct_instruments = (
+        direct_fx_instruments
+        if direct_fx_instruments is not None
+        else valuation_fx.HistoricalFxInstruments(
+            resolved_instrument_cache, detail_loader=get_registry_instrument_detail,
+        )
     )
     resolved_fx_rate_on = resolve_fx_rate_on or partial(
         valuation_fx.resolve_fx_rate_on,

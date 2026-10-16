@@ -30,7 +30,6 @@ from watchlist_app.services.materialization_policy import (
 )
 from watchlist_app.services.shared_instrument_registry import (
     SharedInstrumentRegistryError,
-    get_shared_instrument,
     get_shared_instrument_summaries,
     get_shared_no_trade_evidence,
 )
@@ -173,7 +172,8 @@ def _load_reconciliation_targets(
                     InstrumentChartReadModel.source_cutoff_at,
                     InstrumentChartReadModel.materialization_version,
                     InstrumentChartReadModel.data_freshness_status,
-                    InstrumentChartReadModel.screener_payload_json.is_not(None),
+                    and_(InstrumentChartReadModel.screener_payload_json.is_not(None),
+                         InstrumentChartReadModel.nav_payload_json.is_not(None)),
                 ).where(InstrumentChartReadModel.instrument_id.in_(instrument_ids))
             ).all()
         }
@@ -738,7 +738,7 @@ def schedule_instrument_refresh_if_stale(
     if not normalized_instrument_id:
         return False
     try:
-        shared_instrument = get_shared_instrument(normalized_instrument_id)
+        shared_instrument = get_shared_instrument_summaries([normalized_instrument_id]).get(normalized_instrument_id)
     except SharedInstrumentRegistryError:
         return False
     shared_latest_date = _latest_shared_market_data_date(shared_instrument)

@@ -1083,11 +1083,14 @@ export type SharedMarketDataPoint = {
   status: DataStatus
 }
 
-export type SharedInstrumentRecord = InstrumentCore & {
-  latest_market_data: SharedMarketDataPoint[]
+export type InstrumentMetadataRecord = InstrumentCore & {
   quote_selection_policy: QuoteSelectionPolicy
-  coverage_state: DataStatus
   source_settings?: { source_api_profile?: string }
+}
+
+export type SharedInstrumentRecord = InstrumentMetadataRecord & {
+  latest_market_data: SharedMarketDataPoint[]
+  coverage_state: DataStatus
 }
 
 export type SecuritySearchOption = SharedInstrumentRecord
@@ -3386,6 +3389,10 @@ export function getPortfolios() {
   return fetchJson<PortfolioEntryRecord[]>(API_BASE_URL, '/api/portfolios')
 }
 
+export function getPortfolioOptions() {
+  return fetchJson<Pick<PortfolioEntryRecord, 'portfolio_id' | 'portfolio_name'>[]>(API_BASE_URL, '/api/portfolios/options')
+}
+
 export function createPortfolio(payload: PortfolioCreatePayload) {
   return fetchJson<PortfolioEntryRecord>(API_BASE_URL, '/api/portfolios', {
     method: 'POST',
@@ -3513,7 +3520,8 @@ export function getPortfolioTransactionsWorkspace(
   filters: PortfolioTransactionFilters & { transaction_id?: string } = {},
   signal?: AbortSignal,
 ) {
-  const query = buildQuery(filters)
+  // The inspector displays canonical lots and realized economics, not marks.
+  const query = buildQuery({ ...filters, include_valuation: 'false' })
   return fetchJson<PortfolioTransactionWorkspaceResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/transactions/workspace${query}`,
@@ -4274,6 +4282,26 @@ export function getPortfolioInstruments(portfolioId: string, signal?: AbortSigna
       })),
     }),
   )
+}
+
+export function getPortfolioInstrumentOptions(portfolioId: string, signal?: AbortSignal) {
+  return fetchJson<{ portfolio_id: string; instruments: Omit<RawSharedInstrumentRecord, 'latest_market_data' | 'coverage_state'>[] }>(
+    API_BASE_URL, `/api/portfolios/${portfolioId}/instruments/options`, { signal },
+  ).then((response) => ({ portfolio_id: response.portfolio_id,
+    instruments: response.instruments.map((instrument): InstrumentMetadataRecord => ({
+      ...instrument.instrument_core, quote_selection_policy: instrument.quote_selection_policy,
+      source_settings: instrument.source_settings,
+    })),
+  }))
+}
+
+export function getPortfolioInstrumentOption(portfolioId: string, instrumentId: string) {
+  return fetchJson<RawSharedInstrumentRecord>(API_BASE_URL,
+    `/api/portfolios/${portfolioId}/instruments/${encodeURIComponent(instrumentId)}/option`,
+  ).then((record): SharedInstrumentRecord => ({ ...record.instrument_core,
+    latest_market_data: record.latest_market_data, coverage_state: record.coverage_state,
+    quote_selection_policy: record.quote_selection_policy, source_settings: record.source_settings,
+  }))
 }
 
 export function getPortfolioDerivativeContracts(portfolioId: string, signal?: AbortSignal) {

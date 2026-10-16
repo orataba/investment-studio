@@ -10,10 +10,10 @@ from briefing_app.access import can_generate, is_published, require_report_acces
 import re
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import case, func, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from briefing_app.contracts import GenerateRequest, ReportDraft
-from briefing_app.db import Report, get_session
+from briefing_app.db import Report, ReportSource, get_session
 from briefing_app.evidence import current_source_index, read_bound_source
 from briefing_app.reports import begin_report, report_detail, report_summary, validate_draft, summary_statement, projected_report_summary
 from studio_runtime.model_work import model_work_status, require_model_work
@@ -61,8 +61,12 @@ def create_app(settings=None):
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                        allow_credentials=True, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "Authorization"])
 
-    def get_report(report_id: str, session: Session, writing=False, public=False):
+    def get_report(report_id: str, session: Session, writing=False, public=False, reading=False, metadata_only=False):
         statement = select(Report).where(Report.report_id == report_id)
+        if metadata_only:
+            statement = statement.options(load_only(Report.report_id, Report.team_id, Report.edition_role, Report.status, raiseload=True))
+        elif reading:
+            statement = statement.options(load_only(*(getattr(Report, key) for key in ("report_id", "team_id", "report_type", "report_date", "version", "status", "cutoff", "created_at", "completed_at", "error", "source_count", "edition_role", "reading_json", "result_json")), raiseload=True))
         report = session.scalar(statement.with_for_update() if writing else statement)
         if report is None:
             raise HTTPException(404, "报告不存在")
@@ -96,7 +100,7 @@ def create_app(settings=None):
 
     def report_access_filters(principal):
         if principal is None:
-            return [Report.status == "completed", Report.input_json["edition_role"].as_string() == "publisher"]
+            return [Report.status == "completed", Report.edition_role == "publisher"]
         filters = [Report.team_id == principal.team_id]
         if principal.resource_scope:
             if principal.resource_scope.get("kind") != "report":
@@ -151,7 +155,7 @@ def create_app(settings=None):
     @app.get("/api/briefing/reports/{report_id}")
     def detail(report_id: str, request: Request, session: Session = Depends(get_session)):
         public = request.state.principal is None
-        value = report_detail(get_report(report_id, session, public=public))
+        value = report_detail(get_report(report_id, session, public=public, reading=True))
         if public:
             # Only sources cited in the finished edition belong to its public projection.
             cited = set()
@@ -179,9 +183,10 @@ def create_app(settings=None):
 
     @app.get("/api/briefing/reports/{report_id}/sources/{source_id:path}")
     def source(report_id: str, source_id: str, session: Session = Depends(get_session)):
-        report = get_report(report_id, session)
+        report = get_report(report_id, session, reading=True)
+        payload = session.scalar(select(ReportSource.payload_json).where(ReportSource.report_id == report_id, ReportSource.source_id == source_id).order_by(ReportSource.ordinal).limit(1))
         try:
-            return read_bound_source(report.input_json, source_id, settings)
+            return read_bound_source({"cutoff": report.reading_json.get("cutoff") or report.cutoff.isoformat(), "sources": [payload] if payload else []}, source_id, settings)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
 
@@ -199,14 +204,22 @@ def create_app(settings=None):
     @app.get("/api/briefing/reports/{report_id}/source-index")
     def source_index(report_id: str, offset: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
                      scope: Literal["current", "late_received", "all"] = "current", query: str = "",
+                     source_type: str | None = None, completeness: str = "all",
                      session: Session = Depends(get_session)):
-        sources = get_report(report_id, session).input_json.get("sources", [])
-        sources = [source for source in sources if (scope == "all" or source.get("window_scope", "current") == scope)
-                   and (not query or query.casefold() in " ".join(str(source.get(key) or "") for key in ("title", "source_name", "entities", "symbol")).casefold())]
-        rows = [{key: source.get(key) for key in ("source_id", "source_type", "title", "source_name", "published_at",
-                                                "occurred_at", "observed_at", "information_type", "content_completeness", "window_reasons", "symbol", "date") if source.get(key) is not None}
-                for source in sources[offset:offset + limit]]
-        return {"rows": rows, "total": len(sources), "offset": offset, "limit": limit, "scope": scope, "query": query}
+        get_report(report_id, session, metadata_only=True)
+        filters = [ReportSource.report_id == report_id]
+        if scope != "all":
+            filters.append(ReportSource.window_scope == scope)
+        if source_type:
+            filters.append(ReportSource.source_type == source_type)
+        unfiltered_total = session.scalar(select(func.count()).select_from(ReportSource).where(*filters))
+        if query.strip():
+            filters.append(ReportSource.search_text.contains(query.strip().casefold(), autoescape=True))
+        if completeness != "all":
+            filters.append(ReportSource.completeness == completeness)
+        rows = session.scalars(select(ReportSource.metadata_json).where(*filters).order_by(ReportSource.ordinal).offset(offset).limit(limit)).all()
+        return {"rows": rows, "total": session.scalar(select(func.count()).select_from(ReportSource).where(*filters)),
+                "unfiltered_total": unfiltered_total, "offset": offset, "limit": limit, "scope": scope, "query": query}
 
     @app.post("/api/briefing/reports/{report_id}/draft")
     def submit(report_id: str, draft: ReportDraft, mode: Literal["write", "review"] = Query(...),

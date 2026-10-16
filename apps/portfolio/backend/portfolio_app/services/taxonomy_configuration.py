@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -53,11 +54,48 @@ def taxonomy_configuration_version(portfolio_id: str, *, session=None) -> int:
         return taxonomy_configuration_version(portfolio_id, session=owned_session)
 
 
-def _taxonomy_configuration_payload(session, taxonomy_id: str) -> dict[str, object]:
+@dataclass
+class TaxonomyReadInputs:
+    """One configuration read under the caller's portfolio read/write lock."""
+    taxonomies: list[TaxonomyRecordModel]
+    nodes: list[TaxonomyNodeRecordModel]
+    assignments: list[TaxonomyAssignmentRecordModel]
+    target_sets: list[TargetSetRecordModel]
+    target_lines: list[TargetSetLineRecordModel]
+    contract_only_instrument_ids: set[str]
+
+
+def load_taxonomy_read_inputs(session, portfolio_id: str) -> TaxonomyReadInputs:
+    from portfolio_app.services.research_eligibility import contract_only_instrument_ids
+    from portfolio_app.services.valuation_clock import portfolio_valuation_today
+    portfolio = session.get(PortfolioRecordModel, portfolio_id)
+    taxonomies = list(session.scalars(select(TaxonomyRecordModel).where(
+        TaxonomyRecordModel.portfolio_id == portfolio_id).order_by(TaxonomyRecordModel.taxonomy_id)))
+    ids = [item.taxonomy_id for item in taxonomies]
+    nodes = list(session.scalars(select(TaxonomyNodeRecordModel).where(
+        TaxonomyNodeRecordModel.taxonomy_id.in_(ids)).order_by(
+            TaxonomyNodeRecordModel.sort_order, TaxonomyNodeRecordModel.taxonomy_node_id)))
+    assignments = list(session.scalars(select(TaxonomyAssignmentRecordModel).where(
+        TaxonomyAssignmentRecordModel.taxonomy_id.in_(ids)).order_by(TaxonomyAssignmentRecordModel.assignment_id)))
+    target_sets = list(session.scalars(select(TargetSetRecordModel).where(
+        TargetSetRecordModel.taxonomy_id.in_(ids)).order_by(
+            TargetSetRecordModel.taxonomy_id, TargetSetRecordModel.comparator_taxonomy_node_id,
+            TargetSetRecordModel.target_set_type, TargetSetRecordModel.target_set_id)))
+    target_lines = list(session.scalars(select(TargetSetLineRecordModel).where(
+        TargetSetLineRecordModel.target_set_id.in_([item.target_set_id for item in target_sets])
+    ).order_by(TargetSetLineRecordModel.target_line_id))) if target_sets else []
+    contract_only = contract_only_instrument_ids(portfolio_id,
+        as_of_date=portfolio_valuation_today(portfolio.valuation_timezone), session=session) if portfolio and taxonomies else set()
+    return TaxonomyReadInputs(taxonomies, nodes, assignments, target_sets, target_lines, contract_only)
+
+
+def _taxonomy_configuration_payload(
+    session, taxonomy_id: str, *, _read_inputs: TaxonomyReadInputs | None = None,
+) -> dict[str, object]:
     taxonomy = session.get(TaxonomyRecordModel, taxonomy_id)
     if taxonomy is None:
         raise ValueError("Taxonomy not found.")
-    nodes = session.scalars(
+    nodes = [row for row in _read_inputs.nodes if row.taxonomy_id == taxonomy_id] if _read_inputs is not None else session.scalars(
         select(TaxonomyNodeRecordModel)
         .where(TaxonomyNodeRecordModel.taxonomy_id == taxonomy_id)
         .order_by(
@@ -65,18 +103,19 @@ def _taxonomy_configuration_payload(session, taxonomy_id: str) -> dict[str, obje
             TaxonomyNodeRecordModel.taxonomy_node_id,
         )
     ).all()
-    assignments = session.scalars(
+    assignments = [row for row in _read_inputs.assignments if row.taxonomy_id == taxonomy_id] if _read_inputs is not None else session.scalars(
         select(TaxonomyAssignmentRecordModel)
         .where(TaxonomyAssignmentRecordModel.taxonomy_id == taxonomy_id)
         .order_by(TaxonomyAssignmentRecordModel.assignment_id)
     ).all()
-    target_sets = session.scalars(
+    target_sets = sorted((row for row in _read_inputs.target_sets if row.taxonomy_id == taxonomy_id),
+                        key=lambda row: row.target_set_id) if _read_inputs is not None else session.scalars(
         select(TargetSetRecordModel)
         .where(TargetSetRecordModel.taxonomy_id == taxonomy_id)
         .order_by(TargetSetRecordModel.target_set_id)
     ).all()
     target_set_ids = [record.target_set_id for record in target_sets]
-    target_lines = (
+    target_lines = [row for row in _read_inputs.target_lines if row.target_set_id in target_set_ids] if _read_inputs is not None else (
         session.scalars(
             select(TargetSetLineRecordModel)
             .where(TargetSetLineRecordModel.target_set_id.in_(target_set_ids))
@@ -202,26 +241,21 @@ def current_taxonomy_catalog(portfolio_id: str) -> dict[str, object]:
         result = {key: [] for key in ("taxonomies", "taxonomy_nodes", "taxonomy_assignments", "target_sets", "target_set_lines")}
         resolutions = []
         from portfolio_app.services.taxonomy_targets import resolve_taxonomy_targets
-        taxonomies = session.scalars(select(TaxonomyRecordModel).where(
-            TaxonomyRecordModel.portfolio_id == portfolio_id).order_by(TaxonomyRecordModel.taxonomy_id))
-        for taxonomy in taxonomies:
-            configuration = _taxonomy_configuration_payload(session, taxonomy.taxonomy_id)
+        inputs = load_taxonomy_read_inputs(session, portfolio_id)
+        for taxonomy in inputs.taxonomies:
+            configuration = _taxonomy_configuration_payload(session, taxonomy.taxonomy_id, _read_inputs=inputs)
             result["taxonomies"].append(configuration["taxonomy"])
-            from portfolio_app.services.research_eligibility import contract_only_instrument_ids
-            from portfolio_app.services.valuation_clock import portfolio_valuation_today
             active_target_ids = {target["target_set_id"] for target in configuration["target_sets"] if target["status"] == "active"}
             explicit = [line["target_member_id"] for line in configuration["target_set_lines"]
                         if line["target_member_type"] == "instrument" and line["target_set_id"] in active_target_ids]
-            configuration["contract_only_instrument_ids"] = sorted(contract_only_instrument_ids(
-                portfolio_id, as_of_date=portfolio_valuation_today(portfolio.valuation_timezone),
-                explicitly_selected=explicit, session=session))
+            configuration["contract_only_instrument_ids"] = sorted(inputs.contract_only_instrument_ids - set(explicit))
             resolutions.append(resolve_taxonomy_targets(configuration))
             for key in ("taxonomy_nodes", "taxonomy_assignments", "target_sets", "target_set_lines"):
                 result[key].extend(configuration[key])
         return {
             **result,
             "instrument_universe": list_portfolio_instrument_universe(portfolio_id, _session=session),
-            "target_set_integrity_issues": list_target_set_integrity_issues(portfolio_id, _session=session),
+            "target_set_integrity_issues": list_target_set_integrity_issues(portfolio_id, _session=session, _read_inputs=inputs),
             "target_resolution": resolutions,
             "taxonomy_configuration_version": taxonomy_configuration_version(portfolio_id, session=session),
         }

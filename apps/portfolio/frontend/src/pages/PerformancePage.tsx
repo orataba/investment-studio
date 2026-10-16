@@ -18,7 +18,7 @@ import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import { SerialTaskQueue } from '../../../../../packages/ui/src/serialTaskQueue'
 import {
   getPortfolioInstrumentPriceChart,
-  getPortfolioInstruments,
+  getPortfolioInstrumentOptions,
   getPortfolioPerformance,
   getPortfolioPerformanceCalculation,
   getPortfolioPerformanceCalculationGroups,
@@ -33,7 +33,7 @@ import {
   type PortfolioPerformanceCalculationGroupsResponse,
   type PortfolioPerformanceSummary,
   type PortfolioWorkspaceSummary,
-  type SharedInstrumentRecord,
+  type InstrumentMetadataRecord,
   type PortfolioTaxonomyCatalogResponse,
 } from '../lib/api'
 import {
@@ -1120,7 +1120,7 @@ export function buildRelativePerformanceMetrics(
 }
 
 function benchmarkMetricText(
-  selected: SharedInstrumentRecord | null,
+  selected: InstrumentMetadataRecord | null,
   loading: boolean,
   value: number | null | undefined,
   formatter: (input: number | null | undefined) => string = signedPercent,
@@ -1135,7 +1135,7 @@ function benchmarkMetricText(
 }
 
 function benchmarkMetricClassName(
-  selected: SharedInstrumentRecord | null,
+  selected: InstrumentMetadataRecord | null,
   loading: boolean,
   value: number | null | undefined,
 ) {
@@ -1173,7 +1173,7 @@ export function buildPerformanceMetricRows(
   summary: PortfolioPerformanceSummary,
   dailySeries: PortfolioDailyPerformancePoint[],
   baseCurrency: string,
-  selectedBenchmarkInstrument: SharedInstrumentRecord | null,
+  selectedBenchmarkInstrument: InstrumentMetadataRecord | null,
   benchmarkLoading: boolean,
   benchmarkMetrics: BenchmarkPeriodMetrics | null,
   relativeComparisonEligible: boolean,
@@ -1722,7 +1722,7 @@ function PerformancePage() {
   const [taxonomyCatalog, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
   const [taxonomyCatalogReadyPortfolioId, setTaxonomyCatalogReadyPortfolioId] = useState<string | null>(null)
   const [taxonomyCatalogError, setTaxonomyCatalogError] = useState<string | null>(null)
-  const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
+  const [benchmarkInstruments, setBenchmarkInstruments] = useState<InstrumentMetadataRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
   const [benchmarkChart, setBenchmarkChart] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
@@ -2140,7 +2140,7 @@ function PerformancePage() {
     setTaxonomyCatalogReadyPortfolioId(null)
     setTaxonomyCatalog(null)
     setTaxonomyCatalogError(null)
-    getPortfolioInstruments(portfolioId, controller.signal)
+    getPortfolioInstrumentOptions(portfolioId, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setBenchmarkInstruments(response.instruments)

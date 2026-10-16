@@ -18,7 +18,7 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioAccountsWorkspace: vi.fn(),
   getPortfolioPerformance: vi.fn(),
   getPortfolioTaxonomyCatalog: vi.fn(),
-  getPortfolioInstruments: vi.fn(),
+  getPortfolioInstrumentOptions: vi.fn(),
   getPortfolioInstrumentPriceChart: vi.fn(),
 }))
 
@@ -346,7 +346,7 @@ describe('Risk rendered page contract', () => {
     )
     apiMocks.getPortfolioAccountsWorkspace.mockResolvedValue(accountsWorkspace)
     apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue(taxonomyCatalog)
-    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
+    apiMocks.getPortfolioInstrumentOptions.mockResolvedValue({ portfolio_id: '3', instruments: [] })
   })
 
   it('closes rolling settings with Escape and restores the trigger', async () => {
@@ -460,7 +460,7 @@ describe('Risk rendered page contract', () => {
       instrument_id: 'benchmark-1', instrument_name: 'Market Benchmark',
       instrument_type: 'index', currency, identifiers: [], latest_market_data: [],
     }
-    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [instrument] })
+    apiMocks.getPortfolioInstrumentOptions.mockResolvedValue({ portfolio_id: '3', instruments: [instrument] })
     apiMocks.getPortfolioInstrumentPriceChart.mockResolvedValue({
       portfolio_id: '3', instrument_core: instrument, as_of_date: '2026-07-15', range_key: 'all',
       chart_basis: 'close', return_semantics: 'price_return', currency, metric_family: 'price',
@@ -1100,7 +1100,7 @@ describe('Risk rendered page contract', () => {
   it('invalidates the previous benchmark immediately while another selection is loading', async () => {
     const first = { instrument_id: 'first', instrument_name: 'First Benchmark', instrument_type: 'index', currency: 'USD', identifiers: [], latest_market_data: [] }
     const second = { ...first, instrument_id: 'second', instrument_name: 'Second Benchmark' }
-    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [first, second] })
+    apiMocks.getPortfolioInstrumentOptions.mockResolvedValue({ portfolio_id: '3', instruments: [first, second] })
     apiMocks.getPortfolioInstrumentPriceChart.mockResolvedValueOnce({ portfolio_id: '3', instrument_core: first,
       as_of_date: '2026-07-15', range_key: 'all', currency: 'USD', chart_basis: 'close', return_semantics: 'price_return',
       coverage_state: 'complete', points: returnPoints.map((point, index) => ({ date: point.date, value: 100 + index })) })

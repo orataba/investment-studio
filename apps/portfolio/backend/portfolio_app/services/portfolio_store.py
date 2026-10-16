@@ -55,6 +55,7 @@ from portfolio_app.services.ledger import (
     validate_transaction_position_history,
 )
 from portfolio_app.services.taxonomy_configuration import (
+    TaxonomyReadInputs,
     _record_taxonomy_configuration_revision_in_session,
 )
 from portfolio_app.services.snapshot_selection import default_portfolio_snapshot
@@ -2296,7 +2297,16 @@ def _scope_child_nodes(
     *,
     taxonomy_id: str,
     comparator_taxonomy_node_id: str | None,
+    _read_inputs: TaxonomyReadInputs | None = None,
 ) -> tuple[TaxonomyNodeRecordModel | None, list[dict[str, object]]]:
+    if _read_inputs is not None:
+        nodes = [row for row in _read_inputs.nodes if row.taxonomy_id == taxonomy_id]
+        parent = next((row for row in nodes if row.taxonomy_node_id == comparator_taxonomy_node_id), None)
+        if comparator_taxonomy_node_id and parent is None:
+            raise ValueError("Comparator scope node not found.")
+        return parent, sorted((row for row in nodes if row.status == "active"
+            and row.parent_taxonomy_node_id == (comparator_taxonomy_node_id or None)),
+            key=lambda row: (row.sort_order, row.node_name, row.taxonomy_node_id))
     parent_node = None
     if comparator_taxonomy_node_id:
         parent_node = session.scalar(
@@ -2344,11 +2354,13 @@ def _scope_target_members(
     *,
     taxonomy: TaxonomyRecordModel,
     comparator_taxonomy_node_id: str | None,
+    _read_inputs: TaxonomyReadInputs | None = None,
 ) -> tuple[TaxonomyNodeRecordModel | None, list[dict[str, object]]]:
     parent_node, child_nodes = _scope_child_nodes(
         session,
         taxonomy_id=taxonomy.taxonomy_id,
         comparator_taxonomy_node_id=comparator_taxonomy_node_id,
+        _read_inputs=_read_inputs,
     )
     members: list[dict[str, object]] = []
     if child_nodes:
@@ -2368,20 +2380,24 @@ def _scope_target_members(
     if comparator_taxonomy_node_id is None:
         raise ValueError("Comparator scope must have active child sleeves.")
 
-    direct_assignments = session.scalars(
+    direct_assignments = [row for row in _read_inputs.assignments if row.taxonomy_id == taxonomy.taxonomy_id
+        and row.taxonomy_node_id == comparator_taxonomy_node_id and row.status == "active"] if _read_inputs is not None else session.scalars(
         select(TaxonomyAssignmentRecordModel).where(
             TaxonomyAssignmentRecordModel.taxonomy_id == taxonomy.taxonomy_id,
             TaxonomyAssignmentRecordModel.taxonomy_node_id == comparator_taxonomy_node_id,
             TaxonomyAssignmentRecordModel.status == "active",
         )
     ).all()
-    explicit_members = session.scalars(select(TargetSetLineRecordModel.target_member_id)
+    active_target_ids = {row.target_set_id for row in _read_inputs.target_sets
+        if row.taxonomy_id == taxonomy.taxonomy_id and row.status == "active"} if _read_inputs is not None else set()
+    explicit_members = [row.target_member_id for row in _read_inputs.target_lines
+        if row.target_set_id in active_target_ids and row.target_member_type == "instrument"] if _read_inputs is not None else session.scalars(select(TargetSetLineRecordModel.target_member_id)
         .join(TargetSetRecordModel, TargetSetRecordModel.target_set_id == TargetSetLineRecordModel.target_set_id)
         .where(TargetSetRecordModel.taxonomy_id == taxonomy.taxonomy_id,
                TargetSetRecordModel.status == "active", TargetSetLineRecordModel.target_member_type == "instrument")).all()
     from portfolio_app.services.valuation_clock import portfolio_valuation_today
     portfolio = session.get(PortfolioRecordModel, taxonomy.portfolio_id)
-    contract_only = contract_only_instrument_ids(taxonomy.portfolio_id,
+    contract_only = (_read_inputs.contract_only_instrument_ids - set(explicit_members)) if _read_inputs is not None else contract_only_instrument_ids(taxonomy.portfolio_id,
         as_of_date=portfolio_valuation_today(portfolio.valuation_timezone), explicitly_selected=explicit_members, session=session)
     visible_direct_assignments: dict[tuple[str, str], TaxonomyAssignmentRecordModel] = {}
     for assignment in direct_assignments:
@@ -2408,9 +2424,10 @@ def _validate_target_set_lines(
     comparator_taxonomy_node_id: str | None, target_set_type: str,
     status: str, lines: list[dict[str, object]],
     exclude_target_set_id: str | None = None,
+    _read_inputs: TaxonomyReadInputs | None = None,
 ) -> tuple[TaxonomyNodeRecordModel | None, list[dict[str, object]]]:
     parent, members = _scope_target_members(session, taxonomy=taxonomy,
-        comparator_taxonomy_node_id=comparator_taxonomy_node_id)
+        comparator_taxonomy_node_id=comparator_taxonomy_node_id, _read_inputs=_read_inputs)
     basis = parent.allocation_basis if parent else taxonomy.root_allocation_basis
     if basis not in {"weight", "risk_budget"}:
         raise ValueError("Unsupported allocation basis.")
@@ -2443,7 +2460,9 @@ def _validate_target_set_lines(
     if abs(total - 1) > TARGET_SET_EPSILON and not all_cash:
         raise ValueError("Security member target_value values must sum to 100%; cash reserve is separate.")
     if status == "active":
-        other = session.scalars(select(TargetSetRecordModel).where(
+        other = [row for row in _read_inputs.target_sets if row.taxonomy_id == taxonomy.taxonomy_id
+            and row.target_set_type == target_set_type and row.status == "active"
+            and row.comparator_taxonomy_node_id == comparator_taxonomy_node_id] if _read_inputs is not None else session.scalars(select(TargetSetRecordModel).where(
             TargetSetRecordModel.taxonomy_id == taxonomy.taxonomy_id,
             TargetSetRecordModel.target_set_type == target_set_type,
             TargetSetRecordModel.status == "active",
@@ -2476,6 +2495,17 @@ def _remove_scope_target_member(session, *, taxonomy_id: str, scope_node_id: str
                 if line.target_member_type == member_type and line.target_member_id == member_id:
                     target_set.lines.remove(line)
     session.flush()
+
+
+def list_portfolio_options(*, portfolio_ids: list[str]) -> list[dict[str, str]]:
+    """Read authorized navigation identities without touching valuation state."""
+    with get_session_factory()() as session:
+        return [dict(row) for row in session.execute(select(
+            PortfolioRecordModel.portfolio_id, PortfolioRecordModel.portfolio_name,
+        ).where(PortfolioRecordModel.portfolio_id.in_(portfolio_ids)).order_by(
+            PortfolioRecordModel.sort_order, PortfolioRecordModel.portfolio_name,
+            PortfolioRecordModel.portfolio_id,
+        )).mappings()]
 
 
 def list_portfolios(*, portfolio_ids: list[str] | None = None) -> list[dict[str, object]]:
@@ -3098,6 +3128,7 @@ def list_target_set_integrity_issues(
     *,
     taxonomy_id: str | None = None,
     _session: Session | None = None,
+    _read_inputs: TaxonomyReadInputs | None = None,
 ) -> list[dict[str, object]]:
     """Report active planning targets that no longer match their live scope.
 
@@ -3110,43 +3141,21 @@ def list_target_set_integrity_issues(
     """
 
     with nullcontext(_session) if _session is not None else get_session_factory()() as session:
-        taxonomy_statement = select(TaxonomyRecordModel).where(
-            TaxonomyRecordModel.portfolio_id == portfolio_id,
-        )
-        if taxonomy_id:
-            taxonomy_statement = taxonomy_statement.where(TaxonomyRecordModel.taxonomy_id == taxonomy_id)
-        taxonomies = session.scalars(taxonomy_statement).all()
+        from portfolio_app.services.taxonomy_configuration import load_taxonomy_read_inputs
+        inputs = _read_inputs if _read_inputs is not None else load_taxonomy_read_inputs(session, portfolio_id)
+        taxonomies = [row for row in inputs.taxonomies if not taxonomy_id or row.taxonomy_id == taxonomy_id]
         taxonomies_by_id = {item.taxonomy_id: item for item in taxonomies}
         if not taxonomies_by_id:
             return []
 
-        target_sets = session.scalars(
-            select(TargetSetRecordModel)
-            .where(
-                TargetSetRecordModel.taxonomy_id.in_(list(taxonomies_by_id)),
-                TargetSetRecordModel.status == "active",
-            )
-            .order_by(
-                TargetSetRecordModel.taxonomy_id,
-                TargetSetRecordModel.comparator_taxonomy_node_id,
-                TargetSetRecordModel.target_set_type,
-                TargetSetRecordModel.target_set_id,
-            )
-        ).all()
+        target_sets = [row for row in inputs.target_sets if row.taxonomy_id in taxonomies_by_id
+                       and row.status == "active"]
         if not target_sets:
             return []
 
         target_set_ids = [item.target_set_id for item in target_sets]
-        target_lines = session.scalars(
-            select(TargetSetLineRecordModel)
-            .where(TargetSetLineRecordModel.target_set_id.in_(target_set_ids))
-            .order_by(
-                TargetSetLineRecordModel.target_set_id,
-                TargetSetLineRecordModel.target_member_type,
-                TargetSetLineRecordModel.target_member_id,
-                TargetSetLineRecordModel.target_line_id,
-            )
-        ).all()
+        target_lines = sorted((row for row in inputs.target_lines if row.target_set_id in target_set_ids),
+            key=lambda row: (row.target_set_id, row.target_member_type, row.target_member_id, row.target_line_id))
         target_lines_by_set_id: dict[str, list[TargetSetLineRecordModel]] = {}
         for line in target_lines:
             target_lines_by_set_id.setdefault(line.target_set_id, []).append(line)
@@ -3158,11 +3167,7 @@ def list_target_set_integrity_issues(
         }
         scope_nodes_by_id = {
             item.taxonomy_node_id: item
-            for item in session.scalars(
-                select(TaxonomyNodeRecordModel).where(
-                    TaxonomyNodeRecordModel.taxonomy_node_id.in_(list(scope_node_ids))
-                )
-            ).all()
+            for item in inputs.nodes if item.taxonomy_node_id in scope_node_ids
         }
 
         issues: list[dict[str, object]] = []
@@ -3187,6 +3192,7 @@ def list_target_set_integrity_issues(
                     status=target_set.status,
                     lines=lines,
                     exclude_target_set_id=target_set.target_set_id,
+                    _read_inputs=inputs,
                 )
             except ValueError as error:
                 scope_node = scope_nodes_by_id.get(target_set.comparator_taxonomy_node_id)

@@ -7,7 +7,7 @@ from threading import Event, current_thread
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
@@ -139,3 +139,61 @@ def test_configuration_and_market_writer_keep_instrument_then_registry_lock_orde
             release.set()
         assert market.result(timeout=5)["market_data_updated_at"] is not None
         assert configuration.result(timeout=5)["quote_selection_policy"]["valuation"] == ["last", "close"]
+
+
+def test_calculation_read_cannot_mix_nav_publications(registry_factory):
+    record = instrument_store.create_instrument(
+        registry_factory, instrument_name="Publication snapshot fund",
+        instrument_type="public_fund", currency="USD",
+        identifiers=[{"identifier_type": "ticker", "identifier_value": "SNAPSHOT", "is_primary": True}],
+    )
+    iid = record["instrument_id"]
+
+    def publish(value, fingerprint, watermark):
+        return instrument_store.publish_fund_nav_history(
+            registry_factory, instrument_id=iid,
+            rows=[{"as_of_date": "2026-07-15", "nav": value, "nav_status": "complete",
+                   "nav_source_provider": "test", "currency": "USD",
+                   "nav_lineage": {"kind": "provider_explicit", "evidence": {"source_field": "unit_nav"}}}],
+            projection_run={
+                "source_observation_fingerprint": fingerprint * 64,
+                "projection_kind": "event_derived", "projection_status": "unavailable",
+                "method_version": "dividend_reinvestment/v2", "anchor_date": None,
+                "source_provider": "test", "created_by": "pytest",
+                "evidence": {"unavailable_reason": "reinvestment_evidence_not_observed",
+                             "source_row_count": 1, "published_total_return_dates": [],
+                             "missing_total_return_dates": ["2026-07-15"]},
+            },
+            current_fund_nav_event_ids=[], current_fund_nav_reinvestment_evidence_ids=[],
+            expected_market_data_updated_at=watermark, refresh_status="imported",
+            updated_by="pytest", message="Snapshot isolation regression",
+        )
+
+    first = publish("1.25", "a", record["market_data_updated_at"])
+    expected = instrument_store.get_instrument_calculation_inputs(registry_factory, [iid])[iid]
+    published = []
+
+    def publish_between_identity_and_history(_conn, _cursor, statement, _parameters, _context, _many):
+        if not published and "FROM instrument_market_data" in statement:
+            # The reader has captured its identity/watermarks. A separate
+            # connection commits a new NAV generation before its history read.
+            published.append(True)
+            published[0] = publish("1.50", "b", first["market_data_updated_at"])
+
+    engine = registry_factory.kw["bind"]
+    event.listen(engine, "before_cursor_execute", publish_between_identity_and_history)
+    try:
+        actual = instrument_store.get_instrument_calculation_inputs(registry_factory, [iid])[iid]
+    finally:
+        event.remove(engine, "before_cursor_execute", publish_between_identity_and_history)
+    assert len(published) == 1
+    assert actual == expected
+    current = instrument_store.get_instrument_calculation_inputs(registry_factory, [iid])[iid]
+    assert current["market_data"][0]["value"] == "1.50"
+    assert current["market_data_updated_at"] == published[0]["market_data_updated_at"]
+    assert current["current_fund_nav_projection_run_id"] == published[0]["published_projection_run_id"]
+    assert current["current_fund_nav_projection_run_id"] != expected["current_fund_nav_projection_run_id"]
+    # The stronger isolation belongs only to this read transaction; returning
+    # its connection to the pool must not change ordinary writer isolation.
+    with registry_factory() as session:
+        assert session.connection().get_isolation_level() == "READ COMMITTED"

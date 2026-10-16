@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import TaxonomiesPage from './pages/TaxonomiesPage'
-import type { PortfolioTaxonomyCatalogResponse, PortfolioResolvedMemberTarget, SharedInstrumentRecord } from './lib/api'
+import type { PortfolioTaxonomyCatalogResponse, PortfolioResolvedMemberTarget, InstrumentMetadataRecord } from './lib/api'
 import { fcnContractFixture, holdingFixture, holdingsWorkspaceFixture, instrumentFixture } from './test/portfolioFixtures'
 import { renderPortfolioPage } from './test/renderPortfolioPage'
 import { useLanguage } from '../../../../packages/ui/src/i18n'
@@ -12,7 +12,7 @@ import { useLanguage } from '../../../../packages/ui/src/i18n'
 const access = vi.hoisted(() => ({ can_edit: true }))
 const concentrationMocks = vi.hoisted(() => ({ getConcentration: vi.fn(), getConcentrationSettings: vi.fn() }))
 const api = vi.hoisted(() => ({
-  getPortfolioPositions: vi.fn(), getPortfolioTaxonomyCatalog: vi.fn(), getHoldingsWorkspace: vi.fn(), getPortfolioAccountsWorkspace: vi.fn(), getPortfolioInstruments: vi.fn(),
+  getPortfolioPositions: vi.fn(), getPortfolioTaxonomyCatalog: vi.fn(), getHoldingsWorkspace: vi.fn(), getPortfolioAccountsWorkspace: vi.fn(), getPortfolioInstrumentOptions: vi.fn(),
   createPortfolioInstrumentUniverseRecord: vi.fn(), createPortfolioTaxonomy: vi.fn(), createPortfolioTaxonomyAssignment: vi.fn(), createPortfolioTaxonomyNode: vi.fn(),
   savePortfolioTaxonomyTargetConfiguration: vi.fn(), deletePortfolioInstrumentUniverseRecord: vi.fn(), deletePortfolioTaxonomy: vi.fn(), deletePortfolioTaxonomyNode: vi.fn(),
   updatePortfolioTaxonomy: vi.fn(), updatePortfolioTaxonomyAssignment: vi.fn(), updatePortfolioTaxonomyNode: vi.fn(),
@@ -53,8 +53,8 @@ function catalogFixture(): PortfolioTaxonomyCatalogResponse {
 const settings = { portfolio_id: '3', revision: 2, latest_revision: 5, effective_from: '2026-07-01', enabled_taxonomy_ids: ['tax', 'another-tax'],
   limits: [{ scope: 'taxonomy', taxonomy_id: 'tax', entity_id: 'risk', limit_weight: .85 }, { scope: 'security', taxonomy_id: null, entity_id: 'other-security', limit_weight: .1 }], fcn_allocations: [] }
 const accountResponse = { portfolio_id: '3', base_currency: 'USD', accounts: [{ account: { account_id: 'cash-1', portfolio_id: '3', account_name: 'Operating Cash', account_type: 'deposit_account', account_category: 'cash', currency: 'USD', status: 'active' }, derived_cash_balance_base: 200, pending_settlement_base: 0 }], positions: [], linked_transactions: [], ledger_postings: [] }
-function registry(id = 'asset-2', name = 'Beta Fund'): SharedInstrumentRecord {
-  return { ...instrumentFixture({ instrument_id: id, instrument_name: name, identifiers: [{ identifier_type: 'ticker', identifier_value: id === 'asset-1' ? 'ALPHA' : 'BETA', is_primary: true }] }), latest_market_data: [] } as unknown as SharedInstrumentRecord
+function registry(id = 'asset-2', name = 'Beta Fund'): InstrumentMetadataRecord {
+  return { ...instrumentFixture({ instrument_id: id, instrument_name: name, identifiers: [{ identifier_type: 'ticker', identifier_value: id === 'asset-1' ? 'ALPHA' : 'BETA', is_primary: true }] }), latest_market_data: [] } as unknown as InstrumentMetadataRecord
 }
 function renderPage() { return renderPortfolioPage(<TaxonomiesPage />, '/portfolios/3/taxonomies', '/portfolios/:portfolioId/taxonomies') }
 function PortfolioNavigation() {
@@ -75,7 +75,7 @@ describe('Taxonomies integrated tree contract', () => {
     api.getHoldingsWorkspace.mockResolvedValue(holdingsWorkspaceFixture({ totals: { ...holdingsWorkspaceFixture().totals, nav: 1200 } }))
     api.getPortfolioPositions.mockResolvedValue({ portfolio_id: '3', positions: [{ instrument_id: 'asset-1', instrument_ref: instrumentFixture(), quantity: 60, cost_basis: 603, account_ids: ['account-1'] }] })
     api.getPortfolioAccountsWorkspace.mockResolvedValue(accountResponse)
-    api.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [registry('asset-1', 'Alpha Fund'), registry()] })
+    api.getPortfolioInstrumentOptions.mockResolvedValue({ portfolio_id: '3', instruments: [registry('asset-1', 'Alpha Fund'), registry()] })
     api.searchPortfolioSecurities.mockResolvedValue({ results: [], catalog_errors: {} })
     api.savePortfolioTaxonomyTargetConfiguration.mockResolvedValue({})
     concentrationMocks.getConcentrationSettings.mockResolvedValue(structuredClone(settings))

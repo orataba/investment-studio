@@ -5,6 +5,7 @@ from datetime import date
 from typing import cast
 
 from fastapi import HTTPException
+from studio_runtime import operation
 
 from portfolio_app.core.settings import get_settings
 from portfolio_app.services.calculation_frequency import CalculationFrequency
@@ -366,9 +367,10 @@ def _public_holdings_workspace_response(
         as_of_date=as_of_date,
     )
     if include_position_cycles:
-        _enrich_position_cycle_costs(
-            row_items, transactions=transactions, as_of_date=as_of_date,
-        )
+        with operation("holdings_position_cycle_costs"):
+            _enrich_position_cycle_costs(
+                row_items, transactions=transactions, as_of_date=as_of_date,
+            )
     instrument_types = {
         str(instrument_core.get("instrument_type") or "").strip().lower()
         for row in row_items
@@ -838,12 +840,13 @@ def holdings_workspace(
     )
     # Operational tasks and derivative observations can change independently
     # of the accounting snapshot. Refresh them outside the analytics cache.
-    return _public_holdings_workspace_response(
-        response,
-        include_details=include_details,
-        transactions=list_transactions(resolved_portfolio_id),
-        as_of_date=resolved_as_of_date,
-    )
+    with operation("holdings_live_overlays"):
+        return _public_holdings_workspace_response(
+            response,
+            include_details=include_details,
+            transactions=list_transactions(resolved_portfolio_id),
+            as_of_date=resolved_as_of_date,
+        )
 
 
 def read_holdings_risk_workspace(portfolio_id: str, as_of_date: date | None = None, *, live_overlays: bool = True):

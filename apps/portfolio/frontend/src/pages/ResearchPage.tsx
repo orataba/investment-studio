@@ -21,7 +21,7 @@ import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import {
   createPortfolioResearchRun,
   getPortfolioResearchBacktestBenchmarkComparison,
-  getPortfolioInstruments,
+  getPortfolioInstrumentOptions,
   getPortfolioRiskPolicy,
   getPortfolioTaxonomyCatalog,
   getPortfolioResearchRun,
@@ -36,7 +36,7 @@ import {
   type PortfolioResearchWorkbenchResponse,
   type PortfolioTaxonomyNodeRecord,
   type PortfolioTaxonomyRecord,
-  type SharedInstrumentRecord,
+  type InstrumentMetadataRecord,
 } from '../lib/api'
 import {
   formatLabel,
@@ -248,7 +248,7 @@ export default function ResearchPage() {
   const [dynamicScopeOptions, setDynamicScopeOptions] = useState<PortfolioResearchPlanningScopeOption[] | null>(null)
   const [scopeOptionsLoading, setScopeOptionsLoading] = useState(false)
   const [scopeOptionsError, setScopeOptionsError] = useState<string | null>(null)
-  const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
+  const [benchmarkInstruments, setBenchmarkInstruments] = useState<InstrumentMetadataRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkComparison, setBenchmarkComparison] =
     useState<PortfolioResearchBacktestBenchmarkComparisonResponse | null>(null)
@@ -417,7 +417,7 @@ export default function ResearchPage() {
       return
     }
     let cancelled = false
-    getPortfolioInstruments(portfolioId)
+    getPortfolioInstrumentOptions(portfolioId)
       .then((response) => {
         if (!cancelled) {
           setBenchmarkInstruments(response.instruments)

@@ -12,7 +12,7 @@ def require_report_access(report, *, write=False):
         if not (principal.has_scope("briefing:publish") or (not write and principal.has_scope("briefing:read"))):
             raise IdentityError(403, "此服务身份没有报告权限")
     elif write and (principal.team_role == "reader" or (
-        report.input_json.get("edition_role") == "publisher" and principal.team_role != "admin"
+        report.edition_role == "publisher" and principal.team_role != "admin"
     )):
         raise IdentityError(403, "没有生成或发布报告的权限")
     return principal
@@ -27,4 +27,4 @@ def can_generate(principal: Principal | None, edition_role: str) -> bool:
 
 
 def is_published(report) -> bool:
-    return report.status == "completed" and report.input_json.get("edition_role") == "publisher"
+    return report.status == "completed" and report.edition_role == "publisher"

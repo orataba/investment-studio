@@ -19,6 +19,8 @@ Watchlist、Portfolio 和标的详情共用标题工具“设置 / 风险提示 
 
 共享 Registry 是 canonical instrument、identifier、币种、交易所、行情/NAV、quote policy、return semantics 和 source contract 的唯一所有者。Watchlist 不复制这些事实，也不写回行情。
 
+页面解析身份不读取行情或 NAV 审计账本，但保留 corporate actions 和归档重定向。基金总览同时发起 summary 与本页需要的 NAV/performance/risk 请求，结果仍由原请求代际协调器接收，切换标的后的旧响应不会覆盖当前页面。NAV API 读取同次 canonical recalc 发布的投影并显示 pending/failed provenance；首次尚未完成时显示可重试的待构建状态。比较对象选择仍是即时手工设置，不改变该序列的计算口径。图表 display/quote 投影仅缩小传输字段，完整 full 合同和原历史仍可读取。
+
 ### Platform
 
 Platform 负责 provider 适配、目录发现、首次 materialize、行情刷新和 reference data。目录返回 `catalog_provider / catalog_symbol`，不把 FMP 的内部字段名泄漏成公共 API 契约。

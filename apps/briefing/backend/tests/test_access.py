@@ -178,3 +178,47 @@ def test_publication_status_preserves_report_access_and_ignores_archive_filters(
         assert member['schedules']['daily']['state'] == 'disabled'
     finally:
         event.remove(Report, 'load', reject_full_report)
+
+
+def test_bounded_reading_and_source_search_keep_all_frozen_sources(fixture):
+    from sqlalchemy import event, select
+    from briefing_app.db import ReportSource
+    client, factory, _ = fixture
+    sources = [{"source_id": f"source:{i}", "source_type": "public_document", "title": f"Article {i}",
+                "source_name": "Straße" if i == 64 else "Publisher", "url": f"https://source/{i}",
+                "version_id": f"frozen-{i}", "window_scope": "late_received" if i == 63 else "current",
+                "content_completeness": "future_kind" if i == 64 else "full_text"} for i in range(65)]
+    with factory() as session:
+        report = session.get(Report, "public")
+        report.input_json = {"edition_role": "publisher", "cutoff": "2026-09-07T10:00:00+08:00",
+                             "source_count": 65, "sources": sources, "large_unused": "x" * 1_000_000}
+        report.result_json = {"source_ids": ["source:0"]}
+        session.commit()
+    statements = []
+    engine = factory.kw["bind"]
+    def capture(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        headers = {"Authorization": "Bearer member"}
+        body = client.get("/api/briefing/reports/public", headers=headers).json()
+        assert [s["source_id"] for s in body["sources"]] == ["source:0"]
+        assert body["coverage"]["source_completeness"]["unknown"] == 1
+        first = client.get("/api/briefing/reports/public/source-index?scope=all&source_type=public_document", headers=headers).json()
+        assert first["total"] == 65 and len(first["rows"]) == 30
+        last = client.get("/api/briefing/reports/public/source-index?scope=all&offset=60", headers=headers).json()
+        assert [s["source_id"] for s in last["rows"]] == [f"source:{i}" for i in range(60, 65)]
+        found = client.get("/api/briefing/reports/public/source-index?scope=all&query=STRASSE&completeness=unknown", headers=headers).json()
+        assert found["total"] == 1 and found["rows"][0]["source_id"] == "source:64"
+        assert found["rows"][0]["url"] == "https://source/64"
+        assert not any("report.input_json" in sql or "report.draft_json" in sql or "report_source.payload_json" in sql for sql in statements)
+        assert client.get("/api/briefing/reports/public/source-index?scope=all", headers={"Authorization": "Bearer foreign"}).status_code == 404
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    with factory() as session:
+        payload = session.scalar(select(ReportSource.payload_json).where(ReportSource.report_id == "public", ReportSource.ordinal == 64))
+        assert payload["version_id"] == "frozen-64"
+        report = session.get(Report, "public")
+        report.input_json = {**report.input_json, "provider_usage": {"tokens": 1}}
+        session.commit()
+        assert session.scalar(select(ReportSource.payload_json).where(ReportSource.report_id == "public", ReportSource.ordinal == 64)) == payload

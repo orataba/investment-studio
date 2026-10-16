@@ -2887,6 +2887,7 @@ export default function FundDetailPage({
   const riskSettingsMenuRef = useRef<HTMLDivElement | null>(null)
   const timelineNoteContextMenuRef = useRef<HTMLDivElement | null>(null)
   const detailBundleKeyRef = useRef('')
+  const detailPrefetchRef = useRef<{ key: string; requests: Map<keyof FundDetailBundle, Promise<unknown>> } | null>(null)
   const detailRequestCoordinatorRef = useRef(createDetailRequestCoordinator(''))
   const appliedDefaultBenchmarkKeyRef = useRef('')
   const detailUrlSyncRef = useRef('')
@@ -3013,6 +3014,15 @@ export default function FundDetailPage({
     setDetailBundleKey('')
     setLoadingSectionKeys(new Set())
     setSectionLoadErrors({})
+    // Start the selected tab's independent reads with summary. Keep applying
+    // results through the existing generation coordinator after summary is ready.
+    const prefetched = new Map<keyof FundDetailBundle, Promise<unknown>>()
+    detailPrefetchRef.current = { key: bundleKey, requests: prefetched }
+    for (const request of resourceRequests.filter(request => ['navSeries', 'performance', 'risk'].includes(request.key))) {
+      const promise = request.load()
+      void promise.catch(() => {}) // The resource handler below owns the error UI.
+      prefetched.set(request.key, promise)
+    }
 
     async function loadFund() {
       if (!previousBundle) {
@@ -3079,6 +3089,7 @@ export default function FundDetailPage({
       if (detailRequestCoordinatorRef.current === requestCoordinator) {
         detailRequestCoordinatorRef.current = createDetailRequestCoordinator(`${bundleKey}:invalidated`)
         detailBundleKeyRef.current = ''
+        detailPrefetchRef.current = null
       }
     }
   }, [fundId, fundType, refreshToken])
@@ -3129,7 +3140,10 @@ export default function FundDetailPage({
       if (!token) continue
       setLoadingSectionKeys(current => new Set(current).add(loadKey))
       setSectionLoadErrors(current => { const next = { ...current }; delete next[request.key]; return next })
-      void request.load().then(value => {
+      const prefetched = detailPrefetchRef.current?.key === bundleKey ? detailPrefetchRef.current.requests : null
+      const pending = prefetched?.get(request.key)
+      prefetched?.delete(request.key)
+      void (pending ?? request.load()).then(value => {
         if (!completeDetailRequest(coordinator, token, true) || detailRequestCoordinatorRef.current !== coordinator || detailBundleKeyRef.current !== bundleKey) return
         setBundle(current => current?.summary.instrument_id === fundId ? { ...current, [request.key]: value } : current)
         setReadyResources(current => ({ instrumentId: fundId, keys: new Set(current.instrumentId === fundId ? current.keys : []).add(request.key) }))
@@ -3698,6 +3712,11 @@ export default function FundDetailPage({
   }
 
   const { summary, performance, risk, portfolio, holdings, people, strategy, price, documents, research, navSeries } = bundle
+  // Keep the retained NAV generation's pending/error state visible even if a
+  // separately completed summary request has already observed newer results.
+  const displayedFreshness = navSeries.freshness?.staleness_reason
+    ? { ...summary.freshness, ...navSeries.freshness }
+    : summary.freshness
   const timelineNotes = research.notes
   const availableCurrencies = getAvailableQuoteCurrencies(navSeries.rows)
   const effectiveCurrency = availableCurrencies.includes(selectedCurrency)
@@ -5860,7 +5879,7 @@ export default function FundDetailPage({
             </div>
           </div> : null}
           {resourceReady('navSeries') ? <p className="fund-overview-date-note">{language === 'zh-Hans' ? '可用历史' : 'Available history'} {formatDate(calculationBasisSeries[0]?.date)} — {formatDate(performanceReferenceEndDate)} · {calculationFrequencyStatus}</p> : null}
-          {(summary.freshness.staleness_reason || (summary.freshness.data_freshness_status === 'fresh' && Boolean(summary.freshness.awaiting_publication_date) && !summary.freshness.staleness_reason)) && <p className="fund-overview-date-note" role="status"><FreshnessNote status={summary.freshness.data_freshness_status} awaitingPublicationDate={summary.freshness.awaiting_publication_date} reason={summary.freshness.staleness_reason} observationDate={performanceReferenceEndDate || unitNavDate} /></p>}
+          {(displayedFreshness.staleness_reason || (displayedFreshness.data_freshness_status === 'fresh' && Boolean(displayedFreshness.awaiting_publication_date) && !displayedFreshness.staleness_reason)) && <p className="fund-overview-date-note" role="status"><FreshnessNote status={displayedFreshness.data_freshness_status} awaitingPublicationDate={displayedFreshness.awaiting_publication_date} reason={displayedFreshness.staleness_reason} observationDate={performanceReferenceEndDate || unitNavDate} /></p>}
           {resourceReady('navSeries') && ((navSeries.calculation_frequency_profile.gap_count ?? 0) > 0 || hasUnconfirmedReturnSegmentBreak) ? <p className="fund-overview-quality" role="status">{hasUnconfirmedReturnSegmentBreak
             ? (language === 'zh-Hans' ? '存在尚未确认的基金事件，完整收益历史与风险指标暂不可用。' : 'An unconfirmed fund event prevents complete return history and path risk metrics.')
             : (language === 'zh-Hans' ? '净值历史存在缺口，路径风险指标暂不可用。' : 'NAV history has gaps; path risk metrics are unavailable.')}</p> : null}
@@ -7617,7 +7636,7 @@ export default function FundDetailPage({
             <div><span>{language === 'zh-Hans' ? '业绩数据截至' : 'Performance as of'}</span><strong>{formatDate(performance.snapshot_metadata?.as_of_date || null)}</strong></div>
             <div><span>{language === 'zh-Hans' ? '风险数据截至' : 'Risk as of'}</span><strong>{formatDate(risk.snapshot_metadata?.as_of_date || null)}</strong></div>
           </div>
-          {(summary.freshness.staleness_reason || (summary.freshness.data_freshness_status === 'fresh' && Boolean(summary.freshness.awaiting_publication_date) && !summary.freshness.staleness_reason)) && <p role="status"><FreshnessNote status={summary.freshness.data_freshness_status} awaitingPublicationDate={summary.freshness.awaiting_publication_date} reason={summary.freshness.staleness_reason} observationDate={performanceReferenceEndDate || unitNavDate} /></p>}
+          {(displayedFreshness.staleness_reason || (displayedFreshness.data_freshness_status === 'fresh' && Boolean(displayedFreshness.awaiting_publication_date) && !displayedFreshness.staleness_reason)) && <p role="status"><FreshnessNote status={displayedFreshness.data_freshness_status} awaitingPublicationDate={displayedFreshness.awaiting_publication_date} reason={displayedFreshness.staleness_reason} observationDate={performanceReferenceEndDate || unitNavDate} /></p>}
           {navRefreshStatus?.message && <p>{navRefreshStatus.message}</p>}
           {bundle.reference && Object.keys(bundle.reference.section_errors).length > 0 && <p>{Object.values(bundle.reference.section_errors).join(' ')}</p>}
         </section>

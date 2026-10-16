@@ -57,3 +57,30 @@ describe('retained material directory', () => {
     expect(screen.getByRole('status').textContent).toBe('0 of 6 materials match')
   })
 })
+
+it('loads the complete private directory only when opened and searches beyond the first page', async () => {
+  window.history.replaceState(null, '', '/?lang=en')
+  const sources: Source[] = Array.from({ length: 65 }, (_, i) => ({ source_id: `text:${i}`, source_type: 'public_document',
+    title: `Article ${i}`, source_name: i === 64 ? 'Unique publisher' : 'Publisher', content_completeness: 'full_text' }))
+  const fetcher = vi.fn(async (url: string) => {
+    const params = new URL(url, 'http://test').searchParams
+    const matches = sources.filter(row => !params.get('query') || row.source_name?.includes(params.get('query')!))
+    return { ok: true, json: async () => ({ rows: matches.slice(Number(params.get('offset')), Number(params.get('offset')) + 30), total: matches.length, unfiltered_total: sources.length }) }
+  })
+  vi.stubGlobal('fetch', fetcher)
+  const onSource = vi.fn()
+  const component = (active: boolean) => <LanguageProvider enableDomTranslation={false}><SourceDirectory sources={[]}
+    reportId="frozen-report" active={active} timezone="Asia/Shanghai" canReadSources onSource={onSource} /></LanguageProvider>
+  const { rerender } = render(component(false))
+  expect(fetcher).not.toHaveBeenCalled()
+  rerender(component(true))
+  await screen.findByText('Article 0')
+  expect(screen.getAllByRole('button', { name: 'Retained version' })).toHaveLength(30)
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Unique publisher' } })
+  await screen.findByText('Article 64')
+  fireEvent.click(screen.getByRole('button', { name: 'Retained version' }))
+  expect(onSource).toHaveBeenCalledWith('text:64')
+  expect(screen.getByText('1 of 65 materials match')).toBeTruthy()
+  expect(fetcher.mock.calls.every(([url]) => url.includes('/reports/frozen-report/source-index?'))).toBe(true)
+  vi.unstubAllGlobals()
+})

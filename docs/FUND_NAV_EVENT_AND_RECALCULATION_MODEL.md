@@ -101,8 +101,11 @@ expired claims recover after restart, and a source-generation fence discards a
 calculation whose input changed while it was running. A bounded Registry
 reconciliation scan repairs a lost notification.
 
-Watchlist uses the same pattern with durable per-instrument jobs, leases,
-heartbeats, deduplication, and a source-generation fence. Its bounded keyset
+Watchlist uses durable per-instrument jobs, leases, heartbeats and deduplication.
+Each publication retains the exact input cutoff it computed. If the source
+advances during computation, Watchlist publishes that captured generation and
+queues the successor; freshness remains pending rather than relabeling the
+older result current. Its bounded keyset
 reconciliation compares local materialization cutoffs with set-based Registry
 summaries, so a restart or failed notification eventually self-heals without a
 full Registry scan or N+1 history loads.

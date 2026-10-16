@@ -55,9 +55,9 @@ def test_flat_table_profile_accepts_only_final_heads(
         "instrument_data": "20261008_0037",
         "data_ingestion": "20260904_0009",
         "portfolio": "20261012_0073",
-        "watchlist": "20261014_0074",
+        "watchlist": "20261016_0076",
         "market_data": "studio_market_0003",
-        "briefing": "20260908_0003",
+        "briefing": "20261016_0004",
     }
     monkeypatch.setattr(
         audit_module,

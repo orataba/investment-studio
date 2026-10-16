@@ -253,65 +253,57 @@ def _portfolio_source_instrument_ids(session, portfolio_id: str) -> set[str]:
     return instrument_ids
 
 
-def _source_market_data_watermark(session, portfolio_id: str) -> str | None:
+def _source_watermarks(session, portfolio_id: str) -> tuple[str | None, str | None]:
+    """Read both clocks against one complete transaction dependency set."""
     portfolio_instrument_ids = _portfolio_source_instrument_ids(session, portfolio_id)
-    value = session.scalar(
-        select(func.max(Instrument.market_data_updated_at)).where(
-            Instrument.market_data_updated_at.is_not(None),
+    values = session.execute(
+        select(func.max(Instrument.market_data_updated_at),
+               func.max(Instrument.calculation_inputs_updated_at)).where(
             or_(
                 Instrument.instrument_id.in_(portfolio_instrument_ids),
                 Instrument.instrument_type == "fx",
             ),
         )
-    )
-    return str(value) if value not in (None, "") else None
+    ).one()
+    return tuple(str(value) if value not in (None, "") else None for value in values)
+
+
+def _source_market_data_watermark(session, portfolio_id: str) -> str | None:
+    return _source_watermarks(session, portfolio_id)[0]
 
 
 def _source_calculation_inputs_watermark(
     session,
     portfolio_id: str,
 ) -> str | None:
-    portfolio_instrument_ids = _portfolio_source_instrument_ids(session, portfolio_id)
-    value = session.scalar(
-        select(func.max(Instrument.calculation_inputs_updated_at)).where(
-            Instrument.calculation_inputs_updated_at.is_not(None),
-            or_(
-                Instrument.instrument_id.in_(portfolio_instrument_ids),
-                Instrument.instrument_type == "fx",
-            ),
-        )
-    )
-    return str(value) if value not in (None, "") else None
+    return _source_watermarks(session, portfolio_id)[1]
 
 
 def _source_inputs_are_current(
     session,
     portfolio_id: str,
     state: PortfolioCalculationStateModel,
+    *, watermarks: tuple[str | None, str | None] | None = None,
 ) -> bool:
-    return (
-        state.source_market_data_updated_at
-        == _source_market_data_watermark(session, portfolio_id)
-        and state.source_calculation_inputs_updated_at
-        == _source_calculation_inputs_watermark(session, portfolio_id)
+    return (state.source_market_data_updated_at, state.source_calculation_inputs_updated_at) == (
+        watermarks if watermarks is not None else _source_watermarks(session, portfolio_id)
     )
 
 
 def _snapshot_source_generation(
     session,
     portfolio_id: str,
+    *, watermarks: tuple[str | None, str | None] | None = None,
 ) -> _SnapshotSourceGeneration | None:
     state = session.get(PortfolioCalculationStateModel, portfolio_id)
     if state is None:
         return None
     taxonomy_state = session.get(PortfolioTaxonomyStateModel, portfolio_id)
+    market_watermark, calculation_watermark = watermarks if watermarks is not None else _source_watermarks(session, portfolio_id)
     return _SnapshotSourceGeneration(
         refresh_request_id=state.refresh_request_id,
-        market_data_updated_at=_source_market_data_watermark(session, portfolio_id),
-        calculation_inputs_updated_at=_source_calculation_inputs_watermark(
-            session,
-            portfolio_id,
-        ),
+        market_data_updated_at=market_watermark,
+        calculation_inputs_updated_at=calculation_watermark,
         taxonomy_configuration_version=(
             int(taxonomy_state.current_version)
             if taxonomy_state is not None
@@ -989,10 +981,7 @@ def _recalculate_portfolio_daily_snapshots_once(
             portfolio["as_of_date"] = resolved_end_date.isoformat()
             accounts = [_serialize_account_row(item) for item in account_records]
             transactions = [_serialize_transaction_row(item) for item in transaction_records]
-            source_market_data_updated_at = _source_market_data_watermark(session, portfolio_id)
-            source_calculation_inputs_updated_at = (
-                _source_calculation_inputs_watermark(session, portfolio_id)
-            )
+            source_market_data_updated_at, source_calculation_inputs_updated_at = _source_watermarks(session, portfolio_id)
             taxonomy_state = session.get(
                 PortfolioTaxonomyStateModel,
                 portfolio_id,
@@ -1551,7 +1540,7 @@ def _reconcile_materialized_source_generation_batch(
         return None, next_cursor
 
 
-def _state_requires_refresh(session, portfolio_id: str) -> bool:
+def _state_requires_refresh(session, portfolio_id: str, *, watermarks=None) -> bool:
     state = session.get(PortfolioCalculationStateModel, portfolio_id)
     if state is None or state.daily_snapshot_status not in {"current", "failed"}:
         return True
@@ -1569,7 +1558,7 @@ def _state_requires_refresh(session, portfolio_id: str) -> bool:
             return True
         # A known data gap is deterministic. Keep its reliable prefix readable
         # and wait for changed source inputs instead of retrying on every read.
-    return not _source_inputs_are_current(session, portfolio_id, state)
+    return not _source_inputs_are_current(session, portfolio_id, state, watermarks=watermarks)
 
 
 def _financial_read_generation_in_session(session, portfolio_id: str):
@@ -1588,10 +1577,11 @@ def _financial_read_generation_in_session(session, portfolio_id: str):
                 status="failed",
                 message=state.error_message or "Portfolio calculation failed.",
             )
-    if _state_requires_refresh(session, portfolio_id):
+    watermarks = _source_watermarks(session, portfolio_id) if state is not None and state.daily_snapshot_status in {"current", "failed"} else None
+    if _state_requires_refresh(session, portfolio_id, watermarks=watermarks):
         return None
     return (
-        _snapshot_source_generation(session, portfolio_id),
+        _snapshot_source_generation(session, portfolio_id, watermarks=watermarks),
         state.refreshed_at,
         state.refreshed_from,
         state.refreshed_to,
@@ -1640,6 +1630,9 @@ def portfolio_financial_read_generation(portfolio_id: str):
 
 
 def ensure_portfolio_daily_snapshots(portfolio_id: str) -> None:
+    from portfolio_app.services.financial_read_context import has_opening_generation
+    if has_opening_generation(portfolio_id):
+        return
     portfolio_financial_read_generation(portfolio_id)
 
 

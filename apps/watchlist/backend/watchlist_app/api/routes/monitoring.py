@@ -136,7 +136,7 @@ def _build_monitoring_dashboard(session: Session) -> dict[str, object]:
 
     instrument_ids = list({record.instrument_id for record, _ in row_records})
     chart_overrides = build_latest_quote_overrides(
-        read_model_repository.list_charts(session, instrument_ids)
+        read_model_repository.list_screener_charts(session, instrument_ids)
     )
     attribute_definitions = list(attribute_repository.list_definitions(session))
     attribute_labels = {

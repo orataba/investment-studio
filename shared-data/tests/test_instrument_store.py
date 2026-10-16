@@ -669,6 +669,12 @@ def test_atomic_fund_nav_publication_keeps_unprovable_total_return_absent(
     } == {"official_nav"}
     assert detail["fund_nav_adjustment_factors"] == []
 
+    from studio_data.db.session import get_session_factory
+
+    assert shared_store.get_instrument_calculation_inputs(
+        get_session_factory(), ["fund-us-agg"],
+    )["fund-us-agg"] == detail
+
     assert list_stale_current_fund_nav_projections(
         method_version="fund_nav_reinvestment_projection/v3"
     ) == [
@@ -764,6 +770,113 @@ def test_detail_history_latest_and_source_remain_independently_mutable() -> None
     assert source["market_data"][0]["nav_lineage"]["evidence"]["observations"][0]["source"] == "provider_file"
     detail["latest_market_data"][0]["value"] = "999"
     assert detail["market_data"][0]["value"] == "1.25"
+
+
+@pytest.mark.parametrize("status,anchor", [
+    ("complete", date(2026, 4, 15)),
+    ("partial", date(2026, 4, 15)),
+    ("unavailable", None),
+])
+def test_calculation_inputs_keep_exact_current_publication_without_old_runs(
+    status: str, anchor: date | None,
+) -> None:
+    from investment_studio_instrument_core.db_models import (
+        FundNavCurrentProjection, FundNavProjectionRun,
+    )
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    InstrumentRegistryBase.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    shared_store.reset_store(factory, deepcopy(TEST_SHARED_STORE))
+    with factory() as session:
+        for fingerprint, run_status, run_anchor in (
+            ("a" * 64, "complete", date(2026, 4, 14)),
+            ("b" * 64, status, anchor),
+        ):
+            session.add(FundNavProjectionRun(
+                fund_nav_projection_run_id=f"fund-nav-projection-{fingerprint}",
+                instrument_id="fund-us-agg", input_fingerprint=fingerprint,
+                source_observation_fingerprint=fingerprint,
+                projection_kind="event_derived", projection_status=run_status,
+                method_version="test/v1", anchor_date=run_anchor,
+                source_provider="test_fixture", created_by="pytest",
+                created_at="2026-04-16T00:00:00Z",
+                evidence_json={"segment_breaks": [{"date": "2026-04-15", "reason": "unproved"}]},
+            ))
+        session.flush()
+        session.add(FundNavCurrentProjection(
+            instrument_id="fund-us-agg",
+            fund_nav_projection_run_id=f"fund-nav-projection-{'b' * 64}",
+            updated_at="2026-04-16T00:00:00Z", updated_by="pytest",
+        ))
+        session.commit()
+
+    expected = shared_store.get_instrument(factory, "fund-us-agg")
+    expected["fund_nav_projection_runs"] = [
+        run for run in expected["fund_nav_projection_runs"]
+        if run["fund_nav_projection_run_id"] == expected["current_fund_nav_projection_run_id"]
+    ]
+    loaded_runs = []
+    loaded_points = []
+
+    def record_loaded(_session, instance):
+        if isinstance(instance, FundNavProjectionRun):
+            loaded_runs.append(instance.fund_nav_projection_run_id)
+        if isinstance(instance, InstrumentMarketData):
+            loaded_points.append(instance)
+
+    event.listen(factory, "loaded_as_persistent", record_loaded)
+    try:
+        actual = shared_store.get_instrument_calculation_inputs(
+            factory, ["fund-us-agg", "missing", "fund-us-agg"],
+        )
+    finally:
+        event.remove(factory, "loaded_as_persistent", record_loaded)
+    assert list(actual) == ["fund-us-agg", "missing"]
+    assert actual["missing"] is None
+    assert actual["fund-us-agg"] == expected
+    assert loaded_runs == [expected["current_fund_nav_projection_run_id"]]
+    assert loaded_points == []
+    engine.dispose()
+
+
+def test_resolution_and_metadata_directory_preserve_identity_without_market_reads(
+    isolated_store: Path,
+) -> None:
+    from studio_data.db.session import get_session_factory
+
+    upsert_corporate_action_event(
+        instrument_id="fund-us-agg", action_type="share_split",
+        effective_date=date(2026, 7, 10), new_units="2", old_units="1",
+        source="test", status="confirmed", provenance={"issuer": "test"},
+    )
+    archive_instrument(instrument_id="cash-usd", updated_by="pytest")
+    factory = get_session_factory()
+    expected = get_instrument("fund-us-agg")
+    metadata = shared_store.get_instrument_metadata(factory, ["fund-us-agg"])["fund-us-agg"]
+    queries = []
+    engine = factory.kw["bind"]
+
+    def record_sql(_conn, _cursor, statement, _parameters, _context, _many):
+        queries.append(statement.lower())
+
+    event.listen(engine, "before_cursor_execute", record_sql)
+    try:
+        resolution = shared_store.get_instrument_resolution_details(
+            factory, ["fund-us-agg", "missing", "fund-us-agg"],
+        )
+        active = shared_store.list_instrument_metadata(factory)
+        all_records = shared_store.list_instrument_metadata(factory, include_inactive=True)
+    finally:
+        event.remove(engine, "before_cursor_execute", record_sql)
+    assert resolution == {
+        "fund-us-agg": {**metadata, "corporate_actions": expected["corporate_actions"]},
+        "missing": None,
+    }
+    assert "cash-usd" not in {item["instrument_id"] for item in active}
+    assert "cash-usd" in {item["instrument_id"] for item in all_records}
+    assert active == sorted(active, key=lambda item: (item["instrument_name"], item["instrument_id"]))
+    assert next(item for item in active if item["instrument_id"] == "fund-us-agg") == metadata
+    assert not any("instrument_market_data" in query or "fund_nav_" in query for query in queries)
 
 
 def test_calculation_details_still_reject_corrupt_historical_observations() -> None:
@@ -890,6 +1003,7 @@ def test_calculation_detail_projection_preserves_invalid_persisted_contract_reje
         for load in (
             lambda: shared_store.get_instrument(factory, "fund-us-agg"),
             lambda: shared_store.get_instrument_details(factory, ["fund-us-agg"]),
+            lambda: shared_store.get_instrument_calculation_inputs(factory, ["fund-us-agg"]),
         ):
             with pytest.raises(ValueError):
                 load()

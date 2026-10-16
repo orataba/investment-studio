@@ -965,6 +965,10 @@ export function emptyInstrumentResearchResponse(): InstrumentResearchResponse {
 }
 
 export type FundNavSeriesResponse = {
+  source_cutoff_at?: string | null
+  last_recalculated_at?: string | null
+  materialization_version?: string
+  freshness?: Partial<InstrumentSummaryResponse['freshness']>
   fund_id: string
   count: number
   nav_basis_preference: 'auto' | 'nav_with_dividend'
@@ -1017,6 +1021,10 @@ export type FundNavSeriesResponse = {
 }
 
 type RawFundNavSeriesResponse = {
+  source_cutoff_at?: string | null
+  last_recalculated_at?: string | null
+  materialization_version?: string
+  freshness?: Partial<InstrumentSummaryResponse['freshness']>
   return_series?: InstrumentChartResponse['return_series']
   instrument_id: string
   count: number
@@ -1208,6 +1216,10 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
 
   return {
     fund_id: response.instrument_id,
+    source_cutoff_at: response.source_cutoff_at,
+    last_recalculated_at: response.last_recalculated_at,
+    materialization_version: response.materialization_version,
+    freshness: response.freshness,
     count: response.count,
     nav_basis_preference: response.nav_basis_preference,
     nav_basis_type: response.nav_basis_type,
@@ -1599,7 +1611,7 @@ export function getInstrumentLibrary() {
 }
 
 export function getInstrumentChart(instrumentId: string, signal?: AbortSignal) {
-  return fetchJson<InstrumentChartResponse>(buildInstrumentDetailApiPath(instrumentId, 'chart'), { signal })
+  return fetchJson<InstrumentChartResponse>(`${buildInstrumentDetailApiPath(instrumentId, 'chart')}?projection=display`, { signal })
 }
 
 export function getInstrumentQuote(instrumentId: string, signal?: AbortSignal) {

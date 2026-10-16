@@ -2883,6 +2883,8 @@ def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
         "peer_baseline_instrument_ids": ["fund-us-agg", "savf63"],
     }
 
+    from watchlist_app.services.recalc_worker import drain_recalc_jobs
+    drain_recalc_jobs()
     nav_series_response = client.get("/api/instruments/sxv264/nav-series")
     assert nav_series_response.status_code == 200
     nav_series_payload = nav_series_response.json()
@@ -3048,8 +3050,8 @@ def test_instrument_summary_triggers_async_refresh_when_shared_data_is_newer(
 
     monkeypatch.setattr(
         read_model_freshness,
-        "get_shared_instrument",
-        lambda instrument_id: {
+        "get_shared_instrument_summaries",
+        lambda ids: {instrument_id: {
             "instrument_id": instrument_id,
             "market_data": [
                 {
@@ -3059,7 +3061,7 @@ def test_instrument_summary_triggers_async_refresh_when_shared_data_is_newer(
                     "value": "101.500000",
                 }
             ],
-        },
+        } for instrument_id in ids},
     )
     monkeypatch.setattr(
         read_model_freshness,
@@ -3876,13 +3878,14 @@ def test_recalc_uses_read_watermark_and_enqueues_follow_up_when_source_changes(
     ]
     calls = 0
 
-    def _changing_shared_instrument(_instrument_id: str):
+    def _changing_shared_instrument(_instrument_id: str, **_kwargs):
         nonlocal calls
         result = versions[min(calls, len(versions) - 1)]
         calls += 1
         return result
 
     monkeypatch.setattr(canonical_recalc, "get_shared_instrument", _changing_shared_instrument)
+    monkeypatch.setattr(canonical_recalc, "get_shared_calculation_inputs", _changing_shared_instrument)
     response = client.post(
         "/api/recalc/instruments/sxv264/execute",
         json={
@@ -4055,7 +4058,7 @@ def test_detail_resolution_fails_closed_when_shared_registry_returns_500(
             message="Shared instrument registry returned HTTP 500.",
         )
 
-    monkeypatch.setattr(instrument_resolution, "get_shared_instrument", _raise_registry_error)
+    monkeypatch.setattr(instrument_resolution, "get_shared_instrument_resolution", _raise_registry_error)
 
     response = client.post("/api/instruments/sxv264/resolve")
     assert response.status_code == 502
@@ -4098,7 +4101,7 @@ def test_detail_resolution_does_not_use_cached_row_when_registry_returns_500(
     )
     monkeypatch.setattr(
         instrument_resolution,
-        "get_shared_instrument",
+        "get_shared_instrument_resolution",
         lambda instrument_id: fund_record if instrument_id == "fund-msft-strategy" else None,
     )
 
@@ -4114,7 +4117,7 @@ def test_detail_resolution_does_not_use_cached_row_when_registry_returns_500(
             message="Shared instrument registry returned HTTP 500.",
         )
 
-    monkeypatch.setattr(instrument_resolution, "get_shared_instrument", _raise_registry_error)
+    monkeypatch.setattr(instrument_resolution, "get_shared_instrument_resolution", _raise_registry_error)
 
     response = client.post("/api/instruments/fund-msft-strategy/resolve")
     assert response.status_code == 502

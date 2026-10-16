@@ -3,7 +3,7 @@ import { fetchJson } from '../lib/api'
 import { useCanWriteTeam } from './AccountBoundary'
 import { setRiskReferenceParams, type ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 const request = <T,>(path: string, init?: RequestInit) =>
-  fetchJson<T>(`/api${path}`, init)
+  fetchJson<T>(`/api${path.startsWith('/risk?') ? `${path}&projection=workspace` : path}`, init)
 export default function InstrumentRiskPanel({
   instrumentId,
   watchlistId,

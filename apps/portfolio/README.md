@@ -115,6 +115,12 @@ Performance 手动编辑起止日期后，点击“应用区间”或按 Enter �
 
 交易列表首次响应已包含默认选中交易的完整详情；将默认选择同步至 URL 不再次下载同一工作区。切换交易、筛选或组合，以及保存后的显式刷新，仍读取对应的完整工作区。
 
+工作区切换器读取授权后的 `GET /api/portfolios/options`，只返回名称和编号，不为了导航加载各组合净值。Overview、Performance、Risk、Research 和分类页的名称选择读取 `/{id}/instruments/options`，不扫描证券行情或事件历史；交易录入仍保留含最新报价的目录合同。分类页选择已登记证券时，按需读取该证券的 `/{id}/instruments/{instrument_id}/option`，确认是否缺少报价后才进入原有补齐流程；查询或切换选择不会自动登记证券。
+
+交易页请求 `transactions/workspace?include_valuation=false`，保留批次数量、成本、已实现损益、成本来源及现金/证券汇兑解释，只省略该页不展示的批次当前市值和未实现损益。API 默认 `include_valuation=true` 保留完整估值读取。处置损益按实际币种路径读取取得日、确认日和结算日 FX，同币种无需读取 FX；历史来源合法性和缺口处理不变。
+
+金融 HTTP 请求的内部 `ensure` 复用本次授权后成功取得的 opening generation；缓存构建仍独立复核来源，响应结束后的 closing fence 在请求上下文之外重新读取。两个行情/计算输入水位共用一次完整交易依赖查询，不缓存权限或跨请求复用源事实。分类目录在原组合共享读锁内批量读取配置，目标完整性校验复用同一配置和资格事实，不逐目标集合重读数据库。`financial_read_open/close`、`transaction_workspace_lots/accounting_impact/serialization`、`holdings_live_overlays/position_cycle_costs` 与 `database_connection_reset` 用于分辨请求各阶段；连接 reset span 仅覆盖 search-path 重设和提交，不代表连接池等待。
+
 ## 前端阅读与交互
 
 持仓金额、数量和比例按完整值显示；列宽偏好只指定最小宽度，不按窗口压缩金融数值。宽表在表内滚动，证券／合约身份列与列标题保持可见。长绩效核算表在同一滚动区保留所选期间、报告币种与归因口径。列配置只显示投资名称；取消不应用草稿，更新才保存。

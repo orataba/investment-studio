@@ -14,7 +14,7 @@ const apiMocks = vi.hoisted(() => ({
   createPortfolioOptionOutcome: vi.fn(),
   copyPortfolio: vi.fn(),
   deletePortfolio: vi.fn(),
-  getPortfolios: vi.fn(),
+  getPortfolioOptions: vi.fn(),
   getPortfolioAccounts: vi.fn(),
   getPortfolioRiskPolicy: vi.fn(),
   getPortfolioMembers: vi.fn(),
@@ -80,7 +80,7 @@ describe('Portfolio workspace loading contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     Object.assign(accessMock, { can_edit: true, can_manage: true, role: 'manager' })
-    apiMocks.getPortfolios.mockResolvedValue([])
+    apiMocks.getPortfolioOptions.mockResolvedValue([])
     apiMocks.getPortfolioMembers.mockResolvedValue({ members: [] })
     apiMocks.getPortfolioMemberCandidates.mockResolvedValue({ members: [] })
     apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [] })

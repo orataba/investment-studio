@@ -269,6 +269,37 @@ def get_shared_instrument_summaries(
         raise _registry_error("Failed to query shared instrument registry.") from error
 
 
+def _canonical_shared_record(instrument_id: str, read) -> dict[str, object] | None:
+    record = read(instrument_id)
+    visited = {instrument_id}
+    while isinstance(record, dict):
+        lifecycle = record.get("lifecycle_state")
+        if not isinstance(lifecycle, dict) or str(lifecycle.get("status") or "active").strip().lower() != "archived":
+            break
+        canonical_id = str(lifecycle.get("canonical_instrument_id") or "").strip()
+        if not canonical_id or canonical_id in visited:
+            return None
+        visited.add(canonical_id)
+        record = read(canonical_id)
+    return record
+
+
+def get_shared_instrument_resolution(instrument_id: str) -> dict[str, object] | None:
+    try:
+        return _canonical_shared_record(instrument_id, lambda identifier:
+            shared_store.get_instrument_resolution_details(get_session_factory(), [identifier]).get(identifier))
+    except Exception as error:
+        raise _registry_error("Failed to query shared instrument identity.") from error
+
+
+def get_shared_calculation_inputs(instrument_id: str) -> dict[str, object] | None:
+    try:
+        return _canonical_shared_record(instrument_id, lambda identifier:
+            shared_store.get_instrument_calculation_inputs(get_session_factory(), [identifier]).get(identifier))
+    except Exception as error:
+        raise _registry_error("Failed to query shared calculation inputs.") from error
+
+
 def get_shared_instrument(instrument_id: str, *, metadata_only: bool = False) -> dict[str, object] | None:
     try:
         def read(identifier):
@@ -276,24 +307,7 @@ def get_shared_instrument(instrument_id: str, *, metadata_only: bool = False) ->
                 return shared_store.get_instrument_metadata(get_session_factory(), [identifier]).get(identifier)
             return shared_store.get_instrument(get_session_factory(), identifier)
 
-        record = read(instrument_id)
-        visited = {instrument_id}
-        while isinstance(record, dict):
-            lifecycle = record.get("lifecycle_state")
-            if not isinstance(lifecycle, dict):
-                break
-            canonical_id = str(lifecycle.get("canonical_instrument_id") or "").strip()
-            status = str(lifecycle.get("status") or "active").strip().lower()
-            if status != "archived":
-                break
-            if not canonical_id or canonical_id in visited:
-                return None
-            visited.add(canonical_id)
-            canonical = read(canonical_id)
-            if not isinstance(canonical, dict):
-                return None
-            record = canonical
-        return record
+        return _canonical_shared_record(instrument_id, read)
     except Exception as error:  # pragma: no cover - defensive wrapper
         raise _registry_error("Failed to query shared instrument registry.") from error
 

@@ -10,7 +10,7 @@ import { formatCurrency, formatDailyPercent, formatSignedCurrency, signedValueCl
 import {
   copyPortfolio,
   deletePortfolio,
-  getPortfolios,
+  getPortfolioOptions,
   getPortfolioRiskPolicy,
   getWorkspaceSummaryForPortfolio,
   SUPPORTED_PORTFOLIO_CURRENCIES,
@@ -187,7 +187,7 @@ export default function PortfolioWorkspaceLayout({
   useEffect(() => {
     let cancelled = false
 
-    getPortfolios()
+    getPortfolioOptions()
       .then((response) => {
         if (!cancelled) {
           setPortfolioOptions(

@@ -51,6 +51,7 @@ from watchlist_app.services.read_model_freshness import (
     local_materialization_source_cutoff,
     local_materialization_version,
     schedule_instrument_refresh_if_stale,
+    schedule_instrument_refreshes_if_stale,
 )
 
 
@@ -101,7 +102,8 @@ def _schedule_instrument_refresh(
     instrument_id: str,
     trigger_ref_type: str,
 ) -> None:
-    chart_record = read_model_repository.get_chart(session, instrument_id)
+    charts = read_model_repository.list_screener_charts(session, [instrument_id])
+    chart_record = charts[0] if charts else None
     source_row = read_model_repository.find_any_watchlist_row_for_asset(session, instrument_id)
     schedule_instrument_refresh_if_stale(
         instrument_id=instrument_id,
@@ -339,12 +341,16 @@ def list_instrument_library(
 def get_instrument_chart_data(
     instrument_id: str,
     session: Session = Depends(get_db_session),
-    projection: Literal["full", "quote"] = "full",
+    projection: Literal["full", "quote", "display"] = "full",
 ) -> dict[str, object]:
     _require_instrument(session, instrument_id)
     _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_chart_read")
-    record = read_model_repository.get_chart(session, instrument_id)
-    source = record.payload_json if record is not None else default_instrument_chart_payload(instrument_id)
+    if projection == "full":
+        record = read_model_repository.get_chart(session, instrument_id)
+        source = record.payload_json if record is not None else None
+    else:
+        source = read_model_repository.get_chart_projection(session, instrument_id, projection=projection)
+    source = source if source is not None else default_instrument_chart_payload(instrument_id)
     payload = serialize_payload(instrument_quote_payload(source) if projection == "quote" else source)
     freshness = recalculation_freshness_overrides(session, [instrument_id]).get(instrument_id)
     if freshness:
@@ -700,7 +706,34 @@ def get_fund_nav_series(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _require_instrument(session, instrument_id)
-    return canonical_recalc_service.build_nav_series_payload(session, instrument_id=instrument_id)
+    _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_nav_read")
+    record = read_model_repository.get_nav_projection(session, instrument_id)
+    if record is None or record.nav_payload_json is None:
+        shared = get_shared_instrument_summaries([instrument_id]).get(instrument_id) or {}
+        if (shared.get("lifecycle_state") or {}).get("status") == "archived":
+            # Legacy archived assets cannot enter the active rebuild queue.
+            # Preserve their prior read contract without inventing a published
+            # generation or attaching the old chart's cutoff to new output.
+            return serialize_payload(canonical_recalc_service.build_nav_series_payload(
+                session, instrument_id=instrument_id))
+        schedule_instrument_refreshes_if_stale(
+            targets=[{"instrument_id": instrument_id, "local_materialization_version": None}],
+            trigger_ref_type="nav_projection_missing", trigger_ref_id=instrument_id, raise_on_error=True,
+        )
+        raise HTTPException(status_code=503, detail="NAV data is being rebuilt. Please retry shortly.",
+                            headers={"Retry-After": "1"})
+    # Comparison choices are current manual UI settings, not calculated NAV
+    # facts. Keep them responsive while the numerical generation is rebuilding.
+    profile = manual_profile_repository.get(session, instrument_id)
+    settings = _normalize_nav_settings_payload(profile.nav_settings_json if profile is not None else None)
+    return {**serialize_payload(record.nav_payload_json),
+        "compare_settings": {"default_benchmark_instrument_id": settings["default_benchmark_instrument_id"],
+                             "peer_instrument_ids": settings["peer_baseline_instrument_ids"]},
+        "source_cutoff_at": serialize_payload(record.source_cutoff_at),
+        "last_recalculated_at": serialize_payload(record.last_recalculated_at),
+        "materialization_version": record.materialization_version,
+        "freshness": {"data_freshness_status": record.data_freshness_status,
+            **recalculation_freshness_overrides(session, [instrument_id]).get(instrument_id, {})}}
 
 
 @router.get("/{instrument_id}/nav-settings")

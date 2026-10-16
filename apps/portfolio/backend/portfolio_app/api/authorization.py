@@ -97,7 +97,7 @@ async def authorize(request: Request, principal) -> None:
         for selected in ids:
             await run_in_threadpool(require_access, str(selected), "editor", principal)
         return
-    if path in {"/api/portfolios", "/api/portfolios/reorder"}:
+    if path in {"/api/portfolios", "/api/portfolios/options", "/api/portfolios/reorder"}:
         if scope and scope.get("kind") != "portfolio":
             raise HTTPException(403, "当前任务不能枚举组合")
         if method == "POST" and path == "/api/portfolios":
@@ -139,7 +139,10 @@ async def portfolio_request_context(request: Request, principal=Depends(authenti
         if getattr(request.state, "check_financial_generation", False):
             from portfolio_app.services.daily_snapshots import portfolio_financial_read_generation
             portfolio_id = request.path_params.get("portfolio_id") or request.query_params.get("portfolio_id")
-            request.state.financial_read_generation = await run_in_threadpool(portfolio_financial_read_generation, str(portfolio_id))
+            with operation("financial_read_open"):
+                request.state.financial_read_generation = await run_in_threadpool(portfolio_financial_read_generation, str(portfolio_id))
+            from portfolio_app.services.financial_read_context import remember_opening_generation
+            remember_opening_generation(str(portfolio_id), request.state.financial_read_generation)
         yield principal
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             portfolio_id = request.path_params.get("portfolio_id")

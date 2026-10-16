@@ -23,7 +23,7 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioCalculationStatus: vi.fn(),
   getPortfolioTaxonomyCatalog: vi.fn(),
   getPortfolioPerformance: vi.fn(),
-  getPortfolioInstruments: vi.fn(),
+  getPortfolioInstrumentOptions: vi.fn(),
   getPortfolioInstrumentPriceChart: vi.fn(),
   getConcentration: vi.fn(),
 }))
@@ -64,7 +64,7 @@ describe('Overview rendered page contract', () => {
       target_set_integrity_issues: [],
     })
     apiMocks.getPortfolioPerformance.mockResolvedValue(performanceFixture())
-    apiMocks.getPortfolioInstruments.mockResolvedValue({ instruments: [] })
+    apiMocks.getPortfolioInstrumentOptions.mockResolvedValue({ instruments: [] })
   })
 
   it('keeps a missing-price recovery explanation and the prior published date on screen', async () => {
@@ -620,7 +620,7 @@ describe('Overview rendered page contract', () => {
 
   it.each(['unknown', undefined])('withholds benchmark metrics when return semantics are unconfirmed (%s)', async (returnSemantics) => {
     const user = userEvent.setup()
-    apiMocks.getPortfolioInstruments.mockResolvedValue({
+    apiMocks.getPortfolioInstrumentOptions.mockResolvedValue({
       portfolio_id: '3',
       instruments: [
         {
@@ -688,7 +688,7 @@ describe('Overview rendered page contract', () => {
 
   it('labels a confirmed price index distinctly and shows its normalized benchmark metrics', async () => {
     const user = userEvent.setup()
-    apiMocks.getPortfolioInstruments.mockResolvedValue({
+    apiMocks.getPortfolioInstrumentOptions.mockResolvedValue({
       portfolio_id: '3',
       instruments: [
         {
@@ -784,7 +784,7 @@ describe('Overview rendered page contract', () => {
           : point,
       ),
     })
-    apiMocks.getPortfolioInstruments.mockResolvedValue({
+    apiMocks.getPortfolioInstrumentOptions.mockResolvedValue({
       portfolio_id: '3',
       instruments: [
         {
