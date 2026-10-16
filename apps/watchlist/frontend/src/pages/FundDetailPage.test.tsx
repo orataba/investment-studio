@@ -132,6 +132,41 @@ it('rejects late opinions from the previous fund while retaining the new fund re
   expect(screen.getByText('第二只基金的观点。')).toBeTruthy()
 })
 
+it('starts NAV and analytics while summary is pending and reuses those reads', async () => {
+  const summary = await api.summary()
+  api.summary.mockClear()
+  let finishSummary!: (value: unknown) => void
+  api.summary.mockReturnValue(new Promise(resolve => { finishSummary = resolve }))
+  show('/instruments/fund-1?tab=overview')
+  await waitFor(() => {
+    expect(api.nav).toHaveBeenCalledOnce()
+    expect(api.performance).toHaveBeenCalledOnce()
+    expect(api.risk).toHaveBeenCalledOnce()
+  })
+  expect(screen.queryByRole('heading', { level: 1, name: '测试基金 TEST' })).toBeNull()
+  await act(async () => finishSummary(summary))
+  await screen.findByRole('heading', { level: 1, name: '测试基金 TEST' })
+  expect(api.nav).toHaveBeenCalledOnce()
+  expect(api.performance).toHaveBeenCalledOnce()
+  expect(api.risk).toHaveBeenCalledOnce()
+})
+
+it('keeps retained NAV pending status visible and explicitly retries an unbuilt projection', async () => {
+  const nav = await api.nav()
+  api.nav.mockClear()
+  api.nav.mockRejectedValueOnce(new Error('NAV data is being rebuilt. Please retry shortly.'))
+    .mockResolvedValue({ ...nav, freshness: { data_freshness_status: 'pending_recalc', staleness_reason: 'NAV generation is pending.' } })
+  show()
+  const failure = await screen.findByRole('alert')
+  expect(failure.textContent).toContain('NAV data is being rebuilt')
+  fireEvent.click(within(failure).getByRole('button', { name: '重试' }))
+  expect(await screen.findByText(/NAV generation is pending/)).toBeTruthy()
+  expect(api.nav).toHaveBeenCalledTimes(2)
+  expect(api.summary).toHaveBeenCalledOnce()
+  expect(api.performance).toHaveBeenCalledOnce()
+  expect(api.risk).toHaveBeenCalledOnce()
+})
+
 it('rejects an in-flight opinion response superseded by a research publication', async () => {
   const pending: Array<(value: unknown) => void> = []
   api.research.mockImplementation(() => new Promise(resolve => { pending.push(resolve) }))

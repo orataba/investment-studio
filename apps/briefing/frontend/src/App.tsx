@@ -1,3 +1,4 @@
+import { request } from './api'
 import type { ModelWorkStatus } from '../../../../packages/ui/src/modelWork'
 import { useEffect, useRef, useState } from 'react'
 import HorizontalTableScroll from '../../../../packages/ui/src/HorizontalTableScroll'
@@ -17,17 +18,6 @@ import SourceDirectory from './SourceDirectory'
 import { completenessKinds, completenessLabels, countSourceCompleteness } from './sourceCompleteness'
 import { EvidenceTime, ExternalLinkIcon, navigateToSection, quoteUnit } from './reading'
 
-const api = (import.meta.env.VITE_API_BASE_URL || '/api/briefing').replace(/\/$/, '')
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${api}${path}`, { credentials: 'include', ...options })
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}))
-    const message = typeof body.detail === 'string' ? body.detail : `HTTP ${response.status}`
-    const requestId = response.headers?.get('X-Request-ID')
-    throw new Error(requestId ? `${message} [request_id=${requestId}]` : message)
-  }
-  return response.json()
-}
 const pending = (status: string) => status === 'queued' || status === 'running'
 const valueClass = (value?: string | null) => !value || /^[+−-]?[\d,.]+\s*(%|bp|bps)?$/.test(value.trim()) ? 'number' : undefined
 const signed = (value: number) => `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
@@ -90,7 +80,7 @@ function Coverage({ detail }: { detail: ReportDetail }) {
   const copy = useCopy()
   const text = detail.coverage.text
   const documents = detail.coverage.documents
-  const completenessCounts = countSourceCompleteness(detail.sources)
+  const completenessCounts = detail.coverage.source_completeness || countSourceCompleteness(detail.sources)
   const completenessText = completenessLabels(copy)
   const notes = Array.isArray(detail.coverage.numeric) ? detail.coverage.numeric : []
   const channels = Array.isArray(text.sources) ? text.sources as Record<string, unknown>[] : []
@@ -260,6 +250,7 @@ export default function App() {
   const [total, setTotal] = useState(0)
   const [selected, setSelected] = useState(() => reportLocation().selected)
   const [detail, setDetail] = useState<ReportDetail | null>(null)
+  const [directoryReport, setDirectoryReport] = useState('')
   const [source, setSource] = useState<Source | null>(null)
   const [sourceId, setSourceId] = useState('')
   const [sourceError, setSourceError] = useState('')
@@ -455,7 +446,7 @@ export default function App() {
         {detail.status === 'failed' && <div className="error" role="alert"><p>{t(detail.error || copy('这次生成未形成可读报告。', 'This attempt did not produce a readable report.'))}</p>{readableAlternative && <button onClick={() => choose(readableAlternative.report_id)}>{copy('阅读可用版本', 'Read available edition')} · {readableAlternative.report_date} · v{readableAlternative.version}</button>}</div>}
         <CoverageSummary detail={detail} />
         {detail.report && <ReportBody detail={detail} onSource={showSource} canReadSources={canReadSources} />}
-        <details className="coverage" id="source-coverage"><summary>{copy('来源与覆盖范围', 'Sources and coverage')}</summary><p>{copy('报告保留生成时使用的原文与数值版本；日期未知与未覆盖内容不会被补写为事实。', 'Each edition retains its original evidence and numeric versions. Unknown dates and missing coverage remain explicit.')}</p><p>{copy('原始材料', 'Original materials')} · {detail.source_count} · {detail.window.timezone}</p>{canReadSources && <Coverage detail={detail} />}<SourceDirectory key={detail.report_id} sources={detail.sources} timezone={detail.window.timezone} canReadSources={canReadSources} onSource={showSource} /></details>
+        <details key={detail.report_id} className="coverage" id="source-coverage" onToggle={event => { if (event.currentTarget.open) setDirectoryReport(detail.report_id) }}><summary>{copy('来源与覆盖范围', 'Sources and coverage')}</summary><p>{copy('报告保留生成时使用的原文与数值版本；日期未知与未覆盖内容不会被补写为事实。', 'Each edition retains its original evidence and numeric versions. Unknown dates and missing coverage remain explicit.')}</p><p>{copy('原始材料', 'Original materials')} · {detail.source_count} · {detail.window.timezone}</p>{canReadSources && <Coverage detail={detail} />}<SourceDirectory key={detail.report_id} reportId={detail.report_id} active={directoryReport === detail.report_id} sources={detail.sources} timezone={detail.window.timezone} canReadSources={canReadSources} onSource={showSource} /></details>
       </>}
       </div>
     </div>}

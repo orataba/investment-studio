@@ -27,9 +27,11 @@ def test_price_bar_all_history_is_not_silently_capped_and_explicit_limit_keeps_a
     bars = [{"date": (date(2020, 1, 1) + timedelta(days=index)).isoformat(),
              "close": "100", "adjustment_factor": str(1 + index / 1300)}
             for index in range(1301)]
-    monkeypatch.setattr(api, "get_shared_instrument", lambda _id: {
-        "instrument_id": "long-history", "instrument_type": "etf", "currency": "HKD",
-    })
+    def read_metadata(_id, *, metadata_only):
+        assert metadata_only is True
+        return {"instrument_id": "long-history", "instrument_type": "etf", "currency": "HKD"}
+
+    monkeypatch.setattr(api, "get_shared_instrument", read_metadata)
     monkeypatch.setattr(api, "get_shared_price_bars", lambda **_kwargs: bars)
     complete = client.get("/api/instruments/long-history/price-bars")
     assert complete.status_code == 200
@@ -201,8 +203,12 @@ def test_price_display_anchors_are_full_history_and_keep_their_confirmed_segment
         {"date": "2026-09-04", "close": 13, "adjustment_factor": 3}]
     segments = [{"start_date": "2026-09-01", "end_date": "2026-09-02"},
         {"start_date": "2026-09-03", "end_date": "2026-09-04"}]
-    monkeypatch.setattr(api, "get_shared_instrument", lambda _iid: {"instrument_id": "test", "instrument_type": "etf", "currency": "HKD",
-        "source_settings": {"total_return_segments": segments}})
+    def read_metadata(_iid, *, metadata_only):
+        assert metadata_only is True
+        return {"instrument_id": "test", "instrument_type": "etf", "currency": "HKD",
+            "source_settings": {"total_return_segments": segments}}
+
+    monkeypatch.setattr(api, "get_shared_instrument", read_metadata)
     monkeypatch.setattr(api, "get_shared_price_bars", lambda **kwargs: bars)
     full = api.get_instrument_price_bars("test", start_date=None, end_date=None, limit=500)
     cropped = api.get_instrument_price_bars("test", start_date=date(2026, 9, 2), end_date=None, limit=1)
@@ -220,7 +226,11 @@ def test_price_adjustment_cutoff_never_uses_a_later_factor_and_missing_factor_is
         {"date": "2026-09-02", "close": 11, "adjustment_factor": 2},
         {"date": "2026-09-03", "close": 12, "adjustment_factor": None},
         {"date": "2026-09-04", "close": 13, "adjustment_factor": 4}]
-    monkeypatch.setattr(api, "get_shared_instrument", lambda _iid: {"instrument_id": "test", "instrument_type": "equity", "currency": "HKD"})
+    def read_metadata(_iid, *, metadata_only):
+        assert metadata_only is True
+        return {"instrument_id": "test", "instrument_type": "equity", "currency": "HKD"}
+
+    monkeypatch.setattr(api, "get_shared_instrument", read_metadata)
     monkeypatch.setattr(api, "get_shared_price_bars", lambda **kwargs: bars)
     past = api.get_instrument_price_bars("test", start_date=None, end_date=date(2026, 9, 2), limit=500)
     assert past["adjustment_anchors"]["front"]["factor"] == 2

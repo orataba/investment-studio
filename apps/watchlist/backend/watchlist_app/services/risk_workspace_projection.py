@@ -33,10 +33,13 @@ def _projected_rows(session, model, fields, columns, *, ids, json_column):
     return research_projection_rows(session, query, {key: (key,) for key in values}, json_column=json_column)
 
 
-def risk_assets(session, ids):
+def risk_assets(session, ids, *, workspace=False):
+    fields = {key: kind for key, kind in RISK_FIELDS.items() if not workspace or key != "monitoring_summary"}
+    columns = [InstrumentRiskReadModel.instrument_id, InstrumentRiskReadModel.data_freshness_status]
+    if workspace:
+        columns.append(InstrumentRiskReadModel.workspace_price_context_json)
     return {row.instrument_id: row for row in _projected_rows(
-        session, InstrumentRiskReadModel, RISK_FIELDS,
-        [InstrumentRiskReadModel.instrument_id, InstrumentRiskReadModel.data_freshness_status],
+        session, InstrumentRiskReadModel, fields, columns,
         ids=ids, json_column=InstrumentRiskReadModel.payload_json)}
 
 

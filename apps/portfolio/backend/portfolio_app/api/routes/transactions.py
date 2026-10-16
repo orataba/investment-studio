@@ -44,6 +44,7 @@ from portfolio_app.api.contracts import (
     DerivationBoundaryStatus,
     InternalTransferCreateRequest,
     SharedInstrumentListResponse,
+    InstrumentMetadataListResponse,
     InstrumentOption,
     LedgerPostingListSummary,
     PositionLotListSummary,
@@ -89,7 +90,9 @@ from portfolio_app.services.ledger import (
 from portfolio_app.services.instrument_registry import (
     InstrumentRegistryError,
     get_registry_instrument_metadata,
+    get_registry_instrument_summaries,
     list_registry_instruments,
+    list_registry_instrument_metadata,
 )
 from portfolio_app.services.security_catalog import (
     SecurityCatalogError,
@@ -521,7 +524,7 @@ def _validate_asset_amount_contract(
     )
 
 
-def _serialize_instrument_option(record: dict[str, object]) -> dict[str, object]:
+def _serialize_instrument_metadata_option(record: dict[str, object]) -> dict[str, object]:
     return {
         "instrument_core": {
             "instrument_id": record["instrument_id"],
@@ -532,11 +535,15 @@ def _serialize_instrument_option(record: dict[str, object]) -> dict[str, object]
             "identifiers": record["identifiers"],
             "broker_identifiers": record.get("broker_identifiers", []),
         },
-        "coverage_state": record["coverage_state"],
-        "latest_market_data": record["latest_market_data"],
         "quote_selection_policy": record["quote_selection_policy"],
         "source_settings": {"source_api_profile": dict(record.get("source_settings") or {}).get("source_api_profile")},
     }
+
+
+def _serialize_instrument_option(record: dict[str, object]) -> dict[str, object]:
+    return {**_serialize_instrument_metadata_option(record),
+            "coverage_state": record["coverage_state"],
+            "latest_market_data": record["latest_market_data"]}
 
 
 def _currency_of(account: dict[str, object] | None) -> str:
@@ -1943,6 +1950,35 @@ def list_portfolio_instruments(portfolio_id: str) -> SharedInstrumentListRespons
     )
 
 
+@router.get("/{portfolio_id}/instruments/options", response_model=InstrumentMetadataListResponse)
+def portfolio_instrument_options(portfolio_id: str) -> InstrumentMetadataListResponse:
+    if get_portfolio_configuration(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    try:
+        with operation("transaction_instrument_options"):
+            records = list_registry_instrument_metadata()
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return InstrumentMetadataListResponse(portfolio_id=portfolio_id, instruments=[
+        _serialize_instrument_metadata_option(record) for record in records
+        if record["instrument_type"] != "crypto"
+    ])
+
+
+@router.get("/{portfolio_id}/instruments/{instrument_id}/option", response_model=InstrumentOption)
+def portfolio_instrument_option(portfolio_id: str, instrument_id: str) -> InstrumentOption:
+    if get_portfolio_configuration(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    try:
+        with operation("transaction_instrument_option"):
+            record = get_registry_instrument_summaries([instrument_id]).get(instrument_id)
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    if record is None or record["instrument_type"] == "crypto":
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    return InstrumentOption.model_validate(_serialize_instrument_option(record))
+
+
 @router.get(
     "/{portfolio_id}/derivative-contracts",
     response_model=DerivativeContractListResponse,
@@ -2397,6 +2433,7 @@ def get_transaction_workspace(
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
     transaction_id: str | None = None,
+    include_valuation: bool = True,
 ) -> TransactionWorkspaceResponse:
     portfolio = get_portfolio_configuration(portfolio_id)
     if portfolio is None:
@@ -2446,11 +2483,12 @@ def get_transaction_workspace(
         for record in all_transactions
         if str(record.get("transaction_id") or "") in filtered_transaction_ids
     ]
-    serialized_transactions = serialize_transactions(
-        portfolio_id,
-        filtered_records,
-        account_lookup,
-    )
+    with operation("transaction_workspace_serialization"):
+        serialized_transactions = serialize_transactions(
+            portfolio_id,
+            filtered_records,
+            account_lookup,
+        )
     def option_activity_transaction_id(candidate_transaction_id: str) -> str:
         link = delivery_link_by_transaction_id.get(candidate_transaction_id)
         return str(
@@ -2553,16 +2591,18 @@ def get_transaction_workspace(
         selected_transaction.instrument_id
         or selected_transaction.derivative_contract_id
     ):
-        candidate_position_lots = build_position_lots(
-            portfolio_id,
-            accounts,
-            all_transactions,
-            account_id=selected_transaction.account.account_id,
-            position_reference_id=(
-                selected_transaction.derivative_contract_id
-                or selected_transaction.instrument_id
-            ),
-        )
+        with operation("transaction_workspace_lots", include_valuation=include_valuation):
+            candidate_position_lots = build_position_lots(
+                portfolio_id,
+                accounts,
+                all_transactions,
+                account_id=selected_transaction.account.account_id,
+                position_reference_id=(
+                    selected_transaction.derivative_contract_id
+                    or selected_transaction.instrument_id
+                ),
+                resolve_pricing=include_valuation,
+            )
         related_position_lots_raw = [
             item
             for item in candidate_position_lots
@@ -2617,11 +2657,12 @@ def get_transaction_workspace(
         if selected_transaction_id
         else []
     )
-    accounting_impact = build_transaction_accounting_impact(
-        selected_transaction_record,
-        related_position_lots_raw,
-        base_currency=str(portfolio["base_currency"]),
-    )
+    with operation("transaction_workspace_accounting_impact"):
+        accounting_impact = build_transaction_accounting_impact(
+            selected_transaction_record,
+            related_position_lots_raw,
+            base_currency=str(portfolio["base_currency"]),
+        )
     with operation("transaction_workspace_cash_fx"):
         cash_fx_impacts = (
             build_transaction_cash_fx_impacts(

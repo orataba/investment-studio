@@ -190,19 +190,26 @@ Performance snapshot 的 `return_1w / return_1m / return_3m / return_6m / return
 
 每个 `watchlist_row_read_model.last_nav_date` 是该 instrument 的 metric as-of，不是名单共用日期。Screener 即使未选日期列也必须在每行返回 `metric_as_of_date`，并在 `snapshot_metadata` 返回行终点的 min/max、是否混合及缺失数量。Peer snapshot 只比较相同 as-of；路径风险还必须记录 Instrument Data frequency/calendar 缺点状态。
 
-`instrument_chart_read_model` 同一行保存详情历史与列表投影：
+`instrument_chart_read_model` 同一行保存详情历史、列表和 NAV 投影：
 
 | 字段 | 合同 |
 | --- | --- |
 | `payload_json` | 完整 canonical 图表历史，供详情读取；保持原 JSON 类型。 |
 | `screener_payload_json` | 紧凑列表投影：`selected_series`、`latest_values`、`date_range` 与 `sparklines`；不包含完整 `series`。SQL NULL 表示待补齐，不能视为已就绪的空结果。 |
-| `source_cutoff_at`、`data_freshness_status`、`materialization_version` 及既有计算时间字段 | 完整图表和列表投影共用的来源、版本与新鲜度依据；补齐投影不改变它们。 |
+| `nav_payload_json` | 完整 NAV API 数值合同，复用本轮选择、计算频率和 return series；SQL NULL 表示尚未构建，不从旧显示价格推断收益。 |
+| `source_cutoff_at`、`data_freshness_status`、`materialization_version` 及既有计算时间字段 | 三个投影共用的来源、版本与新鲜度依据。 |
 
-canonical recalc 在同一事务内写入两个 payload。`sparklines` 固定保存现有 `return_chart_1d / return_chart_1w / return_chart_1m / return_chart_1y` 四个窗口，复用完整图表的窗口锚点、采样、精度和覆盖状态算法。当前列表列菜单仍只开放 `1M` 走势，内部四窗口不代表新增用户选项。Screener 仅读紧凑投影并按所选列取窗口，包含无走势列的请求也不读取完整历史；人工研究状态、同类比较及新鲜度判断仍沿用各自实时读取路径。
+canonical recalc 在同一事务内写入三个 payload。`sparklines` 固定保存现有 `return_chart_1d / return_chart_1w / return_chart_1m / return_chart_1y` 四个窗口，复用完整图表的窗口锚点、采样、精度和覆盖状态算法。当前列表列菜单仍只开放 `1M` 走势，内部四窗口不代表新增用户选项。Screener 仅读紧凑投影并按所选列取窗口，包含无走势列的请求也不读取完整历史；人工研究状态、同类比较及新鲜度判断仍沿用各自实时读取路径。
 
-迁移 `20260920_0059` 只新增可空列，不扫描重写完整图表。升级必须通过根目录统一迁移与发布流程：停止 managed writers、备份、迁移和目录刷新后，执行 `backend/scripts/refresh_release_watchlists.py`。脚本在发布事务中分批从已存图表派生所有缺失投影，包含归档资产，不调用行情提供商；失败会回滚本次补齐。补齐可重复运行，已经就绪的投影不重写。`infra/scripts/audit_live_data.py` 要求 Watchlist head 为 `20260920_0059`，且 `watchlist_screener_projection_ready` 的 NULL 数量为零，方可恢复流量和调度。此次仅改变读取投影，既有金融指标 materialization version 不因此递增。数据库回退此迁移只删除新投影列，原完整图表与来源时点保留；代码、数据库与备份按统一发布回滚流程配套处理。
+迁移 `20260920_0059` 只新增可空列，不扫描重写完整图表。升级必须通过根目录统一迁移与发布流程：停止 managed writers、备份、迁移和目录刷新后，执行 `backend/scripts/refresh_release_watchlists.py`。脚本在发布事务中分批从已存图表派生所有缺失投影，包含归档资产，不调用行情提供商；失败会回滚本次补齐。补齐可重复运行，已经就绪的投影不重写。`infra/scripts/audit_live_data.py` 要求 Watchlist head 与当前迁移一致，且 `watchlist_screener_projection_ready` 的 NULL 数量为零，方可恢复流量和调度。0059 仅改变列表读取投影，当时没有递增金融指标 materialization version。数据库回退此迁移只删除新投影列，原完整图表与来源时点保留；代码、数据库与备份按统一发布回滚流程配套处理。
 
 运行时遇到已有图表但投影为 NULL，Screener 返回 HTTP 503 和 `Retry-After: 1`，先通过既有 durable 队列提交修复任务；worker 的 source-generation 对账也将缺失投影视作待重算。不会把完整历史当作永久兼容读取路径，也不把缺失投影静默呈现成空图。
+
+迁移 `20261016_0075` 新增可空 `nav_payload_json`，不修改旧图表、历史事实或来源时点。v22 的 canonical recalc 使用与 performance/risk/chart 相同的捕获输入生成 NAV；统一发布脚本必须重建所有 active 本地标的，worker 对账及首次读取也会为缺失 NAV 投影持久入队。`GET /nav-series` 返回 `source_cutoff_at`、`last_recalculated_at`、`materialization_version` 与重算状态；重算未完成时保留旧代数值并明确 pending，缺失时返回 503 和 Retry-After，可显式重试。手工比较标的设置即时 overlay，计算口径和数值仍属于所标版本。已归档资产已有投影保留；无投影时复用原 NAV builder 保留既有 200/不可用序列合同，不入队、不借用旧图表时点声称同代。无 canonical 的 archive 仍无选中序列，alias 仍沿 canonical 解析；这一分支不用于 active 资产。该迁移回退只删除新增列，既有图表不变。
+
+迁移 `20261016_0076` 新增 `instrument_risk_read_model.workspace_price_context_json`，当前物化版本为 v23。canonical 在同一事务中从本轮 `chart_payload.research_returns` 计算并发布规则无关的周期读数、当前样本限制、近期有效点数、上次回撤差及日期；不拿另一个监控样本代替该合同。Watchlist 风险抽屉使用 `GET /api/risk`（`projection=workspace`），在单次 SELECT 中读取风险必要字段与这些价格输入，随后 overlay 当前阈值/规则版本并复用原规则摘要函数。此投影只省略界面未使用的 `risk.monitoring_summary`，全部案例摘要、过滤范围、人工跟进及精确版本证据入口不变；默认 full 和 `summary=true` 合同保留。发布脚本通过既有重算路径补齐所有 active 本地标的；留存或归档行缺投影时只对该行执行原只读计算，不写业务状态、历史或任务。迁移不回写旧金融事实，回退只删除新增列。正常重新发布 risk 时必须同时写入或清空价格输入，不能留用前一代。
+
+`GET /chart` 的默认 full 合同保留；`projection=display` 在数据库内仅选择展示序列、报价与元信息，`projection=quote` 保留既有报价合同。列表与全局监控消费紧凑投影。身份解析保留 corporate actions 与 canonical 重定向，前台 freshness 读 source summary；后台计算输入包含全量标量行情、corporate actions、当前 NAV run 的状态/断点/锚点，不展开历史 runs/factors/events。原审计读取入口和存储完整保留。
 
 ### 4.6 Recalc Jobs
 
@@ -216,7 +223,7 @@ stale read repair 也只会写 job，不会直接在 Web 请求里补算；后�
 
 数据覆盖事项解除后，同一观察日、预期日、事实修订及缺口质量再次触发时续写最近的原事项和复发记录，保留人工状态及跟进；新缺口另建事项，已有历史触发区间与其引用不物理合并。
 
-Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会分页对账源版本与本地 materialization cutoff，并通过同一条 durable、per-instrument 串行队列修复漏通知。
+Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会分页对账源版本、本地 materialization cutoff、投影缺失和应到时钟，并通过同一条 durable、per-instrument 串行队列修复漏通知。每轮不再无条件扫描全部风险历史；行情重算、规则修改和研究笔记写入继续按标的刷新风险。period-loss 使用最后 N 个真实观察点，墙上时间本身不会改变这个窗口；coverage/stale/no-trade 的时钟变化通过 freshness 对账触发重算与风险刷新。事项跟进、复发、通知和研究复核调度保留各自原路径。
 
 ### 4.7 Watchlist 投资研究
 

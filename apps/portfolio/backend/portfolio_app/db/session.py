@@ -6,6 +6,7 @@ from functools import lru_cache
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from studio_runtime import operation
 
 from portfolio_app.core.settings import get_settings
 
@@ -41,12 +42,14 @@ def _configure_search_path(engine: Engine, schema: str | None) -> Engine:
     def _reset_search_path(dbapi_connection, connection_record, connection_proxy) -> None:  # type: ignore[no-untyped-def]
         del connection_record
         del connection_proxy
-        cursor = dbapi_connection.cursor()
-        try:
-            cursor.execute(f"SET search_path TO {search_path}")
-        finally:
-            cursor.close()
-        dbapi_connection.commit()
+        # Pool wait precedes this callback; this span measures only reset I/O.
+        with operation("database_connection_reset"):
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute(f"SET search_path TO {search_path}")
+            finally:
+                cursor.close()
+            dbapi_connection.commit()
 
     return engine
 

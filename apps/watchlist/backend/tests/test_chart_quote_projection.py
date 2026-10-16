@@ -56,6 +56,7 @@ def test_chart_api_default_unchanged_quote_keeps_freshness_and_full_storage(clie
     source = chart_payload()
     record = SimpleNamespace(payload_json=source)
     monkeypatch.setattr(funds.read_model_repository, "get_chart", lambda *_: record)
+    monkeypatch.setattr(funds.read_model_repository, "get_chart_projection", lambda *_, **kw: source)
     scheduled = []
     monkeypatch.setattr(funds, "_schedule_instrument_refresh", lambda *_, **kw: scheduled.append(kw))
     monkeypatch.setattr(funds, "recalculation_freshness_overrides", lambda *_: {"fund-us-agg": {"status": "pending"}})
@@ -75,6 +76,7 @@ def test_quote_api_missing_chart_preserves_empty_default(client, monkeypatch):
     from watchlist_app.api.routes import funds
     assert client.get("/api/watchlists/all-instruments").status_code == 200
     monkeypatch.setattr(funds.read_model_repository, "get_chart", lambda *_: None)
+    monkeypatch.setattr(funds.read_model_repository, "get_chart_projection", lambda *_, **kw: None)
     monkeypatch.setattr(funds, "_schedule_instrument_refresh", lambda *_, **kw: None)
     monkeypatch.setattr(funds, "recalculation_freshness_overrides", lambda *_: {})
     full = client.get("/api/instruments/fund-us-agg/chart")

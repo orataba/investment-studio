@@ -35,6 +35,7 @@ def _invalidated_instrument_ids(session) -> list[str]:
             or_(
                 InstrumentChartReadModel.instrument_id.is_(None),
                 InstrumentChartReadModel.materialization_version != WATCHLIST_MATERIALIZATION_VERSION,
+                InstrumentChartReadModel.nav_payload_json.is_(None),
                 stale_row,
             ),
         )

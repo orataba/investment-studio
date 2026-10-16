@@ -61,7 +61,12 @@ def test_screener_projection_migration_backfill_and_downgrade_preserve_chart(pos
             last_recalculated_at=datetime(2026, 2, 5, 1, 2, 3, tzinfo=UTC),
             source_cutoff_at=datetime(2026, 2, 4, 5, 6, 7, tzinfo=UTC),
             materialization_version=WATCHLIST_MATERIALIZATION_VERSION)
-        session.add(chart)
+        # This fixture exercises revision 0059, before the NAV projection column.
+        session.execute(InstrumentChartReadModel.__table__.insert().values(
+            instrument_id=instrument_id, payload_json=full_payload, screener_payload_json=None,
+            data_freshness_status=chart.data_freshness_status,
+            last_recalculated_at=chart.last_recalculated_at, source_cutoff_at=chart.source_cutoff_at,
+            materialization_version=chart.materialization_version))
         session.commit()
         expected_windows = build_sparkline_payload([chart], instrument_ids=[instrument_id],
             selected_fields=list(RETURN_CHART_WINDOWS))[instrument_id]
@@ -71,7 +76,8 @@ def test_screener_projection_migration_backfill_and_downgrade_preserve_chart(pos
         assert all(window["status"] == ("ready" if confirmed_returns else "unavailable")
                    for window in expected_windows.values())
 
-    columns = [column for column in InstrumentChartReadModel.__table__.c if column.name != "screener_payload_json"]
+    columns = [column for column in InstrumentChartReadModel.__table__.c
+               if column.name not in {"screener_payload_json", "nav_payload_json"}]
     def original_rows():
         with factory() as session:
             return session.execute(select(*columns).order_by(InstrumentChartReadModel.instrument_id)).all()

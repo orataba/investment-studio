@@ -17,6 +17,13 @@ def list_registry_instruments() -> list[dict[str, object]]:
         raise InstrumentRegistryError("Failed to query shared instrument registry.") from error
 
 
+def list_registry_instrument_metadata() -> list[dict[str, object]]:
+    try:
+        return shared_store.list_instrument_metadata(get_session_factory())
+    except Exception as error:
+        raise InstrumentRegistryError("Failed to query shared instrument metadata.") from error
+
+
 def get_registry_instrument(instrument_id: str) -> dict[str, object] | None:
     try:
         return shared_store.get_instrument(get_session_factory(), instrument_id)

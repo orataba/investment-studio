@@ -36,6 +36,7 @@ it('keeps industry navigation selected after an earlier report read completes an
   let resolveDetail!: (value: ReportDetail) => void
   const response = new Promise<ReportDetail>(resolve => { resolveDetail = resolve })
   const fetch = vi.fn(async (url: string) => ({ ok: true, json: async () => {
+    if (url.includes('/source-index?')) return { rows: detail.sources, total: detail.sources.length, unfiltered_total: detail.sources.length }
     if (url.endsWith('/status')) return { harness_available: true, can_generate: true, can_read_sources: true }
     if (url.includes('/reports?')) return { rows: [detail], total: 1 }
     return response
@@ -66,6 +67,7 @@ it('does not select a newly submitted daily edition after moving to industry res
   let resolveGeneration!: (value: ReportDetail) => void
   const submission = new Promise<ReportDetail>(resolve => { resolveGeneration = resolve })
   const fetch = vi.fn(async (url: string, options?: RequestInit) => ({ ok: true, json: async () => {
+    if (url.includes('/source-index?')) return { rows: detail.sources, total: detail.sources.length, unfiltered_total: detail.sources.length }
     if (url.endsWith('/status')) return { harness_available: true, can_generate: true, can_read_sources: true }
     if (options?.method === 'POST') return submission
     return { rows: [], total: 0 }
@@ -84,6 +86,7 @@ it('does not select a newly submitted daily edition after moving to industry res
 it('loads the report index once while selecting the latest readable edition and switching versions', async () => {
   const previous = { ...detail, report_id: 'report-previous', version: 2, title: '上一版日报' }
   const fetch = vi.fn(async (url: string) => ({ ok: true, json: async () => {
+    if (url.includes('/source-index?')) return { rows: detail.sources, total: detail.sources.length, unfiltered_total: detail.sources.length }
     if (url.endsWith('/status')) return { harness_available: false, can_generate: false, can_read_sources: true }
     if (url.includes('/reports?')) return { rows: [detail, previous], total: 2 }
     return url.endsWith('/report-previous') ? previous : detail
@@ -102,6 +105,29 @@ it('loads the report index once while selecting the latest readable edition and 
   await screen.findByRole('heading', { name: '央行继续观察就业' })
   expect(screen.getByRole('heading', { name: '历史简报' }).closest('aside')?.getAttribute('aria-busy')).toBe('false')
   expect(fetch.mock.calls.filter(([url]) => url.includes('/reports?'))).toHaveLength(1)
+})
+
+it('collapses the source directory when switching editions and loads the new edition on opening', async () => {
+  const next = { ...detail, report_id: 'report-next', report_date: '2026-09-06', title: '下一份日报' }
+  const fetch = vi.fn(async (url: string) => ({ ok: true, json: async () => {
+    if (url.includes('/source-index?')) return { rows: detail.sources, total: 1, unfiltered_total: 1 }
+    if (url.endsWith('/status')) return { can_read_sources: true }
+    if (url.includes('/reports?')) return { rows: [detail, next], total: 2 }
+    return url.endsWith('/report-next') ? next : detail
+  } }))
+  vi.stubGlobal('fetch', fetch)
+  page(<App />)
+  await screen.findByRole('heading', { name: '央行继续观察就业' })
+  const first = document.querySelector<HTMLDetailsElement>('#source-coverage')!
+  fireEvent.click(first.querySelector('summary')!)
+  await waitFor(() => expect(fetch.mock.calls.some(([url]) => url.includes('/report-v1/source-index?'))).toBe(true))
+  fireEvent.click(screen.getByRole('button', { name: /2026-09-06.*版本 1/ }))
+  await waitFor(() => expect(document.querySelector('#source-coverage')).not.toBe(first))
+  const second = document.querySelector<HTMLDetailsElement>('#source-coverage')!
+  expect(second.open).toBe(false)
+  expect(fetch.mock.calls.some(([url]) => url.includes('/report-next/source-index?'))).toBe(false)
+  fireEvent.click(second.querySelector('summary')!)
+  await waitFor(() => expect(fetch.mock.calls.some(([url]) => url.includes('/report-next/source-index?'))).toBe(true))
 })
 
 it('shows tags, dated market moves and direct original links without opening source text', () => {
@@ -204,6 +230,7 @@ it.each(['daily', 'weekly'] as const)('renders important %s releases with source
 it('keeps a completed edition readable when the latest version failed and shows original dates', async () => {
   const failed = { ...detail, report_id: 'report-v2', version: 2, status: 'failed', error: '缺少原文', report: null }
   vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => {
+    if (url.includes('/source-index?')) return { rows: detail.sources, total: detail.sources.length, unfiltered_total: detail.sources.length }
     if (url.endsWith('/status')) return { harness_available: true, can_generate: true, can_read_sources: true }
     if (url.includes('/sources/')) return { ...detail.sources[0], content_text: '这是保留的原文。', url: 'https://example.com/statement' }
     if (url.includes('/reports?')) return { rows: [failed, detail], total: 2 }
@@ -215,7 +242,7 @@ it('keeps a completed edition readable when the latest version failed and shows 
   expect(screen.getByText('未完成')).toBeTruthy()
   expect(screen.queryByText('这是保留的原文。')).toBeNull()
   fireEvent.click(screen.getByText('来源与覆盖范围'))
-  fireEvent.click(screen.getByRole('button', { name: '留存版本' }))
+  fireEvent.click(await screen.findByRole('button', { name: '留存版本' }))
   await screen.findByText('这是保留的原文。')
   expect(screen.getByText('查看留存原文').closest('details')?.open).toBe(false)
   fireEvent.click(screen.getByText('查看留存原文'))
@@ -256,6 +283,7 @@ it('keeps weekly selection, report identity and language in the address and rest
   const weekly = { ...detail, report_id: 'weekly-v1', report_type: 'weekly' }
   window.history.replaceState(null, '', '/?lang=en&type=weekly')
   vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => {
+    if (url.includes('/source-index?')) return { rows: detail.sources, total: detail.sources.length, unfiltered_total: detail.sources.length }
     if (url.endsWith('/status')) return { harness_available: true, can_generate: true, can_read_sources: true }
     if (url.includes('/reports?')) return { rows: url.includes('report_type=weekly') ? [weekly] : [detail], total: 1 }
     return url.endsWith('/weekly-v1') ? weekly : detail
@@ -293,7 +321,9 @@ it('counts completeness from the same retained material set used by the director
     source_id: `text:${index}`, source_type: 'public_document', title: `资料 ${index}`, content_completeness,
   }))
   report.coverage.documents = { current: 6, by_completeness: { full_text: 1, source_excerpt: 1, unavailable: 1 } }
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.includes('/source-index?')
+    ? { rows: report.sources.filter(source => { const kind = new URL(url, 'http://local').searchParams.get('completeness'); return kind === 'all' || source.content_completeness === kind }), total: new URL(url, 'http://local').searchParams.get('completeness') === 'all' ? 6 : 1, unfiltered_total: 6 }
+    : url.endsWith('/status')
     ? { harness_available: false, can_generate: false, can_read_sources: true }
     : url.includes('/reports?') ? { rows: [report], total: 1 } : report })))
   page(<App />)
@@ -301,7 +331,7 @@ it('counts completeness from the same retained material set used by the director
   fireEvent.click(screen.getByText('来源与覆盖范围'))
   expect(screen.getByText('完整正文 1 · 来源节选 1 · 仅标题 1 · 正文不可用 1 · 完整性未留存 1 · 完整性状态未识别 1')).toBeTruthy()
   fireEvent.change(screen.getByRole('combobox', { name: '正文覆盖' }), { target: { value: 'title_only' } })
-  expect(screen.getByText('匹配 1 / 6 份材料')).toBeTruthy()
+  expect(await screen.findByText('匹配 1 / 6 份材料')).toBeTruthy()
   expect(screen.getByText('资料 2')).toBeTruthy()
 })
 
@@ -336,6 +366,7 @@ it('keeps the edition frame while switching without showing an empty state or st
   let resolveNext!: (value: ReportDetail) => void
   const nextResponse = new Promise<ReportDetail>(resolve => { resolveNext = resolve })
   vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => {
+    if (url.includes('/source-index?')) return { rows: detail.sources, total: detail.sources.length, unfiltered_total: detail.sources.length }
     if (url.endsWith('/status')) return { harness_available: true, can_generate: true, can_read_sources: true }
     if (url.includes('/reports?')) return { rows: [detail, next], total: 2 }
     return url.endsWith('/report-v2') ? nextResponse : detail
@@ -419,6 +450,7 @@ it('keeps source loading and errors inside the source sidebar without altering t
   let failSource!: (error: Error) => void
   const sourceResponse = new Promise((_resolve, reject) => { failSource = reject })
   vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => {
+    if (url.includes('/source-index?')) return { rows: detail.sources, total: detail.sources.length, unfiltered_total: detail.sources.length }
     if (url.endsWith('/status')) return { harness_available: true, can_generate: true, can_read_sources: true }
     if (url.includes('/sources/')) return sourceResponse
     return url.includes('/reports?') ? { rows: [detail], total: 1 } : detail
@@ -426,7 +458,7 @@ it('keeps source loading and errors inside the source sidebar without altering t
   const { container } = page(<App />)
   await screen.findByRole('heading', { name: '央行继续观察就业' })
   fireEvent.click(screen.getByText('来源与覆盖范围'))
-  const entry = screen.getByRole('button', { name: '留存版本' })
+  const entry = await screen.findByRole('button', { name: '留存版本' })
   entry.focus()
   fireEvent.click(entry)
   const drawer = screen.getByRole('dialog', { name: '来源原文' })
@@ -446,6 +478,7 @@ it('does not reopen the sidebar when a source response arrives after it was clos
   let finishSource!: (value: unknown) => void
   const sourceResponse = new Promise(resolve => { finishSource = resolve })
   const fetchMock = vi.fn(async (url: string) => ({ ok: true, json: async () => {
+    if (url.includes('/source-index?')) return { rows: detail.sources, total: detail.sources.length, unfiltered_total: detail.sources.length }
     if (url.endsWith('/status')) return { harness_available: true, can_generate: true, can_read_sources: true }
     if (url.includes('/sources/')) return sourceResponse
     return url.includes('/reports?') ? { rows: [detail], total: 1 } : detail
@@ -454,7 +487,7 @@ it('does not reopen the sidebar when a source response arrives after it was clos
   page(<App />)
   await screen.findByRole('heading', { name: '央行继续观察就业' })
   fireEvent.click(screen.getByText('来源与覆盖范围'))
-  fireEvent.click(screen.getByRole('button', { name: '留存版本' }))
+  fireEvent.click(await screen.findByRole('button', { name: '留存版本' }))
   expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/reports/report-v1/sources/text%3Av1'))).toBe(true)
   fireEvent.click(screen.getByRole('button', { name: '关闭来源' }))
   await act(async () => finishSource({ ...detail.sources[0], content_text: '迟到的原文。' }))
@@ -743,6 +776,7 @@ it('keeps statistical zero and retained units distinct from missing values and p
 
 it('searches the archive without reloading or replacing the currently open report', async () => {
   const fetch = vi.fn(async (url: string) => ({ ok: true, json: async () => {
+    if (url.includes('/source-index?')) return { rows: detail.sources, total: detail.sources.length, unfiltered_total: detail.sources.length }
     if (url.endsWith('/status')) return { harness_available: false, can_generate: false, can_read_sources: true }
     if (url.includes('/reports?')) return url.includes('month=2026-08') ? { rows: [], total: 0 } : { rows: [detail], total: 1 }
     return detail
@@ -783,6 +817,7 @@ it('summarizes numeric gaps with readable subjects and preserves raw identifiers
 
 it('shows disabled publication independently of archive results and keeps the latest readable edition accessible', async () => {
   const fetch = vi.fn(async (url: string) => ({ ok: true, json: async () => {
+    if (url.includes('/source-index?')) return { rows: detail.sources, total: detail.sources.length, unfiltered_total: detail.sources.length }
     if (url.endsWith('/status')) return { harness_available: true, can_generate: true, can_read_sources: true,
       timezone: 'Asia/Shanghai', schedules: { daily: { state: 'disabled', next_run_at: null, last_trigger_at: null } },
       editions: { daily: { latest: { ...detail, report_id: 'failed', report_date: '2026-09-08', status: 'failed' }, latest_completed: detail } } }

@@ -16,7 +16,7 @@ import {
   deletePortfolioTaxonomy,
   deletePortfolioTaxonomyNode,
   getHoldingsWorkspace,
-  getPortfolioInstruments,
+  getPortfolioInstrumentOptions,
   getPortfolioPositions,
   type PortfolioPositionRecord,
   getPortfolioAccountsWorkspace,
@@ -36,7 +36,7 @@ import {
   type PortfolioTaxonomyCatalogResponse,
   type PortfolioTaxonomyNodeRecord,
   type PortfolioTaxonomyRecord,
-  type SharedInstrumentRecord,
+  type InstrumentMetadataRecord,
   type TaxonomyAssignmentScope,
 } from '../lib/api'
 import { formatCurrency, formatPercent } from '../lib/format'
@@ -160,7 +160,7 @@ type WorkspaceFetchResult = {
   holdingsWorkspace: HoldingsWorkspaceResponse | null
   ledgerPositions: PortfolioPositionRecord[] | null
   accountsResponse: PortfolioAccountsWorkspaceResponse | null
-  instrumentsResponse: { portfolio_id: string; instruments: SharedInstrumentRecord[] } | null
+  instrumentsResponse: { portfolio_id: string; instruments: InstrumentMetadataRecord[] } | null
   workspaceError: string | null
   supplementalNotice: string | null
 }
@@ -518,7 +518,7 @@ async function fetchWorkspace(portfolioId: string): Promise<WorkspaceFetchResult
     getPortfolioTaxonomyCatalog(portfolioId),
     getHoldingsWorkspace(portfolioId, { include_details: true }),
     getPortfolioAccountsWorkspace(portfolioId),
-    getPortfolioInstruments(portfolioId),
+    getPortfolioInstrumentOptions(portfolioId),
     getPortfolioPositions(portfolioId, new Date().toLocaleDateString('en-CA'), undefined, false),
   ])
 
@@ -570,7 +570,7 @@ export default function TaxonomiesPage() {
   const [ledgerPositions, setLedgerPositions] = useState<PortfolioPositionRecord[] | null>(null)
   const [holdingsWorkspace, setHoldingsWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
   const [accountsResponse, setAccountsResponse] = useState<PortfolioAccountsWorkspaceResponse | null>(null)
-  const [instrumentsResponse, setInstrumentsResponse] = useState<{ portfolio_id: string; instruments: SharedInstrumentRecord[] } | null>(null)
+  const [instrumentsResponse, setInstrumentsResponse] = useState<{ portfolio_id: string; instruments: InstrumentMetadataRecord[] } | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
@@ -966,7 +966,7 @@ export default function TaxonomiesPage() {
   }, [activeAssignments])
 
   const instrumentById = useMemo(() => {
-    const lookup = new Map<string, SharedInstrumentRecord>()
+    const lookup = new Map<string, InstrumentMetadataRecord>()
     instrumentRows.forEach((instrument) => {
       lookup.set(instrument.instrument_id, instrument)
     })

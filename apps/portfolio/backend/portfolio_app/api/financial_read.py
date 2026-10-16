@@ -1,11 +1,13 @@
 from fastapi import Request
 from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
+from studio_runtime import operation
 
 from portfolio_app.services.daily_snapshots import (
     PortfolioCalculationPending,
     portfolio_financial_read_generation,
 )
+from portfolio_app.services.financial_read_context import financial_read_context
 
 
 class FinancialReadRoute(APIRoute):
@@ -20,10 +22,12 @@ class FinancialReadRoute(APIRoute):
                 return await handler(request)
             # Capture the opening generation only after authentication and ACLs.
             request.state.check_financial_generation = True
-            response = await handler(request)
+            with financial_read_context():
+                response = await handler(request)
             before = getattr(request.state, "financial_read_generation", None)
             if response.status_code < 400 and before is not None:
-                after = await run_in_threadpool(portfolio_financial_read_generation, str(portfolio_id))
+                with operation("financial_read_close"):
+                    after = await run_in_threadpool(portfolio_financial_read_generation, str(portfolio_id))
                 if before != after:
                     raise PortfolioCalculationPending(str(portfolio_id), status="changed")
             return response

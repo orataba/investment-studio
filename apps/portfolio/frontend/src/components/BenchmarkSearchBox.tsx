@@ -1,9 +1,9 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 
-import type { SharedInstrumentRecord } from '../lib/api'
+import type { InstrumentMetadataRecord } from '../lib/api'
 import { formatLabel } from '../lib/format'
 
-export function instrumentPrimaryIdentifier(instrument: SharedInstrumentRecord) {
+export function instrumentPrimaryIdentifier(instrument: InstrumentMetadataRecord) {
   return (
     instrument.identifiers.find((item) => item.is_primary)?.identifier_value ??
     instrument.identifiers[0]?.identifier_value ??
@@ -11,7 +11,7 @@ export function instrumentPrimaryIdentifier(instrument: SharedInstrumentRecord) 
   )
 }
 
-export function benchmarkInstrumentLabel(instrument: SharedInstrumentRecord) {
+export function benchmarkInstrumentLabel(instrument: InstrumentMetadataRecord) {
   return `${instrumentPrimaryIdentifier(instrument)} · ${instrument.instrument_name}`
 }
 
@@ -30,11 +30,11 @@ function instrumentTypeRank(type: string) {
 }
 
 type BenchmarkSearchBoxProps = {
-  instruments: SharedInstrumentRecord[]
+  instruments: InstrumentMetadataRecord[]
   selectedInstrumentId: string
   searchValue: string
   onSearchChange: (value: string) => void
-  onSelectInstrument: (instrument: SharedInstrumentRecord) => void
+  onSelectInstrument: (instrument: InstrumentMetadataRecord) => void
   onClear: () => void
   placeholder?: string
   className?: string

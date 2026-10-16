@@ -1878,6 +1878,37 @@ def get_instrument_details(
     accidental per-instrument query loop. Fund NAV audit ledgers can be omitted
     for calculation paths that only consume instrument identity and market data.
     """
+    return _get_instrument_details(
+        session_factory, instrument_ids,
+        include_fund_nav_ledger=include_fund_nav_ledger,
+    )
+
+
+def get_instrument_calculation_inputs(
+    session_factory: SessionFactory,
+    instrument_ids: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, dict[str, object] | None]:
+    """Read full validated histories and the current NAV publication contract.
+
+    Historical audit runs, factors and event ledgers remain available through
+    ``get_instrument_details``. Calculation readers retain the current run's
+    status, anchor and evidence, including unresolved segment breaks. On
+    PostgreSQL all component reads share one snapshot so a concurrent NAV
+    publication cannot pair new observations with an older run or watermark.
+    """
+    return _get_instrument_details(
+        session_factory, instrument_ids,
+        include_fund_nav_ledger=False, current_projection_only=True,
+    )
+
+
+def _get_instrument_details(
+    session_factory: SessionFactory,
+    instrument_ids: list[str] | set[str] | tuple[str, ...],
+    *,
+    include_fund_nav_ledger: bool,
+    current_projection_only: bool = False,
+) -> dict[str, dict[str, object] | None]:
     normalized_ids: list[str] = []
     for raw_instrument_id in instrument_ids:
         instrument_id = str(raw_instrument_id or "").strip()
@@ -1887,6 +1918,8 @@ def get_instrument_details(
         return {}
 
     with session_factory() as session:
+        if current_projection_only and session.get_bind().dialect.name == "postgresql":
+            session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
         targets = session.scalars(
             _instrument_query(
                 include_market_data=False,
@@ -1938,12 +1971,34 @@ def get_instrument_details(
                         ),
                     }
                 )
+        current_runs = {}
+        if current_projection_only and market_data_by_id:
+            current_runs = {
+                run.instrument_id: _fund_nav_projection_run_to_dict(run)
+                for run in session.scalars(
+                    select(FundNavProjectionRun)
+                    .join(
+                        FundNavCurrentProjection,
+                        FundNavCurrentProjection.fund_nav_projection_run_id
+                        == FundNavProjectionRun.fund_nav_projection_run_id,
+                    )
+                    .where(FundNavCurrentProjection.instrument_id.in_(market_data_by_id))
+                    .options(
+                        selectinload(FundNavProjectionRun.event_revisions),
+                        selectinload(FundNavProjectionRun.reinvestment_evidence_revisions),
+                    )
+                ).all()
+            }
         details_by_id = {}
         for target in targets:
             item = _instrument_to_store_dict(
                 target, market_data=market_data_by_id[target.instrument_id],
                 include_fund_nav_ledger=include_fund_nav_ledger,
             )
+            if current_projection_only and target.instrument_id in current_runs:
+                run = current_runs[target.instrument_id]
+                item["fund_nav_projection_runs"] = [run]
+                item["current_fund_nav_projection_run_id"] = run["fund_nav_projection_run_id"]
             # Preserve the established raw tie order even for legacy spelling
             # variants that normalize to one series identity. Normalization
             # validates every observation and owns the resulting point/lineage.
@@ -2069,6 +2124,53 @@ def get_instrument_metadata(
             selectinload(Instrument.broker_identifiers),
         ).where(Instrument.instrument_id.in_(normalized_ids))).all()
         records = {target.instrument_id: _serialize_metadata(target) for target in targets}
+    return {instrument_id: records.get(instrument_id) for instrument_id in normalized_ids}
+
+
+def list_instrument_metadata(
+    session_factory: SessionFactory,
+    *,
+    include_inactive: bool = False,
+) -> list[dict[str, object]]:
+    """List registry identities/settings without quotes or audit histories."""
+    with session_factory() as session:
+        statement = select(Instrument).options(
+            selectinload(Instrument.identifiers),
+            selectinload(Instrument.broker_identifiers),
+        )
+        if not include_inactive:
+            lifecycle_status = Instrument.lifecycle_state_json["status"].as_string()
+            statement = statement.where(func.coalesce(lifecycle_status, "active") != "archived")
+        targets = session.scalars(statement.order_by(
+            Instrument.instrument_name, Instrument.instrument_id,
+        )).all()
+        return [_serialize_metadata(target) for target in targets]
+
+
+def get_instrument_resolution_details(
+    session_factory: SessionFactory,
+    instrument_ids: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, dict[str, object] | None]:
+    """Read identity/configuration and corporate actions for canonical resolution."""
+    normalized_ids = list(dict.fromkeys(
+        str(value).strip() for value in instrument_ids if str(value or "").strip()
+    ))
+    if not normalized_ids:
+        return {}
+    with session_factory() as session:
+        targets = session.scalars(_instrument_query(
+            include_market_data=False, include_fund_nav_ledger=False,
+        ).where(Instrument.instrument_id.in_(normalized_ids))).all()
+        records = {
+            target.instrument_id: {
+                **_serialize_metadata(target),
+                "corporate_actions": _sort_corporate_actions([
+                    _corporate_action_to_dict(action)
+                    for action in target.corporate_action_events
+                ]),
+            }
+            for target in targets
+        }
     return {instrument_id: records.get(instrument_id) for instrument_id in normalized_ids}
 
 

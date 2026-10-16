@@ -31,7 +31,7 @@ import {
   getPortfolioAccountsWorkspace,
   getPortfolioPerformance,
   getPortfolioInstrumentPriceChart,
-  getPortfolioInstruments,
+  getPortfolioInstrumentOptions,
   getPortfolioTaxonomyCatalog,
   type HoldingsWorkspaceResponse,
   type RiskReturnSeries,
@@ -43,7 +43,7 @@ import {
   type PortfolioTaxonomyNodeRecord,
   type PortfolioResolvedMemberTarget,
   type PortfolioTargetMemberType,
-  type SharedInstrumentRecord,
+  type InstrumentMetadataRecord,
   type TaxonomyAssignmentScope,
 } from '../lib/api'
 import { formatCurrency, formatLabel, formatNumber, formatPercent } from '../lib/format'
@@ -1527,7 +1527,7 @@ export default function RiskPage() {
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [workspaceSupportError, setWorkspaceSupportError] = useState<string | null>(null)
   const [riskPolicyRevision, setRiskPolicyRevision] = useState(0)
-  const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
+  const [benchmarkInstruments, setBenchmarkInstruments] = useState<InstrumentMetadataRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
   const [benchmarkChart, setBenchmarkChart] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
@@ -1644,7 +1644,7 @@ export default function RiskPage() {
 
     let cancelled = false
     const controller = new AbortController()
-    getPortfolioInstruments(portfolioId, controller.signal)
+    getPortfolioInstrumentOptions(portfolioId, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setBenchmarkInstruments(response.instruments)

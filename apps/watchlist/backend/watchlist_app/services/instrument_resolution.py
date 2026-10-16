@@ -8,7 +8,7 @@ from watchlist_app.db.models.watchlists import InstrumentTaxonomyAssignment, Ins
 from watchlist_app.reference_data.instrument_taxonomy import INSTRUMENT_TAXONOMY_CODE
 from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
-from watchlist_app.services.shared_instrument_registry import get_shared_instrument
+from watchlist_app.services.shared_instrument_registry import get_shared_instrument_resolution
 
 
 instrument_repository = SQLAlchemyInstrumentRepository()
@@ -210,7 +210,7 @@ def resolve_watchlist_instrument(
     if not requested_instrument_id:
         return None
 
-    shared_record = get_shared_instrument(requested_instrument_id)
+    shared_record = get_shared_instrument_resolution(requested_instrument_id)
     if shared_record is None:
         return None
 

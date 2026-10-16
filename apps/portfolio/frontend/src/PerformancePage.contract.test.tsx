@@ -14,7 +14,7 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioTableViewStore: vi.fn(),
   savePortfolioTableViewStore: vi.fn(),
   getPortfolioTaxonomyCatalog: vi.fn(),
-  getPortfolioInstruments: vi.fn(),
+  getPortfolioInstrumentOptions: vi.fn(),
   getPortfolioInstrumentPriceChart: vi.fn(),
 }))
 const exportMocks = vi.hoisted(() => ({ downloadTable: vi.fn() }))
@@ -108,7 +108,7 @@ describe('Performance rendered page contract', () => {
       target_set_integrity_issues: [],
   target_resolution: [],
     })
-    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
+    apiMocks.getPortfolioInstrumentOptions.mockResolvedValue({ portfolio_id: '3', instruments: [] })
   })
 
   it('uses canonical defaults for an empty backend store and ignores legacy browser views', async () => {
@@ -570,7 +570,7 @@ describe('Performance rendered page contract', () => {
     let resolve!: (value: ReturnType<typeof performanceFixture>) => void
     apiMocks.getPortfolioPerformance.mockReturnValue(new Promise((done) => { resolve = done }))
     const instrument = { instrument_id: 'cny-benchmark', instrument_name: 'CNY Benchmark', instrument_type: 'index', currency: 'CNY', identifiers: [], latest_market_data: [] }
-    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [instrument] })
+    apiMocks.getPortfolioInstrumentOptions.mockResolvedValue({ portfolio_id: '3', instruments: [instrument] })
     apiMocks.getPortfolioInstrumentPriceChart.mockResolvedValue({ portfolio_id: '3', instrument_core: instrument,
       as_of_date: '2026-07-15', range_key: 'all', chart_basis: 'close', return_semantics: 'price_return', currency: 'CNY', metric_family: 'price', points: [], summary: {} })
     const user = userEvent.setup()
@@ -585,7 +585,7 @@ describe('Performance rendered page contract', () => {
 
   it.each(['price_return', 'unknown'] as const)('uses confirmed return semantics to determine benchmark comparison availability (%s)', async (returnSemantics) => {
     const user = userEvent.setup()
-    apiMocks.getPortfolioInstruments.mockResolvedValue({
+    apiMocks.getPortfolioInstrumentOptions.mockResolvedValue({
       portfolio_id: '3',
       instruments: [
         {
@@ -674,7 +674,7 @@ describe('Performance rendered page contract', () => {
     apiMocks.getPortfolioPerformance.mockResolvedValue(performance)
     const instrument = { instrument_id: 'benchmark-1', instrument_name: 'Market Benchmark',
       instrument_type: 'index', currency: 'USD', identifiers: [], latest_market_data: [] }
-    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [instrument] })
+    apiMocks.getPortfolioInstrumentOptions.mockResolvedValue({ portfolio_id: '3', instruments: [instrument] })
     const sessionDates = ['2026-07-06', '2026-07-07', '2026-07-08', '2026-07-09',
       '2026-07-10', '2026-07-13', '2026-07-14', '2026-07-15']
     apiMocks.getPortfolioInstrumentPriceChart.mockResolvedValue({

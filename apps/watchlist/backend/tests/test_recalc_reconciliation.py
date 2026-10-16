@@ -24,7 +24,7 @@ def test_reconciliation_target_loader_keyset_pages_and_fails_closed(
             text(
                 "CREATE TABLE instrument_chart_read_model ("
                 "instrument_id TEXT PRIMARY KEY, source_cutoff_at DATETIME, "
-                "screener_payload_json JSON DEFAULT '{}', "
+                "screener_payload_json JSON DEFAULT '{}', nav_payload_json JSON DEFAULT '{}', "
                 "materialization_version TEXT NOT NULL, "
                 "data_freshness_status TEXT NOT NULL)"
             )
@@ -185,8 +185,8 @@ def test_single_instrument_legacy_source_date_does_not_requeue_forever(
     }
     monkeypatch.setattr(
         read_model_freshness,
-        "get_shared_instrument",
-        lambda _instrument_id: shared,
+        "get_shared_instrument_summaries",
+        lambda ids: {iid: shared for iid in ids},
     )
     monkeypatch.setattr(
         read_model_freshness,
@@ -234,8 +234,8 @@ def test_materialized_fresh_status_ages_to_stale_without_new_source_revision(
     queued: list[dict[str, object]] = []
     monkeypatch.setattr(
         read_model_freshness,
-        "get_shared_instrument",
-        lambda _instrument_id: shared,
+        "get_shared_instrument_summaries",
+        lambda ids: {iid: shared for iid in ids},
     )
     monkeypatch.setattr(
         read_model_freshness,
@@ -414,8 +414,8 @@ def test_same_source_generation_with_old_materialization_version_is_stale(
     queued: list[dict[str, object]] = []
     monkeypatch.setattr(
         read_model_freshness,
-        "get_shared_instrument",
-        lambda _instrument_id: shared,
+        "get_shared_instrument_summaries",
+        lambda ids: {iid: shared for iid in ids},
     )
     monkeypatch.setattr(
         read_model_freshness,

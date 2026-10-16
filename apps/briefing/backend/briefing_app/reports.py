@@ -141,8 +141,8 @@ SUMMARY_FIELDS = ("report_id", "report_type", "report_date", "version", "status"
 def summary_statement():
     """List and polling reads never hydrate the retained input or report bodies."""
     return select(*(getattr(Report, key) for key in SUMMARY_FIELDS), Report.team_id,
-                  Report.input_json["source_count"].as_integer().label("source_count"),
-                  Report.input_json["edition_role"].as_string().label("edition_role"))
+                  Report.source_count,
+                  Report.edition_role)
 
 
 def projected_report_summary(row) -> dict:
@@ -160,19 +160,19 @@ def _summary(values: dict) -> dict:
 
 def report_summary(report: Report) -> dict:
     return _summary({**{key: getattr(report, key) for key in SUMMARY_FIELDS},
-                     "source_count": report.input_json.get("source_count", 0),
-                     "edition_role": report.input_json.get("edition_role", "preview")})
+                     "source_count": report.source_count,
+                     "edition_role": report.edition_role})
 
 
 def report_detail(report: Report) -> dict:
-    snapshot = report.input_json
-    numeric_coverage = list(snapshot.get("numeric_coverage", []))
+    snapshot = report.reading_json
+    numeric_coverage = list(snapshot.get("numeric_coverage") or [])
     if snapshot.get("market_rows") and snapshot.get("price_window_method_version") != PRICE_WINDOW_METHOD_VERSION:
         numeric_coverage.append({"dataset": "historical_report", "status": "historical_price_window_unverified"})
     return {**report_summary(report), "window": {key: snapshot.get(key) for key in
             ("period_start", "period_end", "timezone", "period_label")},
-            "market_rows": [with_quote_metadata(snapshot, row) for row in snapshot.get("market_rows", [])], "macro_rows": snapshot.get("macro_rows", []),
-            "coverage": {"text": snapshot.get("text_coverage", {}), "numeric": numeric_coverage, "documents": snapshot.get("document_counts", {})},
+            "market_rows": [with_quote_metadata(snapshot, row) for row in snapshot.get("market_rows", [])], "macro_rows": snapshot.get("macro_rows") or [],
+            "coverage": {"text": snapshot.get("text_coverage") or {}, "numeric": numeric_coverage, "documents": snapshot.get("document_counts") or {}, "source_completeness": snapshot.get("source_completeness", {})},
             "sources": [{key: source.get(key) for key in ("source_id", "source_type", "title", "source_name", "url",
                         "published_at", "occurred_at", "observed_at", "received_at", "content_completeness", "symbol", "date")}
                         for source in snapshot.get("sources", [])],

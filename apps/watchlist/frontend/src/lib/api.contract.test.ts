@@ -10,6 +10,9 @@ describe('instrument NAV series API contract', () => {
   it('fails closed when the canonical selected value is null', async () => {
     const payload = {
       instrument_id: 'fund-a',
+      source_cutoff_at: '2026-07-15T12:00:00Z',
+      materialization_version: 'watchlist-materialization/v22',
+      freshness: { data_freshness_status: 'pending_recalc', staleness_reason: 'Saved settings are pending.' },
       count: 1,
       nav_basis_preference: 'auto',
       nav_basis_type: 'nav_with_dividend',
@@ -69,6 +72,9 @@ describe('instrument NAV series API contract', () => {
     expect(response.rows[0].selected_value).toBeNull()
     expect(response.series).toEqual([])
     expect(response.calculation_series).toEqual([])
+    expect(response.source_cutoff_at).toBe(payload.source_cutoff_at)
+    expect(response.materialization_version).toBe(payload.materialization_version)
+    expect(response.freshness).toEqual(payload.freshness)
   })
 })
 
@@ -153,7 +159,7 @@ describe('listed detail request cancellation', () => {
     await getInstrumentPriceBars('equity/a', { limit: 2 }, controller.signal)
     await getInstrumentQuote('equity/a', controller.signal)
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      '/api/instruments/equity%2Fa/summary', '/api/instruments/equity%2Fa/chart',
+      '/api/instruments/equity%2Fa/summary', '/api/instruments/equity%2Fa/chart?projection=display',
       '/api/instruments/equity%2Fa/performance', '/api/instruments/equity%2Fa/risk',
       '/api/instruments/equity%2Fa/research', '/api/instruments/equity%2Fa/price-bars?limit=2',
       '/api/instruments/equity%2Fa/chart?projection=quote',

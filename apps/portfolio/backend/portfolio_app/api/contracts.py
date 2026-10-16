@@ -363,12 +363,20 @@ class InstrumentLatestMarketDataPoint(BaseModel):
         return self
 
 
-class InstrumentOption(BaseModel):
+class InstrumentMetadataOption(BaseModel):
     instrument_core: InstrumentCoreContract
-    coverage_state: CoverageState
-    latest_market_data: list[InstrumentLatestMarketDataPoint]
     quote_selection_policy: QuoteSelectionPolicy
     source_settings: dict[str, str | None] = Field(default_factory=dict)
+
+
+class InstrumentMetadataListResponse(BaseModel):
+    portfolio_id: str
+    instruments: list[InstrumentMetadataOption]
+
+
+class InstrumentOption(InstrumentMetadataOption):
+    coverage_state: CoverageState
+    latest_market_data: list[InstrumentLatestMarketDataPoint]
 
     @model_validator(mode="after")
     def validate_latest_market_data_contract(self) -> "InstrumentOption":

@@ -170,7 +170,8 @@ def test_exposure_refresh_publishes_performance_and_chart_from_one_current_sampl
     if withdrawn:
         current = deepcopy(canonical_recalc.get_shared_instrument('sxv264'))
         current['market_data'] = []
-        monkeypatch.setattr(canonical_recalc, 'get_shared_instrument', lambda instrument_id: current)
+        monkeypatch.setattr(canonical_recalc, 'get_shared_calculation_inputs', lambda instrument_id: current)
+        monkeypatch.setattr(canonical_recalc, 'get_shared_instrument', lambda instrument_id, **kwargs: current)
     else:
         latest = deepcopy(instrument['market_data'][-1])
         latest.update(as_of_date='2026-04-15', value='90.0')

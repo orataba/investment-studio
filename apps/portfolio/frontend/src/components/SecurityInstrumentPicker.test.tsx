@@ -2,11 +2,11 @@ import { useState } from 'react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { LanguageProvider, LANGUAGE_STORAGE_KEY } from '../../../../../packages/ui/src/i18n'
-import { materializePortfolioSecurity, searchPortfolioSecurities, type SecurityCatalogResult, type SharedInstrumentRecord } from '../lib/api'
+import { getPortfolioInstrumentOption, materializePortfolioSecurity, searchPortfolioSecurities, type InstrumentMetadataRecord, type SecurityCatalogResult, type SharedInstrumentRecord } from '../lib/api'
 import { instrumentFixture } from '../test/portfolioFixtures'
 import SecurityInstrumentPicker from './SecurityInstrumentPicker'
 
-vi.mock('../lib/api', () => ({ materializePortfolioSecurity: vi.fn(), searchPortfolioSecurities: vi.fn() }))
+vi.mock('../lib/api', () => ({ getPortfolioInstrumentOption: vi.fn(), materializePortfolioSecurity: vi.fn(), searchPortfolioSecurities: vi.fn() }))
 
 const candidate: SecurityCatalogResult = {
   instrument_type: 'equity', symbol: 'PDD', name: 'PDD Holdings', catalog_provider: 'fmp', catalog_symbol: 'PDD',
@@ -20,7 +20,7 @@ const instrument: SharedInstrumentRecord = {
   quote_selection_policy: { trading: [], valuation: [], total_return: [], chart: [], reference: [] },
 }
 
-function Picker({ instruments = [], onSelected = vi.fn() }: { instruments?: SharedInstrumentRecord[]; onSelected?: (id: string) => void }) {
+function Picker({ instruments = [], onSelected = vi.fn() }: { instruments?: InstrumentMetadataRecord[]; onSelected?: (id: string) => void }) {
   const [records, setRecords] = useState(instruments)
   const [value, setValue] = useState('')
   return <LanguageProvider enableDomTranslation={false}><SecurityInstrumentPicker label="Underlying 1" value={value}
@@ -34,6 +34,46 @@ describe('SecurityInstrumentPicker', () => {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, 'en')
     vi.mocked(searchPortfolioSecurities).mockReset().mockResolvedValue({ results: [candidate], catalog_errors: {} })
     vi.mocked(materializePortfolioSecurity).mockReset().mockResolvedValue(instrument)
+    vi.mocked(getPortfolioInstrumentOption).mockReset()
+  })
+
+  it.each([true, false])('loads only the selected metadata option and preserves price preparation (priced=%s)', async (priced) => {
+    const { latest_market_data: _prices, coverage_state: _coverage, ...metadata } = instrument
+    metadata.identifiers = [...metadata.identifiers, { identifier_type: 'provider_symbol', identifier_value: 'fmp:PDD', is_primary: false }]
+    vi.mocked(searchPortfolioSecurities).mockResolvedValue({ results: [], catalog_errors: {} })
+    vi.mocked(getPortfolioInstrumentOption).mockResolvedValue({ ...instrument, ...metadata,
+      latest_market_data: priced ? [{ metric_family: 'price', quote_basis: 'close', as_of_date: '2026-10-15',
+        value: '100', currency: 'USD', price_unit: 'per_unit', price_scale: '1', status: 'complete' }] : [],
+    })
+    const onSelected = vi.fn()
+    render(<Picker instruments={[metadata]} onSelected={onSelected} />)
+    expect(getPortfolioInstrumentOption).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Underlying 1' }), { target: { value: 'PDD' } })
+    fireEvent.click(await screen.findByRole('button', { name: /PDD.*USD/ }))
+    await waitFor(() => expect(onSelected).toHaveBeenCalledExactlyOnceWith('pdd'))
+    expect(getPortfolioInstrumentOption).toHaveBeenCalledExactlyOnceWith('portfolio-1', 'pdd')
+    if (priced) expect(materializePortfolioSecurity).not.toHaveBeenCalled()
+    else expect(materializePortfolioSecurity).toHaveBeenCalledExactlyOnceWith('portfolio-1', {
+      instrument_type: 'equity', catalog_provider: 'fmp', catalog_symbol: 'PDD',
+    })
+  })
+
+  it('does not register or select after metadata price lookup is superseded', async () => {
+    const { latest_market_data: _prices, coverage_state: _coverage, ...metadata } = instrument
+    metadata.identifiers = [...metadata.identifiers, { identifier_type: 'provider_symbol', identifier_value: 'fmp:PDD', is_primary: false }]
+    let finish!: (record: SharedInstrumentRecord) => void
+    vi.mocked(getPortfolioInstrumentOption).mockReturnValue(new Promise(resolve => { finish = resolve }))
+    vi.mocked(searchPortfolioSecurities).mockResolvedValue({ results: [], catalog_errors: {} })
+    const onSelected = vi.fn()
+    render(<Picker instruments={[metadata]} onSelected={onSelected} />)
+    const search = screen.getByRole('searchbox', { name: 'Underlying 1' })
+    fireEvent.change(search, { target: { value: 'PDD' } })
+    fireEvent.click(await screen.findByRole('button', { name: /PDD.*USD/ }))
+    fireEvent.change(search, { target: { value: 'QQQ' } })
+    await act(async () => { finish({ ...instrument, ...metadata }) })
+    expect(materializePortfolioSecurity).not.toHaveBeenCalled()
+    expect(onSelected).not.toHaveBeenCalled()
+    expect(search).toHaveValue('QQQ')
   })
 
   it('registers only after an explicit result selection and uses the returned canonical ID', async () => {

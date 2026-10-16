@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from watchlist_app.db.models.read_models import (
@@ -252,6 +252,32 @@ class SQLAlchemyReadModelRepository:
     def get_chart(self, session: Session, instrument_id: str) -> InstrumentChartReadModel | None:
         return session.get(InstrumentChartReadModel, instrument_id)
 
+    def get_chart_projection(self, session: Session, instrument_id: str, *, projection: str) -> dict[str, Any] | None:
+        # Project in SQL: Python must never deserialize analytical/audit return
+        # histories just to render the quote header or price chart.
+        keys = ["instrument_id", "base_series_type", "selected_series", "currency",
+                "latest_values", "date_range", "freshness", "price_series"]
+        if projection == "display":
+            keys += ["series", "available_compare_targets"]
+        model = InstrumentChartReadModel
+        if session.get_bind().dialect.name == "postgresql":
+            # These columns are JSON, not JSONB: repeated path operators would
+            # parse the large stored chart repeatedly. Expand its root once,
+            # retaining only consumer fields and preserving explicit JSON null.
+            fields = func.json_each(model.payload_json).table_valued("key", "value")
+            projected = select(func.json_object_agg(fields.c.key, fields.c.value)).where(
+                fields.c.key.in_(keys)).scalar_subquery()
+            row = session.execute(select(projected).where(model.instrument_id == instrument_id)).first()
+            return (row[0] or {}) if row is not None else None
+        # An explicit JSON null is part of the contract; an absent key is not.
+        # SQLite's JSON_QUOTE path operator conflates the two; inspect its type.
+        present = [func.json_type(model.payload_json, f"$.{key}").is_not(None) for key in keys]
+        row = session.execute(select(*(model.payload_json[key].label(key) for key in keys), *present)
+            .where(model.instrument_id == instrument_id)).first()
+        if row is None:
+            return None
+        return {key: row[index] for index, key in enumerate(keys) if row[len(keys) + index]}
+
     def list_charts(
         self,
         session: Session,
@@ -296,6 +322,12 @@ class SQLAlchemyReadModelRepository:
     ) -> InstrumentPerformanceReadModel | None:
         return session.get(InstrumentPerformanceReadModel, instrument_id)
 
+    def get_nav_projection(self, session: Session, instrument_id: str):
+        model = InstrumentChartReadModel
+        return session.execute(select(model.nav_payload_json, model.source_cutoff_at,
+            model.last_recalculated_at, model.materialization_version, model.data_freshness_status)
+            .where(model.instrument_id == instrument_id)).first()
+
     def get_risk(self, session: Session, instrument_id: str) -> InstrumentRiskReadModel | None:
         return session.get(InstrumentRiskReadModel, instrument_id)
 
@@ -325,6 +357,8 @@ class SQLAlchemyReadModelRepository:
         source_cutoff_at,
         materialization_version: str,
         screener_payload: dict[str, Any] | None = None,
+        nav_payload: dict[str, Any] | None = None,
+        workspace_price_context: dict[str, Any] | None = None,
     ):
         if model_class is InstrumentChartReadModel and screener_payload is None:
             raise ValueError("Chart and screener projections must be published together")
@@ -340,6 +374,9 @@ class SQLAlchemyReadModelRepository:
             if isinstance(record, InstrumentChartReadModel):
                 record.materialization_version = materialization_version
                 record.screener_payload_json = screener_payload
+                record.nav_payload_json = nav_payload
+            if isinstance(record, InstrumentRiskReadModel):
+                record.workspace_price_context_json = workspace_price_context
             session.add(record)
             session.flush()
             return record
@@ -350,5 +387,8 @@ class SQLAlchemyReadModelRepository:
         if isinstance(record, InstrumentChartReadModel):
             record.materialization_version = materialization_version
             record.screener_payload_json = screener_payload
+            record.nav_payload_json = nav_payload
+        if isinstance(record, InstrumentRiskReadModel):
+            record.workspace_price_context_json = workspace_price_context
         session.flush()
         return record

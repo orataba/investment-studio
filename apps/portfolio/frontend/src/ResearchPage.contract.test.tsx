@@ -8,7 +8,7 @@ import { renderPortfolioPage } from './test/renderPortfolioPage'
 const apiMocks = vi.hoisted(() => ({
   createPortfolioResearchRun: vi.fn(),
   getPortfolioResearchBacktestBenchmarkComparison: vi.fn(),
-  getPortfolioInstruments: vi.fn(),
+  getPortfolioInstrumentOptions: vi.fn(),
   getPortfolioRiskPolicy: vi.fn(),
   getPortfolioTaxonomyCatalog: vi.fn(),
   getPortfolioResearchRun: vi.fn(),
@@ -354,7 +354,7 @@ describe('Research rendered page contract', () => {
     accessMock.can_edit = true
     apiMocks.getPortfolioResearchWorkbench.mockResolvedValue(workbenchFixture)
     apiMocks.getPortfolioResearchRun.mockResolvedValue(completedRun)
-    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
+    apiMocks.getPortfolioInstrumentOptions.mockResolvedValue({ portfolio_id: '3', instruments: [] })
     apiMocks.getPortfolioRiskPolicy.mockResolvedValue({
       lookback_days: 365,
       calculation_frequency: 'daily',
@@ -666,7 +666,7 @@ describe('Research rendered page contract', () => {
   })
 
   it('does not change the saved comparison while a benchmark selection is only a draft', async () => {
-    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [{
+    apiMocks.getPortfolioInstrumentOptions.mockResolvedValue({ portfolio_id: '3', instruments: [{
       instrument_id: 'benchmark-1', instrument_name: 'Market Benchmark', instrument_type: 'index', currency: 'USD',
       identifiers: [{ identifier_type: 'ticker', identifier_value: 'MKT', is_primary: true }], latest_market_data: [],
     }] })

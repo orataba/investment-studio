@@ -1059,10 +1059,10 @@ def risk_alerts(limit: int = Query(default=3, ge=1, le=10), offset: int = Query(
 
 
 @router.get("/risk")
-def risk_workspace(instrument_id: str | None = None, instrument_ids: str | None = None, watchlist_id: str | None = None, summary: bool = False, session: Session = Depends(get_db_session)):
+def risk_workspace(instrument_id: str | None = None, instrument_ids: str | None = None, watchlist_id: str | None = None, summary: bool = False, session: Session = Depends(get_db_session), projection: Literal["workspace"] | None = None):
     from watchlist_app.services.risk_workspace import read_risk_workspace
     return read_risk_workspace(session, instrument_id=instrument_id, instrument_ids=instrument_ids,
-                               watchlist_id=watchlist_id, summary=summary)
+                               watchlist_id=watchlist_id, summary=summary, workspace_projection=projection == "workspace")
 
 @router.get("/risk/cases/{case_id}")
 def risk_case_detail(case_id: str, updated_at: str | None = None, session: Session = Depends(get_db_session)):

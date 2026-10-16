@@ -131,7 +131,7 @@ def get_instrument_price_bars(
             detail="start_date must be on or before end_date",
         )
     try:
-        instrument = get_shared_instrument(instrument_id)
+        instrument = get_shared_instrument(instrument_id, metadata_only=True)
         if instrument is None:
             raise HTTPException(status_code=404, detail="Instrument not found")
         canonical_id = str(instrument.get("instrument_id") or instrument_id)

@@ -78,6 +78,16 @@ def current_session(portfolio_id: str | None = None):
             "capabilities": {"research_enabled": get_settings().research_enabled}, "access": access}
 
 
+@router.get("/options")
+def portfolio_options() -> list[dict[str, str]]:
+    from portfolio_app.services.portfolio_store import list_portfolio_options
+    records = list_portfolio_options(portfolio_ids=visible_ids())
+    order = (get_preference("portfolio-order") or {}).get("portfolio_ids", [])
+    order_index = {value: index for index, value in enumerate(order)}
+    records.sort(key=lambda row: order_index.get(row["portfolio_id"], len(order)))
+    return records
+
+
 @router.get("/{portfolio_id}/calculation-status")
 def calculation_status(portfolio_id: str):
     from portfolio_app.db.models import PortfolioCalculationStateModel

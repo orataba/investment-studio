@@ -80,9 +80,10 @@ from watchlist_app.services.return_windows import (
 from watchlist_app.services.shared_instrument_registry import (
     SharedInstrumentRegistryError,
     get_shared_instrument,
+    get_shared_calculation_inputs,
+    list_shared_active_instrument_ids,
     get_shared_instrument_summaries,
     get_shared_no_trade_evidence,
-    list_shared_instruments,
 )
 
 
@@ -417,12 +418,7 @@ def _active_peer_instrument_ids(session: Session) -> set[str]:
             )
         ).all()
     }
-    shared_active_instrument_ids = {
-        str(item.get("instrument_id"))
-        for instrument_type in supported_types
-        for item in list_shared_instruments(instrument_type=instrument_type, limit=None)
-        if str(item.get("instrument_id") or "").strip()
-    }
+    shared_active_instrument_ids = set(list_shared_active_instrument_ids(instrument_types=set(supported_types)))
     return local_active_instrument_ids & shared_active_instrument_ids
 
 
@@ -1790,6 +1786,77 @@ def _build_return_series(selection: dict[str, object], frequency_context: dict[s
         "intervals": intervals, "wealth_points": wealth, "segments": segments}
 
 
+def _nav_series_payload(*, instrument_id: str, nav_settings: dict[str, object],
+                        selection: dict[str, object], frequency_context: dict[str, Any],
+                        return_series: dict[str, object]) -> dict[str, object]:
+    """The public NAV view, built from the same inputs as the metric snapshots."""
+    nav_basis_preference = str(nav_settings.get("nav_basis_preference", "auto"))
+    segment_by_date = {
+        point["as_of_date"]: point.get("segment_id")
+        for point in selection["points"]
+    }
+    calculation_dates = {
+        point["as_of_date"]
+        for point in frequency_context["points"]
+        if isinstance(point, dict) and isinstance(point.get("as_of_date"), date)
+    }
+    return {
+        "instrument_id": instrument_id,
+        "count": len(selection["rows"]),
+        "nav_basis_preference": nav_basis_preference,
+        "nav_basis_type": selection["nav_basis_type"],
+        "nav_basis_source": selection["nav_basis_source"],
+        "nav_basis_status": selection["nav_basis_status"],
+        "selected_role": selection.get("selected_role"),
+        "selected_metric_family": selection.get("selected_metric_family"),
+        "selected_quote_basis": selection.get("selected_quote_basis"),
+        "selected_series_type": selection.get("selected_series_type"),
+        "selected_series_label": selection.get("selected_series_label"),
+        "selected_date_label": selection.get("selected_date_label"),
+        "return_kind": selection.get("return_kind"),
+        "return_series_status": selection.get("return_series_status"),
+        "return_anchor_date": selection.get("return_anchor_date"),
+        "return_segment_breaks": list(
+            selection.get("return_segment_breaks") or []
+        ),
+        "calculation_frequency_profile": return_series["frequency"],
+        "return_measure": "simple",
+        "return_series": return_series,
+        "compare_settings": {
+            "default_benchmark_instrument_id": nav_settings.get("default_benchmark_instrument_id"),
+            "peer_instrument_ids": list(nav_settings.get("peer_baseline_instrument_ids") or []),
+        },
+        "rows": [
+            {
+                "date": row["as_of_date"].isoformat(),
+                "nav": float(row["nav"]) if row["nav"] is not None else None,
+                "nav_with_dividend": (
+                    float(row["nav_with_dividend"])
+                    if row["nav_with_dividend"] is not None
+                    else None
+                ),
+                "currency": row["currency"],
+                "frequency": row["frequency"],
+                "adopted_at": (
+                    _coerce_utc(row.get("adopted_at")).isoformat().replace("+00:00", "Z")
+                    if row.get("adopted_at") is not None
+                    else None
+                ),
+                "selected_basis_type": selection.get("nav_basis_type"),
+                "selected_value": (
+                    float(row.get(selection["nav_basis_type"]))
+                    if selection.get("nav_basis_type") in {"nav", "nav_with_dividend"}
+                    and row.get(selection["nav_basis_type"]) is not None
+                    else None
+                ),
+                "segment_id": segment_by_date.get(row["as_of_date"]),
+                "calculation_included": row["as_of_date"] in calculation_dates,
+            }
+            for row in selection["rows"]
+        ],
+    }
+
+
 class CanonicalRecalcService:
     def __init__(self) -> None:
         self.instrument_repository = SQLAlchemyInstrumentRepository()
@@ -1811,7 +1878,7 @@ class CanonicalRecalcService:
         nav_settings = _normalize_nav_settings(
             manual_profile.nav_settings_json if manual_profile is not None else None
         )
-        shared_instrument = get_shared_instrument(instrument_id)
+        shared_instrument = get_shared_calculation_inputs(instrument_id)
         shared_instrument_type = (
             str(shared_instrument.get("instrument_type") or "").strip().lower()
             if isinstance(shared_instrument, dict)
@@ -1865,70 +1932,8 @@ class CanonicalRecalcService:
             market_calendar=str(source_settings.get("market_calendar") or "") or None,
         )
         return_series = _build_return_series(selection, frequency_context)
-        segment_by_date = {
-            point["as_of_date"]: point.get("segment_id")
-            for point in selection["points"]
-        }
-        calculation_dates = {
-            point["as_of_date"]
-            for point in frequency_context["points"]
-            if isinstance(point, dict) and isinstance(point.get("as_of_date"), date)
-        }
-        return {
-            "instrument_id": instrument_id,
-            "count": len(selection["rows"]),
-            "nav_basis_preference": nav_basis_preference,
-            "nav_basis_type": selection["nav_basis_type"],
-            "nav_basis_source": selection["nav_basis_source"],
-            "nav_basis_status": selection["nav_basis_status"],
-            "selected_role": selection.get("selected_role"),
-            "selected_metric_family": selection.get("selected_metric_family"),
-            "selected_quote_basis": selection.get("selected_quote_basis"),
-            "selected_series_type": selection.get("selected_series_type"),
-            "selected_series_label": selection.get("selected_series_label"),
-            "selected_date_label": selection.get("selected_date_label"),
-            "return_kind": selection.get("return_kind"),
-            "return_series_status": selection.get("return_series_status"),
-            "return_anchor_date": selection.get("return_anchor_date"),
-            "return_segment_breaks": list(
-                selection.get("return_segment_breaks") or []
-            ),
-            "calculation_frequency_profile": return_series["frequency"],
-            "return_measure": "simple",
-            "return_series": return_series,
-            "compare_settings": {
-                "default_benchmark_instrument_id": nav_settings.get("default_benchmark_instrument_id"),
-                "peer_instrument_ids": list(nav_settings.get("peer_baseline_instrument_ids") or []),
-            },
-            "rows": [
-                {
-                    "date": row["as_of_date"].isoformat(),
-                    "nav": float(row["nav"]) if row["nav"] is not None else None,
-                    "nav_with_dividend": (
-                        float(row["nav_with_dividend"])
-                        if row["nav_with_dividend"] is not None
-                        else None
-                    ),
-                    "currency": row["currency"],
-                    "frequency": row["frequency"],
-                    "adopted_at": (
-                        _coerce_utc(row.get("adopted_at")).isoformat().replace("+00:00", "Z")
-                        if row.get("adopted_at") is not None
-                        else None
-                    ),
-                    "selected_basis_type": selection.get("nav_basis_type"),
-                    "selected_value": (
-                        float(row.get(selection["nav_basis_type"]))
-                        if selection.get("nav_basis_type") in {"nav", "nav_with_dividend"}
-                        and row.get(selection["nav_basis_type"]) is not None
-                        else None
-                    ),
-                    "segment_id": segment_by_date.get(row["as_of_date"]),
-                    "calculation_included": row["as_of_date"] in calculation_dates,
-                }
-                for row in selection["rows"]
-            ],
-        }
+        return _nav_series_payload(instrument_id=instrument_id, nav_settings=nav_settings,
+            selection=selection, frequency_context=frequency_context, return_series=return_series)
 
     def ingest_instrument_holding_snapshot(
         self,
@@ -2213,7 +2218,7 @@ class CanonicalRecalcService:
         if instrument is None:
             raise ValueError(f"Instrument not found: {instrument_id}")
 
-        shared_instrument = get_shared_instrument(instrument_id)
+        shared_instrument = get_shared_calculation_inputs(instrument_id)
         if shared_instrument is None or shared_instrument.get("instrument_id") != instrument_id:
             source_record = get_shared_instrument_summaries([instrument_id]).get(instrument_id)
             if source_record and (source_record.get("lifecycle_state") or {}).get("status") == "archived":
@@ -2272,6 +2277,8 @@ class CanonicalRecalcService:
         )
         calculation_nav_points = frequency_context["points"]
         return_series = _build_return_series(nav_selection, frequency_context)
+        nav_payload = _nav_series_payload(instrument_id=instrument_id, nav_settings=nav_settings,
+            selection=nav_selection, frequency_context=frequency_context, return_series=return_series)
         calculation_frequency_profile = return_series["frequency"]
         quote_selection = _select_quote_series(
             quote_points_by_basis,
@@ -2436,6 +2443,8 @@ class CanonicalRecalcService:
         risk_payload["monitoring"] = monitoring
         risk_payload["monitoring_summary"] = monitoring_summary(monitoring)
         risk_payload["metric_snapshot_id"] = monitoring["metric_snapshot_id"]
+        from watchlist_app.services.risk_workspace_price_context import build_workspace_price_context
+        workspace_price_context = build_workspace_price_context(chart_payload["research_returns"], risk_payload)
         if risk_snapshot is not None:
             risk_snapshot.monitoring_json = retained_monitoring_snapshot(monitoring)
         exposure_payload = self._exposure_payload(exposure_snapshot)
@@ -2461,6 +2470,8 @@ class CanonicalRecalcService:
                     build_screener_chart_projection(instrument_id, chart_payload)
                     if model_class is InstrumentChartReadModel else None
                 ),
+                nav_payload=nav_payload if model_class is InstrumentChartReadModel else None,
+                workspace_price_context=workspace_price_context if model_class is InstrumentRiskReadModel else None,
             )
 
         self._refresh_watchlist_rows(
@@ -2478,7 +2489,7 @@ class CanonicalRecalcService:
         refresh_risk_cases(session, [instrument_id])
 
         shared_instrument_at_end = (
-            get_shared_instrument(instrument_id) if uses_shared_market_data else shared_instrument
+            get_shared_instrument(instrument_id, metadata_only=True) if uses_shared_market_data else shared_instrument
         )
         source_watermark_at_end = _shared_calculation_watermark(
             shared_instrument_at_end
@@ -2935,7 +2946,7 @@ class CanonicalRecalcService:
             "tabs": list(INSTRUMENT_DETAIL_TABS),
         }
 
-    def _peer_comparison_context(self, session: Session) -> dict[str, object]:
+    def _peer_comparison_context(self, session: Session, *, target_instrument_ids: list[str] | None = None) -> dict[str, object]:
         from watchlist_app.services.read_model_freshness import recalculation_freshness_overrides
         nodes = self.taxonomy_repository.list_nodes(
             session,
@@ -2953,6 +2964,15 @@ class CanonicalRecalcService:
             if assignment.node_id
             and str(assignment.instrument_id) in active_peer_instrument_ids
         }
+        # Preserve all members of the target leaf for exclusion counts, but do
+        # not load attributes or snapshots for unrelated taxonomy branches.
+        target_ids = set(target_instrument_ids or ())
+        if target_instrument_ids is not None:
+            peer_nodes = {path[-1] for iid in target_ids
+                if (path := _node_path_node_ids(assigned_node_by_asset.get(iid)))}
+            assigned_node_by_asset = {iid: node for iid, node in assigned_node_by_asset.items()
+                if iid in target_ids or str(getattr(node, "node_id", "")) in peer_nodes}
+            active_peer_instrument_ids &= set(assigned_node_by_asset) | target_ids
         attributes_by_asset: dict[str, dict[str, object]] = {}
         for value in self.attribute_repository.get_values_for_assets(
             session,
@@ -2960,19 +2980,27 @@ class CanonicalRecalcService:
         ):
             attributes = attributes_by_asset.setdefault(str(value.instrument_id), {})
             attributes.setdefault(str(value.attribute_key), value.value_json)
+        comparison_ids = active_peer_instrument_ids
+        if target_instrument_ids is not None:
+            dimensions = {(path[-1], geography) for iid in target_ids
+                if (path := _node_path_node_ids(assigned_node_by_asset.get(iid)))
+                and (geography := _peer_geographic_exposure(assigned_node_by_asset.get(iid), attributes_by_asset.get(iid))) is not None}
+            comparison_ids = {iid for iid in active_peer_instrument_ids if iid in target_ids or
+                (str(getattr(assigned_node_by_asset.get(iid), "node_id", "")),
+                 _peer_geographic_exposure(assigned_node_by_asset.get(iid), attributes_by_asset.get(iid))) in dimensions}
         performance_by_asset: dict[str, object] = {}
         for snapshot in self.snapshot_repository.list_current_performance(
             session,
-            instrument_ids=sorted(active_peer_instrument_ids),
+            instrument_ids=sorted(comparison_ids),
         ):
             if snapshot.methodology_version == PERFORMANCE_METHODOLOGY_VERSION:
                 performance_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
         comparison_basis_by_asset = {}
-        pending_configuration = recalculation_freshness_overrides(session, active_peer_instrument_ids, configuration_only=True)
+        pending_configuration = recalculation_freshness_overrides(session, comparison_ids, configuration_only=True)
         for instrument_id, basis in session.execute(select(
             InstrumentPerformanceReadModel.instrument_id,
             InstrumentPerformanceReadModel.payload_json["comparison_basis"],
-        ).where(InstrumentPerformanceReadModel.instrument_id.in_(sorted(active_peer_instrument_ids)))):
+        ).where(InstrumentPerformanceReadModel.instrument_id.in_(sorted(comparison_ids)))):
             snapshot = performance_by_asset.get(instrument_id)
             if (instrument_id not in pending_configuration and isinstance(basis, dict)
                 and basis.get("comparison_policy_version") == PEER_COMPARISON_POLICY_VERSION
@@ -3046,7 +3074,7 @@ class CanonicalRecalcService:
                 "summary": {},
             }
 
-        context = context or self._peer_comparison_context(session)
+        context = context or self._peer_comparison_context(session, target_instrument_ids=[instrument_id])
         comparison_basis_by_asset = dict(context.get("comparison_basis_by_asset") or {})
         if comparison_basis is not None:
             comparison_basis_by_asset[instrument_id] = comparison_basis
@@ -3259,7 +3287,7 @@ class CanonicalRecalcService:
         instrument_id: str,
         context: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        context = context or self._peer_comparison_context(session)
+        context = context or self._peer_comparison_context(session, target_instrument_ids=[instrument_id])
         assigned_node_by_asset = dict(context["assigned_node_by_asset"])
         performance_by_asset = dict(context["performance_by_asset"])
         return self._peer_comparison_payload(
@@ -3278,7 +3306,7 @@ class CanonicalRecalcService:
     ) -> dict[str, dict[str, object]]:
         if not instrument_ids:
             return {}
-        context = self._peer_comparison_context(session)
+        context = self._peer_comparison_context(session, target_instrument_ids=instrument_ids)
         return {
             instrument_id: _peer_watchlist_attributes(
                 self.current_peer_comparison(

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
-import { materializePortfolioSecurity, type SecurityCatalogResult, type SecuritySearchOption, type SharedInstrumentRecord } from '../lib/api'
+import { getPortfolioInstrumentOption, materializePortfolioSecurity, type InstrumentMetadataRecord, type SecurityCatalogResult, type SecuritySearchOption, type SharedInstrumentRecord } from '../lib/api'
 import { useSecurityCatalog } from '../lib/useSecurityCatalog'
 
 export function primaryIdentifier(
@@ -18,11 +18,11 @@ export function primaryIdentifier(
   )
 }
 
-export function instrumentSearchLabel(instrument: SecuritySearchOption) {
+export function instrumentSearchLabel(instrument: InstrumentMetadataRecord) {
   return `${primaryIdentifier(instrument)} · ${instrument.instrument_name}`
 }
 
-export function registeredSecurityCatalogIdentity(instrument: SharedInstrumentRecord) {
+export function registeredSecurityCatalogIdentity(instrument: InstrumentMetadataRecord) {
   const provider = instrument.source_settings?.source_api_profile === 'futu' ? 'futu' : 'fmp'
   const prefix = `${provider}:`
   const symbol = instrument.identifiers.find(identifier =>
@@ -31,7 +31,7 @@ export function registeredSecurityCatalogIdentity(instrument: SharedInstrumentRe
   return symbol ? { catalog_provider: provider, catalog_symbol: symbol } as const : null
 }
 
-export function securitySourceLabel(instrument: SharedInstrumentRecord, chinese: boolean) {
+export function securitySourceLabel(instrument: InstrumentMetadataRecord, chinese: boolean) {
   const source = instrument.source_settings?.source_api_profile || registeredSecurityCatalogIdentity(instrument)?.catalog_provider
   return source === 'futu' ? (chinese ? '富途' : 'Futu') : source === 'fmp' ? 'FMP' : ''
 }
@@ -48,7 +48,7 @@ export default function SecurityInstrumentPicker({
   label: string
   ariaLabel?: string
   value: string
-  instruments: SharedInstrumentRecord[]
+  instruments: InstrumentMetadataRecord[]
   onSelect: (instrumentId: string) => void
   portfolioId?: string
   onInstrumentRegistered?: (instrument: SharedInstrumentRecord) => void
@@ -91,7 +91,7 @@ export default function SecurityInstrumentPicker({
           .toLowerCase()
           .includes(normalizedQuery),
       )
-    type Result = { key: string; symbol: string; name: string; detail: string; instrument: SharedInstrumentRecord | null; catalog: SecurityCatalogResult | null }
+    type Result = { key: string; symbol: string; name: string; detail: string; instrument: InstrumentMetadataRecord | null; catalog: SecurityCatalogResult | null }
     const options = new Map<string, Result>(matches.map(instrument => [instrument.instrument_id, {
       key: instrument.instrument_id, symbol: primaryIdentifier(instrument), name: instrument.instrument_name,
       detail: [instrument.currency, securitySourceLabel(instrument, language === 'zh-Hans')].filter(Boolean).join(' · '), instrument, catalog: null,
@@ -118,26 +118,33 @@ export default function SecurityInstrumentPicker({
   async function selectResult(result: typeof results[number]) {
     if (preparingRef.current) return
     setSelectionError(null)
-    const registered = result.instrument
+    let registered = result.instrument
     const catalogIdentity = registered ? registeredSecurityCatalogIdentity(registered) : null
-    const needsPrices = portfolioId && onInstrumentRegistered && registered && catalogIdentity &&
-      ['equity', 'etf'].includes(registered.instrument_type) &&
-      !registered.latest_market_data.some(point => point.metric_family === 'price' &&
-        ['last', 'close'].includes(point.quote_basis) && point.status === 'complete')
-    if (registered && !needsPrices) {
-      setQuery('')
-      callbacks.current.onSelect(registered.instrument_id)
-      return
-    }
-    const request = result.catalog ?? (needsPrices ? {
-      instrument_type: registered.instrument_type as 'equity' | 'etf',
-      ...catalogIdentity,
-    } : null)
-    if (!request || !portfolioId || !onInstrumentRegistered) return
     const selectionGeneration = generation.current
     preparingRef.current = true
     setPreparing(true)
     try {
+      // Name-only catalogs fetch prices only for the user's explicit selection.
+      // Existing complete quotes must not trigger an unnecessary registration.
+      if (registered && catalogIdentity && portfolioId && onInstrumentRegistered &&
+          ['equity', 'etf'].includes(registered.instrument_type) && !('latest_market_data' in registered)) {
+        registered = await getPortfolioInstrumentOption(portfolioId, registered.instrument_id)
+        if (selectionGeneration !== generation.current) return
+      }
+      const needsPrices = portfolioId && onInstrumentRegistered && registered && catalogIdentity &&
+        ['equity', 'etf'].includes(registered.instrument_type) &&
+        !(registered as SharedInstrumentRecord).latest_market_data.some(point => point.metric_family === 'price' &&
+          ['last', 'close'].includes(point.quote_basis) && point.status === 'complete')
+      if (registered && !needsPrices) {
+        setQuery('')
+        callbacks.current.onSelect(registered.instrument_id)
+        return
+      }
+      const request = result.catalog ?? (needsPrices && registered ? {
+        instrument_type: registered.instrument_type as 'equity' | 'etf',
+        ...catalogIdentity,
+      } : null)
+      if (!request || !portfolioId || !onInstrumentRegistered) return
       const instrument = await materializePortfolioSecurity(portfolioId, request)
       if (selectionGeneration !== generation.current) return
       callbacks.current.onInstrumentRegistered?.(instrument)

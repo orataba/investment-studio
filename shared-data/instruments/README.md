@@ -34,6 +34,12 @@ Watchlist 和 Portfolio 读取共享事实，但在各自 schema 内生成自己
 完整行情明细仍逐行校验日期、值、币种、状态和 NAV 来源；同一读取中的资产身份与报价单位合同只解析一次。
 复用合同不复用观测的有效性判断，后续坏点、不同系列与历史重复点仍保留原有拒绝或下游判定行为。
 
+读取边界按消费者需要明确区分：`get_instrument_metadata` 和 `list_instrument_metadata` 只读身份与配置；
+`get_instrument_resolution_details` 额外保留 canonical resolution 所需的完整公司行动；
+`get_instrument_calculation_inputs` 保留全部已校验行情和当前基金 NAV projection run 的状态、锚点、证据及成员引用。
+后者在 PostgreSQL 的同一个 repeatable-read 快照中读取身份、水位、行情和当前发布指针，避免并发发布混代；
+不读取历史 run、调整因子或事件审计账本。审计与事件核对仍使用现有完整明细／事件接口，历史记录不删除。
+
 ## 验证
 
 Python 合同随相关 backend 测试运行。TypeScript 合同单独检查：

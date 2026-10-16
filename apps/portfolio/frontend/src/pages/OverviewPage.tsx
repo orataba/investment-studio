@@ -26,7 +26,7 @@ import {
   getHoldingsWorkspace,
   getPortfolioInstrumentPriceChart,
   getPortfolioPerformance,
-  getPortfolioInstruments,
+  getPortfolioInstrumentOptions,
   getPortfolioTaxonomyCatalog,
   getWorkspaceSummaryForPortfolio,
   type HoldingsWorkspaceResponse,
@@ -39,7 +39,7 @@ import {
   type PortfolioTaxonomyCatalogResponse,
   type PortfolioTaxonomyNodeRecord,
   type PortfolioWorkspaceSummary,
-  type SharedInstrumentRecord,
+  type InstrumentMetadataRecord,
 } from '../lib/api'
 import {
   formatCurrency,
@@ -633,7 +633,7 @@ function buildBenchmarkMetrics(
 }
 
 function benchmarkNote(
-  selected: SharedInstrumentRecord | null,
+  selected: InstrumentMetadataRecord | null,
   loading: boolean,
   value: number | null | undefined,
   guard: BenchmarkComparisonGuard | null,
@@ -817,7 +817,7 @@ export default function OverviewPage() {
   const [performanceWorkspace, setPerformanceWorkspace] = useState<PortfolioPerformanceResponse | null>(null)
   const [performanceLoading, setPerformanceLoading] = useState(false)
   const [performanceError, setPerformanceError] = useState<string | null>(null)
-  const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
+  const [benchmarkInstruments, setBenchmarkInstruments] = useState<InstrumentMetadataRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
   const [benchmarkChart, setBenchmarkChart] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
@@ -938,7 +938,7 @@ export default function OverviewPage() {
 
     let cancelled = false
     const controller = new AbortController()
-    getPortfolioInstruments(portfolioId, controller.signal)
+    getPortfolioInstrumentOptions(portfolioId, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setBenchmarkInstruments(response.instruments)

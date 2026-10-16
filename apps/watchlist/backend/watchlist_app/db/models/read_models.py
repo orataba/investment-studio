@@ -77,6 +77,9 @@ class InstrumentChartReadModel(PayloadReadModelMixin, Base):
     # Detail reads retain the full history; screeners explicitly select only
     # this small projection, published with the same chart source generation.
     screener_payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True, deferred=True)
+    # Full NAV rows and analytical evidence from the same captured calculation.
+    # Other chart readers must not hydrate this second detail surface.
+    nav_payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True, deferred=True)
 
     materialization_version: Mapped[str] = mapped_column(
         nullable=False,
@@ -101,6 +104,9 @@ class InstrumentRiskReadModel(PayloadReadModelMixin, Base):
         ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
+    # Rule-independent readings from this risk generation's research return
+    # sample. Current thresholds are applied when reading the workspace.
+    workspace_price_context_json: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True, deferred=True)
 
 
 class InstrumentExposureReadModel(PayloadReadModelMixin, Base):

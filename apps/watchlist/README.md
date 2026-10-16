@@ -37,6 +37,12 @@ Watchlist 直接读取 `instrument_data` 共享事实和 `data_ingestion` 的公
 
 Watchlist schema `20260920_0059` 新增列表图表投影。统一发布流程须先停写、备份并迁移，再执行 `backend/scripts/refresh_release_watchlists.py`，为包括归档资产在内的既有图表补齐投影；该补齐只派生已存图表，不获取行情，也不推进原来源时点。`audit_live_data.py` 的 `watchlist_screener_projection_ready` 检查通过后才可恢复服务与调度。运行时若投影缺失，列表明确返回暂不可用并持久化入队修复，worker 对账也会发现缺口；不在页面请求中现场重算。字段与升级合同见 [数据模型与 API](./docs/DATA_MODEL_AND_API.md#45-read-models)。
 
+详情读取按用途投影共享数据：resolve 只读身份与 corporate actions，前台新鲜度仅读来源摘要，后台计算只读当前行情与当前 NAV projection run，不展开历史审计账本。图表默认 full 合同保留，页面通过 `projection=display` 读取展示序列，报价和监控只读必要投影。同类比较先按末级分类和 geography 限定候选，保留异维度排除数量和共同日期约束。
+
+迁移 `20261016_0075` 增加同代 NAV 读投影，`20261016_0076` 增加同代风险工作台价格输入，当前 materialization version 为 v23；发布脚本重建所有 active 本地标的（不限名单会员），运行时缺 NAV 投影通过现有队列修复并明确返回暂不可用。基金总览的 summary、NAV、performance 和 risk 并行请求；净值读保留已发布序列和待更新状态，比较基准的手工选择仍即时读取。旧版归档资产没有 NAV 投影时保留原归档读取合同，不入队或虚构发布时点；已有归档投影原样保留。行情窗口、全局锚点、收益口径和历史审计存储不因本次优化改变。
+
+Watchlist 风险抽屉使用 `GET /api/risk`（`projection=workspace`），保留全部当前规则、事项和筛选信息，省去未展示的 `monitoring_summary`。价格读数与 risk 在同一事务中从该代图表的 `research_returns` 发布；当前阈值、严重性和规则版本即时 overlay，GET 不读取完整历史或重新计算价格读数。缺投影的留存资产仅沿原只读计算路径兼容，不入队、不修改风险状态或历史。默认 full、`summary=true`、监控详情和事项审计接口保持原合同。
+
 ## 投资观点、投资研究与研究助手
 
 投资研究面向公司股票、股票 ETF、行业指数和股票公募，分为「总览 / 标的动态 / 重要研究主题 / 量化指标」。总览突出建议与依据；标的动态筛选外部新闻公告、市场观点、财报业绩会和会议纪要，不混入研究修订或系统日志；主题聚焦具体催化剂并支持人工记录和删除；量化指标展示实际数据与历史，模型暂停时仍可用。
